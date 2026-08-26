@@ -553,15 +553,28 @@ Repository: **[github.com/master-merlin/mrln-arcane-tuner](https://github.com/ma
 
 ## License
 
-*The project licence is not yet finalised — see "Unresolved" below. Until a
-`LICENSE` file is committed, no open-source grant is implied.*
+MRLN Arcane Tuner is licensed under the **Apache License 2.0**. The full text is
+in [`LICENSE`](LICENSE).
+
+Third-party code vendored into this repository keeps its own licence. Those
+attributions — Apache-2.0 and MIT — are listed in [`NOTICE`](NOTICE), together
+with the upstream each component came from.
 
 ### Model weights are licensed separately — check before you train
 
 MRLN Arcane Tuner ships **no model weights**. It downloads them, on your
 instruction, from the upstream repository named in each model definition. Those
-weights carry **their own licences, which are not this project's licence**, and
-some of them restrict what you may do with a LoRA you train on them.
+weights carry **their own licences, which are not this project's licence**.
+
+Two things vary per model, and they are **independent**, so neither answers the
+other:
+
+- **Access** — some repositories are gated: you must accept the terms on
+  HuggingFace and set `HF_TOKEN` before a download will succeed.
+- **Permitted use** — some weights are non-commercial.
+
+`black-forest-labs/FLUX.1-schnell` shows why the two are separate: it is
+Apache-2.0 **and** still gated.
 
 The application does not check, gate, or enforce any of this — it cannot know
 your intended use, and the agreement is between you and the model's publisher.
@@ -576,8 +589,6 @@ model page as authoritative.
 | `ideogram4` | [`ideogram-ai/ideogram-4-fp8`](https://huggingface.co/ideogram-ai/ideogram-4-fp8) | `ideogram-4-non-commercial` — **non-commercial** | open |
 | `flux1` | [`black-forest-labs/FLUX.1-dev`](https://huggingface.co/black-forest-labs/FLUX.1-dev) | `flux-1-dev-non-commercial-license` — **non-commercial** | **gated** — you must accept the agreement on HuggingFace first |
 | `flux2` | [`black-forest-labs/FLUX.2-dev`](https://huggingface.co/black-forest-labs/FLUX.2-dev) | `flux-non-commercial-license` — **non-commercial** | **gated** |
-
-`FLUX.1-schnell` is Apache-2.0 and is the permissive option in that family.
 
 **Permissive (verified):** `hidream_o1`
 ([`HiDream-ai/HiDream-O1-Image`](https://huggingface.co/HiDream-ai/HiDream-O1-Image),
@@ -612,33 +623,9 @@ forward, a scheduler, a cache helper) under
 `diffusers` does not carry that architecture. Each file names its upstream and
 revision in its header.
 
-Attributions carried, per those headers: the HuggingFace `diffusers` and
-`transformers` teams, Stability AI and Katherine Crowson, the Alibaba Wan Team,
-the Qwen Team, BAAI and the OmniGen2 Team, Alpha-VLLM, Krea AI, and Bytedance
-Ltd. (all Apache-2.0); [`microsoft/Lens`](https://github.com/microsoft/Lens)
-and [`Saganaki22/HiDream_O1-ComfyUI`](https://github.com/Saganaki22/HiDream_O1-ComfyUI)
-(MIT); [`ideogram-oss/ideogram4`](https://github.com/ideogram-oss/ideogram4)
-(Apache-2.0 — note this is the *code* repository; the *weights* above are
-licensed separately and non-commercially).
-
-### Unresolved
-
-One vendored component has a licence conflict that is being worked through
-rather than papered over:
-
-- **`boogu_image/vendor/cache_functions/`** (and the related
-  `taylorseer_utils/`) derives from
-  [`Shenyi-Z/TaylorSeer`](https://github.com/Shenyi-Z/TaylorSeer), which is
-  **GPL-3.0**. The files name that upstream in their headers. GPL-3.0 is
-  copyleft and cannot be redistributed under a permissive licence, so this code
-  cannot simply be absorbed into a permissively licensed project, regardless of
-  how the intermediate fork is tagged.
-
-Until that is resolved — by removing the component, reimplementing it, or
-licensing the project compatibly — no `LICENSE` file is committed, because
-publishing one that the tree does not actually satisfy would be worse than
-publishing none. If you are packaging or redistributing this project, that
-constraint applies to you too.
+**[`NOTICE`](NOTICE) is the authoritative list** of what is vendored and under
+whose terms — it is kept in step with the tree, and duplicating it here would
+only give the two copies a chance to drift apart.
 
 Third-party dependencies installed from PyPI and npm keep their own licences;
 the CI gate publishes an inventory of both on every run.

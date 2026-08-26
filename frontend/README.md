@@ -85,6 +85,16 @@ configured in `angular.json`.
 
 `public/runtime-config.json` is fetched at startup. Every URL the app builds is
 origin-relative, so its `backendPort` and `frontendPort` keys are **deprecated
-and unused** — they are still accepted so that an existing deployment's file
-keeps working, and they may be removed in a later release. Unknown keys and
-out-of-range values are ignored rather than adopted.
+as URL inputs**: they are parsed for compatibility but do not influence frontend
+URLs, and the backend writes them without reading them back. They are still
+accepted so that an existing deployment's file keeps working, and they may be
+removed in a later release. Unknown keys and out-of-range values are ignored
+rather than adopted.
+
+This is not a deprecation of the port *settings* — those stay live and editable
+in Server Control (`application.backend_port` / `application.frontend_port`).
+Be precise about what they do today, though: `frontend_port` drives the dev CORS
+origins and the URL the autostart opens, and does **not** make `ng serve` bind
+that port (`npm start` passes no `--port`); `backend_port` does not move the
+server either, because the shipped launchers hardcode `--port 8000`. Making the
+port a single producer is tracked as backend work.

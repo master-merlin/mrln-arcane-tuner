@@ -3,21 +3,37 @@ import { Injectable } from '@angular/core';
 /**
  * Shape of `/runtime-config.json`.
  *
- * `backendPort` / `frontendPort` are **deprecated**. Nothing reads them: every
- * URL this service hands out is origin-relative, because the FastAPI backend
- * serves the built SPA and proxies `/api` itself, so a port in a config file
- * could only ever disagree with the port the page was actually loaded from.
+ * What is deprecated is this file's role as a source of URLs — not the port
+ * settings themselves. The keys are parsed for compatibility but do not
+ * influence frontend URLs; the backend writes them and does not read them back.
+ * Every URL this service hands out is origin-relative, because the FastAPI
+ * backend serves the built SPA and proxies `/api` itself, so a port in a config
+ * file could only ever disagree with the port the page was actually loaded
+ * from.
  *
- * They are still accepted, and `runtime-config.json` is still shipped and still
- * fetched. It is a user-editable deployment artifact — an install may already
- * have one on disk with these keys set, and removing the keys would turn a
- * working file into a rejected one. Deprecate, never drop (ARCHITECTURE D2).
- * They may be removed a release after they stop appearing in shipped configs.
+ * The ports remain a live, editable feature in Server Control, they are just
+ * read from settings on the backend side (`application.backend_port` /
+ * `application.frontend_port`). `frontend_port` drives the dev CORS origins and
+ * the URL the autostart opens — it does NOT make Angular bind that port
+ * (`npm run start` passes no `--port`).
+ *
+ * `backend_port` is the one to be careful about: do NOT describe it as the port
+ * the server binds. Today the local launchers hardcode `--port 8000`
+ * (`backend/start_backend.{ps1,sh,bat}`) and ignore the setting entirely, so
+ * changing it in the UI does not move the server. Making it a single producer
+ * is scheduled as LANE-7 on the backend lane; until that lands, any wording
+ * here that says otherwise describes the intent, not the behaviour.
+ *
+ * `runtime-config.json` is still shipped and still fetched. It is a
+ * user-editable deployment artifact — an install may already have one on disk
+ * with these keys set, and removing the keys would turn a working file into a
+ * rejected one. Deprecate, never drop (ARCHITECTURE D2). They may be removed a
+ * release after they stop appearing in shipped configs.
  */
 export interface RuntimeConfig {
-    /** @deprecated Unused; URLs are origin-relative. Accepted for compatibility. */
+    /** @deprecated Parsed for compatibility; does not influence frontend URLs. */
     backendPort?: number;
-    /** @deprecated Unused; URLs are origin-relative. Accepted for compatibility. */
+    /** @deprecated Parsed for compatibility; does not influence frontend URLs. */
     frontendPort?: number;
 }
 

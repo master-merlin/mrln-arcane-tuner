@@ -35,9 +35,45 @@ SRC_INDEX = REPO_ROOT / "frontend" / "src" / "index.html"
 BUILT_INDEX = REPO_ROOT / "frontend" / "dist" / "frontend" / "browser" / "index.html"
 
 
+#: Files whose content the built index.html is derived from. If the build is
+#: older than any of these, it no longer describes them.
+BUILD_INPUTS = (
+    REPO_ROOT / "frontend" / "src" / "index.html",
+    REPO_ROOT / "frontend" / "angular.json",
+)
+
+
 def _served_index() -> tuple[str, str]:
-    """Return (html, which) preferring the BUILT file over source."""
+    """Return (html, which) preferring the BUILT file over source.
+
+    A STALE build is refused rather than trusted. This failure mode is not
+    hypothetical and it is the dangerous direction: an old ``dist/`` that
+    predates a newly added Google Font contains no external origin, so the
+    coherence test would PASS while the page the user gets is blocked by the
+    policy. Failing safe (what a stale build did once already, by still
+    containing the ``onload=`` handler) is luck, not design.
+
+    Absence still falls back to source. That is deliberate and proportionate:
+    a missing artifact is merely weaker evidence, while a stale one actively
+    misrepresents the current tree. A developer who never builds the frontend
+    should not be permanently red; one who built last week should be told to
+    rebuild.
+    """
     if BUILT_INDEX.exists():
+        built_mtime = BUILT_INDEX.stat().st_mtime
+        stale = [
+            p.name
+            for p in BUILD_INPUTS
+            if p.exists() and p.stat().st_mtime > built_mtime
+        ]
+        if stale:
+            pytest.fail(
+                f"{BUILT_INDEX} is older than {', '.join(stale)}, so it does not "
+                "describe the current tree. A stale build can hide a newly "
+                "introduced violation and report green.\n"
+                "  Fix: npm --prefix frontend run build -- --configuration production\n"
+                "  (CI is unaffected — it builds before running these.)"
+            )
         return BUILT_INDEX.read_text(encoding="utf-8"), "built"
     if SRC_INDEX.exists():
         return SRC_INDEX.read_text(encoding="utf-8"), "source"

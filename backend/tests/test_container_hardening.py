@@ -23,7 +23,6 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 
 import pytest
@@ -94,16 +93,24 @@ def _run_entrypoint_as_fake_root(tmp: Path, *, uid_exists: bool = True) -> str:
         text=True,
         env=env,
         timeout=60,
-        cwd=str(tmp),
+        # NOT cwd=tmp, deliberately. A child's working directory is an open
+        # handle on that directory for the child's lifetime, and Windows
+        # releases it lazily after the process exits — so deleting the
+        # directory immediately afterwards intermittently raised
+        # `PermissionError [WinError 32] file is being used by another
+        # process`. entrypoint.sh uses only absolute paths before the
+        # privilege drop, so the working directory is irrelevant to what is
+        # being tested; pointing it at the repo root removes the handle
+        # without changing the behaviour under test.
+        cwd=str(REPO_ROOT),
     )
     return proc.stdout + proc.stderr
 
 
 class TestEntrypointDropsPrivileges:
     @requires_bash
-    def test_running_as_root_re_execs_as_the_app_uid(self):
-        with tempfile.TemporaryDirectory() as td:
-            out = _run_entrypoint_as_fake_root(Path(td))
+    def test_running_as_root_re_execs_as_the_app_uid(self, tmp_path):
+        out = _run_entrypoint_as_fake_root(tmp_path)
 
         assert "SETPRIV_CALLED" in out, (
             "entrypoint did not attempt a privilege drop while running as root.\n"
@@ -116,15 +123,14 @@ class TestEntrypointDropsPrivileges:
         assert "--init-groups" in out, f"supplementary groups not reset:\n{out}"
 
     @requires_bash
-    def test_drop_happens_before_the_app_directories_are_touched(self):
+    def test_drop_happens_before_the_app_directories_are_touched(self, tmp_path):
         """Ordering is load-bearing, so it is pinned.
 
         The script must drop privileges BEFORE it starts rewriting symlinks
         under /app. If the drop moves below that, every one of those writes
         happens as root and the container is only nominally non-root.
         """
-        with tempfile.TemporaryDirectory() as td:
-            out = _run_entrypoint_as_fake_root(Path(td))
+        out = _run_entrypoint_as_fake_root(tmp_path)
 
         assert "SETPRIV_CALLED" in out
         # /app does not exist on a test machine; if the script had reached the
@@ -135,7 +141,7 @@ class TestEntrypointDropsPrivileges:
         )
 
     @requires_bash
-    def test_missing_app_user_continues_instead_of_failing_to_boot(self):
+    def test_missing_app_user_continues_instead_of_failing_to_boot(self, tmp_path):
         """Prove the negative on the fallback path.
 
         An image built before this change has no uid 10001. Refusing to boot
@@ -143,8 +149,7 @@ class TestEntrypointDropsPrivileges:
         behaviour is 'continue as root, loudly'. Pinned so the warning cannot
         be quietly dropped later.
         """
-        with tempfile.TemporaryDirectory() as td:
-            out = _run_entrypoint_as_fake_root(Path(td), uid_exists=False)
+        out = _run_entrypoint_as_fake_root(tmp_path, uid_exists=False)
 
         assert "SETPRIV_CALLED" not in out, "dropped to a uid that does not exist"
         assert "CONTINUING AS ROOT" in out, f"silent fallback to root:\n{out}"
@@ -173,13 +178,27 @@ def _run_sha_validation(value: str | None) -> int:
     else:
         env["GIT_SHA"] = value
 
+    # A SENTINEL, not a bare exit code. An acceptance asserted purely on
+    # `returncode == 0` cannot tell "the guard accepted the sha" from "bash
+    # never ran and returned 1" — and the rejection cases, which assert
+    # `!= 0`, pass happily on a spawn failure. That asymmetry made the
+    # acceptance case the only one of the pair that could break for a reason
+    # unrelated to the guard, which is exactly what happened.
     proc = subprocess.run(
-        [_bash(), "-c", snippet + "\nexit 0\n"],
+        [_bash(), "-c", snippet + '\necho "GUARD_ACCEPTED"\nexit 0\n'],
         capture_output=True,
         text=True,
         env=env,
         timeout=30,
     )
+    if proc.returncode != 0 and "GUARD_ACCEPTED" not in proc.stdout:
+        # Either a genuine rejection or a failure to run at all. Distinguish
+        # them: a rejection prints the guard's own message on stderr.
+        if "GIT_SHA" not in proc.stderr:
+            pytest.fail(
+                "the shell did not execute the guard, so nothing was measured. "
+                f"rc={proc.returncode} stdout={proc.stdout!r} stderr={proc.stderr!r}"
+            )
     return proc.returncode
 
 

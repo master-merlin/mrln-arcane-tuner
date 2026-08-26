@@ -21,6 +21,24 @@ The ``ostris/ai-toolkit`` entry in ``NOTICE`` is untouched and stays untouched â
 it is earned several times over by ``ideogram4/``, which reproduces
 ``get_qwen3_vl_features`` verbatim. Removing a false claim about ONE file must
 not be mistaken for removing the obligation.
+
+WHY THIS IS NOT A ONE-PRODUCER VIOLATION (RULE-21), stated because it looks
+like one and the reasoning decides what this guard is for:
+
+README's Acknowledgments restate projects that ``NOTICE`` also lists, and the
+obvious reading is "two copies of one fact, tolerated". That reading is wrong on
+the facts, and tolerating it would license the wrong thing. ``NOTICE`` carries
+licence text and file pointers; it never asserts *what a dependency was used
+for*. "Timestep sampling strategies are derived from ai-toolkit" was never in
+``NOTICE`` and could not have been.
+
+So README is not a second copy â€” it restates a list and adds a claim per item,
+and that surplus is the part with no producer upstream of it. The general form:
+**a document that restates another document's list and adds a claim per item has
+not duplicated anything; it has authored something new, and the new part needs
+its own verification.** This guard enforces exactly that surplus and deliberately
+says nothing about the overlap with ``NOTICE``. Read as "duplication is fine
+here", it would invite the next unverified sentence in under the same shelter.
 """
 
 from __future__ import annotations

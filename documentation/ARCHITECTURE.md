@@ -151,7 +151,6 @@ Top-level singletons, managers, and helpers:
 | `image_hash.py`         | Perceptual hashing for duplicate detection                   |
 | `model_registry.py`     | Curated restore/upscale model registry + download URLs       |
 | `system_monitor.py`     | GPU/CPU monitoring (VRAM, temp, power, utilization)          |
-| `runtime_config.py`     | Writes `runtime-config.json` for dynamic port discovery      |
 | `auth.py`               | Optional token-auth ASGI gate + login page (no-op if unset)  |
 | `logger.py`             | Structured JSON logging (structlog) with WebSocket sink + trace IDs |
 

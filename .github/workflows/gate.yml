@@ -140,6 +140,31 @@ jobs:
         working-directory: frontend
         run: npm run build
 
+      # The CSP applies to the file FastAPI SERVES, which is this build output —
+      # not frontend/src/index.html. That distinction is not academic: the
+      # production build once injected `onload="this.media='all'"` (Angular's
+      # inlineCritical), which a strict script-src blocks, leaving the whole app
+      # unstyled — while every source-level check passed.
+      #
+      # dist/ is gitignored, so the coherence tests fall back to source when no
+      # build is present. Running them HERE, in the only job that has the real
+      # artifact, is what stops that fallback from becoming the blind spot again.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+
+      - name: CSP coherence against the BUILT bundle
+        run: |
+          set -euo pipefail
+          test -s frontend/dist/frontend/browser/index.html || {
+            echo "::error::no built index.html — the CSP coherence check would" \
+                 "silently fall back to source, which is what it exists to avoid."
+            exit 1
+          }
+          python -m pip install --quiet fastapi 'starlette' httpx pytest
+          python -m pytest backend/tests/api/test_csp_policy.py -q \
+            -k "ExternalOrigins or InlineEventHandlers or InlineScriptHash"
+
   e2e:
     name: frontend (Playwright smoke)
     runs-on: ubuntu-latest

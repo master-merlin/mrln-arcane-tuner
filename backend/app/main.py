@@ -332,6 +332,19 @@ app.add_middleware(
 app.add_middleware(TokenAuthMiddleware, token=container_config.auth_token())
 
 
+# ── Security headers (CSP) ───────────────────────────────────────────────
+# Added LAST on purpose. Starlette's ``add_middleware`` prepends, so the last
+# one added is the OUTERMOST — which is what puts the policy on every response,
+# including the 401 the auth gate short-circuits with. An error page is still a
+# page, and a response that skips the policy is exactly the one an injection
+# wants to land in. Registering this before the auth gate would have left that
+# 401 uncovered; ``test_csp_is_on_the_auth_gate_401`` pins the ordering rather
+# than trusting the reasoning.
+from app.api._security_headers import SecurityHeadersMiddleware  # noqa: E402
+
+app.add_middleware(SecurityHeadersMiddleware)
+
+
 from fastapi.responses import HTMLResponse, RedirectResponse  # noqa: E402
 
 

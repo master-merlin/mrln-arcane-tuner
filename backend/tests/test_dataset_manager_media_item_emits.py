@@ -13,6 +13,7 @@ import os
 import time
 
 import pytest
+import pytest_asyncio
 from unittest.mock import patch, AsyncMock
 
 from app.core.dataset_manager import Dataset, DatasetManager
@@ -20,8 +21,8 @@ from app.core.db.repositories.dataset_repo import DatasetRepository
 from app.core.db.repositories.media_item_repo import MediaItemRepository
 
 
-@pytest.fixture
-def media_item_manager(tmp_path):
+@pytest_asyncio.fixture
+async def media_item_manager(tmp_path):
     """Build a DatasetManager with one dataset + media item, bound to the
     running event loop so emissions can actually run.
 
@@ -30,7 +31,9 @@ def media_item_manager(tmp_path):
     """
     mgr = DatasetManager.__new__(DatasetManager)
     mgr.datasets = {}
-    mgr._loop = asyncio.get_event_loop()
+    # Async fixture: `get_running_loop()` binds to the loop the test awaits on.
+    # 0.21 installed a current loop in the main thread; 1.x does not.
+    mgr._loop = asyncio.get_running_loop()
     mgr._dataset_repo = DatasetRepository()
     mgr._media_repo = MediaItemRepository()
 

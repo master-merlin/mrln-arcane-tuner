@@ -57,7 +57,7 @@ Write-Host ""
 Write-Host "📦 Installing remaining dependencies ..." -ForegroundColor Cyan
 $TmpReq = [System.IO.Path]::GetTempFileName()
 Get-Content requirements.txt |
-    Where-Object { $_ -notmatch '^\s*(scenedetect|sam3|torch|torchvision|torchaudio)([\s=<>!~#]|$)' } |
+    Where-Object { $_ -notmatch '^\s*(scenedetect|sam3|hpsv2|torch|torchvision|torchaudio)([\s=<>!~#]|$)' } |
     Set-Content $TmpReq
 pip install -r $TmpReq
 Remove-Item $TmpReq -Force
@@ -86,6 +86,21 @@ $S3 = Get-Content requirements.txt |
 if ($S3) {
     Write-Host "📦 Installing $S3 (--no-deps) ..." -ForegroundColor Cyan
     pip install --no-deps $S3
+}
+
+# hpsv2 declares `pytest ==7.2.0` and `pytest-split ==0.8.0` as INSTALL
+# requirements - its dev deps leaked into its metadata. It never imports either
+# and registers no pytest11 hook, so the pins are inert (see
+# test_hpsv2_works_under_a_runner_its_metadata_forbids), but left in the bulk
+# resolve they abort it against our own pytest pin. All 18 of its real deps are
+# already in requirements.txt, so nothing is lost by skipping its metadata.
+$HP = Get-Content requirements.txt |
+    Where-Object { $_ -match '^\s*hpsv2\s*==' } |
+    ForEach-Object { ($_ -replace '#.*$', '') -replace '\s', '' } |
+    Select-Object -First 1
+if ($HP) {
+    Write-Host "📦 Installing $HP (--no-deps) ..." -ForegroundColor Cyan
+    pip install --no-deps $HP
 }
 
 Write-Host ""

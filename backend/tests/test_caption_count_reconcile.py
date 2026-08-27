@@ -13,7 +13,6 @@ rescan) instead of silently skipping it.
 """
 from __future__ import annotations
 
-import asyncio
 import os
 import time
 
@@ -35,7 +34,11 @@ def unscanned_manager(tmp_path):
     """Dataset whose folder holds an image the last scan never saw."""
     mgr = DatasetManager.__new__(DatasetManager)
     mgr.datasets = {}
-    mgr._loop = asyncio.get_event_loop()
+    # No loop: these are sync tests asserting on counts, never on broadcasts.
+    # Every _loop consumer in DatasetManager guards `is None` — the documented
+    # "no-op before the loop is wired" path — so None is the honest value here.
+    # It was only ever a loop because 0.21's get_event_loop() handed one over.
+    mgr._loop = None
     mgr._dataset_repo = DatasetRepository()
     mgr._media_repo = MediaItemRepository()
 
@@ -99,7 +102,11 @@ def test_an_already_known_image_is_not_re_adopted(tmp_path):
     """The existing fast path is untouched: a scanned image just flips its flag."""
     mgr = DatasetManager.__new__(DatasetManager)
     mgr.datasets = {}
-    mgr._loop = asyncio.get_event_loop()
+    # No loop: these are sync tests asserting on counts, never on broadcasts.
+    # Every _loop consumer in DatasetManager guards `is None` — the documented
+    # "no-op before the loop is wired" path — so None is the honest value here.
+    # It was only ever a loop because 0.21's get_event_loop() handed one over.
+    mgr._loop = None
     mgr._dataset_repo = DatasetRepository()
     mgr._media_repo = MediaItemRepository()
 

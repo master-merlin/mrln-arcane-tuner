@@ -80,8 +80,11 @@ jobs:
       # path. It is already shared by the Docker build and the runtime
       # self-update precisely so those two cannot diverge; CI joining them is
       # the point. It excludes the torch/triton stack (installed above) and
-      # handles the scenedetect and sam3 --no-deps cases that a plain
-      # `pip install -r requirements.txt` gets wrong.
+      # handles the scenedetect, sam3 and hpsv2 --no-deps cases that a plain
+      # `pip install -r requirements.txt` gets wrong. hpsv2 matters most here:
+      # it declares `pytest ==7.2.0` as an install requirement (its dev deps
+      # leaked into its metadata) and a bulk resolve against our own pytest pin
+      # aborts with ResolutionImpossible, so CI would fail at install time.
       - name: Install backend dependencies
         working-directory: backend
         run: bash install-deps.sh

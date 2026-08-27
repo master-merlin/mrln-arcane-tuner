@@ -16,6 +16,7 @@ import os
 import time
 
 import pytest
+import pytest_asyncio
 from unittest.mock import patch, AsyncMock
 from PIL import Image
 
@@ -33,13 +34,15 @@ def _entity_events(mock_broadcast, *, entity: str, op: str):
     ]
 
 
-@pytest.fixture
-def overlay_manager(tmp_path):
+@pytest_asyncio.fixture
+async def overlay_manager(tmp_path):
     """DatasetManager with one dataset containing two REAL images (so crop /
     adjust can open them), bound to the running loop so emissions fire."""
     mgr = DatasetManager.__new__(DatasetManager)
     mgr.datasets = {}
-    mgr._loop = asyncio.get_event_loop()
+    # Async fixture: `get_running_loop()` binds to the loop the test awaits on.
+    # 0.21 installed a current loop in the main thread; 1.x does not.
+    mgr._loop = asyncio.get_running_loop()
     mgr._dataset_repo = DatasetRepository()
     mgr._media_repo = MediaItemRepository()
 

@@ -92,7 +92,9 @@ class EventManager:
         message = {
             "type": event_type,
             "payload": payload,
-            "timestamp": asyncio.get_event_loop().time() # or standard time
+            # Always called from inside the loop (broadcast is a coroutine), so
+            # get_running_loop() is both correct and the non-deprecated form.
+            "timestamp": asyncio.get_running_loop().time()
         }
 
         # We need to serialize once

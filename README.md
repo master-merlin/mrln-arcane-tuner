@@ -89,15 +89,21 @@ pip install torchaudio==2.11.0 --no-deps \
     --index-url https://download.pytorch.org/whl/cu130
 
 # 3. Install remaining Python dependencies. torch/torchvision/torchaudio
-#    (installed above) and scenedetect (needs --no-deps — its GUI opencv-python
-#    dep would clobber the pinned opencv-python-headless) must be excluded from
-#    this bulk install; grep -v filters them out the same way install.sh does.
+#    (installed above) and three packages whose declared metadata is wrong must
+#    be excluded from this bulk install and added back with --no-deps:
+#    scenedetect (its GUI opencv-python dep would clobber the pinned
+#    opencv-python-headless), sam3 (a stale huggingface-hub<1.0 ceiling), and
+#    hpsv2 (its pytest dev deps leaked into its install requirements and would
+#    abort the resolve against our own pytest pin). grep -v filters them out
+#    the same way install.sh does.
 #    Windows users: skip this bash step and run backend\install.ps1 or
 #    backend\install.bat instead, which do the equivalent filtering natively.
-grep -ivE '^[[:space:]]*(scenedetect|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' \
+grep -ivE '^[[:space:]]*(scenedetect|sam3|hpsv2|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' \
     requirements.txt > /tmp/requirements.filtered.txt
 pip install -r /tmp/requirements.filtered.txt
-pip install --no-deps "$(grep -iE '^[[:space:]]*scenedetect[[:space:]]*==' requirements.txt | sed -E 's/#.*$//' | tr -d '[:space:]')"
+for pkg in scenedetect sam3 hpsv2; do
+    pip install --no-deps "$(grep -iE "^[[:space:]]*${pkg}[[:space:]]*==" requirements.txt | sed -E 's/#.*$//' | tr -d '[:space:]')"
+done
 
 # 4. Install frontend dependencies
 cd ../frontend

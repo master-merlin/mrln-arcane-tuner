@@ -3,19 +3,26 @@ import asyncio
 from unittest.mock import patch, AsyncMock
 
 import pytest
+import pytest_asyncio
 
 from app.core.job_manager import JobManager
 
 
-@pytest.fixture
-def job_manager_with_loop():
-    """Build a JobManager bound to the current event loop.
+@pytest_asyncio.fixture
+async def job_manager_with_loop():
+    """Build a JobManager bound to the loop its test actually runs on.
+
+    Async on purpose: `get_running_loop()` can only answer inside the loop, so
+    this binds the manager to the very loop the test awaits on rather than to
+    whatever `get_event_loop()` happened to return. Under pytest-asyncio 0.21 a
+    sync fixture got the right loop by luck — 0.21 installed a current loop in
+    the main thread and 1.x does not.
 
     No DB setup needed: `_persist_delete` swallows exceptions, so even if
     the underlying repository call fails the broadcast still fires.
     """
     mgr = JobManager()
-    mgr._loop = asyncio.get_event_loop()
+    mgr._loop = asyncio.get_running_loop()
     return mgr
 
 

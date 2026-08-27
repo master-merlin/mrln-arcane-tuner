@@ -30,7 +30,7 @@ fsspec==2025.10.0
 ftfy==6.1.1
 h11==0.16.0
 hf-xet==1.6.0
-hpsv2==1.2.0
+hpsv2==1.2.0  # installed with --no-deps (see install-deps.sh): its dev deps leaked into its metadata as `pytest ==7.2.0` + `pytest-split ==0.8.0` — it never imports either and registers no pytest11 hook (test_dependency_metadata_contracts.py), and would otherwise abort the bulk resolve against our own pytest pin
 httpcore==1.0.9
 httpx==0.28.1
 huggingface-hub==1.27.0
@@ -84,11 +84,10 @@ pydantic_core==2.41.5
 Pygments==2.19.2
 PyMatting==1.1.15
 pyreadline3==3.5.4; sys_platform == 'win32'
-# hpsv2 (line 33) DECLARES `pytest ==7.2.0` and `pytest-split ==0.8.0` but never
-# imports either and registers no pytest11 plugin hook, so the pin is a packaging
-# error, not a coupling: install-deps.sh installs hpsv2 with --no-deps, exactly as
-# it already does for scenedetect and sam3. pytest-split is NOT re-added here — it
-# had no callers, and 0.8.0 caps at pytest<8, so it silently downgrades this pin.
+# pytest-split is deliberately ABSENT and must not be re-added: it had no callers
+# here, and 0.8.0 caps at pytest<8, so installing it silently DOWNGRADES the pin
+# below rather than failing. Pinned by test_pytest_split_stays_uninstalled. (hpsv2 also
+# declares both pins — see its own line for why that one is inert.)
 pytest==9.1.1
 pytest-asyncio==1.4.0
 python-dateutil==2.9.0.post0

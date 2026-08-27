@@ -77,12 +77,10 @@ async def update_settings(module: str, settings: dict[str, Any]) -> dict[str, An
     # the response reflects what was actually saved, not just what was sent.
     merged = manager.get_module_settings(module)
 
-    # Rewrite runtime config when port settings change
-    if module == "application":
-        from app.core.runtime_config import write_runtime_config
-        write_runtime_config(
-            merged.get("backend_port", 8000),
-            merged.get("frontend_port", 4200),
-        )
+    # A port change no longer rewrites runtime-config.json. It used to, into
+    # the SOURCE checkout `frontend/public/`, which the served build never
+    # reads — so the rewrite changed nothing the SPA could see, and the keys are
+    # deprecated as URL inputs regardless. The port change takes effect the way
+    # it always really did: the launcher resolves it on the next start.
 
     return merged

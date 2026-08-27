@@ -108,9 +108,13 @@ async def lifespan(app: FastAPI):
 
     logger.info("starting_api", log_level=LOG_LEVEL)
 
-    # ── Write runtime config for the frontend ────────────────────────
-    from app.core.runtime_config import write_runtime_config
-    write_runtime_config(BACKEND_PORT, FRONTEND_PORT)
+    # No runtime-config.json write here. The file is still SHIPPED and still
+    # fetched by the SPA at bootstrap — what was retired is the backend
+    # rewriting it at runtime, into `frontend/public/` (the SOURCE checkout),
+    # which the served build never reads: the container serves
+    # `/app/frontend/browser`. Pointless in dev, and a write into a read-only
+    # or ephemeral checkout in a container. The keys it wrote are deprecated as
+    # URL inputs and influence nothing. See test_runtime_config_writer_retired.
 
     # Apply Hugging Face auth (env token wins, else the saved Server setting)
     # before the registry initialises — model metadata fetches may need it.

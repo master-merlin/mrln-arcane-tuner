@@ -85,7 +85,22 @@ export MRLN_DB_PATH="$DATA_DIR/arcane_tuner.db"
 # volume, not the ephemeral /app checkout — otherwise a pod restart wipes them.
 export MRLN_SETTINGS_PATH="${MRLN_SETTINGS_PATH:-$DATA_DIR/settings.json}"
 export MRLN_FRONTEND_DIST="${MRLN_FRONTEND_DIST:-/app/frontend/browser}"
-PORT="${PORT:-8000}"
+# The port has ONE producer: backend/port_resolver.py, the same one the local
+# launchers call. PORT still wins inside it, and must: Docker's published-port
+# mapping lives in the daemon, outside this namespace, so an operator's PORT is
+# authoritative here in a way it is not on a desktop (DECISION-11). With PORT
+# unset the resolver honours the port saved on the data volume — which is what
+# the settings screen shows, and what every launcher used to ignore.
+#
+# A failure is a REFUSAL, not a fallback: falling back to 8000 would start a
+# server on a port the settings screen denies, which is the silent disagreement
+# this replaced. MRLN_SETTINGS_PATH is exported above, so the resolver reads the
+# volume's settings file rather than the ephemeral checkout's.
+if ! PORT="$(python "$BACKEND_DIR/port_resolver.py")"; then
+    echo "[entrypoint] refusing to start: the backend port could not be determined." >&2
+    echo "[entrypoint] the reason is above; the settings file is $MRLN_SETTINGS_PATH" >&2
+    exit 1
+fi
 export PORT
 
 # Hugging Face cache → persistent volume so downloaded base models / encoders

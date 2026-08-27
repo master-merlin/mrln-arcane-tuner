@@ -7,8 +7,6 @@ Implements FLUX.2-specific behaviour:
 - Latent packing via ``pack_latents`` (4-col IDs for diffusers)
 - No guidance embed (Klein: guidance_embeds=false)
 - ``Flux2Transformer2DModel`` forward pass (no pooled_projections)
-
-Timestep sampling strategies derived from ostris/ai-toolkit (MIT License).
 """
 
 import os

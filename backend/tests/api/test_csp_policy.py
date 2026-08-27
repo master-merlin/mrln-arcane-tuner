@@ -9,19 +9,35 @@ because the deferred stylesheet never flips off ``media="print"``. Angular's
 ``inlineCritical`` created that construct at build time, so no amount of reading
 the source could have found it.
 
-So the coherence tests here prefer the built artifact and say so loudly when
-they fall back to source — a skip that silently degrades to checking the wrong
-file is how this got missed the first time.
+So the coherence tests here prefer the built artifact, and emit a
+``SourceFallbackWarning`` when they fall back to source — a degradation that
+silently checks the wrong file is how this got missed the first time.
+
+THE SECOND LESSON, found while fixing the first: the fallback was announced
+only inside assertion *failure* messages, so a green run said nothing at all.
+A checkout with no ``frontend/dist/`` — which is every fresh clone, since the
+build output is gitignored — passed these tests having verified precisely the
+file the docstring above says cannot find the defect. That is the original bug's
+exact shape living inside the test written to prevent it: correct behaviour,
+degraded, announced in a line nobody reads.
+
+The fallback deliberately still passes rather than failing or skipping. A fresh
+clone cannot build the frontend before running the backend gate, and a gate that
+is red out of the box gets suppressed rather than fixed. What it must not do is
+look like full coverage.
 """
 
 from __future__ import annotations
 
 import base64
 import hashlib
+import os
 import re
+import warnings
 from pathlib import Path
 
 import pytest
+from _pytest.outcomes import Failed
 
 from app.api._security_headers import (
     CSP_DIRECTIVES,
@@ -31,53 +47,103 @@ from app.api._security_headers import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SRC_INDEX = REPO_ROOT / "frontend" / "src" / "index.html"
-BUILT_INDEX = REPO_ROOT / "frontend" / "dist" / "frontend" / "browser" / "index.html"
+SRC_REL = Path("frontend") / "src" / "index.html"
+BUILT_REL = Path("frontend") / "dist" / "frontend" / "browser" / "index.html"
 
+SRC_INDEX = REPO_ROOT / SRC_REL
+BUILT_INDEX = REPO_ROOT / BUILT_REL
 
-#: Files whose content the built index.html is derived from. If the build is
-#: older than any of these, it no longer describes them.
-BUILD_INPUTS = (
-    REPO_ROOT / "frontend" / "src" / "index.html",
-    REPO_ROOT / "frontend" / "angular.json",
+BUILD_COMMAND = "npm --prefix frontend run build"
+
+SOURCE_FALLBACK_MESSAGE = (
+    f"CSP coherence checked {SRC_REL.as_posix()} because {BUILT_REL.as_posix()} "
+    "does not exist. That is NOT the page FastAPI serves, and the defect this "
+    "file exists for (an inline event handler injected by Angular's "
+    "inlineCritical) is created at build time and cannot appear in source. "
+    f"These tests passing means less than it looks like. Run `{BUILD_COMMAND}` "
+    "and run them again to get the coverage the names promise."
 )
 
 
-def _served_index() -> tuple[str, str]:
-    """Return (html, which) preferring the BUILT file over source.
+class SourceFallbackWarning(UserWarning):
+    """Raised when the CSP checks run against source instead of the built page.
 
-    A STALE build is refused rather than trusted. This failure mode is not
-    hypothetical and it is the dangerous direction: an old ``dist/`` that
-    predates a newly added Google Font contains no external origin, so the
-    coherence test would PASS while the page the user gets is blocked by the
-    policy. Failing safe (what a stale build did once already, by still
-    containing the ``onload=`` handler) is luck, not design.
-
-    Absence still falls back to source. That is deliberate and proportionate:
-    a missing artifact is merely weaker evidence, while a stale one actively
-    misrepresents the current tree. A developer who never builds the frontend
-    should not be permanently red; one who built last week should be told to
-    rebuild.
+    A distinct category rather than a bare ``UserWarning`` so a caller that
+    wants the strict behaviour can ask for it by name —
+    ``-W error::...SourceFallbackWarning`` in CI, once CI builds the frontend
+    before the backend gate. It is deliberately NOT escalated here: see the
+    module docstring.
     """
-    if BUILT_INDEX.exists():
-        built_mtime = BUILT_INDEX.stat().st_mtime
+
+
+#: Files whose content the built index.html is derived from. If the build is
+#: older than any of these, it no longer describes them. Relative, so the
+#: staleness check resolves against whichever root is passed in.
+BUILD_INPUT_RELS = (
+    Path("frontend") / "src" / "index.html",
+    Path("frontend") / "angular.json",
+)
+
+
+def _resolve_index(root: Path) -> tuple[str, str] | None:
+    """Return (html, which) preferring the BUILT file, or None if neither exists.
+
+    Takes its root as an argument so both branches below can be driven at a
+    synthetic tree. A warning that only fires against the real repository is a
+    claim about a line of code nobody executes, and which branch a real
+    checkout takes depends on whether anyone has run a build — so a test
+    reading the real tree could never cover both.
+
+    Three outcomes, and the asymmetry between the last two is the whole point:
+
+    * **Built and current** — the page FastAPI serves. Full coverage, silent.
+    * **Built but STALE** — refused. Not hypothetical and it is the dangerous
+      direction: an old ``dist/`` predating a newly added Google Font contains
+      no external origin, so the coherence test PASSES while the page the user
+      gets is blocked. Failing safe (what a stale build did once already, by
+      still containing the ``onload=``) is luck, not design.
+    * **Absent** — falls back to source and **says so**. Deliberate and
+      proportionate: a missing artifact is merely weaker evidence, while a
+      stale one actively misrepresents the tree. A developer who never builds
+      the frontend should not be permanently red; one who built last week
+      should be told to rebuild. But the fallback must not be silent — that
+      was the defect this branch fixed, the label having previously appeared
+      only inside assertion messages, i.e. only on failure.
+    """
+    built = root / BUILT_REL
+    if built.exists():
+        built_mtime = built.stat().st_mtime
         stale = [
-            p.name
-            for p in BUILD_INPUTS
-            if p.exists() and p.stat().st_mtime > built_mtime
+            rel.name
+            for rel in BUILD_INPUT_RELS
+            if (root / rel).exists() and (root / rel).stat().st_mtime > built_mtime
         ]
         if stale:
             pytest.fail(
-                f"{BUILT_INDEX} is older than {', '.join(stale)}, so it does not "
+                f"{built} is older than {', '.join(stale)}, so it does not "
                 "describe the current tree. A stale build can hide a newly "
                 "introduced violation and report green.\n"
-                "  Fix: npm --prefix frontend run build -- --configuration production\n"
+                f"  Fix: {BUILD_COMMAND} -- --configuration production\n"
                 "  (CI is unaffected — it builds before running these.)"
             )
-        return BUILT_INDEX.read_text(encoding="utf-8"), "built"
-    if SRC_INDEX.exists():
-        return SRC_INDEX.read_text(encoding="utf-8"), "source"
-    pytest.skip("no index.html in this checkout")
+        return built.read_text(encoding="utf-8"), "built"
+
+    src = root / SRC_REL
+    if src.exists():
+        # stacklevel=3: past this helper and past _served_index, so the
+        # warning is attributed to the test that degraded, not to this line.
+        warnings.warn(SOURCE_FALLBACK_MESSAGE, SourceFallbackWarning, stacklevel=3)
+        return src.read_text(encoding="utf-8"), "source"
+
+    return None
+
+
+def _served_index() -> tuple[str, str]:
+    """Return (html, which) for this checkout, skipping if there is no page."""
+    resolved = _resolve_index(REPO_ROOT)
+    if resolved is None:
+        pytest.skip("no index.html in this checkout")
+    return resolved
 
 
 def _sha256_of(text: str) -> str:
@@ -92,6 +158,119 @@ def _inline_scripts(html: str) -> list[str]:
             r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", html, re.S
         )
     ]
+
+
+def _tree(
+    root: Path,
+    *,
+    built: str | None = None,
+    source: str | None = None,
+    stale: bool = False,
+) -> Path:
+    """Build a synthetic checkout containing whichever index.html files are given.
+
+    **mtimes are stamped explicitly rather than left to write order.** Found
+    when the stale-build refusal (which arrived on a different branch) met
+    these tests in a merge: this helper wrote ``built`` and then ``source``, so
+    ``mtime(source) >= mtime(built)`` and the refusal was one clock tick away
+    from firing. It passed only because two rapid writes on this machine land
+    on the same tick — a slower disk would have failed
+    ``test_a_built_page_is_preferred_and_says_nothing`` with the *stale* message,
+    which reads exactly like the guard working correctly and would have been
+    "fixed" by weakening the guard.
+
+    So the two states are now named, not implied: ``stale=False`` puts the
+    build after its inputs, ``stale=True`` puts it before them.
+    """
+    for rel, text in ((BUILT_REL, built), (SRC_REL, source)):
+        if text is None:
+            continue
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+    # Fixed timestamps, far enough apart that no filesystem granularity can
+    # blur them. An epoch constant rather than time.time() so the test cannot
+    # depend on when it runs.
+    older, newer = 1_700_000_000, 1_700_000_100
+    build_time, input_time = (older, newer) if stale else (newer, older)
+    for rel, when in ((BUILT_REL, build_time), (SRC_REL, input_time)):
+        path = root / rel
+        if path.exists():
+            os.utime(path, (when, when))
+    return root
+
+
+class TestTheSourceFallbackIsAnnounced:
+    """The guard on the guard: degrading must be visible on a PASS, not only on a fail.
+
+    Every one of these drives ``_resolve_index`` at a synthetic tree rather than
+    at this checkout, because which files exist here depends on whether someone
+    has run a frontend build — so a test that read the real tree would assert
+    different things on different machines and could not cover both branches.
+    """
+
+    def test_a_source_only_tree_warns(self, tmp_path):
+        _tree(tmp_path, source="<html></html>")
+        with pytest.warns(SourceFallbackWarning) as caught:
+            _resolve_index(tmp_path)
+
+        message = str(caught[0].message)
+        assert BUILD_COMMAND in message, "must name the command that fixes it"
+        assert SRC_REL.as_posix() in message
+        assert BUILT_REL.as_posix() in message
+
+    def test_the_fallback_still_returns_the_page(self, tmp_path):
+        """Announced, NOT failed and NOT skipped.
+
+        A fresh clone cannot build the frontend before running the backend gate.
+        Turning this into a failure or a skip would make the checks disappear on
+        exactly the machines that have never run them.
+        """
+        _tree(tmp_path, source="<html>source</html>")
+        with pytest.warns(SourceFallbackWarning):
+            html, which = _resolve_index(tmp_path)
+        assert (html, which) == ("<html>source</html>", "source")
+
+    def test_a_built_page_is_preferred_and_says_nothing(self, tmp_path):
+        """The other half: no false alarm when coverage is real.
+
+        A warning that fires either way carries no information, so the silence
+        is asserted rather than assumed — ``simplefilter("error")`` turns any
+        warning at all into a failure here.
+        """
+        _tree(tmp_path, built="<html>built</html>", source="<html>source</html>")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            html, which = _resolve_index(tmp_path)
+        assert (html, which) == ("<html>built</html>", "built")
+
+    def test_a_stale_build_is_refused(self, tmp_path):
+        """The third state, which had no test at all until the resolver took a root.
+
+        The stale-build refusal could previously only ever run against the real
+        repository, so whether it fired depended on whether the person running
+        the suite happened to have built recently — it was never driven
+        deliberately. Now it is: the build is stamped OLDER than its inputs, and
+        the refusal must name the input that outran it.
+        """
+        _tree(
+            tmp_path,
+            built="<html>built</html>",
+            source="<html>source</html>",
+            stale=True,
+        )
+        with pytest.raises(Failed) as excinfo:
+            _resolve_index(tmp_path)
+        assert "index.html" in str(excinfo.value)
+        assert BUILD_COMMAND in str(excinfo.value)
+
+    def test_a_tree_with_neither_resolves_to_nothing(self, tmp_path):
+        # This is what makes _served_index reach pytest.skip. Pinned so the
+        # skip path cannot quietly become an exception.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert _resolve_index(tmp_path) is None
 
 
 class TestNoInlineEventHandlers:

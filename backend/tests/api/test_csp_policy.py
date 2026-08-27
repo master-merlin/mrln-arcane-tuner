@@ -9,9 +9,22 @@ because the deferred stylesheet never flips off ``media="print"``. Angular's
 ``inlineCritical`` created that construct at build time, so no amount of reading
 the source could have found it.
 
-So the coherence tests here prefer the built artifact and say so loudly when
-they fall back to source — a skip that silently degrades to checking the wrong
-file is how this got missed the first time.
+So the coherence tests here prefer the built artifact, and emit a
+``SourceFallbackWarning`` when they fall back to source — a degradation that
+silently checks the wrong file is how this got missed the first time.
+
+THE SECOND LESSON, found while fixing the first: the fallback was announced
+only inside assertion *failure* messages, so a green run said nothing at all.
+A checkout with no ``frontend/dist/`` — which is every fresh clone, since the
+build output is gitignored — passed these tests having verified precisely the
+file the docstring above says cannot find the defect. That is the original bug's
+exact shape living inside the test written to prevent it: correct behaviour,
+degraded, announced in a line nobody reads.
+
+The fallback deliberately still passes rather than failing or skipping. A fresh
+clone cannot build the frontend before running the backend gate, and a gate that
+is red out of the box gets suppressed rather than fixed. What it must not do is
+look like full coverage.
 """
 
 from __future__ import annotations
@@ -19,6 +32,7 @@ from __future__ import annotations
 import base64
 import hashlib
 import re
+import warnings
 from pathlib import Path
 
 import pytest
@@ -31,17 +45,62 @@ from app.api._security_headers import (
 )
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
-SRC_INDEX = REPO_ROOT / "frontend" / "src" / "index.html"
-BUILT_INDEX = REPO_ROOT / "frontend" / "dist" / "frontend" / "browser" / "index.html"
+SRC_REL = Path("frontend") / "src" / "index.html"
+BUILT_REL = Path("frontend") / "dist" / "frontend" / "browser" / "index.html"
+
+SRC_INDEX = REPO_ROOT / SRC_REL
+BUILT_INDEX = REPO_ROOT / BUILT_REL
+
+BUILD_COMMAND = "npm --prefix frontend run build"
+
+SOURCE_FALLBACK_MESSAGE = (
+    f"CSP coherence checked {SRC_REL.as_posix()} because {BUILT_REL.as_posix()} "
+    "does not exist. That is NOT the page FastAPI serves, and the defect this "
+    "file exists for (an inline event handler injected by Angular's "
+    "inlineCritical) is created at build time and cannot appear in source. "
+    f"These tests passing means less than it looks like. Run `{BUILD_COMMAND}` "
+    "and run them again to get the coverage the names promise."
+)
+
+
+class SourceFallbackWarning(UserWarning):
+    """Raised when the CSP checks run against source instead of the built page.
+
+    A distinct category rather than a bare ``UserWarning`` so a caller that
+    wants the strict behaviour can ask for it by name —
+    ``-W error::...SourceFallbackWarning`` in CI, once CI builds the frontend
+    before the backend gate. It is deliberately NOT escalated here: see the
+    module docstring.
+    """
+
+
+def _resolve_index(root: Path) -> tuple[str, str] | None:
+    """Return (html, which) preferring the BUILT file, or None if neither exists.
+
+    Takes its root as an argument so the announcement below can be driven at a
+    synthetic tree. A warning that only fires against the real repository is a
+    claim about a line of code nobody executes.
+    """
+    built = root / BUILT_REL
+    if built.exists():
+        return built.read_text(encoding="utf-8"), "built"
+
+    src = root / SRC_REL
+    if src.exists():
+        # stacklevel=3: past this helper and past _served_index, so the
+        # warning is attributed to the test that degraded, not to this line.
+        warnings.warn(SOURCE_FALLBACK_MESSAGE, SourceFallbackWarning, stacklevel=3)
+        return src.read_text(encoding="utf-8"), "source"
+
+    return None
 
 
 def _served_index() -> tuple[str, str]:
-    """Return (html, which) preferring the BUILT file over source."""
-    if BUILT_INDEX.exists():
-        return BUILT_INDEX.read_text(encoding="utf-8"), "built"
-    if SRC_INDEX.exists():
-        return SRC_INDEX.read_text(encoding="utf-8"), "source"
-    pytest.skip("no index.html in this checkout")
+    """Return (html, which) for this checkout, skipping if there is no page."""
+    resolved = _resolve_index(REPO_ROOT)
+    if resolved is None:
+        pytest.skip("no index.html in this checkout")
+    return resolved
 
 
 def _sha256_of(text: str) -> str:
@@ -56,6 +115,69 @@ def _inline_scripts(html: str) -> list[str]:
             r"<script(?![^>]*\bsrc=)[^>]*>(.*?)</script>", html, re.S
         )
     ]
+
+
+def _tree(root: Path, *, built: str | None = None, source: str | None = None) -> Path:
+    """Build a synthetic checkout containing whichever index.html files are given."""
+    for rel, text in ((BUILT_REL, built), (SRC_REL, source)):
+        if text is None:
+            continue
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+    return root
+
+
+class TestTheSourceFallbackIsAnnounced:
+    """The guard on the guard: degrading must be visible on a PASS, not only on a fail.
+
+    Every one of these drives ``_resolve_index`` at a synthetic tree rather than
+    at this checkout, because which files exist here depends on whether someone
+    has run a frontend build — so a test that read the real tree would assert
+    different things on different machines and could not cover both branches.
+    """
+
+    def test_a_source_only_tree_warns(self, tmp_path):
+        _tree(tmp_path, source="<html></html>")
+        with pytest.warns(SourceFallbackWarning) as caught:
+            _resolve_index(tmp_path)
+
+        message = str(caught[0].message)
+        assert BUILD_COMMAND in message, "must name the command that fixes it"
+        assert SRC_REL.as_posix() in message
+        assert BUILT_REL.as_posix() in message
+
+    def test_the_fallback_still_returns_the_page(self, tmp_path):
+        """Announced, NOT failed and NOT skipped.
+
+        A fresh clone cannot build the frontend before running the backend gate.
+        Turning this into a failure or a skip would make the checks disappear on
+        exactly the machines that have never run them.
+        """
+        _tree(tmp_path, source="<html>source</html>")
+        with pytest.warns(SourceFallbackWarning):
+            html, which = _resolve_index(tmp_path)
+        assert (html, which) == ("<html>source</html>", "source")
+
+    def test_a_built_page_is_preferred_and_says_nothing(self, tmp_path):
+        """The other half: no false alarm when coverage is real.
+
+        A warning that fires either way carries no information, so the silence
+        is asserted rather than assumed — ``simplefilter("error")`` turns any
+        warning at all into a failure here.
+        """
+        _tree(tmp_path, built="<html>built</html>", source="<html>source</html>")
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            html, which = _resolve_index(tmp_path)
+        assert (html, which) == ("<html>built</html>", "built")
+
+    def test_a_tree_with_neither_resolves_to_nothing(self, tmp_path):
+        # This is what makes _served_index reach pytest.skip. Pinned so the
+        # skip path cannot quietly become an exception.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            assert _resolve_index(tmp_path) is None
 
 
 class TestNoInlineEventHandlers:

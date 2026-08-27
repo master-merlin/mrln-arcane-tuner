@@ -60,7 +60,7 @@ pip install torchaudio==2.11.0 --no-deps \
 echo ""
 echo "📦 Installing remaining dependencies ..."
 TMP_REQ="$(mktemp)"
-grep -ivE '^[[:space:]]*(scenedetect|sam3|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' requirements.txt > "$TMP_REQ"
+grep -ivE '^[[:space:]]*(scenedetect|sam3|hpsv2|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' requirements.txt > "$TMP_REQ"
 pip install -r "$TMP_REQ"
 rm -f "$TMP_REQ"
 
@@ -82,6 +82,18 @@ S3="$(grep -iE '^[[:space:]]*sam3[[:space:]]*==' requirements.txt | sed -E 's/#.
 if [ -n "$S3" ]; then
     echo "📦 Installing $S3 (--no-deps) ..."
     pip install --no-deps "$S3"
+fi
+
+# hpsv2 declares `pytest ==7.2.0` and `pytest-split ==0.8.0` as INSTALL
+# requirements - its dev deps leaked into its metadata. It never imports either
+# and registers no pytest11 hook, so the pins are inert (see
+# test_hpsv2_works_under_a_runner_its_metadata_forbids), but left in the bulk
+# resolve they abort it against our own pytest pin. All 18 of its real deps are
+# already in requirements.txt, so nothing is lost by skipping its metadata.
+HP="$(grep -iE '^[[:space:]]*hpsv2[[:space:]]*==' requirements.txt | sed -E 's/#.*$//' | tr -d '[:space:]' || true)"
+if [ -n "$HP" ]; then
+    echo "📦 Installing $HP (--no-deps) ..."
+    pip install --no-deps "$HP"
 fi
 
 echo ""

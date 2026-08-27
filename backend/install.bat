@@ -56,7 +56,7 @@ REM the container filters them to protect its baked 2.11-matched copy).
 
 echo.
 echo Installing remaining dependencies ...
-findstr /V /R /I "^scenedetect== ^sam3== ^torch== ^torchvision== ^torchaudio==" requirements.txt > "%TEMP%\mrln_requirements_filtered.txt"
+findstr /V /R /I "^scenedetect== ^sam3== ^hpsv2== ^torch== ^torchvision== ^torchaudio==" requirements.txt > "%TEMP%\mrln_requirements_filtered.txt"
 pip install -r "%TEMP%\mrln_requirements_filtered.txt"
 del "%TEMP%\mrln_requirements_filtered.txt"
 
@@ -84,6 +84,21 @@ for /f "usebackq tokens=1 delims= #" %%A in (`findstr /R /I "^sam3==" requiremen
 if defined S3 (
     echo Installing %S3% ^(--no-deps^) ...
     pip install --no-deps %S3%
+)
+
+REM hpsv2 declares `pytest ==7.2.0` and `pytest-split ==0.8.0` as INSTALL
+REM requirements — its dev deps leaked into its metadata. It never imports
+REM either and registers no pytest11 hook, so the pins are inert (see
+REM test_hpsv2_works_under_a_runner_its_metadata_forbids), but left in the bulk
+REM resolve they abort it against our own pytest pin. All 18 of its real deps
+REM are already in requirements.txt, so nothing is lost by skipping its metadata.
+set "HP="
+for /f "usebackq tokens=1 delims= #" %%A in (`findstr /R /I "^hpsv2==" requirements.txt`) do (
+    if not defined HP set "HP=%%A"
+)
+if defined HP (
+    echo Installing %HP% ^(--no-deps^) ...
+    pip install --no-deps %HP%
 )
 
 echo.

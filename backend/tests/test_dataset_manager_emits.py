@@ -4,12 +4,13 @@ import os
 from unittest.mock import patch, AsyncMock
 
 import pytest
+import pytest_asyncio
 
 from app.core.dataset_manager import DatasetManager
 
 
-@pytest.fixture
-def dataset_manager_with_loop(tmp_path):
+@pytest_asyncio.fixture
+async def dataset_manager_with_loop(tmp_path):
     """Build a DatasetManager pointed at a throwaway default_root.
 
     The session-wide ``_isolate_test_db`` fixture already redirects the
@@ -29,7 +30,10 @@ def dataset_manager_with_loop(tmp_path):
     from app.core.settings_manager import get_settings_manager
     mgr.settings_manager = get_settings_manager()
     mgr.datasets = {}
-    mgr._loop = asyncio.get_event_loop()
+    # Async fixture so this binds to the loop the test actually awaits on.
+    # pytest-asyncio 0.21 installed a current loop in the main thread and 1.x
+    # does not, so `get_event_loop()` here was right by luck, not by design.
+    mgr._loop = asyncio.get_running_loop()
 
     from app.core.db import DatabaseEngine
     from app.core.db.repositories.dataset_repo import DatasetRepository

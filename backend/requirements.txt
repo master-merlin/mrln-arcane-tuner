@@ -84,9 +84,13 @@ pydantic_core==2.41.5
 Pygments==2.19.2
 PyMatting==1.1.15
 pyreadline3==3.5.4; sys_platform == 'win32'
-pytest==7.2.0
-pytest-asyncio==0.21.2
-pytest-split==0.8.0
+# hpsv2 (line 33) DECLARES `pytest ==7.2.0` and `pytest-split ==0.8.0` but never
+# imports either and registers no pytest11 plugin hook, so the pin is a packaging
+# error, not a coupling: install-deps.sh installs hpsv2 with --no-deps, exactly as
+# it already does for scenedetect and sam3. pytest-split is NOT re-added here — it
+# had no callers, and 0.8.0 caps at pytest<8, so it silently downgrades this pin.
+pytest==9.1.1
+pytest-asyncio==1.4.0
 python-dateutil==2.9.0.post0
 python-multipart==0.0.30
 pytorch_optimizer==3.9.0

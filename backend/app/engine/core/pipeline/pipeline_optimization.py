@@ -87,6 +87,10 @@ class PipelineOptimizationMixin:
         #    gradient_checkpointing_enable; only the raw model exposes it)
         self._configure_gradient_checkpointing()
 
+        # 4b. Grouped-query attention: hand the kernel plain MHA so it does not
+        #     fall back to math SDPA (quadratic in image area — see the module).
+        self._configure_gqa_attention()
+
         # 5a. Fuse QKV projections (Flux2: to_q/k/v → to_qkv) before PEFT
         #     so PEFT trains a single shared lora_A per fused QKV layer
         self._fuse_qkv_projections()
@@ -229,6 +233,22 @@ class PipelineOptimizationMixin:
             for te in self._get_text_encoders().values():
                 if hasattr(te, "gradient_checkpointing_enable"):
                     te.gradient_checkpointing_enable()
+
+    # ── Grouped-Query Attention ────────────────────────────────────────────
+
+    def _configure_gqa_attention(self) -> None:
+        """Keep GQA families off SDPA's math backend.
+
+        Opt-out only (``gqa_expand_kv: false``): the default has to be on,
+        because the failure it prevents is silent — no warning, just a run that
+        is slower and needs several times the VRAM. See ``gqa_attention`` for
+        the measurement and the mechanism.
+        """
+        if not self.config.get("gqa_expand_kv", True):
+            return
+        from app.engine.core.optimization.gqa_attention import install_gqa_expansion
+
+        install_gqa_expansion(self._get_primary_model(), self.logger)
 
     # ── torch.compile for Float8 Training ──────────────────────────────────
 

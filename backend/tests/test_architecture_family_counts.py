@@ -40,10 +40,22 @@ def _tree_families() -> set[str]:
 
 
 def _tree_support_packages() -> set[str]:
+    """A support package ships no definitions but IS a package: it has __init__.py.
+
+    That clause is not pedantry. The first version of this test counted any
+    directory without definitions, so an empty, untracked `families/definitions/`
+    sitting in one working tree made the count 3 while a clean checkout saw 2 --
+    and the documentation written from that count claimed a component the
+    repository does not contain. The guard measured a working tree and the prose
+    believed it. Requiring __init__.py measures the repository instead, and
+    excludes __pycache__ for the same reason rather than by name.
+    """
     return {
         d.name
         for d in FAMILIES_DIR.iterdir()
-        if d.is_dir() and d.name != "__pycache__" and not any((d / "definitions").glob("*.yaml"))
+        if d.is_dir()
+        and (d / "__init__.py").is_file()
+        and not any((d / "definitions").glob("*.yaml"))
     }
 
 

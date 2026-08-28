@@ -353,3 +353,72 @@ def test_disk_cache_persists_negative_prompt(tmp_path):
     warm._pre_cache_text_embeddings()
     assert "blurry, low quality" in warm.text_cache
     assert warm.driver.calls == 0  # negative + sample served from disk
+
+
+# ── Prompt-length staleness ──────────────────────────────────────────────────
+#
+# `te.max_length` moved 256 -> 1024 for both LTX-2 definitions on 2026-08-28 to
+# match upstream. The cache path carries the definition id and the TE quantization
+# but NOT the prompt length, and the connectors turn padding into learned registers
+# -- so an embedding cached at the old length is a DIFFERENT embedding, not a
+# shorter one, and nothing downstream notices: 256 and 1024 are both multiples of
+# the 128 registers, so the connectors accept either and quietly condition
+# differently.
+
+
+class _Definition:
+    def __init__(self, max_length: int) -> None:
+        self.architecture_params = {"te.max_length": max_length}
+
+
+def test_a_cache_built_at_another_prompt_length_is_a_miss(tmp_path):
+    """The reason this check exists: stale conditioning that nothing would report."""
+    cold = _disk_trainer(str(tmp_path))
+    cold.definition = _Definition(5)  # matches the stub TE's seq_len
+    cold._pre_cache_text_embeddings()
+    assert cold.driver.calls > 0
+
+    warm = _disk_trainer(str(tmp_path))
+    warm.definition = _Definition(1024)  # the definition moved under the cache
+    warm._pre_cache_text_embeddings()
+    assert warm.driver.calls > 0, (
+        "embeddings cached at seq_len 5 were served to a definition asking for 1024. "
+        "Nothing raises -- both lengths are valid to the connectors -- so the run would "
+        "train on conditioning it did not ask for."
+    )
+
+
+def test_a_cache_at_the_MATCHING_length_is_still_a_hit(tmp_path):
+    """The other half, and the one that catches the mistake actually made.
+
+    The first draft of the freshness check read ``emb.shape[0]``, which is the
+    BATCH axis on these batch-first ``[1, seq_len, dim]`` tensors -- so it compared
+    1 against the prompt length, called every caption stale, and would have
+    re-encoded the whole dataset on every run forever. A staleness check without
+    this half looks correct while never letting the cache work.
+    """
+    cold = _disk_trainer(str(tmp_path))
+    cold.definition = _Definition(5)
+    cold._pre_cache_text_embeddings()
+
+    warm = _disk_trainer(str(tmp_path))
+    warm.definition = _Definition(5)
+    warm._pre_cache_text_embeddings()
+    assert warm.driver.calls == 0, (
+        "a cache built at the SAME prompt length was rejected; the freshness check is "
+        "reading the wrong axis and the cache can never be used"
+    )
+
+
+def test_a_trainer_without_a_definition_still_uses_its_cache(tmp_path):
+    """The check must not become a reason a run cannot start.
+
+    `self.definition` is absent on a bare trainer; reading it unguarded raised
+    AttributeError and took out fourteen tests in this file at once.
+    """
+    cold = _disk_trainer(str(tmp_path))
+    cold._pre_cache_text_embeddings()
+
+    warm = _disk_trainer(str(tmp_path))
+    warm._pre_cache_text_embeddings()
+    assert warm.driver.calls == 0

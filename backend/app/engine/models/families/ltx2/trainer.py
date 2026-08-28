@@ -158,6 +158,25 @@ class Ltx2Trainer(GenericTrainingPipeline):
 
         te1_dir, te2_dir, te3_dir = _slot_dir("te1"), _slot_dir("te2"), _slot_dir("te3")
 
+        # The cache path carries the definition id and the TE quantization, but NOT
+        # the prompt length -- and the connectors replace padding with learned
+        # registers, so the length is part of the conditioning rather than something
+        # masked away. An embedding cached at one length is therefore a DIFFERENT
+        # embedding, not a shorter one, and nothing downstream would notice: 256 and
+        # 1024 are both multiples of the 128 registers, so the connectors accept
+        # either and simply condition differently.
+        #
+        # `te.max_length` moved 256 -> 1024 for both definitions on 2026-08-28 to
+        # match upstream, which makes every embedding cached before that date stale.
+        # Treat a length mismatch as a cache miss so the run re-encodes instead of
+        # mixing two conditionings inside one dataset (ARCHITECTURE D10: derived data
+        # keyed on every input and self-healing).
+        # `getattr(self, "definition", None)` and not `self.definition`: the trainer is
+        # constructed without one in unit tests, and a cache-freshness check must never
+        # be the reason a run cannot start.
+        _arch = getattr(getattr(self, "definition", None), "architecture_params", None)
+        expected_len = int((_arch or {}).get("te.max_length", 0) or 0)
+
         dtype = self._resolve_loading_dtype()
 
         # ── Full ordered work set: training captions, expanded sample prompts,
@@ -195,6 +214,7 @@ class Ltx2Trainer(GenericTrainingPipeline):
         # before this fix). Treat that as a MISS — re-encode + re-save all
         # three — instead of silently caching (emb, None, None) forever.
         disk_loaded = 0
+        stale_lengths: dict[int, int] = {}
         need_encode: list[tuple[str, str]] = []
         for cap, hint in work:
             if te1_dir:
@@ -209,16 +229,48 @@ class Ltx2Trainer(GenericTrainingPipeline):
                     partial = (te2_dir and pooled is None) or (
                         te3_dir and mask is None
                     )
-                    if not partial:
+                    # Stale length -> re-encode. The token axis is `-2`, NOT `0`:
+                    # these are cached batch-first as [1, seq_len, dim], so `shape[0]`
+                    # is the batch dim and comparing it to the prompt length would
+                    # mark every caption stale and re-encode the dataset on every
+                    # run, forever. Pinned by the tests beside this file.
+                    stale = (
+                        expected_len > 0
+                        and emb.ndim >= 2
+                        and emb.shape[-2] != expected_len
+                    )
+                    if not partial and not stale:
                         self.text_cache[cap] = (emb, pooled, mask)
                         disk_loaded += 1
                         continue
-                    self.logger.warning(
-                        "ltx2_partial_triple_treated_as_miss",
-                        caption_hash=hashlib.sha256(cap.encode("utf-8")).hexdigest()[:16],
-                        hint=hint,
-                    )
+                    if stale:
+                        # Counted, not logged per caption: a whole dataset goes
+                        # stale at once, and one warning per caption would bury
+                        # everything else in the run's log.
+                        found = int(emb.shape[0])
+                        stale_lengths[found] = stale_lengths.get(found, 0) + 1
+                    else:
+                        self.logger.warning(
+                            "ltx2_partial_triple_treated_as_miss",
+                            caption_hash=hashlib.sha256(
+                                cap.encode("utf-8"),
+                            ).hexdigest()[:16],
+                            hint=hint,
+                        )
             need_encode.append((cap, hint))
+
+        if stale_lengths:
+            self.logger.warning(
+                "ltx2_text_cache_stale_prompt_length",
+                expected=expected_len,
+                found=stale_lengths,
+                re_encoding=sum(stale_lengths.values()),
+                reason=(
+                    "cached embeddings were built at a different te.max_length; the "
+                    "connectors turn padding into learned registers, so a different "
+                    "length is different conditioning. Re-encoding them."
+                ),
+            )
 
         if not need_encode:
             if getattr(self, "_log_writer", None):

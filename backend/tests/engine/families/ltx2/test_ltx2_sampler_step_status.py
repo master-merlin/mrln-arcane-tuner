@@ -46,6 +46,8 @@ def _sampler() -> Ltx2Sampler:
     drv.transformer = _RecTransformer()
     drv.audio_in_channels = 128
     drv.caption_channels = 3840
+    drv.use_prompt_embeddings = True  # LTX-2.3 default; 2.5 sets it False
+    drv.audio_cross_attention_dim = 2048
     drv.frame_rate = 24.0
     drv.audio_sampling_rate = 16000
     drv._latent_shape = (3, 4, 5)

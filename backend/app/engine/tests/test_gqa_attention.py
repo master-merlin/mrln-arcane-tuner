@@ -23,6 +23,7 @@ import pytest
 import torch
 
 from app.engine.core.optimization.gqa_attention import (
+    _HEAD_DIM,
     expand_gqa_dispatch,
     fused_backends_refuse_gqa,
     install_gqa_expansion,
@@ -235,11 +236,25 @@ def test_install_never_raises_on_a_hostile_model():
 
 @pytest.mark.parametrize("module_name", ["transformer_krea2", "ace_step_transformer"])
 def test_diffusers_still_dispatches_gqa_the_way_the_patch_expects(module_name):
-    """If either half of this drifts, the patch degrades to a silent no-op.
+    """Each module must be in one of TWO healthy states, never in neither.
 
-    ``dispatch_attention_fn`` must be a module-level name (that is what gets
-    replaced), and it must still be called with the ``enable_gqa`` keyword (that
-    is what the wrapper triggers on).
+    The original version of this test asserted one rule for both modules: the
+    module must still pass ``enable_gqa=``. diffusers 0.40 broke that for
+    ``transformer_krea2`` -- and the break was *upstream adopting our fix*,
+    expanding the KV heads itself with the same reasoning our patch carries. The
+    test was right to fire and wrong about what it meant, so it now names both
+    healthy states:
+
+    * **passes enable_gqa** -> the kernel still gets a GQA problem, so our patch
+      is load-bearing and must have something to replace;
+    * **expands KV itself** -> upstream does the job, our wrapper never sees
+      ``enable_gqa=True`` and degrades to a pass-through, which is correct.
+
+    What must never happen is NEITHER: a module that has quietly dropped GQA
+    handling altogether, where the math backend returns and nothing says so.
+
+    ``dispatch_attention_fn`` must be a module-level name either way -- that is
+    the symbol ``install_gqa_expansion`` replaces.
     """
     pytest.importorskip("diffusers")
     import importlib
@@ -250,9 +265,68 @@ def test_diffusers_still_dispatches_gqa_the_way_the_patch_expects(module_name):
         "install_gqa_expansion has nothing to replace and silently does nothing"
     )
     source = Path(module.__file__).read_text(encoding="utf-8")
-    assert "enable_gqa=" in source, (
-        f"{module_name} no longer passes enable_gqa; re-check whether it now "
-        "expands KV heads itself (good — drop the patch) or dropped GQA entirely"
+    passes_flag = "enable_gqa=" in source
+    expands_itself = "repeat_interleave" in source
+    assert passes_flag or expands_itself, (
+        f"{module_name} neither passes enable_gqa nor expands the KV heads itself. "
+        "Grouped-query attention has silently lost its handling: SDPA will fall back "
+        "to the math backend, which is quadratic in image area and raises no warning. "
+        "That regression cost krea2 2.4x wall clock and 2.7x peak VRAM once already."
+    )
+
+
+def test_the_wrapper_cannot_double_expand_when_upstream_already_did():
+    """The exact conflict the diffusers 0.40 bump had to be cleared of.
+
+    On 0.40 ``transformer_krea2`` expands the KV heads itself and then calls
+    ``dispatch_attention_fn`` WITHOUT ``enable_gqa``. If our wrapper expanded on
+    anything other than that flag, K and V would be repeated a second time and
+    every attention head would read the wrong KV group -- silently, with correct
+    shapes throughout, which is the worst way for this to fail.
+
+    Called here exactly the way 0.40's processor calls it: no ``enable_gqa``
+    kwarg at all, K/V already at full head width.
+    """
+    seen = {}
+
+    def fake_dispatch(query, key, value, *args, **kwargs):
+        seen["key_heads"] = key.shape[_HEAD_DIM]
+        seen["value_heads"] = value.shape[_HEAD_DIM]
+        seen["enable_gqa"] = kwargs.get("enable_gqa")
+        return query
+
+    wrapped = expand_gqa_dispatch(fake_dispatch)
+    query = torch.zeros(1, 8, 48, 4)
+    key = torch.zeros(1, 8, 48, 4)  # already expanded by upstream: 48 == 48
+    wrapped(query, key, key.clone(), attn_mask=None)
+
+    assert seen["key_heads"] == 48, (
+        f"the wrapper expanded already-expanded KV heads to {seen['key_heads']}; "
+        "on diffusers 0.40 krea2 this would silently misalign every head group"
+    )
+    assert seen["value_heads"] == 48
+    assert seen["enable_gqa"] is False
+
+
+def test_the_wrapper_still_forwards_a_kwarg_diffusers_accepts():
+    """A pass-through must still be a VALID call.
+
+    The wrapper always forwards ``enable_gqa=`` to the real dispatch function,
+    including on the 0.40 krea2 path where the caller omitted it. If diffusers
+    ever drops that parameter, the wrapper turns a working forward into a
+    ``TypeError`` mid-training -- so the parameter's existence is the pin, not
+    an assumption.
+    """
+    pytest.importorskip("diffusers")
+    import inspect
+
+    from diffusers.models.attention_dispatch import dispatch_attention_fn
+
+    target = getattr(dispatch_attention_fn, "_mrln_gqa_wrapped", dispatch_attention_fn)
+    assert "enable_gqa" in inspect.signature(target).parameters, (
+        "diffusers' dispatch_attention_fn no longer accepts enable_gqa, but "
+        "expand_gqa_dispatch always passes it. Every patched family would raise "
+        "TypeError on its first attention call."
     )
 
 

@@ -199,7 +199,7 @@ engine/
 
 #### Model families
 
-**29 shipped families across 53 definitions**, plus two support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share) and `prx_shared` (the same role for `prx` and `prx_pixel`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (26), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
+**29 shipped families across 54 definitions**, plus two support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share) and `prx_shared` (the same role for `prx` and `prx_pixel`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (26), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
 
 Counts here are pinned by `backend/tests/test_architecture_family_counts.py` — the table below is generated from the tree, and a family added without a row in it fails the gate. That guard exists because this section said "13 families" for fifteen families' worth of releases.
 
@@ -228,7 +228,7 @@ Counts here are pinned by `backend/tests/test_architecture_family_counts.py` —
 | `bernini_r`       | Bernini-R video edit (1.3B / 14B MoE)                              | latent_diffusion    | `is_video`                          |
 | `hunyuan_video15` | HunyuanVideo 1.5 480p (T2V / I2V)                                  | latent_diffusion    | `is_video`, `has_image_encoder`     |
 | `kandinsky5`      | Kandinsky 5.0 (T2V Lite SFT 5s / I2V Pro SFT 5s)                   | latent_diffusion    | `is_video`                          |
-| `ltx2`            | LTX 2.3 (Lightricks; Gemma3 TE, i2v + audio)                       | latent_diffusion    | `is_video`, `has_audio`             |
+| `ltx2`            | LTX 2.3 · LTX 2.5 (Lightricks; Gemma3 / Gemma4-Unified TE, i2v + audio) | latent_diffusion    | `is_video`, `has_audio`             |
 | `wan21`           | WAN 2.1 (T2V 1.3B / 14B, I2V 14B 480P / 720P; UMT5-XXL, CLIP i2v encoder) | latent_diffusion | `is_video`, `has_image_encoder` |
 | `wan22`           | WAN 2.2 (dual-expert MoE, A14B T2V / I2V)                          | latent_diffusion    | `is_video`, `dual_expert`           |
 | `wan22_ti2v_5b`   | WAN 2.2 TI2V 5B (dense)                                            | latent_diffusion    | `is_video`, `has_image_encoder`     |

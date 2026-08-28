@@ -18,7 +18,7 @@ colorama==0.4.6; sys_platform == 'win32'
 coloredlogs==15.0.1
 datasets==4.5.0
 decord==0.6.0
-diffusers==0.39.0
+diffusers==0.40.0
 dill==0.4.0
 duckduckgo_search==8.1.1
 einops==0.8.2

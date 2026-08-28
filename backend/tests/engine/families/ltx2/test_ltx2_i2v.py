@@ -29,6 +29,8 @@ def _bare_driver(latent_shape=(2, 2, 2), i2v=True):
     # Attrs read by forward_pass / compute_loss but not exercised here
     d.audio_in_channels = 128
     d.caption_channels = 3840
+    d.use_prompt_embeddings = True  # LTX-2.3 default; 2.5 sets it False
+    d.audio_cross_attention_dim = 2048
     d.frame_rate = 24.0
     return d
 

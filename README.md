@@ -427,7 +427,7 @@ Training is configured through a **dynamic JSON Schema-driven UI** — the form 
 
 #### Supported Model Families
 
-**29 families, 53 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](documentation/ARCHITECTURE.md#model-families).
+**29 families, 54 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](documentation/ARCHITECTURE.md#model-families).
 
 This table is generated from `backend/app/engine/models/families/` and pinned by `backend/tests/test_readme_family_table.py`, so a family added without a row here fails the gate. It listed three of twenty-eight until 2026-08-28 — there is no text-encoder column because populating it accurately for every family means reading every loader, and twenty-five blanks would say less than no column at all.
 
@@ -463,7 +463,7 @@ This table is generated from `backend/app/engine/models/families/` and pinned by
 | `bernini_r` | Bernini-R 14B (Video Edit, MoE) · Bernini-R 1.3B (Video Edit) |
 | `hunyuan_video15` | HunyuanVideo 1.5 480p I2V · HunyuanVideo 1.5 480p T2V |
 | `kandinsky5` | Kandinsky 5.0 I2V Pro SFT 5s · Kandinsky 5.0 T2V Lite SFT 5s |
-| `ltx2` | LTX 2.3 (Lightricks) |
+| `ltx2` | LTX 2.3 (Lightricks) · LTX 2.5 (Lightricks) |
 | `minimax_h3` | MiniMax H3 (text → video+audio) · MiniMax H3 (first/last frame → video+audio) · MiniMax H3 (reference → video+audio) |
 | `wan21` | WAN 2.1 I2V 14B 720P · WAN 2.1 I2V 14B 480P · WAN 2.1 T2V 14B · WAN 2.1 T2V 1.3B |
 | `wan22` | WAN 2.2 I2V A14B (MoE) · WAN 2.2 T2V A14B (MoE) |

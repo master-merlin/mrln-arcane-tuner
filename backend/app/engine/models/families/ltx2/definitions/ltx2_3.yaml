@@ -43,7 +43,7 @@ architecture_params:
   transformer.audio_attention_head_dim: 64
   transformer.audio_cross_attention_dim: 2048
   te.type: gemma3
-  te.max_length: 256
+  te.max_length: 1024
   te._class_name: Gemma3ForConditionalGeneration
   num_heads: 32
   depth: 48

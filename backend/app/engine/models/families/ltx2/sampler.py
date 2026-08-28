@@ -357,9 +357,11 @@ class Ltx2Sampler(GenericSamplingPipeline):
     def _decode_audio(self, driver) -> tuple[Tensor, int] | None:
         """Audio latents → waveform: denormalize → unpack → audio VAE → vocoder.
 
-        Returns ``(waveform, sample_rate)`` at the VOCODER's output rate (LTX-2
-        upsamples the 16 kHz mel domain to ~24 kHz) so the mp4 muxer tags the
-        AAC stream correctly. The audio VAE + vocoder are phased onto the GPU for
+        Returns ``(waveform, sample_rate)`` at the VOCODER's output rate so the
+        mp4 muxer tags the AAC stream correctly. Read from the vocoder rather than
+        fixed here because it differs per definition: every LTX-2 vocoder consumes
+        the same 16 kHz mel domain, but 2.3's ``LTX2Vocoder`` emits ~24 kHz and
+        2.5's ``LTX2VocoderWithBWE`` emits 48 kHz. The audio VAE + vocoder are phased onto the GPU for
         the decode and pushed back to CPU afterwards (they were offloaded after
         pre-caching). Returns ``None`` when there are no audio latents.
         """

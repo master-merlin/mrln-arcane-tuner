@@ -1,0 +1,478 @@
+id: ltx2-5-base
+family: ltx2
+name: LTX 2.5 (Lightricks)
+version: '1.0'
+defaults:
+  resolution: 768
+  scheduler: euler_a
+  learning_rate: 1e-4
+  timestep_sampling: model_shift
+  train_audio: false
+components:
+  repo:
+    path: huggingface:Lightricks/LTX-2.5-Diffusers
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  mode: both
+  has_audio: true
+  audio.loss_weight: 1.0
+  audio.vae_temporal: 4
+  audio.sampling_rate: 16000
+  video.frame_rule: 8n+1
+  video.vae_spatial: 32
+  video.vae_temporal: 8
+  video.divisibility: 32
+  video.frame_rate: 24.0
+  transformer._class_name: LTX2VideoTransformer3DModel
+  transformer.in_channels: 128
+  transformer.out_channels: 128
+  transformer.patch_size: 1
+  transformer.patch_size_t: 1
+  transformer.num_attention_heads: 32
+  transformer.attention_head_dim: 128
+  transformer.cross_attention_dim: 4096
+  transformer.num_layers: 48
+  transformer.audio_in_channels: 128
+  transformer.audio_num_attention_heads: 32
+  transformer.audio_attention_head_dim: 64
+  transformer.audio_cross_attention_dim: 2048
+  num_heads: 32
+  depth: 48
+  in_channels: 128
+  context_dim: 4096
+  transformer.activation_fn: gelu-approximate
+  transformer.attention_bias: true
+  transformer.attention_out_bias: true
+  transformer.audio_hop_length: 160
+  transformer.audio_out_channels: 128
+  transformer.audio_patch_size: 1
+  transformer.audio_patch_size_t: 1
+  transformer.audio_pos_embed_max_pos: 20
+  transformer.audio_sampling_rate: 16000
+  transformer.audio_scale_factor: 4
+  transformer.base_height: 2048
+  transformer.base_width: 2048
+  transformer.caption_channels: 3840
+  transformer.causal_offset: 1
+  transformer.cross_attn_timestep_scale_multiplier: 1000
+  transformer.norm_elementwise_affine: false
+  transformer.norm_eps: 1.0e-06
+  transformer.pos_embed_max_pos: 20
+  transformer.qk_norm: rms_norm_across_heads
+  transformer.rope_double_precision: true
+  transformer.rope_theta: 10000.0
+  transformer.rope_type: split
+  transformer.timestep_scale_multiplier: 1000
+  transformer.vae_scale_factors:
+  - 8
+  - 32
+  - 32
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.base_image_seq_len: 1024
+  scheduler.base_shift: 0.95
+  scheduler.invert_sigmas: false
+  scheduler.max_image_seq_len: 4096
+  scheduler.max_shift: 2.05
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 1.0
+  scheduler.shift_terminal:
+  scheduler.stochastic_sampling: false
+  scheduler.time_shift_type: exponential
+  scheduler.use_beta_sigmas: false
+  scheduler.use_dynamic_shifting: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_karras_sigmas: false
+  vae._class_name: AutoencoderKLLTX2Video
+  vae.block_out_channels:
+  - 256
+  - 512
+  - 1024
+  - 1024
+  vae.decoder_block_out_channels:
+  - 256
+  - 512
+  - 512
+  - 1024
+  vae.decoder_causal: false
+  vae.decoder_inject_noise:
+  - false
+  - false
+  - false
+  - false
+  - false
+  vae.decoder_layers_per_block:
+  - 4
+  - 6
+  - 4
+  - 2
+  - 2
+  vae.decoder_spatial_padding_mode: zeros
+  vae.decoder_spatio_temporal_scaling:
+  - true
+  - true
+  - true
+  - true
+  vae.down_block_types:
+  - LTX2VideoDownBlock3D
+  - LTX2VideoDownBlock3D
+  - LTX2VideoDownBlock3D
+  - LTX2VideoDownBlock3D
+  vae.downsample_type:
+  - spatial
+  - temporal
+  - spatiotemporal
+  - spatiotemporal
+  vae.encoder_causal: true
+  vae.encoder_spatial_padding_mode: zeros
+  vae.in_channels: 3
+  vae.latent_channels: 128
+  vae.layers_per_block:
+  - 4
+  - 6
+  - 4
+  - 2
+  - 2
+  vae.out_channels: 3
+  vae.patch_size: 4
+  vae.patch_size_t: 1
+  vae.resnet_norm_eps: 1.0e-06
+  vae.scaling_factor: 1.0
+  vae.spatial_compression_ratio: 32
+  vae.spatio_temporal_scaling:
+  - true
+  - true
+  - true
+  - true
+  vae.temporal_compression_ratio: 8
+  vae.timestep_conditioning: false
+  vae.upsample_factor:
+  - 2
+  - 2
+  - 1
+  - 2
+  vae.upsample_residual:
+  - false
+  - false
+  - false
+  - false
+  transformer.hidden_size: 4096
+  transformer.audio_cross_attn_mod: true
+  transformer.audio_ff_bias: true
+  transformer.audio_gated_attn: true
+  transformer.cross_attn_mod: true
+  transformer.ff_bias: false
+  transformer.gated_attn: true
+  transformer.perturbed_attn: true
+  transformer.use_keyframes_abs_pos_embedding: true
+  transformer.use_prompt_adaln_single: true
+  transformer.use_prompt_embeddings: false
+  vae.upsample_type:
+  - spatiotemporal
+  - spatiotemporal
+  - temporal
+  - spatial
+  vocoder._class_name: LTX2VocoderWithBWE
+  te.type: gemma4_unified
+  te.max_length: 1024
+  te._class_name: Gemma4UnifiedForConditionalGeneration
+  te.architectures:
+  - Gemma4UnifiedForConditionalGeneration
+  te.audio_config:
+    _name_or_path: ''
+    architectures:
+    audio_embed_dim: 640
+    chunk_size_feed_forward: 0
+    dtype: bfloat16
+    id2label:
+      '0': LABEL_0
+      '1': LABEL_1
+    initializer_range: 0.02
+    is_encoder_decoder: false
+    label2id:
+      LABEL_0: 0
+      LABEL_1: 1
+    model_type: gemma4_unified_audio
+    output_attentions: false
+    output_hidden_states: false
+    problem_type:
+    return_dict: true
+    rms_norm_eps: 1.0e-06
+  te.audio_token_id: 258881
+  te.boa_token_id: 256000
+  te.boi_token_id: 255999
+  te.dtype: bfloat16
+  te.eoa_token_index: 258883
+  te.eoi_token_id: 258882
+  te.eos_token_id:
+  - 1
+  - 106
+  te.gemma_version: gemma4-12b-ltx-v1
+  te.image_token_id: 258880
+  te.initializer_range: 0.02
+  te.ltx_source_checkpoint:
+    base_checkpoint: /checkpoints/jax_trainings/main-ltx2-5-5k-v6-train-gemma-freeze-12l/checkpoints@2637000
+    run_id: ns9i45dv
+    step: 2694000
+    use_ema: false
+  te.model_type: gemma4_unified
+  te.text_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    attention_k_eq_v: true
+    bos_token_id: 2
+    dtype: bfloat16
+    enable_moe_block: false
+    eos_token_id: 1
+    final_logit_softcapping: 30.0
+    global_head_dim: 512
+    head_dim: 256
+    hidden_activation: gelu_pytorch_tanh
+    hidden_size: 3840
+    hidden_size_per_layer_input: 0
+    initializer_range: 0.02
+    intermediate_size: 15360
+    layer_types: &id001
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - full_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - full_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - full_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - full_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - full_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - full_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - full_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - sliding_attention
+    - full_attention
+    max_position_embeddings: 262144
+    model_type: gemma4_unified_text
+    moe_intermediate_size:
+    num_attention_heads: 16
+    num_experts:
+    num_global_key_value_heads: 1
+    num_hidden_layers: 48
+    num_key_value_heads: 8
+    num_kv_shared_layers: 0
+    pad_token_id: 0
+    rms_norm_eps: 1.0e-06
+    rope_parameters: &id002
+      full_attention:
+        partial_rotary_factor: 0.25
+        rope_theta: 1000000.0
+        rope_type: proportional
+      sliding_attention:
+        rope_theta: 10000.0
+        rope_type: default
+    sliding_window: 1024
+    tie_word_embeddings: true
+    top_k_experts:
+    use_bidirectional_attention: vision
+    use_cache: true
+    use_double_wide_mlp: false
+    vocab_size: 262144
+    vocab_size_per_layer_input: 262144
+  te.tie_word_embeddings: true
+  te.transformers_version: 5.14.1
+  te.video_token_id: 258884
+  te.vision_config:
+    _name_or_path: ''
+    architectures:
+    chunk_size_feed_forward: 0
+    dtype: bfloat16
+    id2label:
+      '0': LABEL_0
+      '1': LABEL_1
+    initializer_range: 0.02
+    is_encoder_decoder: false
+    label2id:
+      LABEL_0: 0
+      LABEL_1: 1
+    mm_embed_dim: 3840
+    mm_posemb_size: 1120
+    model_type: gemma4_unified_vision
+    num_soft_tokens: 280
+    output_attentions: false
+    output_hidden_states: false
+    output_proj_dims: 3840
+    patch_size: 16
+    pooling_kernel_size: 3
+    problem_type:
+    return_dict: true
+    rms_norm_eps: 1.0e-06
+  te.text_config.attention_bias: false
+  te.text_config.attention_dropout: 0.0
+  te.text_config.attention_k_eq_v: true
+  te.text_config.bos_token_id: 2
+  te.text_config.dtype: bfloat16
+  te.text_config.enable_moe_block: false
+  te.text_config.eos_token_id: 1
+  te.text_config.final_logit_softcapping: 30.0
+  te.text_config.global_head_dim: 512
+  te.text_config.head_dim: 256
+  te.text_config.hidden_activation: gelu_pytorch_tanh
+  te.text_config.hidden_size: 3840
+  te.text_config.hidden_size_per_layer_input: 0
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 15360
+  te.text_config.layer_types: *id001
+  te.text_config.max_position_embeddings: 262144
+  te.text_config.model_type: gemma4_unified_text
+  te.text_config.moe_intermediate_size:
+  te.text_config.num_attention_heads: 16
+  te.text_config.num_experts:
+  te.text_config.num_global_key_value_heads: 1
+  te.text_config.num_hidden_layers: 48
+  te.text_config.num_key_value_heads: 8
+  te.text_config.num_kv_shared_layers: 0
+  te.text_config.pad_token_id: 0
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_parameters: *id002
+  te.text_config.sliding_window: 1024
+  te.text_config.tie_word_embeddings: true
+  te.text_config.top_k_experts:
+  te.text_config.use_bidirectional_attention: vision
+  te.text_config.use_cache: true
+  te.text_config.use_double_wide_mlp: false
+  te.text_config.vocab_size: 262144
+  te.text_config.vocab_size_per_layer_input: 262144
+  te.audio_config.architectures:
+  te.audio_config.audio_embed_dim: 640
+  te.audio_config.chunk_size_feed_forward: 0
+  te.audio_config.dtype: bfloat16
+  te.audio_config.id2label:
+    '0': LABEL_0
+    '1': LABEL_1
+  te.audio_config.id2label.0: LABEL_0
+  te.audio_config.id2label.1: LABEL_1
+  te.audio_config.initializer_range: 0.02
+  te.audio_config.is_encoder_decoder: false
+  te.audio_config.label2id:
+    LABEL_0: 0
+    LABEL_1: 1
+  te.audio_config.label2id.LABEL_0: 0
+  te.audio_config.label2id.LABEL_1: 1
+  te.audio_config.model_type: gemma4_unified_audio
+  te.audio_config.output_attentions: false
+  te.audio_config.output_hidden_states: false
+  te.audio_config.problem_type:
+  te.audio_config.return_dict: true
+  te.audio_config.rms_norm_eps: 1.0e-06
+  te.ltx_source_checkpoint.base_checkpoint: /checkpoints/jax_trainings/main-ltx2-5-5k-v6-train-gemma-freeze-12l/checkpoints@2637000
+  te.ltx_source_checkpoint.run_id: ns9i45dv
+  te.ltx_source_checkpoint.step: 2694000
+  te.ltx_source_checkpoint.use_ema: false
+  te.text_config.rope_parameters.full_attention:
+    partial_rotary_factor: 0.25
+    rope_theta: 1000000.0
+    rope_type: proportional
+  te.text_config.rope_parameters.full_attention.partial_rotary_factor: 0.25
+  te.text_config.rope_parameters.full_attention.rope_theta: 1000000.0
+  te.text_config.rope_parameters.full_attention.rope_type: proportional
+  te.text_config.rope_parameters.sliding_attention:
+    rope_theta: 10000.0
+    rope_type: default
+  te.text_config.rope_parameters.sliding_attention.rope_theta: 10000.0
+  te.text_config.rope_parameters.sliding_attention.rope_type: default
+  te.vision_config.architectures:
+  te.vision_config.chunk_size_feed_forward: 0
+  te.vision_config.dtype: bfloat16
+  te.vision_config.id2label:
+    '0': LABEL_0
+    '1': LABEL_1
+  te.vision_config.id2label.0: LABEL_0
+  te.vision_config.id2label.1: LABEL_1
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.is_encoder_decoder: false
+  te.vision_config.label2id:
+    LABEL_0: 0
+    LABEL_1: 1
+  te.vision_config.label2id.LABEL_0: 0
+  te.vision_config.label2id.LABEL_1: 1
+  te.vision_config.mm_embed_dim: 3840
+  te.vision_config.mm_posemb_size: 1120
+  te.vision_config.model_type: gemma4_unified_vision
+  te.vision_config.num_soft_tokens: 280
+  te.vision_config.output_attentions: false
+  te.vision_config.output_hidden_states: false
+  te.vision_config.output_proj_dims: 3840
+  te.vision_config.patch_size: 16
+  te.vision_config.pooling_kernel_size: 3
+  te.vision_config.problem_type:
+  te.vision_config.return_dict: true
+  te.vision_config.rms_norm_eps: 1.0e-06
+model_size_mb:
+  transformer: 0.0
+  text_encoder: 0.0
+  vae: 0.0
+lora_targetable_modules:
+- attn1.to_q
+- attn1.to_k
+- attn1.to_v
+- attn1.to_out.0
+- attn2.to_q
+- attn2.to_k
+- attn2.to_v
+- attn2.to_out.0
+- ff.net.0.proj
+- ff.net.2
+- audio_attn1.to_q
+- audio_attn1.to_k
+- audio_attn1.to_v
+- audio_attn1.to_out.0
+- audio_attn2.to_q
+- audio_attn2.to_k
+- audio_attn2.to_v
+- audio_attn2.to_out.0
+- audio_ff.net.0.proj
+- audio_ff.net.2
+- audio_to_video_attn.to_q
+- audio_to_video_attn.to_k
+- audio_to_video_attn.to_v
+- audio_to_video_attn.to_out.0
+- video_to_audio_attn.to_q
+- video_to_audio_attn.to_k
+- video_to_audio_attn.to_v
+- video_to_audio_attn.to_out.0
+block_topology: []

@@ -37,9 +37,22 @@ class HealthResponse(BaseModel):
 
 
 class VersionResponse(BaseModel):
-    """Backend application version (shown in the sidebar footer)."""
+    """Identity of this backend instance — version, and how it is deployed.
+
+    ``container`` exists because the SPA cannot otherwise know: the Server
+    screen's port field is authoritative locally and **ignored** in a
+    container, where the port comes from argv or ``PORT`` and the host side of
+    ``-p`` lives in the daemon, unreadable from inside. Without this the screen
+    would offer an operator a control that silently does nothing.
+
+    It rides here rather than on a new ``/system/deployment`` route
+    deliberately: both are additive and D2-safe today, but a field we regret
+    can be deprecated and left vestigial, while a public *route* we regret is
+    frozen forever. Reserved in ECOSYSTEM §6.
+    """
 
     version: str
+    container: bool
 
 
 class UpdateStatusResponse(BaseModel):
@@ -156,10 +169,18 @@ async def get_version():
     Lives under ``/api`` so it is reachable through the dev-server proxy and
     the production SPA mount alike — unlike the backend root ``/``, which both
     of those serve as ``index.html``.
+
+    Also reports whether this instance runs in a container, which the Server
+    screen needs to explain that its port field is not the authority there.
+    The flag is IMPORTED from ``container_config`` rather than re-derived from
+    the environment: a second ``os.environ`` read would be a second producer of
+    a fact that already has one (RULE-21), free to drift from the resolver that
+    actually decides the port.
     """
     from app import __version__
+    from app.core import container_config
 
-    return {"version": __version__}
+    return {"version": __version__, "container": container_config.is_container()}
 
 
 @router.get("/health", response_model=HealthResponse)

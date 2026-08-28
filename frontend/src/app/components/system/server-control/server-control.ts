@@ -4,6 +4,7 @@ import { FormsModule } from '@angular/forms';
 import { ModelService, type ModelGlobalSettings, type ModelGlobalSettingsPatch } from '../../../services/model.service';
 import { FilesystemService } from '../../../services/filesystem.service';
 import { SettingsStore } from '../../../state/settings.store';
+import { SystemService } from '../../../services/system.service';
 import { IcoComponent } from '../../../icons/ico.component';
 
 interface ApplicationSettings {
@@ -43,8 +44,17 @@ interface ApplicationSettings {
                         <input type="number" class="input mono"
                                [ngModel]="settings()?.backend_port"
                                (ngModelChange)="onSettingChange('backend_port', $event)"
+                               [readOnly]="inContainer()"
+                               [class.sc-readonly]="inContainer()"
                                data-testid="setting-backend-port" />
-                        <p class="sc-hint">requires restart</p>
+                        @if (inContainer()) {
+                            <p class="sc-hint" data-testid="backend-port-container-note">
+                                set by the platform — this pod's port comes from its host
+                                mapping, and this field is ignored here
+                            </p>
+                        } @else {
+                            <p class="sc-hint">requires restart</p>
+                        }
                     </div>
                     <div class="sc-field">
                         <label class="field-label">Frontend Port</label>
@@ -151,6 +161,11 @@ interface ApplicationSettings {
         .sc-grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
         .sc-field { display: flex; flex-direction: column; min-width: 0; }
         .sc-hint { font-size: 10.5px; color: var(--color-text-disabled); margin: 5px 0 0; }
+        /* readonly, not disabled: NgModel's value accessor owns the disabled
+           PROPERTY and resets it every change-detection pass, so that binding
+           is silently undone. readonly is untouched by the forms directives,
+           and it lets the operator still read and copy the value. */
+        .sc-readonly { opacity: 0.6; cursor: not-allowed; }
         .sc-toggle-row { display: flex; align-items: center; gap: 8px; padding: 6px 0; cursor: pointer; }
         .sc-toggle-label { font-size: 12px; color: var(--color-text-secondary); }
         .sc-path-row { display: flex; gap: 8px; }
@@ -163,6 +178,18 @@ export class ServerControlComponent implements OnInit {
     private modelService = inject(ModelService);
     private filesystem = inject(FilesystemService);
     private settingsStore = inject(SettingsStore);
+    private systemService = inject(SystemService);
+
+    /**
+     * True when the backend says it is containerised, in which case the
+     * Backend Port field is not the authority and says so.
+     *
+     * Read from the service rather than fetched-and-stored here: the shell
+     * already asks once at startup, and the enforcement itself stays in the
+     * backend's `resolve_port` — this screen only explains it. Consolidating
+     * the rule into the component is the tidy-up that must not happen.
+     */
+    readonly inContainer = this.systemService.containerMode;
 
     constructor() {
         // Mirror SettingsStore's `application` module into the local
@@ -198,6 +225,13 @@ export class ServerControlComponent implements OnInit {
     ngOnInit() {
         this.loadSettings();
         this.loadModelSettings();
+        // Refresh rather than trust the shell's startup call. If that one
+        // failed, the signal still holds its `false` default and this screen
+        // would offer a port control that a container silently ignores —
+        // the exact stranding DECISION-11 (a) exists to prevent. Cheap, and
+        // it makes the note self-healing instead of dependent on another
+        // component's success.
+        this.systemService.getVersion().subscribe({ error: () => {} });
     }
 
     loadSettings() {

@@ -1,10 +1,30 @@
 import { Injectable, effect, inject, signal, OnDestroy } from '@angular/core';
 import { HttpClient } from '@angular/common/http';
-import { Observable, Subscription } from 'rxjs';
+import { Observable, Subscription, tap } from 'rxjs';
 import { RuntimeConfigService } from './runtime-config.service';
 import { WebSocketService } from './websocket.service';
 
 // ── Types ──────────────────────────────────────────────────────────────
+
+/**
+ * `GET /api/system/version` — the identity of the backend we are talking to.
+ *
+ * A NAMED interface rather than an inline type on the call: an inline type is
+ * where a wire contract goes to die, because the next person adding a field
+ * server-side has nothing telling them a client mirrors it.
+ */
+export interface SystemVersion {
+    version: string;
+    /**
+     * True when the backend runs inside the shipped container image.
+     *
+     * The Server screen needs this because its Backend Port field is the
+     * authority on a local install and ignored in a container: there the port
+     * comes from argv or `PORT`, and the host side of `docker run -p` lives in
+     * the daemon where nothing inside can read it.
+     */
+    container: boolean;
+}
 
 export interface GpuProcess {
     pid: number;
@@ -84,6 +104,16 @@ export class SystemService implements OnDestroy {
     private ws = inject(WebSocketService);
     private apiUrl = inject(RuntimeConfigService).apiUrl;
 
+    /**
+     * Whether the backend reports it is containerised. Populated by
+     * `getVersion()`, which the shell already calls once at startup.
+     *
+     * Defaults to `false` so a screen that renders before the call resolves
+     * shows the local behaviour — the one where the port field works. Erring
+     * the other way would flash "set by the platform" at a local operator.
+     */
+    readonly containerMode = signal(false);
+
     // Live metrics signal — updated by WebSocket stream
     metrics = signal<SystemSnapshot | null>(null);
     private metricsSub: Subscription | null = null;
@@ -116,9 +146,16 @@ export class SystemService implements OnDestroy {
         return this.http.get<HealthSnapshot>(`${this.apiUrl}/system/health`);
     }
 
-    /** App version shown in the sidebar footer. */
-    getVersion(): Observable<{ version: string }> {
-        return this.http.get<{ version: string }>(`${this.apiUrl}/system/version`);
+    /** App version + deployment kind. Caches `container` for the Server screen. */
+    getVersion(): Observable<SystemVersion> {
+        return this.http.get<SystemVersion>(`${this.apiUrl}/system/version`).pipe(
+            // `=== true` rather than a coercion on purpose: a client newer than
+            // its backend gets `undefined` here, and the safe reading of "I do
+            // not know" is "not a container" — the local case, where the port
+            // field really is the authority. Claiming container mode on a
+            // missing field would hide a control that works.
+            tap((v) => this.containerMode.set(v.container === true)),
+        );
     }
 
     /** Persisted server log tail (structlog lines), newest-last. */

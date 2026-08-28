@@ -427,11 +427,52 @@ Training is configured through a **dynamic JSON Schema-driven UI** — the form 
 
 #### Supported Model Families
 
-| Family               | Architecture                  | Text Encoder            | Notes                               |
-| -------------------- | ----------------------------- | ----------------------- | ----------------------------------- |
-| **SDXL**             | UNet + DDPMScheduler          | Dual CLIP (TE1 + TE2)   | Epsilon prediction, Min-SNR gamma   |
-| **Flux.1**           | Transformer + Flow Matching   | Qwen3                   | BFL-format export for ComfyUI       |
-| **Flux.2 (Klein)**   | Transformer + Flow Matching   | Qwen3                   | No guidance embed, packed latents   |
+**28 families, 50 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](documentation/ARCHITECTURE.md#model-families).
+
+This table is generated from `backend/app/engine/models/families/` and pinned by `backend/tests/test_readme_family_table.py`, so a family added without a row here fails the gate. It listed three of twenty-eight until 2026-08-28 — there is no text-encoder column because populating it accurately for every family means reading every loader, and twenty-five blanks would say less than no column at all.
+
+**Image — 20 families**
+
+| Family | Definitions shipped |
+| --- | --- |
+| `boogu_image` | Boogu-Image 0.1 Base · Boogu-Image 0.1 Edit · Boogu-Image 0.1 Turbo |
+| `chroma` | Chroma1 Base · Chroma1 HD |
+| `dreamlite` | DreamLite Base · DreamLite Mobile |
+| `ernie_image` | ERNIE Image (Base 8B) |
+| `flux1` | FLUX.1 Dev · FLUX.1 Kontext Dev · FLUX.1 Schnell |
+| `flux2` | Flux 2 (Dev) · Flux 2 (Klein Base 4B) · Flux 2 (Klein Base 9B) |
+| `hidream_o1` | HiDream-O1-Image (Full) |
+| `ideogram4` | Ideogram 4 (fp8, 9.3B) |
+| `krea2` | Krea-2 Raw · Krea-2 Turbo |
+| `longcat_image` | LongCat-Image |
+| `lumina2` | Lumina-Image 2.0 |
+| `microsoft_lens` | Microsoft Lens (Base 3.8B) |
+| `nucleus_image` | Nucleus-Image |
+| `omnigen2` | OmniGen2 |
+| `ovis_image` | Ovis-Image 7B |
+| `prx` | PRX 512 T2I (SFT) |
+| `prx_pixel` | PRX Pixel T2I |
+| `qwen_image` | Qwen-Image 2512 · Qwen-Image-Edit 2509 · Qwen-Image-Edit 2511 |
+| `sdxl` | Illustrious-XL v2.0 · NoobAI-XL v1.1 · Stable Diffusion XL Base |
+| `zimage` | Z-Image Base · Z-Image De-Turbo (ostris) |
+
+**Video — 7 families**
+
+| Family | Definitions shipped |
+| --- | --- |
+| `bernini_r` | Bernini-R 14B (Video Edit, MoE) · Bernini-R 1.3B (Video Edit) |
+| `hunyuan_video15` | HunyuanVideo 1.5 480p I2V · HunyuanVideo 1.5 480p T2V |
+| `kandinsky5` | Kandinsky 5.0 I2V Pro SFT 5s · Kandinsky 5.0 T2V Lite SFT 5s |
+| `ltx2` | LTX 2.3 (Lightricks) |
+| `wan21` | WAN 2.1 I2V 14B 720P · WAN 2.1 I2V 14B 480P · WAN 2.1 T2V 14B · WAN 2.1 T2V 1.3B |
+| `wan22` | WAN 2.2 I2V A14B (MoE) · WAN 2.2 T2V A14B (MoE) |
+| `wan22_ti2v_5b` | WAN 2.2 TI2V 5B (Dense) |
+
+**Audio — 1 family**
+
+| Family | Definitions shipped |
+| --- | --- |
+| `ace_step15` | ACE-Step 1.5 (Turbo) · ACE-Step 1.5 XL (Base) |
 
 #### 🧪 Experimental: Edit (Paired) & Video Training
 

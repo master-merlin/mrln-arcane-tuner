@@ -31,6 +31,11 @@ def _video_driver() -> Ltx2Driver:
     drv.transformer = _RecTransformer()
     drv.audio_in_channels = 128
     drv.caption_channels = 3840
+    # LTX-2.3 shape: the checkpoint omits `use_prompt_embeddings`, diffusers
+    # defaults it True, and the model's own audio_caption_projection takes the
+    # RAW caption width. LTX-2.5 sets it False — see test_the_audio_prompt_*.
+    drv.use_prompt_embeddings = True
+    drv.audio_cross_attention_dim = 2048
     drv.frame_rate = 24.0
     drv.train_audio = False
     drv._latent_shape = (3, 4, 5)

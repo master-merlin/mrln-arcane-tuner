@@ -102,6 +102,10 @@ class Ltx2Driver(IModelDriver):
         # the connector→caption-projection contract).
         self.audio_in_channels: int = 128
         self.caption_channels: int = 3840
+        # Width the AUDIO cross-attention actually reads, and the flag that
+        # decides which of the two it is — see :meth:`_audio_prompt_width`.
+        self.audio_cross_attention_dim: int = 2048
+        self.use_prompt_embeddings: bool = True
         self.audio_sampling_rate: int = 16000
         self._audio_mel = None  # lazily-built AudioMelExtractor (audio-on runs)
         self._latent_shape: tuple[int, int, int] | None = None  # (F, H, W)
@@ -143,6 +147,23 @@ class Ltx2Driver(IModelDriver):
             self.patch_size = int(arch.get("transformer.patch_size", 1))
             self.patch_size_t = int(arch.get("transformer.patch_size_t", 1))
 
+        # The LOADED config wins over the definition for these two: they decide
+        # a tensor width, and a definition that has drifted from the checkpoint
+        # would produce a shape crash several frames deep inside a block rather
+        # than an honest mismatch here. `use_prompt_embeddings` is absent from
+        # the LTX-2.3 checkpoint entirely, where diffusers' own default (True)
+        # is the correct answer — so read it with that default, never assume the
+        # definition declares it.
+        self.audio_cross_attention_dim = int(
+            getattr(cfg, "audio_cross_attention_dim", None)
+            or arch.get("transformer.audio_cross_attention_dim", 2048)
+        )
+        self.use_prompt_embeddings = bool(
+            getattr(cfg, "use_prompt_embeddings", None)
+            if cfg is not None and getattr(cfg, "use_prompt_embeddings", None) is not None
+            else arch.get("transformer.use_prompt_embeddings", True)
+        )
+
         self.logger.info(
             "ltx2_config",
             train_audio=self.train_audio,
@@ -150,6 +171,7 @@ class Ltx2Driver(IModelDriver):
             patch_size=self.patch_size,
             patch_size_t=self.patch_size_t,
             frame_rate=self.frame_rate,
+            audio_prompt_width=self._audio_prompt_width(),
         )
 
     def get_components(self) -> dict[str, Any]:
@@ -496,15 +518,51 @@ class Ltx2Driver(IModelDriver):
             )
         return video_pred
 
-    @staticmethod
-    def _audio_embeddings(text_embeddings: Any, video_emb: torch.Tensor) -> torch.Tensor:
+    def _audio_prompt_width(self) -> int:
+        """Width the transformer expects for ``audio_encoder_hidden_states``.
+
+        The joint transformer reads the audio prompt at TWO different widths
+        depending on one config flag, and both LTX-2 checkpoints we ship are
+        real cases of it:
+
+        * ``use_prompt_embeddings=True`` (LTX-2.3 — the key is absent from its
+          config, so diffusers' default applies): the model owns an
+          ``audio_caption_projection`` mapping ``caption_channels`` →
+          ``audio_inner_dim``, so it is handed the RAW caption width.
+        * ``use_prompt_embeddings=False`` (LTX-2.5): no projection exists; the
+          connector already emits per-modality widths, so the audio cross
+          attention reads ``audio_cross_attention_dim`` directly.
+
+        Both models declare ``caption_channels=3840`` and
+        ``audio_cross_attention_dim=2048``, which is why feeding the caption
+        width unconditionally worked for 2.3 and crashed 2.5 at the first
+        sampling step — inside the block, against the audio adaLN modulation.
+        """
+        return (
+            self.caption_channels
+            if self.use_prompt_embeddings
+            else self.audio_cross_attention_dim
+        )
+
+    def _audio_embeddings(
+        self, text_embeddings: Any, video_emb: torch.Tensor,
+    ) -> torch.Tensor:
         """Audio text embedding (connector's 2nd output, cached in ``pooled``).
 
-        Falls back to a zero tensor shaped like the video embedding when absent
-        so a malformed cache degrades to "no audio prompt" rather than crashing.
+        Falls back to a single zero token at the width the AUDIO stream reads
+        when absent, so a malformed cache degrades to "no audio prompt" rather
+        than crashing. Not ``zeros_like(video_emb)``: the video prompt is a
+        different width whenever the connector emits per-modality features
+        (4096 vs 2048 on LTX-2.5), so the old fallback traded a missing cache
+        entry for a shape crash.
         """
         pooled = getattr(text_embeddings, "pooled", None)
-        return pooled if pooled is not None else torch.zeros_like(video_emb)
+        if pooled is not None:
+            return pooled
+        return torch.zeros(
+            video_emb.shape[0], 1, self._audio_prompt_width(),
+            dtype=video_emb.dtype, device=video_emb.device,
+        )
 
     def encode_audio_clean(
         self, waveform: torch.Tensor, sample_rate: int,
@@ -559,8 +617,8 @@ class Ltx2Driver(IModelDriver):
         """Minimal zero audio stream for video-only training/sampling.
 
         The joint transformer requires ``audio_hidden_states`` (``[B, n, audio_in_channels]``
-        → ``audio_proj_in``) and ``audio_encoder_hidden_states``
-        (``[B, l, caption_channels]`` → ``audio_caption_projection``).  With
+        → ``audio_proj_in``) and ``audio_encoder_hidden_states``, whose width is
+        NOT always ``caption_channels`` — see :meth:`_audio_prompt_width`.  With
         ``isolate_modalities=True`` the audio stream is decoupled from video, so
         a single zero token in each suffices (cheap; output discarded).
         """
@@ -570,7 +628,7 @@ class Ltx2Driver(IModelDriver):
             dtype=hidden_ref.dtype, device=hidden_ref.device,
         )
         audio_emb = torch.zeros(
-            b, 1, self.caption_channels,
+            b, 1, self._audio_prompt_width(),
             dtype=video_emb.dtype, device=hidden_ref.device,
         )
         return audio_h, audio_emb

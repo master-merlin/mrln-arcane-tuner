@@ -1,6 +1,6 @@
 # Architecture
 
-> Updated 2026-07-06 · App version `0.7.2-beta`
+> Updated 2026-08-28 · App version: `backend/app/__init__.py` (not restated here — a version copied into prose drifts, and this one had been wrong since 0.7.2-beta)
 
 ## Overview
 
@@ -68,7 +68,7 @@ graph LR
 | File          | Purpose                                                                  |
 | ------------- | ------------------------------------------------------------------------ |
 | `main.py`     | FastAPI app, lifespan, CORS + optional token-auth + logging middleware, router mounts, error-envelope exception handlers, `/media` + SPA static mounts |
-| `__init__.py` | Version (`0.7.2-beta`); applies diffusers + HPS-v2 compat patches at import |
+| `__init__.py` | Version (see `backend/app/__init__.py`); applies diffusers + HPS-v2 compat patches at import |
 
 **Lifespan** wires the shared event loop into `dataset_manager` / `job_manager` / `task_manager`, hydrates jobs from the DB, discovers plugins + initializes the model registry, recovers jobs whose subprocess died during downtime, initializes the self-update service, optionally launches the frontend dev server, and warms cache-stats aggregation on a non-GPU background lane.
 
@@ -191,30 +191,50 @@ engine/
 ├── factories/             # Optimizer + quantization (bitsandbytes/quanto/torchao) factories + base/impl subdirs
 ├── models/
 │   ├── registry.py        # Model family registry (plugin-driven) + count()
-│   └── families/          # 13 families + wan_shared (see below)
+│   └── families/          # 28 families + 3 support packages (see below)
 ├── strategies/            # EMA, timestep sampling, noise interpolation, sigma schedule/tracker
 └── utils/                 # LoRA tools + conversion, safe save, introspection, VRAM/cost estimators, override manager
 ```
 
-**Model families** (`models/families/`) — 13 shipped families plus the `wan_shared` support package (shared WAN text-encoding/cache mixin, driver/sampler/saver/trainer bases; WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`). Every family declares an `archetype` (`latent_diffusion` or `unified_transformer`); video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`.
 
-| Family            | Model                                                        | Archetype           | Video caps                       |
-| ----------------- | ----------------------------------------------------------- | ------------------- | -------------------------------- |
-| `sdxl`            | Stable Diffusion XL (1.0 / Turbo), dual CLIP, ε-prediction  | latent_diffusion    | —                                |
-| `flux1`           | FLUX.1 (Dev / Schnell), flow-matching, T5 + CLIP            | latent_diffusion    | —                                |
-| `flux2`           | FLUX.2 (Klein / Dev)                                         | latent_diffusion    | —                                |
-| `qwen_image`      | Qwen-Image                                                   | latent_diffusion    | —                                |
-| `zimage`          | Z-Image Base                                                 | latent_diffusion    | —                                |
-| `ernie_image`     | Baidu ERNIE-Image (custom text encoder)                     | latent_diffusion    | —                                |
-| `ideogram4`       | Ideogram 4 (structured-JSON captioning)                     | latent_diffusion    | —                                |
-| `krea2`           | Krea2 (Raw train + Turbo deploy; vendored transformer, Qwen3-VL TE + Qwen VAE) | latent_diffusion | —                    |
-| `microsoft_lens`  | Microsoft Lens (decoupled GPT-OSS, vendored DiT)            | latent_diffusion    | —                                |
-| `hidream_o1`      | HiDream-O1-Image (pixel-space text-to-image LoRA)           | unified_transformer | —                                |
-| `ltx2`            | LTX 2.3 video (Gemma3 TE, i2v + audio)                      | latent_diffusion    | `is_video`, `has_audio`          |
-| `wan21`           | WAN 2.1 (T2V 1.3B/14B, I2V 14B; UMT5-XXL, CLIP i2v encoder) | latent_diffusion    | `is_video`, `has_image_encoder`  |
-| `wan22`           | WAN 2.2 (dual-expert MoE, A14B T2V/I2V)                     | latent_diffusion    | `is_video`, `dual_expert`        |
+#### Model families
 
-Each family implements `Loader` (`IModelLoader`), `Saver` (`IModelSaver`), `Driver` (`IModelDriver`, phased forward pass), `Trainer` (`GenericTrainingPipeline` hooks), and `Sampler` (inference preview, with true cond+uncond CFG on image and video families). The `wan_shared` package holds the code wan21/wan22 share so the two stay byte-identical by construction.
+**28 shipped families across 50 definitions**, plus three support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share), `prx_shared` (the same role for `prx` and `prx_pixel`), and `definitions/` (cross-family definition helpers). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (26), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
+
+Counts here are pinned by `backend/tests/test_architecture_family_counts.py` — the table below is generated from the tree, and a family added without a row in it fails the gate. That guard exists because this section said "13 families" for fifteen families' worth of releases.
+
+| Family            | Model(s)                                                          | Archetype           | Capability flags                    |
+| ----------------- | ----------------------------------------------------------------- | ------------------- | ----------------------------------- |
+| `boogu_image`     | Boogu-Image 0.1 (Base / Edit / Turbo)                             | latent_diffusion    | —                                   |
+| `chroma`          | Chroma1 (Base / HD)                                                | latent_diffusion    | —                                   |
+| `dreamlite`       | DreamLite (Base / Mobile)                                          | latent_diffusion    | —                                   |
+| `ernie_image`     | Baidu ERNIE-Image (Base 8B, custom text encoder)                   | latent_diffusion    | —                                   |
+| `flux1`           | FLUX.1 (Dev / Schnell / Kontext Dev)                               | latent_diffusion    | —                                   |
+| `flux2`           | FLUX.2 (Dev / Klein Base 4B / Klein Base 9B)                       | latent_diffusion    | —                                   |
+| `hidream_o1`      | HiDream-O1-Image (Full) — pixel-space text-to-image LoRA           | unified_transformer | —                                   |
+| `ideogram4`       | Ideogram 4 (fp8, 9.3B; structured-JSON captioning)                 | latent_diffusion    | —                                   |
+| `krea2`           | Krea-2 (Raw train + Turbo deploy; vendored transformer, Qwen3-VL TE + Qwen VAE) | latent_diffusion | —                      |
+| `longcat_image`   | LongCat-Image                                                      | latent_diffusion    | —                                   |
+| `lumina2`         | Lumina-Image 2.0                                                   | latent_diffusion    | —                                   |
+| `microsoft_lens`  | Microsoft Lens (Base 3.8B; decoupled GPT-OSS, vendored DiT)        | latent_diffusion    | —                                   |
+| `nucleus_image`   | Nucleus-Image                                                      | latent_diffusion    | —                                   |
+| `omnigen2`        | OmniGen2                                                           | latent_diffusion    | —                                   |
+| `ovis_image`      | Ovis-Image 7B                                                      | latent_diffusion    | —                                   |
+| `prx`             | PRX 512 T2I (SFT)                                                  | latent_diffusion    | —                                   |
+| `prx_pixel`       | PRX Pixel T2I                                                      | pixel_transformer   | —                                   |
+| `qwen_image`      | Qwen-Image 2512, Qwen-Image-Edit 2509 / 2511                       | latent_diffusion    | —                                   |
+| `sdxl`            | SDXL Base 1.0, Illustrious-XL v2.0, NoobAI-XL v1.1 — dual CLIP, ε-prediction | latent_diffusion | —                          |
+| `zimage`          | Z-Image (Base / De-Turbo)                                          | latent_diffusion    | —                                   |
+| `bernini_r`       | Bernini-R video edit (1.3B / 14B MoE)                              | latent_diffusion    | `is_video`                          |
+| `hunyuan_video15` | HunyuanVideo 1.5 480p (T2V / I2V)                                  | latent_diffusion    | `is_video`, `has_image_encoder`     |
+| `kandinsky5`      | Kandinsky 5.0 (T2V Lite SFT 5s / I2V Pro SFT 5s)                   | latent_diffusion    | `is_video`                          |
+| `ltx2`            | LTX 2.3 (Lightricks; Gemma3 TE, i2v + audio)                       | latent_diffusion    | `is_video`, `has_audio`             |
+| `wan21`           | WAN 2.1 (T2V 1.3B / 14B, I2V 14B 480P / 720P; UMT5-XXL, CLIP i2v encoder) | latent_diffusion | `is_video`, `has_image_encoder` |
+| `wan22`           | WAN 2.2 (dual-expert MoE, A14B T2V / I2V)                          | latent_diffusion    | `is_video`, `dual_expert`           |
+| `wan22_ti2v_5b`   | WAN 2.2 TI2V 5B (dense)                                            | latent_diffusion    | `is_video`, `has_image_encoder`     |
+| `ace_step15`      | ACE-Step 1.5 (Turbo / XL Base) — 48kHz Oobleck audio VAE           | latent_diffusion    | `is_audio_family`                   |
+
+Each family implements `Loader` (`IModelLoader`), `Saver` (`IModelSaver`), `Driver` (`IModelDriver`, phased forward pass), `Trainer` (`GenericTrainingPipeline` hooks), and `Sampler` (inference preview, with true cond+uncond CFG on image and video families). The `wan_shared` package holds the code wan21/wan22/wan22_ti2v_5b share so they stay byte-identical by construction; `prx_shared` does the same for `prx` and `prx_pixel`.
 
 **Training IPC:** jobs run as subprocesses (1 process = 1 job) launched from `run_trainer.py`, which sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True,gc_threshold:0.8` to bound reserved-pool fragmentation on Windows/WDDM. The trainer warms batches largest-bucket-first (worst-case allocation up front), writes JSON-Lines to `{output_dir}/job_log.jsonl` (read by `JobManager`'s log tailer), and polls `{output_dir}/signal.json` each step for pause/resume/soft-stop. `JobManager` runs a PID watchdog and, on a transient GPU fault (TDR/GpuRcReset), performs a bounded auto-resume when the toggle is enabled. Jobs persist in SQLite and are re-attached or recovered after a backend restart.
 

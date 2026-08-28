@@ -120,11 +120,23 @@ def hub_access_message(exc: BaseException, key: str, path: str) -> str | None:
     import that can fail. Returning ``None`` leaves the original message intact,
     so a mis-detection can only ever lose the nicer wording.
     """
-    name = type(exc).__name__
-    status = getattr(getattr(exc, "response", None), "status_code", None)
-    gated = "GatedRepo" in name
-    known = name in {"HfHubHTTPError", "RepositoryNotFoundError"} or gated
-    if not gated and not (known and status in _STATUS_CAUSE):
+    try:
+        name = type(exc).__name__
+        # `getattr(..., default)` swallows AttributeError and NOTHING else. A
+        # `response` whose `status_code` is a property that raises -- a proxy
+        # object, a partially constructed response -- propagates straight out of
+        # here, from inside an except block, replacing the real component failure
+        # with a traceback about the error reporter. The whole body is guarded
+        # because this function's only job is to improve a message: any failure
+        # of its own must cost the nicer wording and nothing else.
+        status = getattr(getattr(exc, "response", None), "status_code", None)
+        if not isinstance(status, int):
+            status = None
+        gated = "GatedRepo" in name
+        known = name in {"HfHubHTTPError", "RepositoryNotFoundError"} or gated
+        if not gated and not (known and status in _STATUS_CAUSE):
+            return None
+    except Exception:  # noqa: BLE001 - see above: never raise from an error path
         return None
 
     repo = path.split(":", 1)[-1].strip("/")

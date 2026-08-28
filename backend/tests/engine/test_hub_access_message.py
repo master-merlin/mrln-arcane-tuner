@@ -93,6 +93,45 @@ def test_it_stays_silent_on_failures_that_are_not_about_access(exc):
     assert hub_access_message(exc, "unet", REPO) is None
 
 
+class _HostileResponse:
+    """A response whose status_code getter raises, like a proxy or a half-built one."""
+
+    @property
+    def status_code(self):
+        raise RuntimeError("connection object is not initialised")
+
+
+class _HostileError(Exception):
+    def __init__(self) -> None:
+        super().__init__("something went wrong downloading")
+        self.response = _HostileResponse()
+
+
+def test_it_never_raises_out_of_an_exception_handler():
+    """Found by adversarial review, and the severity is in WHERE this runs.
+
+    ``hub_access_message`` is called from inside an ``except`` block on every
+    family's component-load path. ``getattr(obj, name, default)`` swallows
+    AttributeError and nothing else, so a ``status_code`` property that raises
+    propagates out of the error reporter and replaces the real component failure
+    with a traceback about the reporter itself -- the actual cause is then gone.
+    Its own docstring promised this could not happen; that promise is now a test.
+    """
+    assert hub_access_message(_HostileError(), "unet", REPO) is None
+
+
+def test_a_non_integer_status_cannot_reach_the_message():
+    """A Mock or a stringly-typed status must not be formatted into user text."""
+
+    class _Odd(Exception):
+        def __init__(self) -> None:
+            super().__init__("odd")
+            self.response = type("R", (), {"status_code": "403"})()
+
+    # Not an int -> not a recognised access failure -> original error preserved.
+    assert hub_access_message(_Odd(), "unet", REPO) is None
+
+
 def test_the_message_never_blames_the_user_s_data():
     """The failure arrives mid-job, right after dataset work, and reads like its fault."""
     for exc in (GatedRepoError(), HfHubHTTPError(401), RepositoryNotFoundError(404)):

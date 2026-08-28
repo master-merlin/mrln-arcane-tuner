@@ -179,7 +179,7 @@ architecture_params:
   - spatial
   vocoder._class_name: LTX2VocoderWithBWE
   te.type: gemma4_unified
-  te.max_length: 256
+  te.max_length: 1024
   te._class_name: Gemma4UnifiedForConditionalGeneration
   te.architectures:
   - Gemma4UnifiedForConditionalGeneration

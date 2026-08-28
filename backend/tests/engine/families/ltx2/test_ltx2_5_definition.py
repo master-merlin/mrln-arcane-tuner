@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import pathlib
 
 import pytest
 
@@ -172,6 +173,14 @@ def test_the_resolved_transformer_accepts_every_flag_the_definition_declares(def
     them natively. Either resolution satisfies this test, and nothing else does --
     which is exactly the property worth pinning, because the failure it guards
     against is silent by construction.
+
+    **What this test does NOT prove**, named because an adversarial review was
+    right to name it: acceptance is not implementation. A class can take a flag,
+    allocate whatever it implies, and never read it in the forward --
+    ``use_keyframes_abs_pos_embedding`` is exactly that on diffusers 0.40, and it
+    passes here. That case is pinned separately below rather than left to be
+    rediscovered. This test's job is the narrower one it can actually do: catch a
+    flag the runtime does not know about at all.
     """
     loader = Ltx2Loader(device="cpu")
     manifest = {spec.key: spec.hf_class for spec in loader.get_component_manifest(definition)}
@@ -194,4 +203,66 @@ def test_the_resolved_transformer_accepts_every_flag_the_definition_declares(def
         "the shapes agree, and the model built is not the one the config describes. "
         "Resolve by running a diffusers that accepts them, or by pointing "
         "`transformer._module` at a vendored class that does."
+    )
+
+
+def test_the_prompt_length_is_upstreams_and_a_whole_number_of_registers(definition):
+    """256 would load fine and condition the model differently. Twice over.
+
+    The text connectors REPLACE every padded position with a learned register
+    (128 of them, indexed by absolute position) and then zero the attention mask,
+    so padding here is not something masked away -- it IS conditioning. Changing
+    the length changes how many register tokens the transformer cross-attends to.
+    LTX-2.3 ships 256; every LTX-2 pipeline in diffusers 0.39 and 0.40 defaults to
+    1024, so 2.5 follows upstream. (Whether 2.3 should move is a separate call: it
+    is released, and changing it would alter conditioning for existing LoRAs and
+    invalidate every cached text embedding.)
+
+    The divisibility half is a hard runtime constraint, not a preference --
+    ``LTX2TextConnector.forward`` raises when ``seq_len % num_learnable_registers``
+    is non-zero, and it raises at the first training step, not at load.
+    """
+    max_length = definition.architecture_params["te.max_length"]
+    assert max_length == 1024, (
+        f"te.max_length is {max_length}; upstream's LTX-2 pipelines all default to 1024. "
+        "This is not a cost knob -- padded positions become learned registers, so the "
+        "length is part of the conditioning."
+    )
+    assert max_length % 128 == 0, (
+        f"te.max_length {max_length} is not a multiple of the connectors' 128 learnable "
+        "registers; LTX2TextConnector.forward raises on the first step"
+    )
+
+
+def test_the_keyframes_flag_is_declared_for_LOADING_not_for_a_feature(definition):
+    """A recorded limitation, so nobody promises I2V keyframes on the strength of it.
+
+    The 2.5 checkpoint carries a ``keyframes_abs_pos_embedding`` weight, so the
+    definition sets the flag that allocates it -- otherwise the tensor is an
+    unexpected key and the load is no longer clean. But diffusers 0.40 allocates
+    it and never reads it: its own docstring says "the regular distilled forward
+    path does not consume it until a dedicated keyframes pipeline wires it in".
+
+    So the flag buys load fidelity, not behaviour, and our I2V path is the same
+    per-token-timestep conditioning LTX-2.3 uses -- which is also what upstream's
+    regular forward does. Asserted rather than commented so that the day diffusers
+    wires it up, this test fails and someone decides deliberately whether to use it.
+    """
+    assert definition.architecture_params["transformer.use_keyframes_abs_pos_embedding"] is True
+
+    import diffusers.models.transformers.transformer_ltx2 as mod
+
+    source = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
+    # Scope to the MODEL class's own forward. Searching from the file's first
+    # `def forward(` would start above the model's __init__ -- where the parameter
+    # is allocated -- and the test would report consumption that is really just
+    # the allocation it exists to distinguish from consumption.
+    class_start = source.find("class LTX2VideoTransformer3DModel")
+    assert class_start > 0, "LTX2VideoTransformer3DModel was renamed; re-read this test"
+    forward_start = source.find("    def forward(", class_start)
+    assert forward_start > 0, "the model class has no forward(); re-read this test"
+    assert "keyframes_abs_pos_embedding" not in source[forward_start:], (
+        "diffusers now CONSUMES keyframes_abs_pos_embedding in the forward pass. "
+        "LTX-2.5's I2V keyframe conditioning has become available -- decide whether "
+        "the ltx2 driver should feed it, rather than inheriting this test's assumption."
     )

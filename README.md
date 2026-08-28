@@ -131,6 +131,39 @@ Or enable **auto-start** in Server Settings — the backend will launch the fron
 
 The frontend runs on `http://localhost:4200` by default. Both ports are configurable in Server Settings.
 
+### Updating an existing install
+
+```cmd
+update.bat                 :: Windows
+.\update.ps1               :: Windows (PowerShell)
+./update.sh                # Linux / macOS
+```
+
+Pulls the latest `main`, then brings your installed dependencies back in line
+with it — reinstalling backend packages if `requirements.txt` moved, running
+`npm ci` if the frontend lockfile moved, and rebuilding the SPA if this install
+serves a built one.
+
+It compares **what is installed against what the checkout declares**, rather
+than looking at what a given pull happened to change, so it also repairs drift
+from any other cause — a branch switch, an interrupted install, or simply
+having skipped a few releases.
+
+| | |
+|---|---|
+| `--check` | report what is out of date and change nothing (exit 1 if anything is) |
+| `--no-pull` | skip git; only bring dependencies in line with the checkout you have |
+| `--build` / `--no-build` | force or skip the production frontend build |
+
+It will stop rather than touch a working tree it does not own: it refuses if you
+have uncommitted changes, and only ever fast-forwards — it will not merge,
+reset or stash. If your branch has diverged from `origin`, that is left to you.
+
+**Inside the container, use the in-app updater instead** (Server Settings →
+Update). The container owns its own checkout and restarts itself once running
+tasks have drained; the script detects the container and stops rather than
+having two updaters write to one checkout.
+
 ---
 
 ## Run as a container on RunPod

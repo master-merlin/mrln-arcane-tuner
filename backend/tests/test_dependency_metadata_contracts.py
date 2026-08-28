@@ -303,3 +303,100 @@ def test_each_no_deps_package_says_why_on_its_own_requirements_line():
             f"requirements.txt pins {name} with no inline note that it is installed "
             "--no-deps. Its siblings carry one; an unexplained line invites removal."
         )
+
+
+#: Constraints a ``--no-deps`` package DECLARES that our own pins deliberately
+#: violate. The presence guard above proves the dependency is installed; it says
+#: nothing about whether the version we installed is one the package would have
+#: accepted. That gap is where a real incompatibility hides, so every violation
+#: is listed here with its reason, and an unlisted one fails. A choice nobody
+#: wrote down is indistinguishable from an accident.
+ACCEPTED_CONSTRAINT_VIOLATIONS = {
+    ("hpsv2", "protobuf"): (
+        "hpsv2 declares protobuf<4 and imports no protobuf anywhere in its "
+        "package, so the constraint is inert. We pin 5.29.6 because 3.20.3 "
+        "carried two HIGH advisories, and CVE-2026-0994 is fixed only at "
+        ">=5.29.6 -- 4.25.8 clears the other one and leaves that one open."
+    ),
+    ("hpsv2", "pytest"): (
+        "The leaked dev pin. Covered behaviourally by "
+        "test_hpsv2_imports_under_a_runner_its_metadata_forbids."
+    ),
+    ("sam3", "huggingface-hub"): (
+        "A stale <1.0 ceiling. Covered behaviourally by "
+        "test_sam3_imports_cleanly_despite_declared_hub_pin in "
+        "test_transformers5_compat.py."
+    ),
+}
+
+
+def _declared_violations() -> dict[tuple[str, str], str]:
+    """Every (package, dependency) whose installed version breaks a declaration.
+
+    Requirements gated behind an unsatisfied environment marker are not
+    declarations about THIS install and are skipped. A dependency that is
+    absent entirely is a presence problem, not a version one, and belongs to
+    the guard above -- listing it here would report one defect as two.
+    """
+    from packaging.requirements import Requirement
+
+    found: dict[tuple[str, str], str] = {}
+    for package in sorted(_no_deps_packages()):
+        try:
+            declared = md.metadata(package).get_all("Requires-Dist") or []
+        except md.PackageNotFoundError:
+            continue
+        for raw in declared:
+            requirement = Requirement(raw)
+            if requirement.marker and not requirement.marker.evaluate():
+                continue
+            if not requirement.specifier:
+                continue
+            try:
+                installed = md.version(requirement.name)
+            except md.PackageNotFoundError:
+                continue
+            if not requirement.specifier.contains(installed, prereleases=True):
+                key = (package, requirement.name.lower().replace("_", "-"))
+                found[key] = f"declares {requirement.specifier}, installed {installed}"
+    return found
+
+
+def test_every_declared_constraint_we_break_is_one_we_chose_to_break():
+    """The second half of the --no-deps claim, and the half that was missing.
+
+    ``--no-deps`` means pip never checked these declarations, so nothing in the
+    install fails when one stops holding. The guard above asks "is it there?";
+    this one asks "is it a version the package said it could use?". Both
+    questions have to be answered or the gap between them is invisible: when
+    protobuf moved 3.20.3 -> 5.29.6 for two HIGH advisories, hpsv2's declared
+    ``protobuf<4`` went from satisfied to violated and every test in this file
+    stayed green, because protobuf was still *present*.
+    """
+    unexplained = {
+        key: detail
+        for key, detail in _declared_violations().items()
+        if key not in ACCEPTED_CONSTRAINT_VIOLATIONS
+    }
+    assert not unexplained, (
+        "A --no-deps package declares a constraint our pins break, and nobody "
+        f"recorded why: {unexplained}. pip did not check it and will not. Either "
+        "move the pin back inside the declared range, or add the pair to "
+        "ACCEPTED_CONSTRAINT_VIOLATIONS with the reason it is safe."
+    )
+
+
+def test_no_accepted_violation_has_quietly_stopped_being_one():
+    """Anti-vacuity: the ledger must not outlive the constraints it excuses.
+
+    An entry that is no longer a violation is a licence nobody needs, and it
+    keeps the next real one hidden -- the same failure shape as a test whose
+    subject was removed and whose assertion still passes.
+    """
+    live = _declared_violations()
+    stale = sorted(key for key in ACCEPTED_CONSTRAINT_VIOLATIONS if key not in live)
+    assert not stale, (
+        f"ACCEPTED_CONSTRAINT_VIOLATIONS excuses constraints that now hold: {stale}. "
+        "The upstream pin was fixed or our own moved back into range -- drop the "
+        "entry so the ledger keeps meaning what it says."
+    )

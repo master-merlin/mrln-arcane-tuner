@@ -2,7 +2,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.7.9-beta` · PyTorch 2.10 · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
+`v0.7.9-beta` · PyTorch 2.12.1 local / 2.11.0 container · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
 
 **Author:** [master-merlin](https://github.com/master-merlin) · **Repository:** [github.com/master-merlin/mrln-arcane-tuner](https://github.com/master-merlin/mrln-arcane-tuner)
 
@@ -195,7 +195,7 @@ mastermerlin/mrln-arcane-tuner:0.7.9-beta        # pinned version (CUDA 12.8 / c
 mastermerlin/mrln-arcane-tuner:0.7.9-beta-cu126  # fallback for legacy R560–R565 drivers
 ```
 
-The default image bundles **CUDA 12.8 (cu128) · PyTorch 2.10 · Python 3.12**
+The default image bundles **CUDA 12.8 (cu128) · PyTorch 2.11.0 · Python 3.12**
 (runtime) and a **Node 24 / Angular 22** production build of the UI. cu128 ships
 **Blackwell (sm_120/sm_100)** kernels plus Hopper/Ada/Ampere, and needs an
 **R570+** host driver — which Blackwell cards require anyway, so it covers the
@@ -334,7 +334,7 @@ MRLN Arcane Tuner is a full-stack application with a FastAPI backend and an Angu
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│                  Angular 21 SPA                      │
+│                  Angular 22 SPA                      │
 │    43 Standalone Components · Signals · Tailwind     │
 └──────────────────┬────────────────┬──────────────────┘
                    │ REST           │ WebSocket

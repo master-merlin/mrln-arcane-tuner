@@ -81,6 +81,13 @@ interface Img {
                                  decoding="async"
                                  (error)="onImgError(c.startIndex)"/>
                         }
+                        <!-- The thumbnail covers the cell's own readiness
+                             colour, which is what the legend explains. Repeat
+                             it as a bar along the bottom edge so a strip of
+                             thumbnails still answers the legend's question.
+                             Same class combination as the aggregated cells,
+                             so the two renderings can never drift apart. -->
+                        <span class="status-bar" aria-hidden="true"></span>
                     }
                 </span>
             }
@@ -124,13 +131,35 @@ interface Img {
         .cell.c.m { background: var(--color-success); opacity: 0.9; }
         .cell.h { opacity: 1; }
 
-        /* Thumbnail cells override the colour-bar treatment entirely. */
+        /* Thumbnail cells override the colour-bar treatment entirely —
+           the readiness colour comes back as .status-bar below. */
         .cell.thumb {
             background: var(--color-surface-mid);
             opacity: 1;
             min-width: 72px;
             flex: 0 0 72px !important;
         }
+        /* Readiness bar for thumbnail cells. Mirrors the aggregated cells'
+           mapping exactly: base = missing, .c = captioned only, .c.m =
+           masked, and un-harmonized is dimmed rather than recoloured
+           (the legend names three colours, not four). z-index clears the
+           thumbnail image, which sits at z-index 1. */
+        .status-bar { display: none; }
+        .cell.thumb .status-bar {
+            display: block;
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 4px;
+            z-index: 2;
+            background: var(--color-danger);
+            opacity: 0.55;
+            pointer-events: none;
+        }
+        .cell.thumb.c .status-bar { background: var(--color-warning); opacity: 0.75; }
+        .cell.thumb.c.m .status-bar { background: var(--color-success); opacity: 0.9; }
+        .cell.thumb.h .status-bar { opacity: 1; }
         .cell.thumb img {
             position: relative;
             z-index: 1;

@@ -21,11 +21,12 @@ that CAN run every time, and the docstring says plainly what it does not cover
 from __future__ import annotations
 
 import os
-import shutil
 import subprocess
 from pathlib import Path
 
 import pytest
+
+from tests.support.bash_probe import bash_skip_reason, find_bash
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
@@ -50,11 +51,19 @@ def _entrypoint() -> str:
 
 
 def _bash() -> str | None:
-    return shutil.which("bash")
+    """A shell that can open ``entrypoint.sh``, not merely a shell.
+
+    ``shutil.which("bash")`` used to answer this and got it wrong: on Windows it
+    returns WSL's System32 bash about as often as Git Bash, and WSL cannot see
+    `D:\\...` — so the guard below was satisfied by a shell that then failed
+    every test instead of skipping. See ``tests/support/bash_probe.py``.
+    """
+    return find_bash(ENTRYPOINT) if ENTRYPOINT.exists() else None
 
 
 requires_bash = pytest.mark.skipif(
-    _bash() is None, reason="needs a POSIX shell to execute entrypoint.sh"
+    bash_skip_reason(ENTRYPOINT) is not None,
+    reason=bash_skip_reason(ENTRYPOINT) or "",
 )
 
 

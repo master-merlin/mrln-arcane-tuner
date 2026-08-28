@@ -48,6 +48,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.support.bash_probe import find_bash
+
 BACKEND_DIR = Path(__file__).resolve().parents[1]
 REPO_ROOT = BACKEND_DIR.parent
 
@@ -130,7 +132,14 @@ def _command(sb: Path, launcher: str) -> list[str] | None:
     if not path.exists():
         return None
     if launcher.endswith(".sh"):
-        bash = shutil.which("bash")
+        # Probed against this sandbox, not against PATH: the launcher lives in
+        # tmp, which is on a different volume from the repo, and a shell can
+        # manage one without the other. `shutil.which("bash")` used to answer
+        # here and handed back WSL's System32 bash as readily as Git Bash —
+        # which cannot open a Windows drive path, so these tests failed rather
+        # than skipped, depending on the operator's PATH. See
+        # ``tests/support/bash_probe.py``.
+        bash = find_bash(path)
         return [bash, str(path)] if bash else None
     if launcher.endswith(".bat"):
         cmd = shutil.which("cmd") or shutil.which("cmd.exe")

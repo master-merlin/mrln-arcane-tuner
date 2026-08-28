@@ -26,6 +26,16 @@ export interface StepMetrics {
     step_time?: number;
     samples_per_sec?: number;
     eta?: number;
+    /**
+     * RUN seconds as the trainer itself accounts for them — wall clock since
+     * the process started, MINUS paused time, PLUS the offset carried over from
+     * earlier sessions of a resumed run
+     * (`TrainingLogger.get_total_elapsed`). Always preferred over anything the
+     * client derives from `started_at`: only the runner knows how long it was
+     * actually running, and it is the one thing a backend restart cannot lose
+     * because the trainer subprocess outlives it.
+     */
+    elapsed?: number;
     vram_allocated_mb?: number;
     vram_reserved_mb?: number;
     resolution?: string;
@@ -353,6 +363,17 @@ export function formatEta(seconds: number | undefined | null): string {
 }
 
 /** Elapsed `h:mm:ss` / `m:ss` from a start (epoch seconds) to an end (epoch ms). */
+/** `h:mm:ss` (or `m:ss`) for a plain seconds count. Negative/NaN → `0:00`. */
+export function formatSeconds(seconds: number | null | undefined): string {
+    if (seconds == null || !Number.isFinite(seconds) || seconds < 0) return '0:00';
+    const total = Math.floor(seconds);
+    const h = Math.floor(total / 3600);
+    const m = Math.floor((total % 3600) / 60);
+    const s = total % 60;
+    if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
+    return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
 export function formatDuration(startedAtSec: number | undefined, endMs: number): string {
     if (!startedAtSec) return '0:00';
     const seconds = Math.floor((endMs - startedAtSec * 1000) / 1000);

@@ -842,4 +842,38 @@ describe('JobsScreen adaptive status chip (T11)', () => {
         fixture.detectChanges();
         expect(fixture.nativeElement.querySelector('[data-testid="adapt-chip"]')).toBeNull();
     });
+
+    /**
+     * UAT-3.2 — the chip used to sit in a row of its own ABOVE the curves card,
+     * where it read as a separate section rather than as a property of the
+     * curve. The pair of tests above passed either way, which is why this one
+     * pins the position and not just the existence.
+     */
+    it('sits inside the curves card head, immediately after the live chip', () => {
+        const { fixture, view } = setup();
+        view.activeJobs.set([
+            makeJob({
+                status: JobStatus.RUNNING,
+                logs: [adaptLine({ step: 20, kind: 'narrow', active_count: 5, total_count: 8 })],
+            }),
+        ]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+
+        const chip = fixture.nativeElement.querySelector('[data-testid="adapt-chip"]') as HTMLElement;
+        expect(chip).toBeTruthy();
+
+        // In the curves head, not floating above the card.
+        const head = chip.closest('.curves-head');
+        expect(head).toBeTruthy();
+        expect(head!.querySelector('.card-title')!.textContent).toContain('Training Curves');
+
+        // Same height as "live" is a CSS concern; what the DOM can pin is that
+        // it wears the same size class and follows the live chip in order.
+        expect(chip.classList.contains('head-chip')).toBe(true);
+        const chips = [...head!.querySelectorAll('.chip')] as HTMLElement[];
+        const live = chips.find(c => c.textContent!.trim().endsWith('live'));
+        expect(live).toBeTruthy();
+        expect(chips.indexOf(chip)).toBe(chips.indexOf(live!) + 1);
+    });
 });

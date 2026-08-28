@@ -44,6 +44,7 @@ import {
     bestLossSpark,
     formatDuration,
     formatEta,
+    formatSeconds,
     formatGradNorm,
     latestAdaptState,
     latestMetrics,
@@ -236,12 +237,79 @@ export class JobsScreen {
      */
     protected readonly persistedLogsByJob = signal<Map<string, string[]>>(new Map());
 
-    /** Loss/LR series for the curve + sparklines — live logs, else replay. */
+    /**
+     * Loss/LR series for the curve + sparklines — persisted history MERGED with
+     * the live log stream, newest wins per step.
+     *
+     * UAT-3.5: this used to be "live if there is any live, else replay", which
+     * silently truncated the curve for exactly the case that matters. The live
+     * buffer holds what THIS client has received over the socket; after a
+     * backend restart mid-run (or a browser reload, or attaching to a job that
+     * was already running) it starts at whatever step the reconnect landed on,
+     * and the graph began there — no gap, no warning, just a shorter run than
+     * really happened. Merging means the disk/DB history fills everything in
+     * front of the live window and the live points stay authoritative where
+     * they overlap.
+     */
     protected readonly lossPoints = computed<LossPoint[]>(() => {
         const live = lossSeries(this.selectedJob()?.logs);
-        if (live.length) return live;
         const id = this.selectedJob()?.id;
-        return (id && this.replayByJob().get(id)?.points) || [];
+        const replay = (id && this.replayByJob().get(id)?.points) || [];
+        if (!replay.length) return live;
+        if (!live.length) return replay;
+        const byStep = new Map<number, LossPoint>();
+        for (const p of replay) byStep.set(p.step, p);
+        for (const p of live) byStep.set(p.step, p);   // live wins on overlap
+        return [...byStep.values()].sort((a, b) => a.step - b.step);
+    });
+
+    /**
+     * How much of the curve to draw. UAT-3.4: the chart previously showed
+     * "whatever happened to be in the buffer", which read as all-or-nothing
+     * depending on how the run was observed rather than on anything the user
+     * chose. `all` keeps the old default; the windows are step COUNTS off the
+     * end.
+     */
+    protected readonly curveWindow = signal<'all' | 1000 | 500 | 100>('all');
+    protected readonly curveWindows = [
+        { value: 'all' as const, label: 'All' },
+        { value: 1000 as const, label: '1k' },
+        { value: 500 as const, label: '500' },
+        { value: 100 as const, label: '100' },
+    ];
+    protected setCurveWindow(v: 'all' | 1000 | 500 | 100): void {
+        this.curveWindow.set(v);
+    }
+
+    /**
+     * What the chart actually draws. Deliberately separate from `lossPoints`:
+     * the window is a view over the curve, so `best`, the sparklines and the
+     * convergence verdict keep reading the WHOLE run — a "best loss" that
+     * changed when you zoomed the graph would be a worse bug than the one this
+     * fixes. (The chart's plateau detector does see only the window; with the
+     * default `all` that is unchanged, and when a user narrows the view it is
+     * the visible curve it comments on.)
+     */
+    protected readonly chartPoints = computed<LossPoint[]>(() => {
+        const all = this.lossPoints();
+        const w = this.curveWindow();
+        return w === 'all' ? all : all.slice(-w);
+    });
+
+    /** True while a manual disk re-read is in flight (curve reload button). */
+    protected readonly curveReloading = signal(false);
+
+    /**
+     * Whole-run best handed to the chart, so its violet marker and legend keep
+     * meaning the same thing as the KPI tile once a window is applied. Only
+     * passed when the view IS windowed — with `all` the chart's own derivation
+     * is identical, and letting it do its own work keeps the default path
+     * exactly as it was.
+     */
+    protected readonly chartBestOverride = computed<{ value: number; step: number } | null>(() => {
+        if (this.curveWindow() === 'all') return null;
+        const b = this.best();
+        return b ? { value: b.loss, step: b.step } : null;
     });
 
     /** True when an archived run's output folder is gone (replay came from DB). */
@@ -296,16 +364,73 @@ export class JobsScreen {
         return mpx != null ? `${mpx.toFixed(1)} Mpx` : 'bucket dims';
     });
 
-    /** Live elapsed wall-clock for the selected job. */
+    /**
+     * Last RUN-time reading the trainer itself reported, and the wall-clock
+     * moment this client received it. UAT-3.6.
+     *
+     * Written by an effect rather than derived, because it has to remember
+     * *when* a value arrived in order to keep ticking between steps — a video
+     * run can be 30s per step, and a clock that only moves when a step lands
+     * reads as frozen.
+     */
+    private readonly runnerElapsed = signal<{ jobId: string; seconds: number; atMs: number } | null>(null);
+
+    /**
+     * Elapsed RUN time for the selected job.
+     *
+     * UAT-3.6 — this used to be `now − started_at`, which is wall clock, not
+     * run time, and got two things wrong. A pause was counted as work (resume
+     * clears `paused_at` and never credits the interval back, so a job paused
+     * overnight came back claiming eight extra hours), and a backend restart
+     * lost the thread entirely.
+     *
+     * The runner already knew the right answer and was already sending it:
+     * `TrainingLogger.get_total_elapsed()` rides in every step log as
+     * `elapsed` — wall clock minus paused time plus the offset from earlier
+     * sessions of a resumed run. It survives a backend restart because the
+     * trainer subprocess does. So the number is the runner's; this only ticks
+     * it forward between steps while the job is actually running.
+     *
+     * The `started_at` fallback remains for the window before the first step
+     * (queueing, model download, weight load) where no trainer reading exists
+     * yet — the one case where wall clock IS the honest answer.
+     */
     protected readonly elapsed = computed<string>(() => {
         const j = this.selectedJob();
         if (!j) return '0:00';
+
+        const r = this.runnerElapsed();
+        if (r && r.jobId === j.id) {
+            // Not RUNNING (paused, finished, stopped) → freeze at the last
+            // reading. Paused time is not run time, and the trainer's own
+            // number already excludes it.
+            if (j.status !== JobStatus.RUNNING) return formatSeconds(r.seconds);
+            const nowMs = this.now() || Date.now();
+            return formatSeconds(r.seconds + Math.max(0, (nowMs - r.atMs) / 1000));
+        }
+
         const end = j.finished_at
             ? j.finished_at * 1000
             : j.paused_at
               ? j.paused_at * 1000
               : this.now() || Date.now();
         return formatDuration(j.started_at, end);
+    });
+
+    /** Wall-clock moment the run began, for the "started" field beside elapsed. */
+    protected readonly startedAtLabel = computed<string>(() => {
+        const at = this.selectedJob()?.started_at;
+        if (!at) return '';
+        const d = new Date(at * 1000);
+        const today = new Date();
+        const sameDay =
+            d.getFullYear() === today.getFullYear() &&
+            d.getMonth() === today.getMonth() &&
+            d.getDate() === today.getDate();
+        const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        // A run that started yesterday and is still going is exactly the case
+        // where a bare "09:14" misleads, so the date appears only then.
+        return sameDay ? time : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
     });
 
     // ── Pre-formatted KPI labels (keep the template declarative) ────────
@@ -583,6 +708,36 @@ export class JobsScreen {
     /** Toggle the value callout at the curve tip (current point). On by default. */
     protected readonly showTip = signal<boolean>(true);
 
+    /**
+     * Re-read the persisted curve for the selected job, right now.
+     *
+     * UAT-3.5 asked for this explicitly, and it is not the same thing as the
+     * automatic fetch: that runs once per job per visit, whereas the trainer
+     * only rewrites `loss_history.json` at the end of a run and flushes
+     * `step_metrics` every 50 steps — so during a long run "what is on disk"
+     * genuinely changes underneath a curve that was fetched once. This is the
+     * button that goes and looks again.
+     */
+    protected reloadCurveFromDisk(): void {
+        const j = this.selectedJob();
+        if (!j || this.curveReloading()) return;
+        this.curveReloading.set(true);
+        this.jobService.getJobReplay(j.id).subscribe({
+            next: (r) => {
+                const points: LossPoint[] = (r.loss ?? [])
+                    .filter((p) => typeof p.loss === 'number')
+                    .map((p) => ({ step: p.step, loss: p.loss, lr: p.lr ?? 0, grad_norm: p.grad_norm }));
+                this.replayByJob.update((m) => {
+                    const next = new Map(m);
+                    next.set(j.id, { points, available: r.available });
+                    return next;
+                });
+                this.curveReloading.set(false);
+            },
+            error: () => this.curveReloading.set(false),
+        });
+    }
+
     /** total_steps as a number for the chart's plateau guard (0 = unknown). */
     protected readonly chartTotalSteps = computed<number>(() => {
         const t = this.metrics()?.total_steps;
@@ -603,6 +758,23 @@ export class JobsScreen {
         interval(1000)
             .pipe(takeUntilDestroyed(this.destroyRef))
             .subscribe(() => this.now.set(Date.now()));
+
+        // Capture the trainer's own RUN-time reading whenever a new one
+        // arrives (UAT-3.6). Stamped with the moment of receipt so `elapsed`
+        // can tick between steps without inventing time: everything it adds is
+        // wall clock since a reading the runner vouched for.
+        //
+        // Keyed on the job id as well as the value, so selecting a different
+        // job cannot briefly show the previous job's clock, and a step log that
+        // repeats the same second does not reset the tick.
+        effect(() => {
+            const j = this.selectedJob();
+            const seconds = this.metrics()?.elapsed;
+            if (!j || typeof seconds !== 'number' || !Number.isFinite(seconds)) return;
+            const prev = untracked(() => this.runnerElapsed());
+            if (prev && prev.jobId === j.id && prev.seconds === seconds) return;
+            this.runnerElapsed.set({ jobId: j.id, seconds, atMs: Date.now() });
+        });
 
         // When the selected job changes, lazy-load its sample + checkpoint lists once.
         effect(() => {
@@ -663,13 +835,19 @@ export class JobsScreen {
             }
         });
 
-        // Replay archived runs: when an archived job with no live logs is
-        // selected, fetch its persisted loss history (disk first, DB fallback)
-        // so the curve + log tail render even though the run is finished.
+        // Replay persisted history for the selected job: disk
+        // (loss_history.json) first, DB step_metrics fallback.
+        //
+        // UAT-3.5 — this used to be gated on `isArchived()` AND on there being
+        // no live data, so a RUNNING job never read history and its curve began
+        // wherever this client's socket happened to attach. Both gates are
+        // gone: a running job fetches once too, and `lossPoints` merges the two
+        // series. The `has(j.id)` guard still makes it one request per job per
+        // visit — the live stream keeps the tail current, so re-polling would
+        // buy nothing (the manual reload button exists for "I want disk NOW").
         effect(() => {
             const j = this.selectedJob();
-            if (!j || !this.isArchived()) return;
-            if (lossSeries(j.logs).length > 1) return; // already have live data
+            if (!j) return;
             if (this.replayByJob().has(j.id)) return;
             this.jobService.getJobReplay(j.id).subscribe({
                 next: (r) => {

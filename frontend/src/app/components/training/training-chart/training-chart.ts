@@ -76,6 +76,14 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
     readonly totalSteps = input<number>(0);
     /** When true, draw a value callout at the curve tip (current point). */
     readonly showTip = input<boolean>(false);
+    /**
+     * Whole-run best loss, when `data` is only a window over the run. Keeps
+     * this chart's violet "Best Loss" legend and marker agreeing with the KPI
+     * rail tile they are keyed to, instead of reporting the best of whatever
+     * happens to be in view. Omit it and the chart derives the best from `data`
+     * as before.
+     */
+    readonly bestOverride = input<{ value: number; step: number } | null>(null);
 
     readonly plateauDetected = output<{ step: number; loss: number }>();
 
@@ -227,17 +235,30 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         const rawLoss = currentData.map(d => d.loss);
         const smoothedLoss = this.applySmoothing(rawLoss);
 
-        // Track best loss for the marker plugin
-        let minLoss = Infinity;
-        let minStep = 0;
-        for (const d of currentData) {
-            if (d.loss < minLoss) {
-                minLoss = d.loss;
-                minStep = d.step;
+        // Track best loss for the marker plugin.
+        //
+        // `bestOverride` exists because `data` may be a WINDOW over the run
+        // (the curve's All / 1k / 500 / 100 control). Deriving the best from
+        // the visible slice would put a second, different "Best Loss" on a
+        // screen that already shows the run's best in the KPI rail — and this
+        // marker is deliberately keyed to that tile, violet and all. So when
+        // the caller knows the whole-run best, it wins.
+        const override = this.bestOverride();
+        if (override) {
+            this._bestLossVal = override.value;
+            this._bestLossStep = override.step;
+        } else {
+            let minLoss = Infinity;
+            let minStep = 0;
+            for (const d of currentData) {
+                if (d.loss < minLoss) {
+                    minLoss = d.loss;
+                    minStep = d.step;
+                }
             }
+            this._bestLossVal = minLoss === Infinity ? null : minLoss;
+            this._bestLossStep = minLoss === Infinity ? null : minStep;
         }
-        this._bestLossVal = minLoss === Infinity ? null : minLoss;
-        this._bestLossStep = minLoss === Infinity ? null : minStep;
 
         const bestDummy: (number | null)[] = Array(currentData.length).fill(null);
 
@@ -470,9 +491,21 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
                         ctx.moveTo(left, y);
                         ctx.lineTo(right, y);
                         ctx.stroke();
-                        // Solid dot (+ halo) at the best-loss point itself.
+                        // Solid dot (+ halo) at the best-loss point itself —
+                        // only when that step is actually on screen. With a
+                        // windowed view the run's best often sits behind the
+                        // left edge; uPlot would still hand back a position and
+                        // the dot would be drawn pinned to the axis, claiming a
+                        // minimum at a step that is not there. The dashed line
+                        // stays either way: "the run's best was this low" is
+                        // true regardless of what the window shows.
                         if (this._bestLossStep != null) {
-                            const x = u.valToPos(this._bestLossStep, 'x', true);
+                            const xScale = u.scales['x'];
+                            const [xMin, xMax] = xScale?.min != null && xScale?.max != null
+                                ? [xScale.min, xScale.max]
+                                : [-Infinity, Infinity];
+                            const inView = this._bestLossStep >= xMin && this._bestLossStep <= xMax;
+                            const x = inView ? u.valToPos(this._bestLossStep, 'x', true) : NaN;
                             if (!isNaN(x)) {
                                 ctx.setLineDash([]);
                                 ctx.globalAlpha = 0.3;

@@ -213,25 +213,29 @@ def test_the_prompt_length_is_upstreams_and_a_whole_number_of_registers(definiti
     (128 of them, indexed by absolute position) and then zero the attention mask,
     so padding here is not something masked away -- it IS conditioning. Changing
     the length changes how many register tokens the transformer cross-attends to.
-    LTX-2.3 ships 256; every LTX-2 pipeline in diffusers 0.39 and 0.40 defaults to
-    1024, so 2.5 follows upstream. (Whether 2.3 should move is a separate call: it
-    is released, and changing it would alter conditioning for existing LoRAs and
-    invalidate every cached text embedding.)
+    Every LTX-2 pipeline in diffusers 0.39 and 0.40 defaults to 1024. LTX-2.3
+    shipped 256 and was moved to 1024 on 2026-08-28 on the user's call, the
+    compatibility argument being void because it was never broadly released --
+    so BOTH definitions are pinned here, and the family no longer disagrees with
+    upstream about what a prompt is.
 
     The divisibility half is a hard runtime constraint, not a preference --
     ``LTX2TextConnector.forward`` raises when ``seq_len % num_learnable_registers``
     is non-zero, and it raises at the first training step, not at load.
     """
-    max_length = definition.architecture_params["te.max_length"]
-    assert max_length == 1024, (
-        f"te.max_length is {max_length}; upstream's LTX-2 pipelines all default to 1024. "
-        "This is not a cost knob -- padded positions become learned registers, so the "
-        "length is part of the conditioning."
-    )
-    assert max_length % 128 == 0, (
-        f"te.max_length {max_length} is not a multiple of the connectors' 128 learnable "
-        "registers; LTX2TextConnector.forward raises on the first step"
-    )
+    registry = ModelRegistry()
+    registry.initialize()
+    for def_id in ("ltx2-3-base", DEFINITION_ID):
+        max_length = registry.get_definition(def_id).architecture_params["te.max_length"]
+        assert max_length == 1024, (
+            f"{def_id} te.max_length is {max_length}; upstream's LTX-2 pipelines all "
+            "default to 1024. This is not a cost knob -- padded positions become learned "
+            "registers, so the length is part of the conditioning."
+        )
+        assert max_length % 128 == 0, (
+            f"{def_id} te.max_length {max_length} is not a multiple of the connectors' 128 "
+            "learnable registers; LTX2TextConnector.forward raises on the first step"
+        )
 
 
 def test_the_keyframes_flag_is_declared_for_LOADING_not_for_a_feature(definition):

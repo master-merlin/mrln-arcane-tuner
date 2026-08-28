@@ -121,3 +121,31 @@ def test_environment_variables_it_names_are_real(var: str):
         "reads it. Instructions for a variable nothing consumes are worse than none."
     )
     assert var in _text(), f"{var} left SECURITY.md; move this check with it"
+
+
+def test_every_path_it_names_is_TRACKED_not_merely_present():
+    """The deeper half of the same check, and the one this session learned to add.
+
+    ``.exists()`` asks the working tree. Hours before this file was written, an
+    empty untracked directory in one working tree made ARCHITECTURE.md describe a
+    component the repository does not contain, and the guard that generated the
+    claim passed locally because locally it was true. SECURITY.md's whole promise
+    is that a reader can open the file named beside each claim -- and a reader has
+    a clone, not this working tree.
+
+    Skips rather than fails outside a git checkout: a released sdist is a
+    legitimate place to run the suite from, and there is nothing to verify there.
+    """
+    import subprocess
+
+    result = subprocess.run(
+        ["git", "-C", str(REPO), "ls-files"], capture_output=True, text=True, timeout=60
+    )
+    if result.returncode != 0:
+        pytest.skip("not a git checkout")
+    tracked = set(result.stdout.split("\n"))
+    untracked = sorted(p for p in _claimed_paths() if p not in tracked)
+    assert not untracked, (
+        f"SECURITY.md names paths git does not track: {untracked}. They exist here and "
+        "would not exist for anyone who clones, so the claim is true only on this machine."
+    )

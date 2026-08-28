@@ -81,7 +81,7 @@ architecture_params:
   scheduler.max_shift: 2.05
   scheduler.num_train_timesteps: 1000
   scheduler.shift: 1.0
-  scheduler.shift_terminal: null
+  scheduler.shift_terminal:
   scheduler.stochastic_sampling: false
   scheduler.time_shift_type: exponential
   scheduler.use_beta_sigmas: false
@@ -185,7 +185,7 @@ architecture_params:
   - Gemma4UnifiedForConditionalGeneration
   te.audio_config:
     _name_or_path: ''
-    architectures: null
+    architectures:
     audio_embed_dim: 640
     chunk_size_feed_forward: 0
     dtype: bfloat16
@@ -200,7 +200,7 @@ architecture_params:
     model_type: gemma4_unified_audio
     output_attentions: false
     output_hidden_states: false
-    problem_type: null
+    problem_type:
     return_dict: true
     rms_norm_eps: 1.0e-06
   te.audio_token_id: 258881
@@ -288,9 +288,9 @@ architecture_params:
     - full_attention
     max_position_embeddings: 262144
     model_type: gemma4_unified_text
-    moe_intermediate_size: null
+    moe_intermediate_size:
     num_attention_heads: 16
-    num_experts: null
+    num_experts:
     num_global_key_value_heads: 1
     num_hidden_layers: 48
     num_key_value_heads: 8
@@ -307,7 +307,7 @@ architecture_params:
         rope_type: default
     sliding_window: 1024
     tie_word_embeddings: true
-    top_k_experts: null
+    top_k_experts:
     use_bidirectional_attention: vision
     use_cache: true
     use_double_wide_mlp: false
@@ -318,7 +318,7 @@ architecture_params:
   te.video_token_id: 258884
   te.vision_config:
     _name_or_path: ''
-    architectures: null
+    architectures:
     chunk_size_feed_forward: 0
     dtype: bfloat16
     id2label:
@@ -338,7 +338,7 @@ architecture_params:
     output_proj_dims: 3840
     patch_size: 16
     pooling_kernel_size: 3
-    problem_type: null
+    problem_type:
     return_dict: true
     rms_norm_eps: 1.0e-06
   te.text_config.attention_bias: false
@@ -359,9 +359,9 @@ architecture_params:
   te.text_config.layer_types: *id001
   te.text_config.max_position_embeddings: 262144
   te.text_config.model_type: gemma4_unified_text
-  te.text_config.moe_intermediate_size: null
+  te.text_config.moe_intermediate_size:
   te.text_config.num_attention_heads: 16
-  te.text_config.num_experts: null
+  te.text_config.num_experts:
   te.text_config.num_global_key_value_heads: 1
   te.text_config.num_hidden_layers: 48
   te.text_config.num_key_value_heads: 8
@@ -371,12 +371,77 @@ architecture_params:
   te.text_config.rope_parameters: *id002
   te.text_config.sliding_window: 1024
   te.text_config.tie_word_embeddings: true
-  te.text_config.top_k_experts: null
+  te.text_config.top_k_experts:
   te.text_config.use_bidirectional_attention: vision
   te.text_config.use_cache: true
   te.text_config.use_double_wide_mlp: false
   te.text_config.vocab_size: 262144
   te.text_config.vocab_size_per_layer_input: 262144
+  te.audio_config.architectures:
+  te.audio_config.audio_embed_dim: 640
+  te.audio_config.chunk_size_feed_forward: 0
+  te.audio_config.dtype: bfloat16
+  te.audio_config.id2label:
+    '0': LABEL_0
+    '1': LABEL_1
+  te.audio_config.id2label.0: LABEL_0
+  te.audio_config.id2label.1: LABEL_1
+  te.audio_config.initializer_range: 0.02
+  te.audio_config.is_encoder_decoder: false
+  te.audio_config.label2id:
+    LABEL_0: 0
+    LABEL_1: 1
+  te.audio_config.label2id.LABEL_0: 0
+  te.audio_config.label2id.LABEL_1: 1
+  te.audio_config.model_type: gemma4_unified_audio
+  te.audio_config.output_attentions: false
+  te.audio_config.output_hidden_states: false
+  te.audio_config.problem_type:
+  te.audio_config.return_dict: true
+  te.audio_config.rms_norm_eps: 1.0e-06
+  te.ltx_source_checkpoint.base_checkpoint: /checkpoints/jax_trainings/main-ltx2-5-5k-v6-train-gemma-freeze-12l/checkpoints@2637000
+  te.ltx_source_checkpoint.run_id: ns9i45dv
+  te.ltx_source_checkpoint.step: 2694000
+  te.ltx_source_checkpoint.use_ema: false
+  te.text_config.rope_parameters.full_attention:
+    partial_rotary_factor: 0.25
+    rope_theta: 1000000.0
+    rope_type: proportional
+  te.text_config.rope_parameters.full_attention.partial_rotary_factor: 0.25
+  te.text_config.rope_parameters.full_attention.rope_theta: 1000000.0
+  te.text_config.rope_parameters.full_attention.rope_type: proportional
+  te.text_config.rope_parameters.sliding_attention:
+    rope_theta: 10000.0
+    rope_type: default
+  te.text_config.rope_parameters.sliding_attention.rope_theta: 10000.0
+  te.text_config.rope_parameters.sliding_attention.rope_type: default
+  te.vision_config.architectures:
+  te.vision_config.chunk_size_feed_forward: 0
+  te.vision_config.dtype: bfloat16
+  te.vision_config.id2label:
+    '0': LABEL_0
+    '1': LABEL_1
+  te.vision_config.id2label.0: LABEL_0
+  te.vision_config.id2label.1: LABEL_1
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.is_encoder_decoder: false
+  te.vision_config.label2id:
+    LABEL_0: 0
+    LABEL_1: 1
+  te.vision_config.label2id.LABEL_0: 0
+  te.vision_config.label2id.LABEL_1: 1
+  te.vision_config.mm_embed_dim: 3840
+  te.vision_config.mm_posemb_size: 1120
+  te.vision_config.model_type: gemma4_unified_vision
+  te.vision_config.num_soft_tokens: 280
+  te.vision_config.output_attentions: false
+  te.vision_config.output_hidden_states: false
+  te.vision_config.output_proj_dims: 3840
+  te.vision_config.patch_size: 16
+  te.vision_config.pooling_kernel_size: 3
+  te.vision_config.problem_type:
+  te.vision_config.return_dict: true
+  te.vision_config.rms_norm_eps: 1.0e-06
 model_size_mb:
   transformer: 0.0
   text_encoder: 0.0

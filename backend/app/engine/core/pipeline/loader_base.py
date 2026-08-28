@@ -93,6 +93,65 @@ class ComponentSpec:
 
 
 # ---------------------------------------------------------------------------
+# Hub access failures
+# ---------------------------------------------------------------------------
+
+#: Hugging Face refuses a gated or private repo with an HTTP status, and the
+#: resulting traceback says "404 Client Error" or names a cache path -- which
+#: reads as "the model is broken" when the real answer is "click accept, or set
+#: a token".
+#:
+#: 404 is deliberately AMBIGUOUS and the message must stay ambiguous with it: the
+#: Hub returns 404 both for a repository that does not exist and for one the
+#: caller is not entitled to see, because distinguishing them would leak the
+#: existence of private repos. Asserting "accept the licence" on a mistyped repo
+#: id would send someone hunting for a licence page that was never there, which
+#: is worse than the raw error -- so 404 names both causes and both fixes.
+_STATUS_CAUSE = {401: "token", 403: "licence", 404: "either"}
+
+
+def hub_access_message(exc: BaseException, key: str, path: str) -> str | None:
+    """An actionable message for an auth/licence failure, else ``None``.
+
+    Detected structurally -- by exception class name and HTTP status -- rather
+    than by matching message text, which changes between huggingface_hub
+    releases. ``huggingface_hub`` is never imported here: this runs inside an
+    exception handler on a path that must not itself raise, and D1 forbids an
+    import that can fail. Returning ``None`` leaves the original message intact,
+    so a mis-detection can only ever lose the nicer wording.
+    """
+    name = type(exc).__name__
+    status = getattr(getattr(exc, "response", None), "status_code", None)
+    gated = "GatedRepo" in name
+    known = name in {"HfHubHTTPError", "RepositoryNotFoundError"} or gated
+    if not gated and not (known and status in _STATUS_CAUSE):
+        return None
+
+    repo = path.split(":", 1)[-1].strip("/")
+    cause = "licence" if gated else _STATUS_CAUSE.get(status, "either")
+    accept = (
+        f"open https://huggingface.co/{repo} and accept the model licence with the "
+        "same account your token belongs to"
+    )
+    add_token = "add a Hugging Face access token in Server -> Models"
+
+    if cause == "licence":
+        what, fix = "is gated or private", f"To fix: {accept}."
+    elif cause == "token":
+        what, fix = "needs authentication", f"To fix: {add_token}."
+    else:
+        what = "was not found, which the Hub also returns for a repo your account cannot see"
+        fix = (
+            f"So either the id is wrong, or it is gated: check the spelling of `{repo}`, "
+            f"and if it is right, {accept} — and {add_token} if you have not."
+        )
+    return (
+        f"Cannot access {key} in {path}: the repository {what} "
+        f"(HTTP {status or 'gated'}). {fix} Nothing is wrong with your dataset."
+    )
+
+
+# ---------------------------------------------------------------------------
 # Generic loader
 # ---------------------------------------------------------------------------
 
@@ -212,7 +271,8 @@ class GenericComponentLoader(IModelLoader):
                 error=str(e),
             )
             raise RuntimeError(
-                f"Failed to load {spec.key} from {path}: {e}",
+                hub_access_message(e, spec.key, path)
+                or f"Failed to load {spec.key} from {path}: {e}",
             ) from e
 
         # 6. Device placement

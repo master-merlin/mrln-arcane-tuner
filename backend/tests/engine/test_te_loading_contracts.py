@@ -426,6 +426,12 @@ CASES: list[_Case] = [
     # loader declares the same Qwen3Model class ovis_image's Qwen3 TE uses.
     _Case("ace_step15", _m("ace_step15"), "AceStep15Loader", "text_encoder",
           "transformers.Qwen3Model", "Qwen3Model"),
+    # minimax_h3's TE is Qwen3-VL-32B, declared via the same
+    # Qwen3VLForConditionalGeneration class as boogu_image/dreamlite/
+    # ideogram4/nucleus_image -- reuses the existing tiny-arch builder, no
+    # exemption needed.
+    _Case("minimax_h3", _m("minimax_h3"), "MiniMaxH3Loader", "text_encoder",
+          "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
 ]
 
 # Families that have a loader.py but no standalone-TE loading contract.

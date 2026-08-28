@@ -30,33 +30,42 @@ _FPS_TOL = 0.5
 
 
 def frame_predicate(rule: str | None) -> Callable[[int], bool]:
-    """Return a predicate ``(n: int) -> bool`` for an ``Nn+1`` frame rule.
+    """Return a predicate ``(n: int) -> bool`` for an ``Nn+M`` frame rule.
 
-    ``"4n+1"`` → ``n%4==1``, ``"8n+1"`` → ``n%8==1``, etc.  ``None`` / an
-    unrecognized rule → always ``True`` (no constraint).  A single still
-    (``n==1``) satisfies every ``Nn+1`` rule.  The ``Nn+1`` parsing lives once in
-    :meth:`BucketManager._parse_frame_step` so bucketing and validation agree.
+    ``"4n+1"`` → ``n%4==1``, ``"8n+1"`` → ``n%8==1``, ``"17n+5"`` → ``n%17==5``
+    (MiniMax H3), etc.  ``None`` / an unrecognized rule → always ``True`` (no
+    constraint).  A single still (``n==1``) satisfies every ``Nn+1`` rule, but
+    NOT an ``Nn+M`` rule whose floor ``M`` isn't 1 (H3's floor is 5).  The
+    ``Nn+M`` parsing lives once in :meth:`BucketManager._parse_frame_step` so
+    bucketing and validation agree.
     """
-    step = BucketManager._parse_frame_step(rule)
-    if not step:
+    parsed = BucketManager._parse_frame_step(rule)
+    if parsed is None:
         return lambda n: True
-    return lambda n: int(n) >= 1 and (int(n) - 1) % step == 0
+    step, offset = parsed
+    return lambda n: int(n) >= offset and (int(n) - offset) % step == 0
 
 
 def snap_frames(num_frames: int, rule: str | None) -> int:
-    """Snap an arbitrary frame count DOWN to the nearest valid ``Nn+1`` value.
+    """Snap an arbitrary frame count DOWN to the nearest valid ``Nn+M`` value.
 
     A per-prompt preview frame count (``SamplePromptConfig.num_frames``) is NOT
     run through the video-contract validator, so it may violate the family's
     frame rule; snapping keeps the sampled latent grid legal. ``F=1`` satisfies
-    every rule (still image). ``"8n+1"``: 30 → 25; ``"4n+1"``: 30 → 29. A
-    ``None``/unrecognized rule imposes no constraint (returned unchanged, min 1).
+    every ``Nn+1`` rule (still image). ``"8n+1"``: 30 → 25; ``"4n+1"``: 30 → 29;
+    ``"17n+5"``: 120 → 107. A raw count at or below the rule's floor ``M``
+    snaps UP to ``M`` (there is no valid value below it — e.g. H3's floor is 5,
+    not 1). A ``None``/unrecognized rule imposes no constraint (returned
+    unchanged, min 1).
     """
     n = max(int(num_frames), 1)
-    step = BucketManager._parse_frame_step(rule)
-    if not step:
+    parsed = BucketManager._parse_frame_step(rule)
+    if parsed is None:
         return n
-    return ((n - 1) // step) * step + 1
+    step, offset = parsed
+    if n <= offset:
+        return offset
+    return ((n - offset) // step) * step + offset
 
 
 @dataclass(frozen=True)
@@ -65,7 +74,7 @@ class VideoProfile:
 
     is_video: bool
     mode: str | None  # "t2v" | "i2v" | "both" | None
-    frame_rule: str | None  # "4n+1" | "8n+1" | None
+    frame_rule: str | None  # e.g. "4n+1" | "8n+1" | "17n+5" | None
     native_fps: float | None
     vae_spatial: int | None
     vae_temporal: int | None
@@ -206,8 +215,8 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
     if num_frames and not profile.frame_ok(num_frames):
         report.errors.append(
             f"num_frames={num_frames} violates this model's frame rule "
-            f"'{profile.frame_rule}'. Use a value of that form (1, "
-            f"{_first_ladder_values(profile.frame_rule)} …)."
+            f"'{profile.frame_rule}'. Use a value of that form "
+            f"({_first_ladder_values(profile.frame_rule)} …)."
         )
 
     # Per-dataset frame overrides (DatasetItem.num_frames) must also satisfy the
@@ -305,6 +314,14 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
 
 
 def _first_ladder_values(rule: str | None, n: int = 3) -> str:
-    """A short human hint of the first few valid frame counts (e.g. '5, 9, 13')."""
+    """A short human hint of the first ``n + 1`` valid frame counts,
+    INCLUDING the rule's own floor (e.g. '1, 5, 9, 13' for ``4n+1``;
+    '5, 22, 39, 56' for ``17n+5``, whose floor is 5, not 1).
+
+    Slicing from index 0 (rather than hardcoding a leading literal ``1``) is
+    load-bearing: a rule whose floor isn't 1 — MiniMax H3's ``17n+5`` — would
+    otherwise have its validator message advertise ``1`` as a valid value
+    when the predicate rejects it, and omit the real floor entirely.
+    """
     ladder = BucketManager.frame_ladder(BucketManager._default_max_frames(rule), rule)
-    return ", ".join(str(f) for f in ladder[1 : n + 1]) or "1"
+    return ", ".join(str(f) for f in ladder[: n + 1]) or "1"

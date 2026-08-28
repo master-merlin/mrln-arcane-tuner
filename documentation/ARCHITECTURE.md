@@ -191,7 +191,7 @@ engine/
 ├── factories/             # Optimizer + quantization (bitsandbytes/quanto/torchao) factories + base/impl subdirs
 ├── models/
 │   ├── registry.py        # Model family registry (plugin-driven) + count()
-│   └── families/          # 28 families + 2 support packages (see below)
+│   └── families/          # 29 families + 2 support packages (see below)
 ├── strategies/            # EMA, timestep sampling, noise interpolation, sigma schedule/tracker
 └── utils/                 # LoRA tools + conversion, safe save, introspection, VRAM/cost estimators, override manager
 ```
@@ -199,7 +199,7 @@ engine/
 
 #### Model families
 
-**28 shipped families across 50 definitions**, plus two support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share) and `prx_shared` (the same role for `prx` and `prx_pixel`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (26), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
+**29 shipped families across 53 definitions**, plus two support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share) and `prx_shared` (the same role for `prx` and `prx_pixel`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (26), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
 
 Counts here are pinned by `backend/tests/test_architecture_family_counts.py` — the table below is generated from the tree, and a family added without a row in it fails the gate. That guard exists because this section said "13 families" for fifteen families' worth of releases.
 
@@ -232,6 +232,7 @@ Counts here are pinned by `backend/tests/test_architecture_family_counts.py` —
 | `wan21`           | WAN 2.1 (T2V 1.3B / 14B, I2V 14B 480P / 720P; UMT5-XXL, CLIP i2v encoder) | latent_diffusion | `is_video`, `has_image_encoder` |
 | `wan22`           | WAN 2.2 (dual-expert MoE, A14B T2V / I2V)                          | latent_diffusion    | `is_video`, `dual_expert`           |
 | `wan22_ti2v_5b`   | WAN 2.2 TI2V 5B (dense)                                            | latent_diffusion    | `is_video`, `has_image_encoder`     |
+| `minimax_h3`      | MiniMax H3 (text / first-last-frame / reference → video+audio) — 33B dense single-stream DiT | latent_diffusion    | `is_video`, `has_audio`             |
 | `ace_step15`      | ACE-Step 1.5 (Turbo / XL Base) — 48kHz Oobleck audio VAE           | latent_diffusion    | `is_audio_family`                   |
 
 Each family implements `Loader` (`IModelLoader`), `Saver` (`IModelSaver`), `Driver` (`IModelDriver`, phased forward pass), `Trainer` (`GenericTrainingPipeline` hooks), and `Sampler` (inference preview, with true cond+uncond CFG on image and video families). The `wan_shared` package holds the code wan21/wan22/wan22_ti2v_5b share so they stay byte-identical by construction; `prx_shared` does the same for `prx` and `prx_pixel`.

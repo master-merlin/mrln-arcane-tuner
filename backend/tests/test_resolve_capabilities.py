@@ -145,6 +145,10 @@ FAMILY_HAS_VAE_AND_TE = {
         True,
         True,
     ),  # latent_diffusion audio DiT (AutoencoderOobleck VAE) + external Qwen3-Embedding TE + condition encoder (no TE training)
+    "minimax_h3": (
+        True,
+        True,
+    ),  # latent_diffusion dense DiT (vendored visual + audio VAEs) + external Qwen3-VL-32B TE (no TE training)
 }
 
 

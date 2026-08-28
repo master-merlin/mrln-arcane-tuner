@@ -1,0 +1,187 @@
+# MiniMax-H3 — 33B dense single-stream omni-modal DiT (video + stereo audio
+# denoised JOINTLY in one pass). MiniMax H3 Community License (NOT Apache-2.0).
+#
+# Model classes are VENDORED (vendor/, pinned diffusers SHA 245d78fb) — H3 is
+# NOT in any diffusers release; the installed 0.39.0 has zero MiniMax code.
+#
+# All architecture_params verified against the live HF repo
+# (MiniMaxAI/MiniMax-H3, 2026-08-05): transformer/config.json, vae/config.json,
+# audio_vae/config.json — fetched via the raw endpoints, no download needed.
+id: minimax-h3-fl2va
+family: minimax_h3
+name: MiniMax H3 (first/last frame -> video+audio)
+version: '1.0'
+defaults:
+  resolution: 768
+  scheduler: flow_match
+  learning_rate: 1e-4
+  train_audio: true
+  # 107 frames satisfies 17n+5 (n=6) — ~4.46s @ 24fps, and the same default
+  # ai-toolkit's UI ships. NOT the model's 345-frame ceiling: attention is
+  # dense (sparse attention was not shipped with the weights), so 107 frames
+  # is ~18.8K tokens where 345 is ~59.9K. See spec section 5.
+  num_frames: 107
+components:
+  repo:
+    path: huggingface:MiniMaxAI/MiniMax-H3
+    type: diffusers
+    params: {}
+# Deliberately 0, NOT an oversight. fl2va's conditioning mechanism is
+# first/last-frame video conditioning, not the paired-EDIT dataset mechanism
+# (Kontext / Qwen-Edit). control_inputs > 0 activates the paired-edit-dataset
+# gating in pipeline_data.py, built for a source-image + edited-target pairing
+# this definition does not implement; flipping it on here would silently
+# route training through a pipeline that does not match the model.
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  # mode: both correctly marks this definition as i2v-capable
+  # (VideoProfile.supports_i2v() must be True here — the counterpart fix to
+  # t2va's mode: t2v). PR1 MARKER: as of PR0, "both" is the ONLY thing that
+  # differentiates fl2va from t2va — same transformer subfolder, same
+  # control_inputs: 0, otherwise byte-identical architecture_params. There is
+  # NO first/last-frame conditioning mechanism wired up anywhere yet (no
+  # conditioning-frame injection into the packed sequence, no dedicated
+  # parameters here). PR1 owns: (1) adding the real first/last-frame
+  # conditioning parameters, and (2) a test that pins them so this
+  # definition cannot silently drift back to being plain-t2v-with-a-
+  # different-name.
+  mode: both
+  has_audio: true
+  # The ONLY lever separating the modalities: H3 is single-stream, so audio
+  # and video traverse the same attn/FFN and cannot be targeted separately.
+  audio.loss_weight: 0.1
+  audio.sampling_rate: 32000
+  audio.latent_rate: 40
+  audio.channels: 2
+  # Two COUPLED sigma schedules, not one. Verified in ai-toolkit packing.py
+  # (VIDEO_SIGMA_SHIFT / AUDIO_SIGMA_SHIFT) and in the vendored H3 scheduler.
+  # One u is sampled per step and mapped through BOTH curves.
+  audio.sigma_shift: 3.0
+  video.sigma_shift: 12.0
+  # RAW VAE factor. The transformer's 2x patchify is declared separately via
+  # video.divisibility — WAN declares 8 with a 2x2 patchify, LTX-2 declares 32
+  # with patch_size 1. Declaring 32 here would double-count the patchify.
+  video.vae_spatial: 16
+  video.vae_temporal: 4
+  video.divisibility: 32
+  # 17n+5, NOT 4n+1. The VAE chunks 17 pixel frames -> 5 latent frames
+  # (vae/config.json clip_length: 17), so the naive (F-1)/4+1 derivation from
+  # the 4x temporal factor is WRONG. Latent frames = (F-5)//17*5 + 2.
+  # Cross-confirmed by ai-toolkit packing.py, DiffSynth (raises on
+  # num_frames % 17 != 5) and musubi ("124 through 345 in steps of 17").
+  # Requires the Nn+M frame-rule generalization from Task 3B.
+  video.frame_rule: 17n+5
+  video.frame_rate: 24.0
+  video.short_edge: 768
+  video.max_pixels: 1032192   # 768 * 1344 canvas cap
+  # -- Transformer (transformer/config.json) --
+  transformer._class_name: MiniMaxH3Transformer3DModel
+  transformer.subfolder: transformer
+  transformer.num_attention_heads: 56
+  transformer.attention_head_dim: 128
+  # NOTE 56 x 128 = 7168 != hidden_size 5376. QKV projections are NOT square.
+  transformer.hidden_size: 5376
+  transformer.num_layers: 50
+  transformer.num_refiner_layers: 2
+  transformer.ffn_dim: 14336
+  transformer.in_channels: 24
+  transformer.audio_in_channels: 32
+  transformer.patch_size:
+  - 1
+  - 2
+  - 2
+  transformer.text_dim: 5120
+  transformer.freq_dim: 256
+  transformer.time_embed_hidden_dim: 5376
+  transformer.time_embed_dim: 2688
+  transformer.rope_freq_dim: 16
+  transformer.rope_theta: 10000.0
+  transformer.norm_eps: 1.0e-05
+  transformer.qk_norm_eps: 1.0e-05
+  transformer.final_norm_eps: 1.0e-05
+  # -- Visual VAE (vae/config.json) --
+  vae._class_name: AutoencoderKLMiniMaxH3
+  vae.latent_channels: 24
+  vae.spatial_downsample_factors:
+  - 2
+  - 2
+  - 2
+  - 2
+  - 1
+  - 1
+  vae.temporal_downsample_factors:
+  - 1
+  - 2
+  - 2
+  - 1
+  - 1
+  - 1
+  vae.clip_length: 17
+  vae.token_drop: 3
+  # -- Audio VAE (audio_vae/config.json) — MONO. Stereo is produced by running
+  #    it once PER CHANNEL; never hand it a 2-channel tensor.
+  audio_vae._class_name: AutoencoderKLMiniMaxH3Audio
+  audio_vae.latent_channels: 32
+  audio_vae.encoder_rates:
+  - 2
+  - 4
+  - 4
+  - 5
+  - 5
+  audio_vae.sampling_rate: 32000
+  # -- Text encoder (text_encoder/config.json) — Qwen3-VL-32B, ~66.7 GB bf16
+  #    on disk (66,714,780,128 bytes,
+  #    text_encoder/model.safetensors.index.json metadata.total_size,
+  #    fetched 2026-08-10) — corrected from an earlier "48 GB" here that was
+  #    simply wrong: 32B params at bf16 alone is already ~64 GB, and no
+  #    truncated/repackaged 48 GB variant of this repo was found on HF; the
+  #    old figure was an uncredited approximation, not a measurement.
+  #    Cached then UNLOADED before the DiT loads; never coexists with it.
+  te.type: qwen3_vl
+  te.hidden_size: 5120
+  # Hidden states are tapped at layer 50, NOT the last layer.
+  te.hidden_state_tap_index: 50
+  # Generic activation-estimate hints
+  hidden_size: 5376
+  depth: 52
+  in_channels: 24
+  context_dim: 5120
+  num_heads: 56
+# On-disk component sizes (MiB — bytes / 1024^2), fetched from the HF repo's
+# per-component safetensors index `metadata.total_size` via the raw
+# endpoints (no download needed), MiniMaxAI/MiniMax-H3, 2026-08-10. The
+# estimator prefers these over the `_FAMILY_PARAMS["minimax_h3"]` fallback
+# table (kept in sync — see its comment for the exact byte sources and the
+# video-VAE-only convention shared with ltx2).
+model_size_mb:
+  transformer: 63209.94
+  text_encoder: 63624.17
+  vae: 9932.97
+# CONTROLLER-PINNED scope: attention + FFN nn.Linear modules across the 50 main
+# blocks and 2 refiner blocks. The AdaLN / time-embedding branch (~13B params)
+# is deliberately EXCLUDED — it is timestep-conditioned rather than
+# content-conditioned, so adapting it is expensive and off-objective (spec 8.1).
+# This list MUST match MiniMaxH3Driver.get_lora_targets() exactly, enforced by
+# test_definition_ships_curated_target_list_matching_driver.
+lora_targetable_modules:
+- attn.to_q
+- attn.to_k
+- attn.to_v
+- attn.to_out.0
+- ff.net.0.proj
+- ff.net.2
+block_topology:
+- name: transformer_blocks
+  attr_path: transformer_blocks
+  count: 50
+# Refiners are NESTED under token_refiner — verified against the checkpoint's
+# safetensors index weight_map (token_refiner.refiner_blocks.{0,1}.*). A bare
+# "refiner_blocks" attr_path does NOT resolve and would silently leave these
+# 2 blocks out of targeting and block swap.
+- name: token_refiner_blocks
+  attr_path: token_refiner.refiner_blocks
+  count: 2

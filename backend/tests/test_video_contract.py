@@ -62,7 +62,7 @@ def test_frame_predicate_none_is_unconstrained():
 def test_frame_ladder_generalizes_to_any_nn1():
     # Future family: 6n+1 must produce [1, 7, 13, ...] without code edits.
     assert BucketManager.frame_ladder(25, "6n+1") == [1, 7, 13, 19, 25]
-    assert BucketManager._parse_frame_step("6n+1") == 6
+    assert BucketManager._parse_frame_step("6n+1") == (6, 1)
     assert BucketManager._parse_frame_step("nonsense") is None
 
 

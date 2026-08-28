@@ -37,7 +37,24 @@ describe('SystemService — version + logs (P4b extraction)', () => {
         svc.getVersion().subscribe();
         const req = http.expectOne('http://test/api/system/version');
         expect(req.request.method).toBe('GET');
-        req.flush({ version: '1.2.3' });
+        req.flush({ version: '1.2.3', container: false });
+    });
+
+    it('getVersion() caches container mode for the Server screen', () => {
+        expect(svc.containerMode()).toBe(false);
+        svc.getVersion().subscribe();
+        http.expectOne('http://test/api/system/version').flush({ version: '1.2.3', container: true });
+        expect(svc.containerMode()).toBe(true);
+    });
+
+    it('a backend that omits `container` leaves the flag false', () => {
+        // A client newer than its backend. "I do not know" must read as the
+        // LOCAL case: claiming container mode would hide a port field that
+        // actually works. Without this the `=== true` check could be a loose
+        // coercion and nothing would notice.
+        svc.getVersion().subscribe();
+        http.expectOne('http://test/api/system/version').flush({ version: '1.2.3' });
+        expect(svc.containerMode()).toBe(false);
     });
 
     it('getLogs() GETs /system/logs?lines=200 by default', () => {

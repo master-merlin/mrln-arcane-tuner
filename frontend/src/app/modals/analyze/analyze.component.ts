@@ -1,4 +1,5 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, effect, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, DestroyRef, OnInit, computed, effect, inject, signal } from '@angular/core';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { forkJoin } from 'rxjs';
 import { IcoComponent, IconKey } from '../../icons/ico.component';
 import { DatasetService } from '../../services/dataset';
@@ -9,6 +10,7 @@ import { SegmentedComponent } from '../../ui/segmented/segmented.component';
 import { TaskQueueHintComponent } from '../../ui/task-queue-hint/task-queue-hint.component';
 import { CropAllItem } from './crop-all';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
+import { WebSocketService } from '../../services/websocket.service';
 import { TaskStore } from '../../state/task.store';
 import { TagAnalyticsPanelComponent } from './tag-analytics-panel';
 
@@ -911,6 +913,8 @@ export class AnalyzeModalComponent implements OnInit {
     private rtc = inject(RuntimeConfigService);
     private toast = inject(ToastService);
     private sync = inject(DatasetSyncService);
+    private ws = inject(WebSocketService);
+    private destroyRef = inject(DestroyRef);
 
     protected readonly chartW = CHART_W;
     protected readonly chartH = CHART_H;
@@ -977,6 +981,32 @@ export class AnalyzeModalComponent implements OnInit {
     private _harmonizeFinalized = false;
 
     protected data: AnalyzeModalData = (this.overlay.topModal()?.data as AnalyzeModalData) ?? {};
+
+    /**
+     * UAT-3.3 — the modal was the one dataset surface NOT on the sync path.
+     *
+     * It refetched only when a task it had started ITSELF reported completion,
+     * so every other way a dataset can change underneath it — a rescan, a crop,
+     * a caption written from the grid, harmonize whose task view the store had
+     * already rotated out of `recent`, another window entirely — left the file
+     * table and the distributions showing values that were no longer true,
+     * beside a grid showing the truth.
+     *
+     * The backend already broadcasts `dataset.invalidated` after every
+     * structural mutation (`DatasetManager._emit_dataset_invalidated`, which
+     * `scan_dataset` ends with), and that is exactly what the grid listens to.
+     * Subscribing to the same event is what makes "the modal disagrees with the
+     * grid" structurally impossible instead of fixed for one operation.
+     *
+     * Declared after `data` on purpose: the callback reads `this.data`, and
+     * field initializers run in declaration order.
+     */
+    private _invalidation = this.ws
+        .on<{ name: string }>('dataset.invalidated')
+        .pipe(takeUntilDestroyed(this.destroyRef))
+        .subscribe(({ name }) => {
+            if (name && name === this.data?.datasetName) this.fetch();
+        });
 
     protected readonly filterOptions = [
         { value: 'all' as FileFilter, label: 'All', count: () => this.allFiles().length },

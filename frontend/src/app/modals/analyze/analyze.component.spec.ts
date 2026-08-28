@@ -16,7 +16,7 @@
  */
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 import { settle } from '../../../testing/async';
 import { signal } from '@angular/core';
 import { AnalyzeModalComponent } from './analyze.component';
@@ -26,6 +26,7 @@ import { DatasetService } from '../../services/dataset';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { ToastService } from '../../services/toast';
 import { TaskStore } from '../../state/task.store';
+import { WebSocketService } from '../../services/websocket.service';
 
 class StubOverlay {
     private _modal = signal<{
@@ -63,6 +64,36 @@ class StubToast {
     info = vi.fn();
 }
 
+/**
+ * Minimal WebSocketService the modal's `dataset.invalidated` subscription needs.
+ * `emit` lets a spec push an event as the backend would.
+ */
+class StubWs {
+    private subjects = new Map<string, Subject<any>>();
+    reconnected$ = new Subject<void>();
+    serverRestarted$ = new Subject<void>();
+    messages$ = new Subject<any>();
+    // Signals the injected graph reads even though this spec never fires them:
+    // EntityStore's constructor effect calls entityChanged(), and a stub that
+    // omits it explodes at injector time for every spec in the file.
+    entityChanged = signal<any>(null);
+    isConnected = signal(false);
+    degraded = signal(false);
+    reconnected = signal(0);
+    forceReconnect = vi.fn();
+    on<T>(event: string) {
+        let s = this.subjects.get(event);
+        if (!s) {
+            s = new Subject<T>();
+            this.subjects.set(event, s);
+        }
+        return s.asObservable();
+    }
+    emit(event: string, payload: unknown): void {
+        this.subjects.get(event)?.next(payload);
+    }
+}
+
 describe('AnalyzeModalComponent — UI-context restore on re-mount', () => {
     let cmp: AnalyzeModalComponent;
 
@@ -76,6 +107,7 @@ describe('AnalyzeModalComponent — UI-context restore on re-mount', () => {
                 { provide: ToastService, useClass: StubToast },
                 { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
                 { provide: TaskStore, useValue: { byId: vi.fn().mockReturnValue(signal(undefined)), active: signal([]), cancel: vi.fn() } },
+                { provide: WebSocketService, useClass: StubWs },
             ],
         });
         cmp = TestBed.inject(AnalyzeModalComponent);
@@ -131,6 +163,7 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
                 { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
                 { provide: TaskStore, useValue: taskStoreSpy },
                 { provide: RuntimeConfigService, useValue: { apiUrl: 'http://localhost:28000/api' } },
+                { provide: WebSocketService, useClass: StubWs },
             ],
         });
         TestBed.inject(OverlayStore).openModal('analyze', { datasetName: 'ds1' });
@@ -264,5 +297,94 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         expect(api.deletePair).not.toHaveBeenCalled();
         (openSpy.mock.calls.at(-1)![1] as { onConfirm: () => void }).onConfirm();
         expect(api.deletePair).toHaveBeenCalledWith('ds1', 'row.png');
+    });
+});
+
+// ─── UAT-3.3: the modal is on the dataset sync path ───────────────────────────
+
+/**
+ * The modal used to refetch ONLY when a task it started itself reported
+ * completion. Harmonize renames and rewrites every file, so the grid — which
+ * has always listened to `dataset.invalidated` — moved on while the modal kept
+ * rendering pre-harmonize rows beside it.
+ *
+ * These specs pin the event subscription rather than the harmonize path
+ * specifically: the defect was that ONE surface was off the shared path, and a
+ * test that only proved "harmonize refreshes" would let the next operation
+ * reintroduce it.
+ */
+describe('AnalyzeModalComponent — refreshes on dataset.invalidated', () => {
+    let api: any;
+    let ws: StubWs;
+    let fixture: ReturnType<typeof TestBed.createComponent<AnalyzeModalComponent>> | null = null;
+
+    beforeEach(() => {
+        fixture = null;
+        api = {
+            analyzeDataset: vi.fn().mockReturnValue(of({ landscape: null, portrait: null, squared: null })),
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+        };
+        TestBed.configureTestingModule({
+            providers: [
+                OverlayStore,
+                { provide: DatasetService, useValue: api },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+                { provide: ToastService, useValue: { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() } },
+                { provide: TaskStore, useValue: { byId: vi.fn().mockReturnValue(signal(undefined)), active: signal([]), cancel: vi.fn() } },
+                { provide: RuntimeConfigService, useValue: { apiUrl: 'http://localhost:28000/api' } },
+                { provide: WebSocketService, useClass: StubWs },
+            ],
+        });
+        TestBed.inject(OverlayStore).openModal('analyze', { datasetName: 'ds1' });
+        ws = TestBed.inject(WebSocketService) as unknown as StubWs;
+    });
+
+    afterEach(() => {
+        fixture?.destroy();
+        fixture = null;
+    });
+
+    function mount() {
+        fixture = TestBed.createComponent(AnalyzeModalComponent);
+        fixture.detectChanges();          // runs ngOnInit -> initial fetch
+        api.analyzeDataset.mockClear();
+        api.getDatasetPairs.mockClear();
+        return fixture;
+    }
+
+    it('re-reads analysis AND pairs when its dataset is invalidated', () => {
+        mount();
+        ws.emit('dataset.invalidated', { name: 'ds1' });
+        expect(api.analyzeDataset).toHaveBeenCalledTimes(1);
+        expect(api.getDatasetPairs).toHaveBeenCalledTimes(1);
+    });
+
+    it('ignores an invalidation for a DIFFERENT dataset', () => {
+        mount();
+        ws.emit('dataset.invalidated', { name: 'some-other-dataset' });
+        expect(api.analyzeDataset).not.toHaveBeenCalled();
+    });
+
+    it('ignores a nameless payload rather than refetching blindly', () => {
+        mount();
+        ws.emit('dataset.invalidated', {});
+        expect(api.analyzeDataset).not.toHaveBeenCalled();
+    });
+
+    it('refreshes on every invalidation, not just the first', () => {
+        // A harmonize emits one; a follow-up rescan or crop emits more. A
+        // once-only subscription would look correct in the first test above.
+        mount();
+        ws.emit('dataset.invalidated', { name: 'ds1' });
+        ws.emit('dataset.invalidated', { name: 'ds1' });
+        expect(api.analyzeDataset).toHaveBeenCalledTimes(2);
+    });
+
+    it('stops listening once the modal is destroyed', () => {
+        const f = mount();
+        f.destroy();
+        fixture = null;
+        ws.emit('dataset.invalidated', { name: 'ds1' });
+        expect(api.analyzeDataset).not.toHaveBeenCalled();
     });
 });

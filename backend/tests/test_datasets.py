@@ -798,7 +798,10 @@ class TestThumbnailEndpoint:
             params={"image_rel_path": "img.jpg", "max_edge": 512},
         )
         assert response.status_code == 200
-        assert (ds_path / ".thumbnails" / "img@512.webp").exists()
+        assert (ds_path / ".thumbnails" / "512" / "img.webp").exists()
+        # The size is a directory: it must never appear in the filename,
+        # where `foo.png`@512 and `foo@512.png` collided.
+        assert not (ds_path / ".thumbnails" / "img@512.webp").exists()
 
         dataset_manager.delete_dataset("ep_edge", delete_files=True)
 

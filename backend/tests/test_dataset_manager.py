@@ -652,6 +652,29 @@ class TestThumbnailInvalidation:
 
         assert not thumb.exists()
 
+    def test_scan_purges_the_legacy_flat_thumbnail_layout(self, manager, tmp_path):
+        """Orphans of the pre-`<edge>/` layout die on the first scan.
+
+        Renditions used to be `<stem>[@<edge>].webp` directly under
+        `.thumbnails/`. Moving the size into a directory orphans every one of
+        them; without this call they would sit on the user's disk forever.
+        """
+        from app.core.dataset import thumbnails
+
+        ds_path = tmp_path / "datasets" / "tn_legacy"
+        ds_path.mkdir(parents=True)
+        _create_image(str(ds_path / "a.jpg"))
+        legacy_dir = ds_path / ".thumbnails"
+        legacy_dir.mkdir()
+        orphan = legacy_dir / "a@512.webp"
+        orphan.write_bytes(b"pre-upgrade rendition")
+
+        manager.create_dataset("tn_legacy", path=str(ds_path))
+        manager.scan_dataset("tn_legacy")
+
+        assert not orphan.exists(), "legacy rendition survived a full scan"
+        assert thumbnails.thumbnail_path_for(str(ds_path), "a.jpg").exists()
+
     def test_harmonize_files_purges_and_rebuilds_thumbnails(self, manager, tmp_path):
         from app.core.dataset import thumbnails
 
@@ -670,7 +693,7 @@ class TestThumbnailInvalidation:
         # The old-named thumbnail is gone
         assert not old_thumb.exists()
         # The new-named thumbnail exists (harmonize renames to {base}_00001.jpg)
-        new_thumb_dir = ds_path / ".thumbnails"
+        new_thumb_dir = ds_path / ".thumbnails" / "256"
         webps = list(new_thumb_dir.glob("*.webp"))
         assert len(webps) == 1
         assert webps[0].name.endswith("_00001.webp")

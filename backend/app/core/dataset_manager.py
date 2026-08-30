@@ -690,6 +690,14 @@ class DatasetManager:
 
         dataset.missing = False
 
+        # One-shot cleanup of the pre-`<edge>/` flat thumbnail layout. Those
+        # renditions are unreachable now (their names encoded the size with a
+        # `@`, which collided across sources); this is where they stop
+        # accumulating. No-op after the first scan of a dataset.
+        from app.core.dataset import thumbnails
+
+        thumbnails.purge_legacy_layout(dataset.path)
+
         # Snapshot for incremental scan and version-bump detection
         ctx: dict[str, Any] = {
             "old_multimedia_count": dataset.multimedia_count,

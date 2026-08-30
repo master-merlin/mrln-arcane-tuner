@@ -510,8 +510,12 @@ class TestThumbnailNamespacing:
         root_thumb = thumbnail_path_for(ds, "img1.png")
         ctl_thumb = thumbnail_path_for(ds, "control/img1.jpg")
         assert root_thumb != ctl_thumb
-        # Root naming is unchanged (existing thumbnails stay valid).
+        # A root source keeps its bare stem; the subdir source is prefixed.
         assert root_thumb.name == "img1.webp"
+        assert ctl_thumb.name == "control__img1.webp"
+        # ...and both live under the rendition-size directory, never a
+        # size-suffixed filename (see test_thumbnails.py collision guards).
+        assert root_thumb.parent.name == "256"
 
     def test_ensure_thumbnail_for_control_image(self, tmp_path):
         ds = str(tmp_path)

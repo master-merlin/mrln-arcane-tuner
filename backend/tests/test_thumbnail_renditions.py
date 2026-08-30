@@ -10,7 +10,7 @@ Three things must hold, and each is a way this could go wrong quietly:
     be generated first;
   * invalidation drops EVERY rendition, or an edited image keeps painting its
     pre-edit pixels at some other size;
-  * the size is allowlisted, because it lands in a filename.
+  * the size is allowlisted, because it lands in a path component.
 """
 
 from __future__ import annotations
@@ -30,25 +30,30 @@ def _make_image(path: Path, size: tuple[int, int] = (2000, 1200)) -> None:
 # ── The size is part of the key ──────────────────────────────────────────
 
 
-def test_default_edge_keeps_the_bare_stem(tmp_path):
-    """Existing thumbnails on disk stay valid — the default name is unchanged."""
+def test_the_default_edge_lives_in_its_own_size_directory(tmp_path):
+    """The size is a directory for EVERY edge, the default included.
+
+    It used to be a `@<edge>` suffix on non-default sizes only, which put
+    renditions and un-suffixed names in one namespace and let `foo.png`@512
+    collide with `foo@512.png`@256.
+    """
     assert thumbnails.thumbnail_path_for(str(tmp_path), "a.jpg") == (
-        tmp_path / ".thumbnails" / "a.webp"
+        tmp_path / ".thumbnails" / "256" / "a.webp"
     )
     assert thumbnails.thumbnail_path_for(str(tmp_path), "a.jpg", 256) == (
-        tmp_path / ".thumbnails" / "a.webp"
+        tmp_path / ".thumbnails" / "256" / "a.webp"
     )
 
 
 def test_non_default_edge_is_a_distinct_file(tmp_path):
     assert thumbnails.thumbnail_path_for(str(tmp_path), "a.jpg", 512) == (
-        tmp_path / ".thumbnails" / "a@512.webp"
+        tmp_path / ".thumbnails" / "512" / "a.webp"
     )
 
 
 def test_sized_key_composes_with_subdirectory_prefixing(tmp_path):
     assert thumbnails.thumbnail_path_for(str(tmp_path), "control/img1.jpg", 512) == (
-        tmp_path / ".thumbnails" / "control__img1@512.webp"
+        tmp_path / ".thumbnails" / "512" / "control__img1.webp"
     )
 
 
@@ -116,7 +121,12 @@ def test_glob_metacharacters_in_a_filename_do_not_break_invalidation(tmp_path):
 
 def test_paths_for_is_silent_when_nothing_was_ever_generated(tmp_path):
     found = thumbnails.thumbnail_paths_for(str(tmp_path), "ghost.jpg")
-    assert found == [tmp_path / ".thumbnails" / "ghost.webp"]
+    # Computed, not discovered: one path per allowed edge plus this source's
+    # legacy flat names. Nothing is listed off disk, so an empty cache and a
+    # missing directory answer identically.
+    assert len(found) == len(set(found))
+    for edge in thumbnails.ALLOWED_MAX_EDGES:
+        assert tmp_path / ".thumbnails" / str(edge) / "ghost.webp" in found
     thumbnails.invalidate_thumbnail(str(tmp_path), "ghost.jpg")  # no exception
 
 

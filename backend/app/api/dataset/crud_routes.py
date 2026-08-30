@@ -358,9 +358,11 @@ async def get_dataset_thumbnail(
 ):
     """Serve a WebP thumbnail for a dataset image; generates if missing.
 
-    *max_edge* selects the rendition (default 256). It becomes part of the
-    cached thumbnail's filename, so it is checked against an allowlist rather
-    than a range — an arbitrary integer must never reach a path.
+    *max_edge* selects the rendition (default 256). It becomes a directory
+    component of the cache path (``.thumbnails/<edge>/``), so it is checked
+    against an allowlist rather than a range — an arbitrary integer must never
+    reach a path. ``thumbnail_path_for`` enforces the same allowlist; this
+    check exists to answer 400 instead of 500.
     """
     from app.core.dataset import thumbnails
 

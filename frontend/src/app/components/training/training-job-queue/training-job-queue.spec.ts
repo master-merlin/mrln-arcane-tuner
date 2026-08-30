@@ -397,4 +397,113 @@ describe('TrainingJobQueueComponent — job-control failures are surfaced', () =
         TestBed.tick();
         expect(() => component.stopJob('j1')).not.toThrow();
     });
+
+});
+
+/**
+ * `job_update` must not blank the accumulated log buffer.
+ *
+ * The merge read `updatedJob.logs || existingLogs`, and an empty array is
+ * TRUTHY in JS — so a payload carrying `logs: []` was treated as "the server
+ * sent logs" and replaced the client's buffer with nothing. `resume_job`
+ * broadcasts a full `job.model_dump()` (job_manager.py:1781-1784), which is
+ * exactly such a payload whenever the server-side ring buffer has been reset
+ * or evicted. The loss chart goes blank and no reading recovers it.
+ *
+ * Falsy-as-absent, inverted: absent is `undefined`, not "empty".
+ */
+describe('TrainingJobQueueComponent — job_update never blanks accumulated logs', () => {
+    beforeEach(() => {
+        const wsStub = {
+            entityChanged: signal(null),
+            reconnected: signal(0),
+            isConnected: signal(false),
+            messages$: new Subject<any>().asObservable(),
+            reconnected$: new Subject<void>().asObservable(),
+            serverRestarted$: new Subject<void>().asObservable(),
+            on: () => of(),
+        };
+        TestBed.configureTestingModule({
+            providers: [
+                provideHttpClient(withXhr()),
+                TrainingJobQueueComponent,
+                {
+                    provide: JobService,
+                    useValue: {
+                        listJobs: vi.fn().mockReturnValue(of([])),
+                        listJobHistory: vi.fn().mockReturnValue(of([])),
+                        getJobCheckpoints: vi.fn().mockReturnValue(of([])),
+                        getAutoResume: vi.fn().mockReturnValue(of({ auto_resume: true })),
+                        getAutoQueue: vi.fn().mockReturnValue(of({ auto_queue: false })),
+                    },
+                },
+                { provide: WebSocketService, useValue: wsStub },
+                { provide: ToastService, useValue: { error: vi.fn(), success: vi.fn(), info: vi.fn(), warning: vi.fn() } },
+                {
+                    provide: ProjectService,
+                    useValue: { allProjects: signal([]), activeJobsProject: signal(null) },
+                },
+                { provide: ModelService, useValue: {} },
+                { provide: RuntimeConfigService, useValue: { apiUrl: 'http://test', wsUrl: 'ws://test' } },
+                { provide: ResumeJobService, useValue: { open: vi.fn() } },
+                { provide: OverlayStore, useValue: { openModal: vi.fn() } },
+            ],
+        });
+    });
+
+    const RUNNING = 'live-1';
+    const accumulated = ['STEP_LOG:{"step":1,"loss":0.4}', 'STEP_LOG:{"step":2,"loss":0.3}'];
+
+    /** Seed the queue with a running job that already has a log buffer. */
+    function seeded() {
+        const component = TestBed.inject(TrainingJobQueueComponent) as any;
+        TestBed.tick();
+        component.jobs.set([{ ...makeJob(RUNNING, JobStatus.RUNNING), logs: [...accumulated] }]);
+        return component;
+    }
+
+    const logsOf = (component: any, id: string): string[] =>
+        (component.jobs().find((j: Job) => j.id === id)?.logs ?? []) as string[];
+
+    it('keeps the buffer when the update carries an EMPTY logs array (the resume broadcast)', () => {
+        const component = seeded();
+        component.handleWsEvent({
+            type: 'job_update',
+            payload: { ...makeJob(RUNNING, JobStatus.RUNNING), logs: [] },
+        });
+        TestBed.tick();
+        expect(logsOf(component, RUNNING)).toEqual(accumulated);
+    });
+
+    it('keeps the buffer when the update omits logs entirely', () => {
+        const component = seeded();
+        component.handleWsEvent({
+            type: 'job_update',
+            payload: makeJob(RUNNING, JobStatus.RUNNING),
+        });
+        TestBed.tick();
+        expect(logsOf(component, RUNNING)).toEqual(accumulated);
+    });
+
+    it('still adopts a NON-empty logs array from the server', () => {
+        const component = seeded();
+        const fuller = [...accumulated, 'STEP_LOG:{"step":3,"loss":0.2}'];
+        component.handleWsEvent({
+            type: 'job_update',
+            payload: { ...makeJob(RUNNING, JobStatus.RUNNING), logs: fuller },
+        });
+        TestBed.tick();
+        expect(logsOf(component, RUNNING)).toEqual(fuller);
+    });
+
+    it('carries the buffer into the archive when the job terminates with empty logs', () => {
+        const component = seeded();
+        component.handleWsEvent({
+            type: 'job_update',
+            payload: { ...makeJob(RUNNING, JobStatus.COMPLETED), logs: [] },
+        });
+        TestBed.tick();
+        const archived = component.historicalJobs().find((j: Job) => j.id === RUNNING);
+        expect(archived?.logs).toEqual(accumulated);
+    });
 });

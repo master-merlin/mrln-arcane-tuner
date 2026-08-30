@@ -52,6 +52,7 @@ type GridPair = DatasetPair & { _captionDirty?: boolean; _variantCaption?: strin
             [definitionId]="definitionId()"
             [variantCaptions]="variantCaptions()"
             [datasetKind]="datasetKind()"
+            [coverFile]="coverFile()"
             (pairOrderRequested)="openPairOrder($event)"
             (filesDropped)="onFilesDropped($event)"
             (detailRequested)="openDetail($event)"
@@ -60,7 +61,8 @@ type GridPair = DatasetPair & { _captionDirty?: boolean; _variantCaption?: strin
             (exclusionToggled)="toggleExclusion.emit($event)"
             (cropRequested)="onCropRequested($event)"
             (pairDeleted)="deletePair.emit($event)"
-            (editStructured)="openStructuredModal($event)"/>
+            (editStructured)="openStructuredModal($event)"
+            (coverPinRequested)="coverPinRequested.emit($event)"/>
         @if (editingPair(); as ep) {
             <app-structured-caption-modal
                 [value]="modalValue()"
@@ -106,6 +108,8 @@ export class BrowseMode {
     variantCaptions = input<Record<string, string>>({});
     /** Dataset kind ('standard' | 'edit') — enables the grid's pair UX. */
     datasetKind = input<string>('standard');
+    /** The dataset's current library-card cover (`preview_image`), or null. */
+    coverFile = input<string | null>(null);
 
     /** Caption was edited and the textarea lost focus while dirty. */
     saveCaption = output<{ pair: DatasetPair; content: string; isMasked: boolean; definitionId?: string | null }>();
@@ -113,6 +117,8 @@ export class BrowseMode {
     toggleExclusion = output<{ media_file: string; enabled: boolean }>();
     /** Trash icon on a tile — workspace confirms + performs the API. */
     deletePair = output<DatasetPair>();
+    /** Pin icon on a tile — workspace persists the cover. Null unpins. */
+    coverPinRequested = output<string | null>();
 
     protected overlay = inject(OverlayStore);
     protected mediaItems = inject(MediaItemStore);

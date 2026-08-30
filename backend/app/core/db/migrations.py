@@ -54,6 +54,7 @@ def run_migrations(engine: DatabaseEngine) -> None:
         _migrate_v19,
         _migrate_v20,
         _migrate_v21,
+        _migrate_v22,
     ]
 
     for i, migrate_fn in enumerate(migrations, start=1):
@@ -1116,3 +1117,27 @@ def _migrate_v21(conn) -> None:
     """)
 
     seed_factory_presets_with_conn(conn)
+
+
+# ── V22: pinned library cover ──────────────────────────────────────────────
+
+def _migrate_v22(conn) -> None:
+    """Add ``datasets.preview_pinned`` — the user's chosen library cover.
+
+    ``preview_image`` already existed but was pure derived data: every scan
+    overwrote it with the first non-audio file it happened to enumerate, so a
+    user had no way to say which image represents the dataset. This flag is the
+    only new state; the chosen path keeps living in ``preview_image`` so every
+    reader (library card, project grid, export manifest) needs no change.
+
+    Default 0 means every existing dataset keeps today's auto behaviour.
+
+    Idempotent: an ``ALTER TABLE`` that already ran raises and is swallowed,
+    matching v7/v15.
+    """
+    try:
+        conn.execute(
+            "ALTER TABLE datasets ADD COLUMN preview_pinned INTEGER NOT NULL DEFAULT 0",
+        )
+    except Exception:
+        pass  # Column already exists

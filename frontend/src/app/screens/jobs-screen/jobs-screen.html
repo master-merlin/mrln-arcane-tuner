@@ -19,7 +19,17 @@
                     </h1>
                     <div class="detail-meta mono">
                         @if (j.pid) { <span>PID {{ j.pid }}</span><span class="dot-sep">·</span> }
-                        <span>{{ elapsed() }} elapsed</span>
+                        <!-- Two different facts, deliberately both shown:
+                             elapsed is RUN time as the trainer accounts for it
+                             (pauses excluded, resumed sessions included), and
+                             "started" is the wall-clock moment. Before this,
+                             one number was doing both jobs and getting each
+                             wrong in its own way. -->
+                        <span data-testid="job-elapsed">{{ elapsed() }} elapsed</span>
+                        @if (startedAtLabel()) {
+                            <span class="dot-sep">·</span>
+                            <span data-testid="job-started-at">started {{ startedAtLabel() }}</span>
+                        }
                         @if (j.config['project_id']) {
                             <span class="dot-sep">·</span>
                             <span>project {{ j.config['project_id'] }}</span>
@@ -146,16 +156,6 @@
                 </div>
             }
 
-            <!-- ── Adaptive layer targeting status chip ──────────────── -->
-            @if (adaptState(); as a) {
-                <div class="adapt-status-row">
-                    <span class="chip teal" data-testid="adapt-chip"
-                          [title]="'Adaptive layer targeting: ' + a.kind">
-                        Adaptive: {{ a.active_count }}/{{ a.total_count }} layers
-                    </span>
-                </div>
-            }
-
             <!-- ── TRAINING CURVES ───────────────────────────────────── -->
             <section class="card collapse-card">
                 <div class="card-head curves-head">
@@ -163,6 +163,17 @@
                         <span class="card-title">Training Curves</span>
                         @if (j.status === JobStatus.RUNNING) {
                             <span class="chip success head-chip"><span class="dot"></span> live</span>
+                        }
+                        <!-- Adaptive layer targeting sits here, right of "live",
+                             rather than in a row of its own above the card: it
+                             describes what the curve is showing, and a chip on
+                             its own line read as a separate section. `head-chip`
+                             is what makes it the same height as "live". -->
+                        @if (adaptState(); as a) {
+                            <span class="chip teal head-chip" data-testid="adapt-chip"
+                                  [title]="'Adaptive layer targeting: ' + a.kind">
+                                Adaptive: {{ a.active_count }}/{{ a.total_count }} layers
+                            </span>
                         }
                     </button>
                     <div class="card-head-tools curve-tools" (click)="$event.stopPropagation()">
@@ -182,6 +193,25 @@
                                     title="This run did not enable EMA — curve uses SMA smoothing">SMA</button>
                         }
                         <button class="btn sm" [class.primary]="showTip()" (click)="showTip.set(!showTip())" title="Show values at the curve tip">TIP</button>
+                        <!-- How much of the run to draw. Always present and
+                             always the same four choices, so the view no longer
+                             depends on how the run happened to be observed. -->
+                        <span class="curve-window" data-testid="curve-window">
+                            @for (w of curveWindows; track w.value) {
+                                <button class="btn sm"
+                                        [class.primary]="curveWindow() === w.value"
+                                        [attr.data-testid]="'curve-window-' + w.value"
+                                        [attr.aria-pressed]="curveWindow() === w.value"
+                                        (click)="setCurveWindow(w.value)"
+                                        [title]="w.value === 'all' ? 'Show every step' : 'Show the last ' + w.value + ' steps'">{{ w.label }}</button>
+                            }
+                        </span>
+                        <button class="btn sm" data-testid="curve-reload"
+                                [disabled]="curveReloading()"
+                                (click)="reloadCurveFromDisk()"
+                                title="Re-read the saved curve from disk (the trainer flushes it as the run goes)">
+                            {{ curveReloading() ? '…' : '⟳' }}
+                        </button>
                         <button class="card-head-caret" type="button" (click)="toggle('curves')">
                             <span class="caret">{{ expanded().curves ? '−' : '+' }}</span>
                         </button>
@@ -189,12 +219,13 @@
                 </div>
                 @if (expanded().curves) {
                     <div class="card-body">
-                        @if (lossPoints().length > 1) {
+                        @if (chartPoints().length > 1) {
                             <app-training-chart
-                                [data]="lossPoints()"
+                                [data]="chartPoints()"
                                 [smoothing]="smoothing()"
                                 [smoothingMode]="effectiveSmoothingMode()"
                                 [showTip]="showTip()"
+                                [bestOverride]="chartBestOverride()"
                                 [totalSteps]="chartTotalSteps()"
                                 [height]="240"/>
                         } @else {

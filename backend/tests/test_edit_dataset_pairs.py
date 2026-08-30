@@ -130,11 +130,12 @@ def _make_edit_dataset(manager, name: str = "editds", slots: int = 2):
 
 class TestV15Migration:
     def test_run_migrations_reaches_latest(self, db_engine):
-        # V21 (adaptive_preset_templates + factory seeding) is the current tip.
+        # V22 (datasets.preview_pinned — the user's chosen library cover) is
+        # the current tip.
         run_migrations(db_engine)
         with db_engine.connection() as conn:
             row = conn.execute("SELECT version FROM schema_version").fetchone()
-            assert row["version"] == 21
+            assert row["version"] == 22
 
     def test_dataset_kind_defaults_standard(self, migrated_engine):
         with migrated_engine.write() as conn:

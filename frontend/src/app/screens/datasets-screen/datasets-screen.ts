@@ -8,7 +8,7 @@ import { ToastService } from '../../services/toast';
 import { DatasetStore } from '../../state/dataset.store';
 import { OverlayStore } from '../../state/overlay.store';
 import { ScopeStore } from '../../state/scope.store';
-import { datasetPreviewUrl } from '../../shared/media-preview';
+import { datasetPreviewUrl, directDatasetMediaUrl } from '../../shared/media-preview';
 import { formatBytes } from '../../shared/format-bytes';
 import { FormatBytesPipe } from '../../shared/format-bytes.pipe';
 import {
@@ -830,11 +830,13 @@ export class DatasetsScreen {
     protected trackById = (_: number, d: Dataset) => d.id ?? d.name;
 
     /**
-     * URL of the dataset's preview thumbnail, or `null` when none is available
-     * (dataset missing on disk, or no preview chosen yet). Stills resolve to
-     * `${mediaBaseUrl}/${name}/${preview_image}`; video clips (mp4/webm/mkv/avi)
-     * route through the thumbnail endpoint for a renderable first-frame poster
-     * (a raw clip in an `<img>` is what left video-only datasets blank).
+     * URL of the dataset's cover, or `null` when none is available (dataset
+     * missing on disk, or no preview chosen yet).
+     *
+     * Every cover resolves to a bounded thumbnail rendition: video because an
+     * `<img>` cannot paint mp4/webm/mkv/avi at all, stills because a full-size
+     * training source decoded into a card-sized box is what made this grid
+     * unscrollable. See `shared/media-preview.ts` for the measurements.
      */
     protected previewUrl(d: Dataset): string | null {
         if (!d.preview_image || d.missing) return null;
@@ -842,13 +844,26 @@ export class DatasetsScreen {
     }
 
     /**
-     * Hide the broken <img> when its src 404s — the @else branch already
-     * renders the ImageOff fallback, so we just blank the failed img out
-     * by setting display:none. Avoids flashing the browser broken-image
-     * glyph over the gradient backdrop on missing-preview datasets.
+     * Recover, then hide, a cover whose src failed.
+     *
+     * Covers resolve to a generated WebP thumbnail. Generation is Pillow-based,
+     * so a format the browser can paint but this install's Pillow cannot decode
+     * (AVIF without `pillow-avif-plugin`) 404s the thumbnail while the original
+     * would have rendered fine — so retry once against `/media` before giving
+     * up. The retry is marked on the element, never re-armed: a second failure
+     * means the source itself is gone.
+     *
+     * Once there is nothing left to try, blank the img out. The @else branch
+     * already renders the ImageOff fallback, and display:none avoids flashing
+     * the browser broken-image glyph over the gradient backdrop.
      */
-    protected onPreviewError(event: Event): void {
+    protected onPreviewError(event: Event, d?: Dataset): void {
         const img = event.target as HTMLImageElement;
+        if (d?.preview_image && img.dataset['fallbackTried'] !== '1') {
+            img.dataset['fallbackTried'] = '1';
+            img.src = directDatasetMediaUrl(this.rtc.mediaBaseUrl, d.name, d.preview_image);
+            return;
+        }
         img.style.display = 'none';
     }
 

@@ -42,10 +42,13 @@ import { JobLogViewerComponent } from './job-log-viewer';
 import {
     bestLoss,
     bestLossSpark,
-    formatDuration,
+    wallClockElapsedLabel,
+    finalElapsedSeconds,
     formatEta,
+    formatSeconds,
     formatGradNorm,
     latestAdaptState,
+    newestAdaptState,
     latestMetrics,
     logTail,
     lossSeries,
@@ -236,12 +239,79 @@ export class JobsScreen {
      */
     protected readonly persistedLogsByJob = signal<Map<string, string[]>>(new Map());
 
-    /** Loss/LR series for the curve + sparklines — live logs, else replay. */
+    /**
+     * Loss/LR series for the curve + sparklines — persisted history MERGED with
+     * the live log stream, newest wins per step.
+     *
+     * UAT-3.5: this used to be "live if there is any live, else replay", which
+     * silently truncated the curve for exactly the case that matters. The live
+     * buffer holds what THIS client has received over the socket; after a
+     * backend restart mid-run (or a browser reload, or attaching to a job that
+     * was already running) it starts at whatever step the reconnect landed on,
+     * and the graph began there — no gap, no warning, just a shorter run than
+     * really happened. Merging means the disk/DB history fills everything in
+     * front of the live window and the live points stay authoritative where
+     * they overlap.
+     */
     protected readonly lossPoints = computed<LossPoint[]>(() => {
         const live = lossSeries(this.selectedJob()?.logs);
-        if (live.length) return live;
         const id = this.selectedJob()?.id;
-        return (id && this.replayByJob().get(id)?.points) || [];
+        const replay = (id && this.replayByJob().get(id)?.points) || [];
+        if (!replay.length) return live;
+        if (!live.length) return replay;
+        const byStep = new Map<number, LossPoint>();
+        for (const p of replay) byStep.set(p.step, p);
+        for (const p of live) byStep.set(p.step, p);   // live wins on overlap
+        return [...byStep.values()].sort((a, b) => a.step - b.step);
+    });
+
+    /**
+     * How much of the curve to draw. UAT-3.4: the chart previously showed
+     * "whatever happened to be in the buffer", which read as all-or-nothing
+     * depending on how the run was observed rather than on anything the user
+     * chose. `all` keeps the old default; the windows are step COUNTS off the
+     * end.
+     */
+    protected readonly curveWindow = signal<'all' | 1000 | 500 | 100>('all');
+    protected readonly curveWindows = [
+        { value: 'all' as const, label: 'All' },
+        { value: 1000 as const, label: '1k' },
+        { value: 500 as const, label: '500' },
+        { value: 100 as const, label: '100' },
+    ];
+    protected setCurveWindow(v: 'all' | 1000 | 500 | 100): void {
+        this.curveWindow.set(v);
+    }
+
+    /**
+     * What the chart actually draws. Deliberately separate from `lossPoints`:
+     * the window is a view over the curve, so `best`, the sparklines and the
+     * convergence verdict keep reading the WHOLE run — a "best loss" that
+     * changed when you zoomed the graph would be a worse bug than the one this
+     * fixes. (The chart's plateau detector does see only the window; with the
+     * default `all` that is unchanged, and when a user narrows the view it is
+     * the visible curve it comments on.)
+     */
+    protected readonly chartPoints = computed<LossPoint[]>(() => {
+        const all = this.lossPoints();
+        const w = this.curveWindow();
+        return w === 'all' ? all : all.slice(-w);
+    });
+
+    /** True while a manual disk re-read is in flight (curve reload button). */
+    protected readonly curveReloading = signal(false);
+
+    /**
+     * Whole-run best handed to the chart, so its violet marker and legend keep
+     * meaning the same thing as the KPI tile once a window is applied. Only
+     * passed when the view IS windowed — with `all` the chart's own derivation
+     * is identical, and letting it do its own work keeps the default path
+     * exactly as it was.
+     */
+    protected readonly chartBestOverride = computed<{ value: number; step: number } | null>(() => {
+        if (this.curveWindow() === 'all') return null;
+        const b = this.best();
+        return b ? { value: b.loss, step: b.step } : null;
     });
 
     /** True when an archived run's output folder is gone (replay came from DB). */
@@ -262,16 +332,50 @@ export class JobsScreen {
     );
 
     /**
-     * Latest adaptive layer targeting event (Task 5/7 backend → Task 11 FE) —
-     * the newest `{"adapt": {...}}` broadcast in the LIVE log stream. `job.logs`
-     * is live-session-only (cleared + rotated on a rebuild restart, and its
-     * reconnect-hydration never reconstructs `adapt` entries), so this reflects
-     * "latest known state this session", not durable history — the persisted
-     * timeline (GET /api/jobs/history/{job_id}/adaptive) is a later task.
+     * Newest adaptive layer targeting state per job id — a MONOTONIC LATCH,
+     * not a derivation. LANE-35.
+     *
+     * This used to be `latestAdaptState(selectedJob()?.logs)`: a scan of
+     * `job.logs`, which is a bounded 1000-entry FIFO (`job_manager.py` appends
+     * then `pop(0)`). Adapt events fire only at adaptation moments while
+     * ordinary step lines stream into that same buffer continuously, so a rare
+     * event ages out BY CONSTRUCTION and the chip was guaranteed to vanish on
+     * any long enough run. The fix is the invariant, not a bigger buffer:
+     * latch the state when it is observed instead of re-deriving it from a
+     * lossy window.
+     *
+     * Two sources feed the latch and `newestAdaptState` is the one rule
+     * between them (higher `step` wins):
+     *  - the DURABLE record, `GET /jobs/history/{id}/adaptive` (the run dir's
+     *    `adaptive_targeting.json`, rewritten by the trainer at every
+     *    adaptation) — fetched once per job, survives eviction and reload;
+     *  - the LIVE log stream — the fast path, so a brand-new event shows
+     *    without waiting on a refetch.
      */
-    protected readonly adaptState = computed<AdaptEvent | null>(() =>
-        latestAdaptState(this.selectedJob()?.logs),
-    );
+    private readonly adaptLatch = signal<ReadonlyMap<string, AdaptEvent>>(new Map());
+    /** Job ids whose durable adaptive history has been requested (one per visit). */
+    private readonly adaptFetched = signal<ReadonlySet<string>>(new Set());
+
+    /** Advance the latch for `jobId` if `next` is newer than what is held. */
+    private latchAdaptState(jobId: string, next: AdaptEvent | null): void {
+        if (!next) return;
+        const held = this.adaptLatch().get(jobId) ?? null;
+        const winner = newestAdaptState(held, next);
+        if (winner === held) return;
+        this.adaptLatch.update((m) => {
+            const copy = new Map(m);
+            copy.set(jobId, winner!);
+            return copy;
+        });
+    }
+
+    protected readonly adaptState = computed<AdaptEvent | null>(() => {
+        const j = this.selectedJob();
+        if (!j) return null;
+        // The latch is the durable answer; the live scan covers the window
+        // between an event landing in `logs` and the effect latching it.
+        return newestAdaptState(this.adaptLatch().get(j.id) ?? null, latestAdaptState(j.logs));
+    });
 
     // ── KPI helpers ─────────────────────────────────────────────────────
     protected readonly progressPct = computed<number>(() => {
@@ -296,16 +400,205 @@ export class JobsScreen {
         return mpx != null ? `${mpx.toFixed(1)} Mpx` : 'bucket dims';
     });
 
-    /** Live elapsed wall-clock for the selected job. */
+    /**
+     * Last RUN-time reading the trainer itself reported, and the wall-clock
+     * moment this client received it. UAT-3.6.
+     *
+     * Written by an effect rather than derived, because it has to remember
+     * *when* a value arrived in order to keep ticking between steps — a video
+     * run can be 30s per step, and a clock that only moves when a step lands
+     * reads as frozen.
+     *
+     * `atMs` is WALL CLOCK, and wall clock keeps running while a job is paused.
+     * That is the whole reason `pinBaseWhileNotRunning` exists below: freezing
+     * the *display* during a pause is not enough, because the stamp underneath
+     * it goes stale by exactly the pause duration.
+     */
+    private readonly runnerElapsed = signal<{
+        jobId: string;
+        seconds: number;
+        atMs: number;
+        /** True once the base has absorbed its extrapolation and is being held
+         *  still — see `pinBaseWhileNotRunning`. Cleared by every fresh reading. */
+        pinned: boolean;
+    } | null>(null);
+
+    /** The last distinct `elapsed` the runner reported, so each reading is
+     *  applied to the base exactly once. Not a signal: nothing renders it, and
+     *  it exists only to keep the two writers of `runnerElapsed` from fighting. */
+    private lastRunnerReading: { jobId: string; seconds: number } | null = null;
+
+    /**
+     * Elapsed RUN time for the selected job.
+     *
+     * UAT-3.6 — this used to be `now − started_at`, which is wall clock, not
+     * run time, and got two things wrong. A pause was counted as work (resume
+     * clears `paused_at` and never credits the interval back, so a job paused
+     * overnight came back claiming eight extra hours), and a backend restart
+     * lost the thread entirely.
+     *
+     * The runner already knew the right answer and was already sending it:
+     * `TrainingLogger.get_total_elapsed()` rides in every step log as
+     * `elapsed` — wall clock minus paused time plus the offset from earlier
+     * sessions of a resumed run. It survives a backend restart because the
+     * trainer subprocess does. So the number is the runner's; this only ticks
+     * it forward between steps while the job is actually running.
+     *
+     * The `started_at` fallback remains for the window before the first step
+     * (queueing, model download, weight load) where no trainer reading exists
+     * yet — the one case where wall clock IS the honest answer.
+     */
+    /**
+     * Keep the extrapolation base pinned to now while the job is NOT running.
+     *
+     * Pausing and resuming a run made elapsed leap forward by the pause length,
+     * then snap back a few seconds later, then read as if it were running fast.
+     * All three were one bug. `elapsed` ticks as `seconds + (now − atMs)`, and
+     * freezing the display during a pause left `atMs` behind by the entire
+     * pause; the instant the status flipped back to RUNNING that whole interval
+     * was added in a single frame, and it stayed wrong until the next step log
+     * replaced the reading.
+     *
+     * Advancing the stamp in lockstep with the clock while stopped means
+     * `now − atMs` is ~0 at the moment of resume, so the display continues from
+     * where it froze and grows at real time from there. The trainer's own
+     * number — which has always excluded paused time — corrects any drift on
+     * the next step.
+     */
+    /**
+     * A fresh runner reading that sits BELOW what is on screen by less than
+     * this is noise, not a correction, and the screen value is kept.
+     *
+     * Three sub-second terms stack, all pointing the same way, all at a resume:
+     *
+     *  - `elapsed` in a step log is `int(total_elapsed)`
+     *    (`training_logger.py:160`) — up to 1 s low;
+     *  - the base the display resumed from was built from an earlier log that
+     *    lost its own fraction to the same truncation — up to 1 s low again;
+     *  - the trainer polls the resume signal once a second
+     *    (`signal_manager.py:73`) and credits that whole wake-up gap to PAUSED
+     *    time, so its first post-resume reading is legitimately behind the wall
+     *    clock the display has already ticked through — up to 1 s more.
+     *
+     * Anything inside that band is the trainer saying the same thing we are;
+     * anything beyond it is the trainer telling us something we could not know
+     * (a checkpoint save, an offset carried from an earlier session) and wins
+     * outright, backwards jump included — that correction is worth seeing.
+     */
+    private static readonly REBASE_TOLERANCE_S = 3;
+
+    /**
+     * The base to adopt for a fresh runner reading: the reading itself, unless
+     * it would move the rendered number backwards by less than the tolerance,
+     * in which case the value already on screen is carried forward.
+     *
+     * Forward corrections are always taken — the runner is the authority on how
+     * much of the wall clock was run time; only the sub-second backward step is
+     * suppressed, because a clock that goes backwards reads as broken.
+     */
+    private monotonicBase(jobId: string, seconds: number, nowMs: number): number {
+        const prev = untracked(() => this.runnerElapsed());
+        if (!prev || prev.jobId !== jobId) return seconds;
+        const onScreen = prev.seconds + (prev.pinned ? 0 : Math.max(0, (nowMs - prev.atMs) / 1000));
+        const backwards = onScreen - seconds;
+        return backwards > 0 && backwards <= JobsScreen.REBASE_TOLERANCE_S ? onScreen : seconds;
+    }
+
+    private pinBaseWhileNotRunning(): void {
+        effect(() => {
+            const j = this.selectedJob();
+            const tick = this.now();
+            if (!j) return;
+            const prev = untracked(() => this.runnerElapsed());
+            if (!prev || prev.jobId !== j.id) return;
+
+            // The stamp must come from a REAL clock reading, never from the
+            // 1 Hz tick that woke this effect: `now` is up to a full second
+            // behind wall clock, and every millisecond of that lag becomes
+            // elapsed time the display invents (UAT-3.9).
+            const nowMs = Date.now();
+
+            if (j.status === JobStatus.RUNNING) {
+                // The run just resumed. Re-stamp the held base from the clock
+                // and hand the display back to the running branch. Without
+                // this the effect simply returned here, leaving `atMs` at the
+                // last tick BEFORE the flip — so the first running frame added
+                // `now − that tick` (up to 1 s) in one jump and then carried it
+                // until the next step log snapped it back.
+                if (prev.pinned) this.runnerElapsed.set({ ...prev, atMs: nowMs, pinned: false });
+                return;
+            }
+            if (prev.pinned) {
+                // Already absorbed — just hold the base against the clock.
+                if (nowMs !== prev.atMs) this.runnerElapsed.set({ ...prev, atMs: nowMs });
+                return;
+            }
+            // First tick after the run stopped. Absorb the extrapolation that
+            // was on screen, so the display holds where it was instead of
+            // dropping back to the last step's reading — up to a step time,
+            // which on a video run is 30s of visible jump backwards.
+            //
+            // Measured from the moment the job actually STOPPED, not from now:
+            // the backend stamps `paused_at`/`finished_at` when it flips the
+            // status, and that is the only honest end for this interval. Using
+            // `now` would credit as run time however long this client took to
+            // hear about the stop — which, for a client that was asleep or
+            // disconnected, is the entire pause.
+            const stoppedMs = (j.paused_at ?? j.finished_at ?? 0) * 1000 || nowMs;
+            const ranOn = Math.max(0, Math.min(stoppedMs, nowMs) - prev.atMs) / 1000;
+            this.runnerElapsed.set({
+                ...prev,
+                seconds: prev.seconds + ranOn,
+                atMs: nowMs,
+                pinned: true,
+            });
+        });
+    }
+
     protected readonly elapsed = computed<string>(() => {
         const j = this.selectedJob();
         if (!j) return '0:00';
-        const end = j.finished_at
-            ? j.finished_at * 1000
-            : j.paused_at
-              ? j.paused_at * 1000
-              : this.now() || Date.now();
-        return formatDuration(j.started_at, end);
+
+        // A finished run has a FINAL total the backend persisted from the
+        // trainer itself (`job_history.duration_seconds` =
+        // `TrainingLogger.get_total_elapsed()`, the same function that emits
+        // `elapsed` in every step log). It outranks anything derived here: it
+        // is the only reading that survives a reload, when `job.logs` comes
+        // back empty. The queue's archive rows read the same field through the
+        // same helper, so the two surfaces cannot disagree on a finished job.
+        const final = finalElapsedSeconds(j);
+        if (final != null) return formatSeconds(final);
+
+        const r = this.runnerElapsed();
+        if (r && r.jobId === j.id) {
+            // Not RUNNING (paused, finished, stopped) → freeze at the last
+            // reading. Paused time is not run time, and the trainer's own
+            // number already excludes it.
+            if (j.status !== JobStatus.RUNNING) return formatSeconds(r.seconds);
+            const nowMs = this.now() || Date.now();
+            return formatSeconds(r.seconds + Math.max(0, (nowMs - r.atMs) / 1000));
+        }
+
+        // No trainer reading yet (queueing / download / weight load) — the one
+        // window where wall clock IS the honest answer. Shared with the queue's
+        // rows so the fallback rule has one implementation, not two.
+        return wallClockElapsedLabel(j, this.now() || Date.now());
+    });
+
+    /** Wall-clock moment the run began, for the "started" field beside elapsed. */
+    protected readonly startedAtLabel = computed<string>(() => {
+        const at = this.selectedJob()?.started_at;
+        if (!at) return '';
+        const d = new Date(at * 1000);
+        const today = new Date();
+        const sameDay =
+            d.getFullYear() === today.getFullYear() &&
+            d.getMonth() === today.getMonth() &&
+            d.getDate() === today.getDate();
+        const time = d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+        // A run that started yesterday and is still going is exactly the case
+        // where a bare "09:14" misleads, so the date appears only then.
+        return sameDay ? time : `${d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${time}`;
     });
 
     // ── Pre-formatted KPI labels (keep the template declarative) ────────
@@ -583,6 +876,36 @@ export class JobsScreen {
     /** Toggle the value callout at the curve tip (current point). On by default. */
     protected readonly showTip = signal<boolean>(true);
 
+    /**
+     * Re-read the persisted curve for the selected job, right now.
+     *
+     * UAT-3.5 asked for this explicitly, and it is not the same thing as the
+     * automatic fetch: that runs once per job per visit, whereas the trainer
+     * only rewrites `loss_history.json` at the end of a run and flushes
+     * `step_metrics` every 50 steps — so during a long run "what is on disk"
+     * genuinely changes underneath a curve that was fetched once. This is the
+     * button that goes and looks again.
+     */
+    protected reloadCurveFromDisk(): void {
+        const j = this.selectedJob();
+        if (!j || this.curveReloading()) return;
+        this.curveReloading.set(true);
+        this.jobService.getJobReplay(j.id).subscribe({
+            next: (r) => {
+                const points: LossPoint[] = (r.loss ?? [])
+                    .filter((p) => typeof p.loss === 'number')
+                    .map((p) => ({ step: p.step, loss: p.loss, lr: p.lr ?? 0, grad_norm: p.grad_norm }));
+                this.replayByJob.update((m) => {
+                    const next = new Map(m);
+                    next.set(j.id, { points, available: r.available });
+                    return next;
+                });
+                this.curveReloading.set(false);
+            },
+            error: () => this.curveReloading.set(false),
+        });
+    }
+
     /** total_steps as a number for the chart's plateau guard (0 = unknown). */
     protected readonly chartTotalSteps = computed<number>(() => {
         const t = this.metrics()?.total_steps;
@@ -603,6 +926,44 @@ export class JobsScreen {
         interval(1000)
             .pipe(takeUntilDestroyed(this.destroyRef))
             .subscribe(() => this.now.set(Date.now()));
+
+        // Capture the trainer's own RUN-time reading whenever a new one
+        // arrives (UAT-3.6). Stamped with the moment of receipt so `elapsed`
+        // can tick between steps without inventing time: everything it adds is
+        // wall clock since a reading the runner vouched for.
+        //
+        // Keyed on the job id as well as the value, so selecting a different
+        // job cannot briefly show the previous job's clock, and a step log that
+        // repeats the same second does not reset the tick.
+        effect(() => {
+            const j = this.selectedJob();
+            const seconds = this.metrics()?.elapsed;
+            if (!j || typeof seconds !== 'number' || !Number.isFinite(seconds)) return;
+            // Consume each distinct runner reading exactly once, tracked apart
+            // from the display base. The base is also written by
+            // `pinBaseWhileNotRunning`, and comparing against it would let the
+            // two effects fight: a re-run while paused would see the absorbed
+            // base differ from the last step's number and "restore" it,
+            // reintroducing the jump this whole mechanism exists to remove.
+            const seen = this.lastRunnerReading;
+            if (seen && seen.jobId === j.id && seen.seconds === seconds) return;
+            this.lastRunnerReading = { jobId: j.id, seconds };
+            // A fresh reading supersedes any pinned base: the runner's number
+            // already excludes paused time, so it IS the correction — except
+            // that it is allowed to be a shade LOWER than what is on screen
+            // without contradicting it, and adopting it verbatim then walks the
+            // clock backwards (UAT-3.9). Re-base monotonically: within the
+            // tolerance the two numbers agree and the screen value is kept.
+            const nowMs = Date.now();
+            this.runnerElapsed.set({
+                jobId: j.id,
+                seconds: this.monotonicBase(j.id, seconds, nowMs),
+                atMs: nowMs,
+                pinned: false,
+            });
+        });
+
+        this.pinBaseWhileNotRunning();
 
         // When the selected job changes, lazy-load its sample + checkpoint lists once.
         effect(() => {
@@ -663,13 +1024,19 @@ export class JobsScreen {
             }
         });
 
-        // Replay archived runs: when an archived job with no live logs is
-        // selected, fetch its persisted loss history (disk first, DB fallback)
-        // so the curve + log tail render even though the run is finished.
+        // Replay persisted history for the selected job: disk
+        // (loss_history.json) first, DB step_metrics fallback.
+        //
+        // UAT-3.5 — this used to be gated on `isArchived()` AND on there being
+        // no live data, so a RUNNING job never read history and its curve began
+        // wherever this client's socket happened to attach. Both gates are
+        // gone: a running job fetches once too, and `lossPoints` merges the two
+        // series. The `has(j.id)` guard still makes it one request per job per
+        // visit — the live stream keeps the tail current, so re-polling would
+        // buy nothing (the manual reload button exists for "I want disk NOW").
         effect(() => {
             const j = this.selectedJob();
-            if (!j || !this.isArchived()) return;
-            if (lossSeries(j.logs).length > 1) return; // already have live data
+            if (!j) return;
             if (this.replayByJob().has(j.id)) return;
             this.jobService.getJobReplay(j.id).subscribe({
                 next: (r) => {
@@ -690,6 +1057,40 @@ export class JobsScreen {
                     });
                 },
             });
+        });
+
+        // LANE-35 — adaptive state, both sources into one monotonic latch.
+        //
+        // Durable first: one fetch per job per visit of the run dir's
+        // `adaptive_targeting.json`. Verified against the live backend that
+        // this serves a RUNNING job with current data (the job_history row and
+        // its `output_dir` exist from job creation, and the trainer rewrites
+        // the file at every adaptation), so this is not archive-only.
+        effect(() => {
+            const j = this.selectedJob();
+            if (!j) return;
+            if (untracked(() => this.adaptFetched().has(j.id))) return;
+            this.adaptFetched.update((s) => new Set(s).add(j.id));
+            this.jobService.getJobAdaptiveHistory(j.id).subscribe({
+                next: (r) => {
+                    const events = r.events ?? [];
+                    this.latchAdaptState(j.id, events.length ? events[events.length - 1] : null);
+                },
+                // Empty shape on failure: a job that never adapted and a failed
+                // read look the same to the chip — it simply stays hidden.
+                error: () => {},
+            });
+        });
+
+        // Live fast path: latch every adapt event while it is still in the FIFO,
+        // so it outlives the window it arrived in. The write is `untracked` —
+        // an effect whose mutating body is tracked re-fires itself forever.
+        effect(() => {
+            const j = this.selectedJob();
+            if (!j) return;
+            const live = latestAdaptState(j.logs);
+            if (!live) return;
+            untracked(() => this.latchAdaptState(j.id, live));
         });
 
         // Persisted log tail: when a finished job has no live log buffer (e.g.

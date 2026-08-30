@@ -965,6 +965,17 @@ export class DatasetService {
       + `?source_rel_path=${encodeURIComponent(sourceRelPath)}`);
   }
 
+  /** Pin `imageRelPath` as the dataset's library-card cover, or unpin with
+   *  null (which hands the choice back to the scanner's automatic election).
+   *
+   *  The backend broadcasts the updated dataset on the entity channel, so the
+   *  library card refreshes on its own — callers do not need to refetch. */
+  setPreviewImage(name: string, imageRelPath: string | null): Observable<Dataset> {
+    return this.http.put<Dataset>(
+      `${this.apiUrl}/${encodeURIComponent(name)}/preview`,
+      { image_rel_path: imageRelPath });
+  }
+
   /** Set (or clear with null) a clip's trim window, in seconds. Returns the
    *  recomputed per-family clip-health warnings. Callers MUST follow with
    *  `DatasetSyncService.refreshDataset(name)` to reconcile the media store. */

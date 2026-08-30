@@ -88,6 +88,14 @@ import type { DatasetPair } from '../../services/dataset';
                             (toggleFullscreen)="toggleFullscreen()"
                             (toggleOverlay)="toggleOverlay.emit()">
                         @if (pair.media_type !== 'audio') {
+                        <button type="button" class="footer-action pin"
+                                data-testid="details-pin-cover"
+                                [class.is-cover]="isCover()"
+                                [attr.aria-pressed]="isCover()"
+                                [title]="isCover() ? 'Library cover — click to unpin' : 'Pin as library cover'"
+                                (click)="onPinCover()">
+                            <app-ico name="Pin" [size]="14"/>
+                        </button>
                         <button type="button" class="footer-action violet" title="Adjust (open editor)"
                                 (click)="openEditor()">
                             <app-ico name="Sliders" [size]="14"/>
@@ -233,6 +241,26 @@ import type { DatasetPair } from '../../services/dataset';
         .footer-action.exclude.is-excluded:hover {
             background: color-mix(in oklab, var(--color-warning) 32%, transparent);
         }
+        /* Pin — mirrors the exclude toggle's on/off treatment in the brand
+           hue, so "this is the cover" reads the same way "this is excluded"
+           does one button over. */
+        .footer-action.pin {
+            background: var(--color-surface-mid);
+            color: var(--color-text-muted);
+            border-color: var(--color-border-subtle);
+        }
+        .footer-action.pin:hover {
+            background: color-mix(in oklab, var(--color-brand) 18%, transparent);
+            color: var(--color-brand);
+        }
+        .footer-action.pin.is-cover {
+            color: var(--color-brand);
+            background: color-mix(in oklab, var(--color-brand) 22%, transparent);
+            border-color: color-mix(in oklab, var(--color-brand) 55%, transparent);
+        }
+        .footer-action.pin.is-cover:hover {
+            background: color-mix(in oklab, var(--color-brand) 32%, transparent);
+        }
     `],
 })
 export class DetailsMode {
@@ -254,6 +282,9 @@ export class DetailsMode {
      *  Drives the mask sidebar's "Masked view" toggle disabled state,
      *  matching the Browse toolbar's pattern. */
     hasMaskedImages = input<boolean>(false);
+    /** The dataset's current library-card cover (`preview_image`), or null.
+     *  Drives the footer pin button's state, exactly as in the grid. */
+    coverFile = input<string | null>(null);
 
     /** Caption save intent — workspace performs optimistic + API. The
      *  `definitionId` is the active definition when in variant mode (model-aware
@@ -277,6 +308,9 @@ export class DetailsMode {
     /** Video trim committed in the detail media container — workspace persists
      *  it via DatasetService.saveTrim + DatasetSyncService.refreshDataset. */
     trimSave = output<{ media_file: string; trim_start_s: number | null; trim_end_s: number | null }>();
+    /** Pin (or unpin) the shown item as the dataset's library-card cover.
+     *  Emits the media file, or null to unpin — same contract as the grid. */
+    coverPinRequested = output<string | null>();
 
     protected overlay = inject(OverlayStore);
     protected mediaItems = inject(MediaItemStore);
@@ -326,6 +360,19 @@ export class DetailsMode {
     protected isExcluded = computed<boolean>(() => {
         return this.currentPair()?.metadata?.enabled === false;
     });
+
+    /** True when the shown item is the dataset's current library-card cover. */
+    protected isCover = computed<boolean>(() => {
+        const file = this.currentPair()?.media_file;
+        return !!file && file === this.coverFile();
+    });
+
+    /** Pin the shown item as the cover, or unpin when it already is one. */
+    protected onPinCover(): void {
+        const file = this.currentPair()?.media_file;
+        if (!file) return;
+        this.coverPinRequested.emit(this.isCover() ? null : file);
+    }
 
     constructor() {
         // Whenever the editor's loaded baseline matches the textarea, drop the

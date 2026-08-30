@@ -6,6 +6,7 @@ import { TemplateService, Template, TemplateDomain } from './template.service';
 import { ImportArchiveService } from './import-archive.service';
 import { RuntimeConfigService } from './runtime-config.service';
 import { ToastService } from './toast';
+import { datasetPreviewUrl } from '../shared/media-preview';
 import type {
   ExportGroup, ExportDatasetChoice, ExportSelection,
 } from '../modals/export-options/export-options.component';
@@ -96,11 +97,11 @@ export class ProjectExportService {
     });
   }
 
-  /** Dataset preview thumbnail URL (same shape as the datasets/project-detail
-   *  grids), or undefined when the dataset has no preview or is missing. */
+  /** Dataset cover URL (the shared helper the datasets/project-detail grids
+   *  use), or undefined when the dataset has no preview or is missing. */
   private thumbUrl(row: { name: string; preview_image?: string; missing?: boolean }): string | undefined {
     if (!row.preview_image || row.missing) return undefined;
-    return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(row.name)}/${row.preview_image}`;
+    return datasetPreviewUrl(this.rtc.apiUrl, this.rtc.mediaBaseUrl, row.name, row.preview_image);
   }
 
   private safe(name: string): string {

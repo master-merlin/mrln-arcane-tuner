@@ -778,6 +778,50 @@ class TestThumbnailEndpoint:
 
         dataset_manager.delete_dataset("ep_trav", delete_files=True)
 
+    def test_get_thumbnail_serves_the_requested_rendition(
+        self, client, tmp_path, monkeypatch,
+    ):
+        from PIL import Image
+        from app.core.dataset_manager import dataset_manager
+
+        ds_root = tmp_path / "datasets"
+        ds_root.mkdir()
+        monkeypatch.setattr(dataset_manager, "default_root", str(ds_root))
+
+        ds_path = ds_root / "ep_edge"
+        ds_path.mkdir()
+        Image.new("RGB", (2000, 1200), "blue").save(ds_path / "img.jpg")
+        dataset_manager.create_dataset("ep_edge", path=str(ds_path))
+
+        response = client.get(
+            "/api/datasets/ep_edge/thumbnail",
+            params={"image_rel_path": "img.jpg", "max_edge": 512},
+        )
+        assert response.status_code == 200
+        assert (ds_path / ".thumbnails" / "img@512.webp").exists()
+
+        dataset_manager.delete_dataset("ep_edge", delete_files=True)
+
+    def test_get_thumbnail_rejects_an_unlisted_edge(self, client, tmp_path, monkeypatch):
+        """`max_edge` lands in a filename, so it is allowlisted, not clamped."""
+        from app.core.dataset_manager import dataset_manager
+
+        ds_root = tmp_path / "datasets"
+        ds_root.mkdir()
+        monkeypatch.setattr(dataset_manager, "default_root", str(ds_root))
+
+        ds_path = ds_root / "ep_badedge"
+        ds_path.mkdir()
+        dataset_manager.create_dataset("ep_badedge", path=str(ds_path))
+
+        response = client.get(
+            "/api/datasets/ep_badedge/thumbnail",
+            params={"image_rel_path": "img.jpg", "max_edge": 9999},
+        )
+        assert response.status_code == 400
+
+        dataset_manager.delete_dataset("ep_badedge", delete_files=True)
+
 
 # ── Aggregate excluded_count ─────────────────────────────────────────────
 

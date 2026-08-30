@@ -763,3 +763,14 @@
         padding: 14px 16px 24px;
     }
 }
+
+/* Curve window selector — a tight group so the four choices read as one
+   control rather than four loose buttons among the curve tools. */
+.curve-window {
+    display: inline-flex;
+    gap: 2px;
+}
+.curve-window .btn.sm {
+    padding-inline: 6px;
+    min-width: 30px;
+}

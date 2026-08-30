@@ -8,6 +8,7 @@ import {
   type LoraResizeResult,
 } from '../../../services/lora-tools.service';
 import uPlot from 'uplot';
+import { integerAxis } from '../../../shared/integer-axis';
 
 export type ToolTab = 'inspect' | 'resize';
 
@@ -621,7 +622,12 @@ export class LoraToolsComponent implements OnDestroy {
                     y: { auto: true, range: (_u: uPlot, _min: number, max: number) => [0, Math.max(max * 1.25, 0.001)] as [number, number] },
                 },
                 axes: [
-                    {
+                    // x = layer index into `labels` — integral by construction.
+                    // Without the increment constraint uPlot picks 0.5/0.25 on a
+                    // short layer list and the `Math.round` below then prints the
+                    // SAME label on two adjacent ticks. `integerAxis` keeps its own
+                    // label lookup (the `values` override) but takes the incrs.
+                    integerAxis({
                         stroke: '#4b5563',
                         grid: { show: false },
                         ticks: { show: false },
@@ -631,7 +637,7 @@ export class LoraToolsComponent implements OnDestroy {
                             const idx = Math.round(v);
                             return labels[idx] || '';
                         }),
-                    },
+                    }),
                     {
                         stroke: '#4b5563',
                         grid: { stroke: 'rgba(75, 85, 99, 0.15)', show: true },

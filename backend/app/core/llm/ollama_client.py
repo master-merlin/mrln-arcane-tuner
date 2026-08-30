@@ -4,6 +4,9 @@
 Inference uses the portable ``/v1/chat/completions`` endpoint; model listing and
 pulling use Ollama's native ``/api/*`` (LM Studio manages its own models, so the
 caller hides pull/list when those endpoints are absent).
+
+The base URL is user-writable (``llm_refine.base_url``), so it is validated in
+``__init__`` -- at the sink, not at the call sites. See the constructor.
 """
 
 from __future__ import annotations
@@ -13,6 +16,7 @@ from typing import Any
 import httpx
 
 from app.core.logger import get_logger
+from app.core.url_guard import validate_base_url
 
 logger = get_logger(__name__)
 
@@ -21,7 +25,29 @@ _DEFAULT_TIMEOUT = 120.0
 
 class OllamaClient:
     def __init__(self, base_url: str = "http://localhost:11434", client: httpx.AsyncClient | None = None) -> None:
-        self._base = base_url.rstrip("/")
+        """Validate at construction, so no instance can exist with a base URL
+        this server may not request.
+
+        The guard sits HERE and not at the callers because every base URL that
+        reaches this class comes from the user-writable ``llm_refine.base_url``
+        setting, and a guard wired per-caller decays: the release audit found
+        ``validate_base_url`` wired into ONE caller
+        (``core/llm/openai_compat.py:60``) while this client was built
+        unguarded at ``api/llm_refine_routes.py:27`` and
+        ``core/captioning/caption_refine_batch.py:104``. A third caller is now
+        covered by construction. There is deliberately NO ``validate=False``
+        opt-out -- ``MRLN_ALLOW_PRIVATE_PROVIDER_URLS`` is the one documented
+        way back in (``core/url_guard.py``), and it is a no-op on a local
+        install, where reaching ``localhost:11434`` stays the correct use.
+
+        Raises ``OutboundUrlRejected`` (a ``ValueError``). Known limits are the
+        guard's own and are unchanged by placing it here: this checks the URL
+        before connecting, so DNS rebinding and redirect hops remain open
+        (``core/url_guard.py:34-44``). Note also that the check resolves the
+        host synchronously; an async caller constructing a client with a
+        hostile hostname pays that resolution on its event loop.
+        """
+        self._base = validate_base_url(base_url)
         self._injected = client
 
     def _acquire(self) -> tuple[httpx.AsyncClient, bool]:

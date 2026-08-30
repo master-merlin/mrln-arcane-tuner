@@ -362,6 +362,9 @@ The dataset pipeline is designed to get your images from raw collection to train
 #### Multi-Dataset Scanning
 Automatic directory scanning with image–caption pairing. Supports `.png`, `.jpg`, `.webp` images with paired `.txt` caption files. Incremental and full rescan modes.
 
+#### Cover Image
+The library card and workspace details footer both need one representative image, and by default that's just whatever the scanner enumerates first. A pin control (left of *Adjust image* in a grid tile's top-right cluster, left of *Adjust* in the details footer) lets you choose it instead — it's a toggle, so unpinning re-elects the automatic choice immediately. The pin is persisted (`datasets.preview_pinned`, `PUT /datasets/{name}/preview`) and **survives a rescan** — every scan used to overwrite the cover with the next enumerated file, which is what made pinning worth having in the first place. If the pinned file is later deleted, the next scan clears the pin and falls back rather than showing a hole. Library and workspace-grid covers are served from a sized thumbnail rendition, not the full training source.
+
 #### Image Manipulation
 A 9-stage non-destructive adjustment pipeline that processes images before training:
 
@@ -571,6 +574,10 @@ Full checkpoint support including LoRA weights, optimizer state, scheduler, Grad
 
 #### Real-Time Monitoring
 - **Live loss chart** — interactive uPlot chart with loss and learning rate curves
+- **Training Curves window** — `All · 1k · 500 · 100` narrows how much of the run the chart shows; it's a view over the data, so the KPI rail (best loss, convergence) stays keyed to the whole run regardless of the window
+- **Re-read from disk (`⟳`)** — re-reads the saved curve, including on a running job. The trainer only rewrites `loss_history.json` at the end of a run and flushes `step_metrics` every 50 steps, so a live re-read is accurate to the last flush, not to the instant
+- **Adaptive chip** — `Adaptive: n/m layers`, next to the `live` chip, for runs using adaptive layer targeting
+- **Elapsed & started-at** — the job header reads `<elapsed> elapsed · started <time>`. Elapsed comes from the trainer, not wall-clock-minus-start: it's real run time (paused time excluded, and the offset from earlier sessions of a resumed run carried forward), so a pause doesn't inflate it and a backend restart doesn't lose it
 - **Sample images** — periodic generation previews at configurable intervals
 - **Structured logs** — real-time WebSocket streaming of JSON-formatted training events
 - **Live terminal** — xterm.js terminal for raw log output
@@ -608,7 +615,7 @@ Combine **Inspect** results with **Targeted Layer Training** — inspect a refer
 
 ### 🖥️ Server Settings
 
-- **Backend & frontend port configuration** — dynamic runtime config with automatic frontend discovery
+- **Backend & frontend port configuration** — set in Server Settings; the backend reads the saved port on its next start (the platform's own port outranks it inside a container)
 - **Log level control** — adjust structured logging verbosity at runtime
 - **Frontend auto-start** — optionally launch the Angular dev server and open a browser on backend startup
 - **System restart** — restart the backend from the UI

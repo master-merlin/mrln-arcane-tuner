@@ -133,6 +133,35 @@ def client():
     return TestClient(app)
 
 
+@pytest.fixture
+def frozen_gpu_snapshot(monkeypatch):
+    """Hold the LIVE GPU reading fixed for the duration of one test.
+
+    ``VRAMEstimator.estimate`` queries ``system_monitor.snapshot()`` on every
+    call (`app/engine/utils/vram_estimator.py:746`) and copies the device-wide
+    figures into the report — ``used_mb`` / ``total_mb`` / ``available_mb`` /
+    ``fits``, plus two warning strings that interpolate them. So two estimates
+    taken a few milliseconds apart legitimately differ whenever another process
+    on the box (ComfyUI, a browser, a training run) allocates or frees VRAM
+    between them: measured 2026-08-29 as ``used_mb`` 50851 vs 50731 and
+    warnings differing only as "49.7 GB" vs "49.5 GB" (LANES LANE-30).
+
+    A test that compares two estimates for equality is asserting something
+    about the MODEL, not about the device, so it must see one snapshot for
+    both calls — otherwise the suite's colour depends on what else is open on
+    the machine, which is not a gate.
+
+    This takes one REAL reading and replays it, so the assertion still runs
+    against this box's actual telemetry (and against the no-GPU path, where
+    ``gpus`` is empty, unchanged) — it is not a fabricated device.
+    """
+    from app.core import system_monitor as sm
+
+    snap = sm.system_monitor.snapshot()  # one real read …
+    monkeypatch.setattr(sm.system_monitor, "snapshot", lambda: snap)  # … replayed
+    return snap
+
+
 def pytest_collection_finish(session):
     """Guard against silent collection breakage (audit P0 item 0.6).
 

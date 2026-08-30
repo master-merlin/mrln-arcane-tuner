@@ -1,4 +1,5 @@
 import uPlot from 'uplot';
+import { integerAxis } from '../../shared/integer-axis';
 import type { ActivityWeek } from '../../services/job';
 import { tooltipPlugin, type TooltipFormatter } from './stats-tooltip';
 
@@ -130,8 +131,11 @@ export function buildActivityOpts(
         cursor: CURSOR,
         scales: { x: { time: true } },
         axes: [
+            // x = week timestamps (uPlot time scale, its own increment ladder);
+            // y = cumulative run counts — integral, and now on the shared ladder
+            // rather than a local copy that stopped at 100.
             themedAxis(theme),
-            themedAxis(theme, { size: 36, incrs: [1, 2, 5, 10, 25, 50, 100] }),
+            themedAxis(theme, integerAxis({ size: 36 })),
         ],
         series: [
             {},
@@ -153,8 +157,10 @@ export function buildHistogramOpts(
         cursor: CURSOR,
         scales: { x: { time: false } },
         axes: [
+            // x = loss bin centers — a genuinely continuous domain, deliberately
+            // NOT constrained to integers; y = number of runs, which is integral.
             themedAxis(theme, { values: (_u, vals) => vals.map(v => Number(v).toFixed(3)) }),
-            themedAxis(theme, { size: 36 }),
+            themedAxis(theme, integerAxis({ size: 36 })),
         ],
         series: [
             {},
@@ -175,8 +181,10 @@ export function buildAdaptiveOpts(
         cursor: CURSOR,
         scales: { x: { time: false } },
         axes: [
-            themedAxis(theme),
-            themedAxis(theme, { size: 36 }),
+            // x = training step, y = active-layer count. Both integral, so both
+            // carry the integer increment constraint (shared/integer-axis.ts).
+            themedAxis(theme, integerAxis()),
+            themedAxis(theme, integerAxis({ size: 36 })),
         ],
         series: [
             {},

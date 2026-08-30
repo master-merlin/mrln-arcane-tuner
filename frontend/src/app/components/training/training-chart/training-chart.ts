@@ -3,6 +3,7 @@ import {
     ViewEncapsulation, input, output, effect
 } from '@angular/core';
 import uPlot from 'uplot';
+import { integerAxis } from '../../../shared/integer-axis';
 
 export type SmoothingMode = 'ema' | 'sma';
 
@@ -358,13 +359,17 @@ export class TrainingChartComponent implements AfterViewInit, OnDestroy {
         };
 
         const axes: uPlot.Axis[] = [
-            {
+            // x = training step. Integral by construction, so the increments are
+            // constrained to integers — uPlot's default `incrs` include 0.5/0.25
+            // and put gridlines at half-steps once the visible span is small
+            // (measured: <= 6 steps at a 738px plot). See shared/integer-axis.ts.
+            integerAxis({
                 stroke: cAxisDim,
                 grid: { stroke: cGrid, width: 1 },
                 ticks: { stroke: cTick, width: 1 },
                 font: '10px Inter, sans-serif',
                 labelFont: '10px Inter, sans-serif',
-            },
+            }),
             {
                 stroke: cAxis,
                 grid: { stroke: cGrid, width: 1 },

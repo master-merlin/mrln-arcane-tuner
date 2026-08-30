@@ -191,7 +191,11 @@ def test_vram_activations_scale_with_num_frames():
     assert math.isfinite(many.peak_mb)
 
 
-def test_image_vram_unchanged_by_video_path():
+def test_image_vram_unchanged_by_video_path(frozen_gpu_snapshot):
+    # ``frozen_gpu_snapshot`` replays ONE live NVML read for both calls, so the
+    # comparison below can stay a WHOLE-dict equality (which is what makes it
+    # catch fields nobody thought about) without the device-derived rows
+    # deciding the result. See backend/tests/conftest.py::frozen_gpu_snapshot.
     defn = registry.get_definition(_IMAGE_DEF)
     assert defn is not None
 

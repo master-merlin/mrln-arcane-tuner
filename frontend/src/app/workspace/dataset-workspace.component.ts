@@ -482,6 +482,25 @@ export class DatasetWorkspaceComponent {
         });
     }
 
+    /**
+     * Pin (or unpin, on `null`) the dataset's library-card cover.
+     *
+     * No local mutation and no refetch: the backend broadcasts the updated
+     * dataset on the entity channel, which is the one sync path every surface
+     * already listens on — so the library card, this workspace's own header and
+     * any other open window all follow from the same event.
+     */
+    protected onPinCover(mediaFile: string | null): void {
+        const d = this.dataset();
+        if (!d) return;
+        this.datasetsApi.setPreviewImage(d.name, mediaFile).subscribe({
+            next: () => this.toast.success(
+                mediaFile ? 'Pinned as library cover.' : 'Library cover unpinned.',
+            ),
+            error: (err: unknown) => this.toast.error(this.errMsg(err, 'Could not set the cover')),
+        });
+    }
+
     /** Per-dataset Analyze / Cache / Rescan actions from the topbar. */
     protected openAction(kind: 'analyze' | 'cache' | 'rescan'): void {
         const d = this.dataset();

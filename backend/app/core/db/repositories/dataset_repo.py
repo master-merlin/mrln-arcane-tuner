@@ -24,7 +24,7 @@ class DatasetRepository:
         "id", "name", "path", "description", "created_at",
         "last_scanned_at", "file_count", "total_size_bytes",
         "multimedia_count", "caption_count", "mask_count",
-        "caption_coverage", "missing", "preview_image",
+        "caption_coverage", "missing", "preview_image", "preview_pinned",
         "majority_ar", "harmonization_score", "classifier",
         "version", "has_cache", "source_type", "license", "updated_at",
         "trigger_word", "tags", "notes", "kind",

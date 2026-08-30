@@ -9,7 +9,7 @@ import { FormsModule } from '@angular/forms';
 import { type ChartDataPoint, type SmoothingMode } from '../training-chart/training-chart';
 import {
   lossStatus, CONVERGENCE_WINDOW, type LossStatus,
-  latestMetrics, lossSeries, formatEta as fmtEta, formatDuration,
+  latestMetrics, lossSeries, formatEta as fmtEta, elapsedLabel,
   type StepMetrics,
 } from '../../../shared/job-metrics';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
@@ -24,6 +24,22 @@ import { ToastService } from '../../../services/toast';
 
 /** Archive rows shown while collapsed — a preview, not the whole archive. */
 const ARCHIVE_PREVIEW_ROWS = 6;
+
+/**
+ * Logs to keep when a `job_update` lands: the server's, when it actually sent
+ * some, otherwise whatever we have accumulated.
+ *
+ * This used to read `updatedJob.logs || existingLogs`, and an EMPTY ARRAY IS
+ * TRUTHY — so a payload carrying `logs: []` counted as "the server sent logs"
+ * and wiped the client's buffer. `resume_job` broadcasts a full
+ * `job.model_dump()` (job_manager.py), which is exactly such a payload whenever
+ * the server-side ring buffer has been reset or evicted; the loss chart goes
+ * blank and nothing restores it. Absent is `undefined`, not "empty".
+ */
+function mergeJobLogs(incoming: string[] | undefined, existing: string[] | undefined): string[] {
+  if (Array.isArray(incoming) && incoming.length > 0) return incoming;
+  return existing ?? [];
+}
 
 @Component({
   selector: 'app-training-job-queue',
@@ -348,7 +364,7 @@ export class TrainingJobQueueComponent implements OnInit {
         // `jobs` until the 30s history poll. loadHistory() (inside
         // archiveLocally) then backfills the authoritative DB summary row.
         const existing = this.jobs().find(j => j.id === updatedJob.id);
-        const merged: Job = { ...updatedJob, logs: updatedJob.logs || existing?.logs || [] };
+        const merged: Job = { ...updatedJob, logs: mergeJobLogs(updatedJob.logs, existing?.logs) };
         this.archiveLocally(merged, updatedJob.status);
         // The backend now starts the next pending job on completion/failure —
         // no client-side advancement needed (and it works with no browser open).
@@ -370,9 +386,9 @@ export class TrainingJobQueueComponent implements OnInit {
         const index = current.findIndex(j => j.id === updatedJob.id);
         if (index !== -1) {
           const newJobs = [...current];
-          // Preserve logs if not present in payload to avoid clearing them
-          const existingLogs = newJobs[index].logs || [];
-          newJobs[index] = { ...updatedJob, logs: updatedJob.logs || existingLogs };
+          // Same index, same shape — only the logs are merged rather than
+          // replaced, so an update that carries none keeps what we have.
+          newJobs[index] = { ...updatedJob, logs: mergeJobLogs(updatedJob.logs, newJobs[index].logs) };
           return newJobs;
         } else {
           // New job
@@ -758,12 +774,27 @@ export class TrainingJobQueueComponent implements OnInit {
     });
   }
 
+  /**
+   * Elapsed RUN time for a queue row — the SAME number the Jobs detail pane
+   * shows for the same job (`shared/job-metrics.elapsedLabel`).
+   *
+   * This used to be `formatDuration(job.started_at, paused_at ?? finished_at ??
+   * now)`, i.e. raw wall clock. The backend clears `paused_at` on resume, so
+   * after a pause that expression silently counted the whole paused interval as
+   * training: it froze correctly during the pause and then, on the next 1 Hz
+   * tick, leapt forward by the entire pause in one frame. It was the original
+   * UAT-3.6 defect surviving in a second surface that derived what the detail
+   * pane already owned.
+   *
+   * The runner's `elapsed` is now the single owner. Between step logs this row
+   * holds the last reading rather than extrapolating: the rows that render it
+   * are the recent/archive rows, whose jobs are terminal and whose run time no
+   * longer ticks, so an arrival stamp would buy nothing and would put per-job
+   * mutable clock state into a list that can render the whole archive. Wall
+   * clock remains the fallback for the pre-first-step window only.
+   */
   getDuration(job: Job): string {
-    if (!job.started_at) return '0:00';
-    const end = job.finished_at ? job.finished_at * 1000
-      : job.paused_at ? job.paused_at * 1000
-        : this.currentNow();
-    return formatDuration(job.started_at, end);
+    return elapsedLabel(job, this.currentNow());
   }
 
   /** Template entry point; delegates to the shared `formatEta`. */

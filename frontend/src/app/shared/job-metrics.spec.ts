@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { adaptEvents, latestAdaptState, lossSeries, logTail } from './job-metrics';
+import {
+    adaptEvents,
+    latestAdaptState,
+    newestAdaptState,
+    lossSeries,
+    logTail,
+    type AdaptEvent,
+} from './job-metrics';
 
 const stepLine = (step: number, extra: object) =>
     JSON.stringify({ step, status: 'training', loss: 0.5, progress: 1, ...extra });
@@ -21,6 +28,18 @@ describe('adaptive metrics parsing', () => {
         expect(latestAdaptState([])).toBeNull();
         const logs = [adaptLine({ step: 20, kind: 'narrow', active_count: 5, total_count: 8 })];
         expect(latestAdaptState(logs)?.active_count).toBe(5);
+    });
+
+    it('newestAdaptState: higher step wins, null-tolerant, ties to b (LANE-35)', () => {
+        const a: AdaptEvent = { step: 1450, kind: 'narrow', active_count: 181, total_count: 224 };
+        const b: AdaptEvent = { step: 1700, kind: 'narrow', active_count: 176, total_count: 224 };
+        expect(newestAdaptState(null, null)).toBeNull();
+        expect(newestAdaptState(null, b)).toBe(b);
+        expect(newestAdaptState(a, null)).toBe(a);
+        expect(newestAdaptState(a, b)).toBe(b); // durable older, live newer
+        expect(newestAdaptState(b, a)).toBe(b); // live older (evicted refetch)
+        expect(newestAdaptState(a, { ...a })).not.toBe(a); // tie → b
+        expect(newestAdaptState(a, { ...a })?.step).toBe(1450);
     });
 
     it('lossSeries carries adaptive fields through for charting', () => {

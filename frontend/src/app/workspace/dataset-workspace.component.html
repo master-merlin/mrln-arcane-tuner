@@ -254,8 +254,10 @@
                         [definitionId]="variantDefinitionId()"
                         [variantCaptions]="variantCaptions()"
                         [datasetKind]="dataset()?.kind ?? 'standard'"
+                        [coverFile]="dataset()?.preview_image ?? null"
                         (saveCaption)="onSaveCaption($event)"
                         (toggleExclusion)="onToggleExclusion($event)"
+                        (coverPinRequested)="onPinCover($event)"
                         (deletePair)="onDeletePairRequested($event)"/>
                 }
                 @case ('details') {
@@ -268,7 +270,9 @@
                             [showMasked]="showMasked()"
                             [showOverlay]="showOverlay()"
                             [hasMaskedImages]="hasMaskedImages()"
+                            [coverFile]="dataset()?.preview_image ?? null"
                             (saveCaption)="onSaveCaption($event)"
+                            (coverPinRequested)="onPinCover($event)"
                             (toggleExclusion)="onToggleExclusion($event)"
                             (deletePair)="onDeletePairRequested($event)"
                             (deleteMask)="onDeleteMaskRequested($event)"

@@ -7,6 +7,7 @@ import { TemplateService } from './template.service';
 import { ImportArchiveService } from './import-archive.service';
 import { RuntimeConfigService } from './runtime-config.service';
 import { ToastService } from './toast';
+import { PREVIEW_MAX_EDGE } from '../shared/media-preview';
 
 function tpl(id: string, project_id: string | null, extra: Record<string, unknown> = {}) {
     return {
@@ -51,7 +52,7 @@ describe('ProjectExportService', () => {
                     },
                 },
                 { provide: ImportArchiveService, useValue: { downloadBlob } },
-                { provide: RuntimeConfigService, useValue: { mediaBaseUrl: 'http://m' } },
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api', mediaBaseUrl: 'http://m' } },
                 { provide: ToastService, useValue: { error: vi.fn(), success: vi.fn() } },
             ],
         });
@@ -76,8 +77,16 @@ describe('ProjectExportService', () => {
         expect(cap.items[0].sub).toBe('qwen3-vl'); // model_id subline
         const train = data.groups.find((g: { key: string }) => g.key === 'training');
         expect(train.items[0].sub).toBe('flux-dev'); // definition_id subline
+        // The cover comes from the shared helper, so it is a bounded thumbnail
+        // rendition rather than the full-size original this used to serve.
+        // The private copy that built it here also left `preview_image`
+        // un-encoded, which truncated the URL at a `#` in a filename.
         expect(data.datasets).toEqual([
-            { name: 'ds-one', thumbUrl: 'http://m/ds-one/p.jpg', mode: 'reference' },
+            {
+                name: 'ds-one',
+                thumbUrl: `/api/datasets/ds-one/thumbnail?image_rel_path=p.jpg&max_edge=${PREVIEW_MAX_EDGE}`,
+                mode: 'reference',
+            },
         ]);
     });
 

@@ -30,6 +30,15 @@ except ImportError:
 _THUMB_DIR_NAME = ".thumbnails"
 _MAX_EDGE_DEFAULT = 256
 _WEBP_QUALITY = 80
+# Renditions a caller may ask for. The value lands in a FILENAME, so it is an
+# allowlist and not a range check: nothing outside this tuple ever reaches a
+# path.
+#
+# 256 is the original grid-tile size. The larger ones exist for library cards,
+# which grow to ~(viewport-60)/6 and are then multiplied by the display's pixel
+# ratio: 512 was measurably too soft on a real monitor, so the cover default is
+# 1024 and 1536 is headroom for a wide card on a HiDPI display.
+ALLOWED_MAX_EDGES = (256, 512, 1024, 1536)
 # Every video/animation extension is first-frame extractable via PyAV
 # (mp4/webm/mkv/avi decode; .gif's first frame works too), so the
 # thumbnail path mirrors the canonical video set instead of an mp4-only
@@ -42,7 +51,9 @@ def thumbnail_dir(dataset_path: str) -> Path:
     return Path(dataset_path) / _THUMB_DIR_NAME
 
 
-def thumbnail_path_for(dataset_path: str, rel_path: str) -> Path:
+def thumbnail_path_for(
+    dataset_path: str, rel_path: str, max_edge: int = _MAX_EDGE_DEFAULT,
+) -> Path:
     """Return the absolute path of the thumbnail for ``rel_path``.
 
     The thumbnail filename mirrors the source stem with a ``.webp``
@@ -51,10 +62,47 @@ def thumbnail_path_for(dataset_path: str, rel_path: str) -> Path:
     components (``control__img1.webp``) — root naming is unchanged so
     existing thumbnails stay valid, and a control image can't collide
     with the root image of the same stem.
+
+    The rendition size is part of the key, because it is part of the
+    output: a non-default *max_edge* appends ``@<edge>`` to the stem. The
+    default keeps the bare ``<stem>.webp`` name so every thumbnail already
+    on disk stays valid instead of being silently orphaned.
     """
     p = Path(rel_path.replace("\\", "/"))
     stem = "__".join((*p.parent.parts, p.stem)) if p.parent.parts else p.stem
+    if max_edge != _MAX_EDGE_DEFAULT:
+        stem = f"{stem}@{max_edge}"
     return thumbnail_dir(dataset_path) / f"{stem}.webp"
+
+
+def thumbnail_paths_for(dataset_path: str, rel_path: str) -> list[Path]:
+    """Return EVERY rendition of ``rel_path``'s thumbnail, at any size.
+
+    Invalidation is what this exists for: a source whose pixels changed must
+    drop all of its derived sizes, or a card keeps painting pre-edit pixels
+    at whichever size it happens to request.
+
+    Sized renditions are matched by exact stem prefix rather than by a glob,
+    because a source filename may legitimately contain ``[``, ``*`` or ``?``
+    — which a glob pattern would interpret instead of match.
+    """
+    base = thumbnail_path_for(dataset_path, rel_path)
+    found = [base]
+    parent = base.parent
+    if not parent.is_dir():
+        return found
+
+    prefix = f"{base.stem}@"
+    try:
+        entries = list(parent.iterdir())
+    except OSError:
+        return found
+    for path in entries:
+        if path.suffix != ".webp" or not path.stem.startswith(prefix):
+            continue
+        if path.stem[len(prefix):].isdigit():
+            found.append(path)
+    return found
 
 
 def generate_thumbnail(
@@ -118,30 +166,37 @@ def _first_video_frame(src_path: str):
     return None
 
 
-def ensure_thumbnail(dataset_path: str, rel_path: str) -> Path | None:
-    """Return an existing thumbnail or generate one.
+def ensure_thumbnail(
+    dataset_path: str, rel_path: str, max_edge: int = _MAX_EDGE_DEFAULT,
+) -> Path | None:
+    """Return an existing thumbnail or generate one at *max_edge*.
 
     Returns ``None`` when the source is missing or unreadable.
     """
     src_path = os.path.join(dataset_path, rel_path)
-    dst_path = thumbnail_path_for(dataset_path, rel_path)
+    dst_path = thumbnail_path_for(dataset_path, rel_path, max_edge)
 
     if dst_path.exists():
         return dst_path
     if not os.path.exists(src_path):
         return None
-    if generate_thumbnail(src_path, dst_path):
+    if generate_thumbnail(src_path, dst_path, max_edge):
         return dst_path
     return None
 
 
 def invalidate_thumbnail(dataset_path: str, rel_path: str) -> None:
-    """Delete the thumbnail for *rel_path* if it exists (best-effort)."""
-    dst_path = thumbnail_path_for(dataset_path, rel_path)
-    try:
-        dst_path.unlink(missing_ok=True)
-    except OSError as e:
-        logger.warning("thumbnail_invalidate_failed", path=str(dst_path), error=str(e))
+    """Delete every rendition of *rel_path*'s thumbnail (best-effort).
+
+    All sizes, not just the default one — see :func:`thumbnail_paths_for`.
+    """
+    for dst_path in thumbnail_paths_for(dataset_path, rel_path):
+        try:
+            dst_path.unlink(missing_ok=True)
+        except OSError as e:
+            logger.warning(
+                "thumbnail_invalidate_failed", path=str(dst_path), error=str(e),
+            )
 
 
 def delete_thumbnail(dataset_path: str, rel_path: str) -> None:

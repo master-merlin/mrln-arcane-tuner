@@ -1,10 +1,12 @@
-import { Component, ElementRef, computed, effect, inject, input, output, signal, untracked, viewChild, ChangeDetectionStrategy } from '@angular/core';
+import { Component, DestroyRef, ElementRef, computed, effect, inject, input, output, signal, untracked, viewChild, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { StatePillsComponent, StatePillsState } from '../../../../ui/state-pills/state-pills.component';
 import { VideoTilePreviewComponent } from './video-tile-preview';
 import { AudioTilePreviewComponent } from './audio-tile-preview';
 import type { DatasetPair, PairMetadata } from '../../../../services/dataset';
 import { ModelContextStore } from '../../../../state/model-context.store';
+import { PREVIEW_MAX_EDGE, staysAnimated } from '../../../../shared/media-preview';
+import { createInViewTracker } from '../../../../shared/in-view-tracker';
 import { detect, parse, serialize, normalize } from './caption/ideogram-format';
 
 /**
@@ -69,13 +71,14 @@ export interface GridCropRequest {
                  [style.grid-template-columns]="'repeat(' + density() + ', minmax(0, 1fr))'">
                 @for (pair of pairs(); track pair.stem; let i = $index) {
                     <div [attr.data-media-file]="pair.media_file"
+                         [attr.data-index]="i"
                          [class.tile-active]="pair.media_file === activeMediaFile()"
                          class="tile bg-surface-mid/50 border border-surface-mid rounded-theme-xl overflow-hidden flex flex-col group hover:border-brand/50 transition-all hover:shadow-xl hover:shadow-brand/10 h-[480px]">
                         <!-- Media Thumbnail -->
                          <div class="h-80 bg-media-backdrop relative cursor-pointer overflow-hidden flex-shrink-0" (click)="detailRequested.emit(i)">
                              <!-- Filename Overlay (top-center) -->
                              <div class="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none z-[5] max-w-[58%]">
-                                 <div class="bg-surface-low/80 backdrop-blur-sm text-text-primary text-[10px] px-2 py-0.5 rounded-theme-md border border-border-subtle font-mono truncate text-center">
+                                 <div class="bg-surface-low/80 text-text-primary text-[10px] px-2 py-0.5 rounded-theme-md border border-border-subtle font-mono truncate text-center">
                                      {{ pair.media_file }}
                                  </div>
                              </div>
@@ -85,8 +88,16 @@ export interface GridCropRequest {
                                   event because the on-top img/video is rendered
                                   at opacity-80 at rest, so without an explicit
                                   hide the dots would bleed through every
-                                  loaded tile. -->
-                             @if (!isLoaded(pair)) {
+                                  loaded tile. ALSO gated on the tile being on
+                                  screen: the media is lazily loaded, so an
+                                  off-screen tile never loads, never fires a
+                                  load event, and its three dots animate on
+                                  forever.
+                                  Measured on a 263-item dataset: 238 unloaded
+                                  tiles = 714 permanently running CSS
+                                  animations, and they cost the whole app
+                                  ~18 ms of every frame even while idle. -->
+                             @if (isPending(pair, i)) {
                                  <span class="grid-thumb-loader" aria-hidden="true">
                                      <span></span><span></span><span></span>
                                  </span>
@@ -110,10 +121,11 @@ export interface GridCropRequest {
                              } @else {
                                 <img [src]="getDisplayUrl(pair)"
                                      (load)="onTileLoaded($event, pair)"
-                                     (error)="onOverlayError(pair)"
+                                     (error)="onTileImageError(pair)"
                                      class="w-full h-full object-cover transition-opacity relative z-[1]"
                                      [class]="pair.metadata?.enabled === false ? 'opacity-30' : 'opacity-80 group-hover:opacity-100'"
-                                     loading="lazy">
+                                     loading="lazy"
+                                     decoding="async">
                              }
                              
                              <!-- Edit Overlay -->
@@ -165,25 +177,35 @@ export interface GridCropRequest {
                                 <app-state-pills [state]="pairState(pair)"/>
                              </span>
                              
-                             <!-- Action Buttons (top-right): adjust + crop + eye toggle + delete — matches detail view order -->
-                              <div [class]="'absolute top-2 right-2 flex gap-1 bg-transparent z-10 transition-all ' + (pair.metadata?.enabled === false ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')">
+                             <!-- Action Buttons (top-right): pin + adjust + crop + eye toggle + delete — matches detail view order -->
+                              <div [class]="'absolute top-2 right-2 flex gap-1 bg-transparent z-10 transition-all ' + (pair.metadata?.enabled === false || isCover(pair) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')">
                                  @if (pair.media_type !== 'audio') {
-                                 <button (click)="onEditClick(pair, $event, i)" class="tile-action bg-surface-low/60 hover:bg-purple-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Adjust image">
+                                 <button (click)="onPinClick(pair, $event)"
+                                         data-testid="grid-pin-cover"
+                                         class="tile-action tile-pin rounded-theme-md shadow-lg transition-colors"
+                                         [class.is-cover]="isCover(pair)"
+                                         [attr.aria-pressed]="isCover(pair)"
+                                         [title]="isCover(pair) ? 'Library cover — click to unpin' : 'Pin as library cover'">
+                                    <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 17v5"/><path d="M9 10.76a2 2 0 0 1-1.11 1.79l-1.78.9A2 2 0 0 0 5 15.24V16a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-.76a2 2 0 0 0-1.11-1.79l-1.78-.9A2 2 0 0 1 15 10.76V7a1 1 0 0 1 1-1 2 2 0 0 0 0-4H8a2 2 0 0 0 0 4 1 1 0 0 1 1 1z"/></svg>
+                                 </button>
+                                 }
+                                 @if (pair.media_type !== 'audio') {
+                                 <button (click)="onEditClick(pair, $event, i)" class="tile-action bg-surface-low/88 hover:bg-purple-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg transition-colors" title="Adjust image">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="4" y1="21" x2="4" y2="14"/><line x1="4" y1="10" x2="4" y2="3"/><line x1="12" y1="21" x2="12" y2="12"/><line x1="12" y1="8" x2="12" y2="3"/><line x1="20" y1="21" x2="20" y2="16"/><line x1="20" y1="12" x2="20" y2="3"/><line x1="1" y1="14" x2="7" y2="14"/><line x1="9" y1="8" x2="15" y2="8"/><line x1="17" y1="16" x2="23" y2="16"/></svg>
                                  </button>
                                  }
                                  @if (pair.media_type !== 'audio' && pair.metadata?.target_width && (pair.metadata!.target_width !== pair.metadata!.width || pair.metadata!.target_height !== pair.metadata!.height)) {
-                                     <button (click)="onCropClick(pair, $event)" class="tile-action bg-surface-low/60 hover:bg-orange-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Crop image (aspect ratio mismatch)">
+                                     <button (click)="onCropClick(pair, $event)" class="tile-action bg-surface-low/88 hover:bg-orange-500/80 text-text-muted hover:text-white rounded-theme-md shadow-lg transition-colors" title="Crop image (aspect ratio mismatch)">
                                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M6 2v14a2 2 0 0 0 2 2h14"></path><path d="M18 22V8a2 2 0 0 0-2-2H2"></path></svg>
                                      </button>
                                  }
                                  <button (click)="toggleExclusion(pair, $event)"
-                                         class="tile-action tile-exclude rounded-theme-md shadow-lg backdrop-blur-sm transition-colors"
+                                         class="tile-action tile-exclude rounded-theme-md shadow-lg transition-colors"
                                          [class.is-excluded]="pair.metadata?.enabled === false"
                                          [title]="pair.metadata?.enabled === false ? 'Excluded — click to re-include' : 'Exclude from training'">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M21.7311 18L13.7311 4C13.5562 3.69392 13.3034 3.43961 12.9985 3.26283C12.6935 3.08605 12.3474 2.99298 11.995 2.99298C11.6427 2.99298 11.2965 3.08605 10.9916 3.26283C10.6867 3.43961 10.4339 3.69392 10.2591 4L2.25906 18C2.08488 18.3036 1.99352 18.6477 1.9943 18.9978C1.99508 19.348 2.08797 19.6916 2.26349 19.9945C2.43902 20.2973 2.69107 20.5488 2.99435 20.7234C3.29762 20.898 3.64158 20.9897 3.99155 20.9893H19.9916C20.3406 20.989 20.6833 20.8967 20.9853 20.7218C21.2873 20.547 21.5379 20.2955 21.7124 19.9929C21.8869 19.6903 21.9791 19.3471 21.9797 18.9978C21.9803 18.6485 21.8893 18.305 21.7159 18.0019L21.7311 18Z"/><line x1="12" y1="9" x2="12" y2="13"/><line x1="12" y1="17" x2="12.01" y2="17"/></svg>
                                  </button>
-                                 <button (click)="deletePair(pair, $event)" class="tile-action bg-danger/80 hover:bg-danger text-white rounded-theme-md shadow-lg backdrop-blur-sm transition-colors" title="Delete entry">
+                                 <button (click)="deletePair(pair, $event)" class="tile-action bg-danger-overlay/88 hover:bg-danger-overlay text-white rounded-theme-md shadow-lg transition-colors" title="Delete entry">
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                                  </button>
                               </div>
@@ -268,11 +290,18 @@ export interface GridCropRequest {
         }
         /* Exclude toggle — muted by default, warning-tinted on hover, warning +
            tinted background when actually excluded. The rest background matches
-           the adjust/crop buttons (surface-low/60) so all three overlay
-           actions share one consistent, theme-aware glass at rest instead of a
-           hardcoded dark fill (which read as dark-theme in light mode). */
+           the adjust/crop buttons (surface-low/88) so all three overlay
+           actions share one consistent, theme-aware fill at rest instead of a
+           hardcoded dark fill (which read as dark-theme in light mode).
+
+           88%, not 60%: these buttons carried a per-tile backdrop blur, which
+           was removed under DECISION-21 because a per-tile backdrop-filter is a
+           compositor pass per tile per frame. The alpha is what replaces the
+           blur's separation — at 60% the muted grey glyphs lose contrast over
+           a bright photo. The two halves travel together; see
+           backend/tests/test_frontend_scroll_cost_guard.py. */
         .tile-exclude {
-            background: color-mix(in oklab, var(--color-surface-low) 60%, transparent);
+            background: color-mix(in oklab, var(--color-surface-low) 88%, transparent);
             color: var(--color-text-muted);
         }
         .tile-exclude:hover {
@@ -281,7 +310,7 @@ export interface GridCropRequest {
         }
         .tile-exclude.is-excluded {
             color: var(--color-warning);
-            background: color-mix(in oklab, var(--color-warning) 22%, color-mix(in oklab, var(--color-surface-low) 60%, transparent));
+            background: color-mix(in oklab, var(--color-warning) 22%, color-mix(in oklab, var(--color-surface-low) 88%, transparent));
             border: 1px solid color-mix(in oklab, var(--color-warning) 55%, transparent);
         }
         .tile-exclude.is-excluded:hover {
@@ -289,7 +318,28 @@ export interface GridCropRequest {
             color: white;
         }
 
-        /* Shared footprint for the tile overlay actions (adjust / crop /
+        /* Pin — same footprint as its siblings. The pinned tile keeps its
+           action row visible (see the row's opacity binding) so the cover is
+           identifiable without hovering every tile to find it. */
+        .tile-pin {
+            background: color-mix(in oklab, var(--color-surface-low) 88%, transparent);
+            color: var(--color-text-muted);
+        }
+        .tile-pin:hover {
+            background: color-mix(in oklab, var(--color-brand) 80%, transparent);
+            color: white;
+        }
+        .tile-pin.is-cover {
+            color: var(--color-brand);
+            background: color-mix(in oklab, var(--color-brand) 22%, color-mix(in oklab, var(--color-surface-low) 88%, transparent));
+            border: 1px solid color-mix(in oklab, var(--color-brand) 55%, transparent);
+        }
+        .tile-pin.is-cover:hover {
+            background: color-mix(in oklab, var(--color-brand) 80%, transparent);
+            color: white;
+        }
+
+        /* Shared footprint for the tile overlay actions (pin / adjust / crop /
            exclude / delete) — one consistent, slightly compact size so the
            cluster reads uniform. Overrides the SVGs' 14px presentation attrs. */
         .tile-action { padding: 5px; line-height: 0; }
@@ -413,6 +463,10 @@ export class ViewerGridViewComponent {
     /** Dataset kind ('standard' | 'edit'). 'edit' enables pair badges, the
      *  effective-target thumbnail, and the edit-instruction caption hint. */
     datasetKind = input<string>('standard');
+    /** The dataset's current library-card cover (`preview_image`), or null.
+     *  Drives the pin button's state so the tile that IS the cover reads as
+     *  pinned and clicking it unpins. */
+    coverFile = input<string | null>(null);
 
     /** True when editing per-definition variants (model-aware + a definition +
      *  not viewing masked captions). */
@@ -448,6 +502,41 @@ export class ViewerGridViewComponent {
     }
 
     /**
+     * Dataset-relative paths whose thumbnail rendition returned an error.
+     * `renditionUrl` then serves the original bytes for that path instead —
+     * thumbnail generation is Pillow-based, so a format the browser can paint
+     * but this install's Pillow cannot decode (AVIF without its plugin) still
+     * shows an image rather than a broken tile. Keyed by PATH, not by
+     * `media_file`, because an edit dataset's tile paints `effective_target`.
+     */
+    protected failedRenditions = signal<Set<string>>(new Set());
+
+    /**
+     * Single `(error)` handler for the tile `<img>`, routing to whichever of
+     * the two independent fallbacks applies to what that tile is painting.
+     * They are not interchangeable: a failed overlay must drop to the SOURCE
+     * image, a failed rendition must drop to the source's ORIGINAL BYTES.
+     * Sending a rendition failure into `failedOverlays` would change nothing
+     * about the URL and leave the tile permanently blank.
+     */
+    protected onTileImageError(pair: GridPair): void {
+        if (!pair?.media_file) return;
+        if (this.showsOverlay(pair)) {
+            this.onOverlayError(pair);
+            return;
+        }
+        if (this.showsMasked(pair)) return;  // already direct — nothing to fall back to
+        const rel = this.tileSourcePath(pair);
+        if (!rel) return;
+        this.failedRenditions.update(s => {
+            if (s.has(rel)) return s;
+            const next = new Set(s);
+            next.add(rel);
+            return next;
+        });
+    }
+
+    /**
      * Set of URLs that have successfully reported `load`/`loadeddata`.
      * Keyed by full URL (not by `media_file`) so toggling showMasked /
      * showOverlay doesn't invalidate tiles whose effective URL didn't
@@ -461,6 +550,20 @@ export class ViewerGridViewComponent {
 
     protected isLoaded(pair: GridPair): boolean {
         return this.loadedUrls().has(this.getDisplayUrl(pair));
+    }
+
+    /** Bounds the tile loader to tiles on screen — see in-view-tracker. */
+    private inView = createInViewTracker({ selector: '.tile[data-index]' });
+
+    /**
+     * The loader dots animate forever, so they are only rendered where
+     * they describe something in progress: the tile is on screen (its
+     * lazy media has therefore been requested) and has not painted yet.
+     * `isLoaded` alone is not enough — an off-screen lazy image never
+     * fires `load`, so its dots would never stop.
+     */
+    protected isPending(pair: GridPair, index: number): boolean {
+        return !this.isLoaded(pair) && this.inView.has(index);
     }
 
     protected onTileLoaded(event: Event, pair: GridPair): void {
@@ -499,6 +602,14 @@ export class ViewerGridViewComponent {
             if (!mf) return;
             queueMicrotask(() => this.scrollActiveIntoView(mf));
         });
+
+        // Re-observe tiles after the list changes. Deferred to a microtask
+        // so the new tile DOM exists when we query for it.
+        effect(() => {
+            this.pairs();
+            queueMicrotask(() => this.inView.refresh(this.scrollHost()?.nativeElement));
+        });
+        inject(DestroyRef).onDestroy(() => this.inView.destroy());
 
         // Seed the variant display buffer whenever the definition, the resolved
         // variant map, or the pair list changes. Reads inputs reactively and
@@ -579,6 +690,9 @@ export class ViewerGridViewComponent {
     /** Expand icon clicked on a structured (ideogram4 JSON) tile — the parent
      *  should open the StructuredCaptionModal seeded with this pair. */
     editStructured = output<GridPair>();
+    /** Pin (or, when it is already the cover, unpin) this item as the dataset's
+     *  library-card cover. Emits the media file, or null to unpin. */
+    coverPinRequested = output<string | null>();
 
     /** True while a file drag hovers the grid — drives the drop overlay. */
     protected isDragging = signal<boolean>(false);
@@ -619,37 +733,102 @@ export class ViewerGridViewComponent {
     }
 
     /**
-     * 256px WebP thumbnail (poster) URL for a pair — backed by
-     * `GET /datasets/{name}/thumbnail`, which extracts the first frame for
-     * videos. Used as the at-rest poster for the lazy video tile. Cache-busted
-     * with the same `?t=lastUpdateTime` as the other media URLs.
+     * WebP first-frame poster URL for a video pair — backed by
+     * `GET /datasets/{name}/thumbnail`, which extracts the frame with PyAV.
+     * Used as the at-rest poster for the lazy video tile. Cache-busted with the
+     * same `?t=lastUpdateTime` as the other media URLs.
+     *
+     * Sized from the SAME constant as the still tiles. This used to omit
+     * `max_edge` and take the endpoint's 256 default into a 320px box — soft at
+     * DPR 1 and worse above it, which is exactly the regression the library
+     * shipped once already by sizing a rendition against one machine.
      */
     thumbnailUrl(pair: GridPair): string {
         return `${this.apiUrl()}/datasets/${encodeURIComponent(this.datasetName())}/thumbnail`
-            + `?image_rel_path=${encodeURIComponent(pair.media_file)}&t=${this.lastUpdateTime()}`;
+            + `?image_rel_path=${encodeURIComponent(pair.media_file)}`
+            + `&max_edge=${PREVIEW_MAX_EDGE}&t=${this.lastUpdateTime()}`;
     }
 
-    getDisplayUrl(pair: GridPair): string {
-        if (this.showMasked() && pair.metadata?.has_masked) {
-            return this.getMediaUrl('masked/' + this.getStem(pair.media_file) + '.jpg');
+    /**
+     * Bounded WebP rendition of a dataset file, for a tile-sized box.
+     *
+     * Measured on the browse grid of a 263-item dataset: every still resolved
+     * to `/media`, the full training source, into a box measured at 339x320
+     * CSS px. 5887.7 MP of decoded bitmap for 28.5 MP of `<img>` boxes, median
+     * source 8.19 MP and one at 42.33 MP; a rAF-delta sweep ran at 3.9-6.9 fps
+     * with 433 of 433 frames over 20ms, and a full sweep repeatedly killed the
+     * renderer outright. Same mechanism as the library covers.
+     *
+     * `PREVIEW_MAX_EDGE` (1024) is shared with the library deliberately, and
+     * not sized down to the 320px tile: a tile is 320 CSS px TALL but its
+     * width is `(viewport - gaps) / density` with density as low as 3, so a
+     * wide window at DPR 2 asks for ~1260 device px across, and the pixel
+     * ratio is exactly what made a 512 rendition ship visibly soft covers on
+     * the user's monitor. Sharing the number also shares the cache: a
+     * dataset's library cover and its grid tile hit the same
+     * `<stem>@1024.webp`, so opening a workspace reuses what the library
+     * already generated.
+     *
+     * `staysAnimated` keeps GIFs on `/media` — a rendition is one still frame.
+     * A path in `failedRenditions` also falls back to `/media`: thumbnail
+     * generation is Pillow-based, and a format the browser can paint but this
+     * install's Pillow cannot decode must not leave a hole in the grid.
+     */
+    protected renditionUrl(relativePath: string): string {
+        if (staysAnimated(relativePath) || this.failedRenditions().has(relativePath)) {
+            return this.getMediaUrl(relativePath);
         }
-        if (
-            this.showOverlay() && pair.metadata?.has_overlay
-            && !this.failedOverlays().has(pair.media_file)
-        ) {
-            return this.getOverlayUrl(pair.media_file);
-        }
-        // Edit datasets show the LOGICAL target (role_order may point a
-        // control slot at the tile). Masked/overlay views above stay
-        // root-image-specific, so they take precedence intentionally.
+        return `${this.apiUrl()}/datasets/${encodeURIComponent(this.datasetName())}/thumbnail`
+            + `?image_rel_path=${encodeURIComponent(relativePath)}`
+            + `&max_edge=${PREVIEW_MAX_EDGE}`
+            + `&t=${this.lastUpdateTime()}`;
+    }
+
+    /** True while this tile paints the masked composite rather than the source. */
+    protected showsMasked(pair: GridPair): boolean {
+        return this.showMasked() && !!pair.metadata?.has_masked;
+    }
+
+    /** True while this tile paints the baked overlay endpoint. */
+    protected showsOverlay(pair: GridPair): boolean {
+        return this.showOverlay() && !!pair.metadata?.has_overlay
+            && !this.failedOverlays().has(pair.media_file);
+    }
+
+    /**
+     * The dataset file a tile paints when it is showing neither the masked
+     * composite nor the baked overlay. Edit datasets show the LOGICAL target
+     * (`role_order` may point a control slot at the tile).
+     */
+    protected tileSourcePath(pair: GridPair): string {
         if (
             this.datasetKind() === 'edit'
             && pair.effective_target
             && pair.effective_target !== pair.media_file
         ) {
-            return this.getMediaUrl(pair.effective_target);
+            return pair.effective_target;
         }
-        return this.getMediaUrl(pair.media_file);
+        return pair.media_file;
+    }
+
+    getDisplayUrl(pair: GridPair): string {
+        // Masked composites stay on `/media`, NOT on a rendition. `masked/
+        // <stem>.jpg` is rewritten in place by every re-mask (masking_routes)
+        // and NOTHING on that path calls `thumbnails.invalidate_thumbnail`, so
+        // a rendition of it would keep painting pre-mask pixels. Route it the
+        // moment the mask writer invalidates — not before.
+        if (this.showsMasked(pair)) {
+            return this.getMediaUrl('masked/' + this.getStem(pair.media_file) + '.jpg');
+        }
+        // Baked overlays stay direct for the same reason: `overlays/<stem>.png`
+        // is rewritten by every re-apply, and the overlay commit invalidates
+        // only the SOURCE image's thumbnail (overlay_routes), never the
+        // overlay's own. Both views are opt-in toggles over a subset of tiles;
+        // the default browse grid below is what was measured.
+        if (this.showsOverlay(pair)) {
+            return this.getOverlayUrl(pair.media_file);
+        }
+        return this.renditionUrl(this.tileSourcePath(pair));
     }
 
     onPairOrderClick(pair: GridPair, event: Event): void {
@@ -683,6 +862,23 @@ export class ViewerGridViewComponent {
     onEditClick(pair: GridPair, event: Event, index: number) {
         event.stopPropagation();
         this.editRequested.emit(index);
+    }
+
+    /** True when this item is the dataset's current library-card cover. */
+    isCover(pair: GridPair): boolean {
+        return !!pair.media_file && pair.media_file === this.coverFile();
+    }
+
+    /**
+     * Pin this item as the cover, or unpin when it already is one.
+     *
+     * Clicking the pinned tile emitting `null` is what makes the control
+     * reversible without a second affordance — the same button says "this is
+     * the cover" and "stop making it the cover".
+     */
+    onPinClick(pair: GridPair, event: Event) {
+        event.stopPropagation();
+        this.coverPinRequested.emit(this.isCover(pair) ? null : pair.media_file);
     }
 
     /**

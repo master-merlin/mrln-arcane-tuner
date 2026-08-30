@@ -84,6 +84,11 @@ function setup(): { fixture: ComponentFixture<JobsScreen>; view: JobsViewState; 
         getJobSamples: vi.fn().mockReturnValue(of([])),
         getJobCheckpoints: vi.fn().mockReturnValue(of([])),
         getJobReplay: vi.fn().mockReturnValue(of({ loss: [], available: true })),
+        // LANE-35: the screen fetches the durable adaptive timeline for the
+        // selected job; empty shape = a run that never adapted.
+        getJobAdaptiveHistory: vi
+            .fn()
+            .mockReturnValue(of({ events: [], modules: [], heat: {} })),
         getJobLogs: vi.fn().mockReturnValue(of([])),
         getSamplingStatus: vi.fn().mockReturnValue(of({ job_id: JOB_ID, sampling_paused: false })),
         getSamplingCadence: vi.fn().mockReturnValue(of({ job_id: JOB_ID, interval: 100, default_interval: 100 })),

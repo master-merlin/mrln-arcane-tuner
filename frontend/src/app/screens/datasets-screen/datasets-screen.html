@@ -387,7 +387,8 @@
                              [src]="src"
                              [alt]="d.name"
                              loading="lazy"
-                             (error)="onPreviewError($event)"/>
+                             decoding="async"
+                             (error)="onPreviewError($event, d)"/>
                     } @else {
                         <div class="ds-card-img-fallback">
                             <app-ico name="ImageOff" [size]="28"/>

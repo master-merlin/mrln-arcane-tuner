@@ -48,6 +48,18 @@
     --color-warning-soft: oklch(0.42 0.10 75);
     --color-danger: oklch(0.70 0.17 25);
     --color-danger-soft: oklch(0.42 0.12 25);
+    /* Danger fill for a control composited over ARBITRARY PHOTO PIXELS, where
+       the backdrop is not a token and cannot be reasoned about. `--color-danger`
+       is rgb(246,109,103): at the 0.80 alpha these overlays used it measured
+       2.53:1 white-glyph-to-fill over a near-white photo (RGB 220/221/219),
+       under the 3:1 WCAG 1.4.11 asks of a non-text control — and 2.88:1 even
+       fully opaque, so no alpha rescues that hue. This is rgb(201,47,51) and at
+       0.88 measures 4.47:1 over pure white, 4.71:1 over the bright photo,
+       6.38:1 over a near-black one; opaque (the hover state) 5.33:1 flat.
+       Theme-INDEPENDENT on purpose, the `.hps-pill` pattern: the glyph over it
+       is a fixed `white`, so a fill that flipped with the theme would ship
+       white-on-light. Deliberately NOT overridden in the light block below. */
+    --color-danger-overlay: oklch(0.55 0.19 25);
 
     /* ── Chart / data-vis ── */
     --color-chart-lr: oklch(0.72 0.12 185);

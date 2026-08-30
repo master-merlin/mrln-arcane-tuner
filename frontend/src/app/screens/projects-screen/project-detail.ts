@@ -25,6 +25,7 @@ import { RunSummaryComponent } from '../../components/training/run-summary/run-s
 import { TemplateInfoCardComponent } from '../../ui/template-info-card/template-info-card.component';
 import { EstimateWallComponent } from '../../components/training/estimate-wall/estimate-wall';
 import { nextTriggerWord } from '../../shared/trigger-word';
+import { datasetPreviewUrl } from '../../shared/media-preview';
 import type { SchemaNode } from '../../components/training/schema-node';
 
 export type DetailTab = 'overview' | 'datasets' | 'templates' | 'quick-train' | 'runs';
@@ -1156,8 +1157,13 @@ export class ProjectDetail implements OnInit {
     // ── Display helpers ────────────────────────────────────────────────
 
     /**
-     * Same shape as datasets-screen.previewUrl — `${mediaBase}/${name}/${preview_image}`.
-     * Returns null for missing datasets or those without a chosen preview.
+     * Cover URL for a project dataset row, or null when the dataset is missing
+     * or has no chosen preview.
+     *
+     * Delegates to the shared `datasetPreviewUrl` rather than building the URL
+     * here. The private copy this replaces served the full-size original and
+     * knew nothing about video posters, so a video-only dataset rendered blank
+     * on this screen and a 58 MP cover was decoded whole for a card.
      */
     protected previewUrl(d: ProjectDatasetRow): string | null {
         if (!d.preview_image || d.missing) return null;
@@ -1165,7 +1171,7 @@ export class ProjectDetail implements OnInit {
     }
 
     private datasetPreviewUrl(name: string, previewImage: string): string {
-        return `${this.rtc.mediaBaseUrl}/${encodeURIComponent(name)}/${previewImage}`;
+        return datasetPreviewUrl(this.rtc.apiUrl, this.rtc.mediaBaseUrl, name, previewImage);
     }
 
     protected onPreviewError(event: Event): void {

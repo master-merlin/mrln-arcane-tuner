@@ -48,6 +48,16 @@ class UpdateDatasetRequest(BaseModel):
     _check_kind = field_validator("kind")(_validate_kind)
 
 
+class SetPreviewRequest(BaseModel):
+    """Request body for pinning a dataset's library cover.
+
+    ``None`` unpins and hands the choice back to the scanner's automatic
+    election, which is a distinct intent from "leave unchanged" — so this
+    field is required and nullable rather than optional.
+    """
+    image_rel_path: str | None
+
+
 class CaptionRequest(BaseModel):
     """Request body for caption save."""
     content: str

@@ -61,6 +61,9 @@ class Dataset(BaseModel):
     caption_coverage: bool = False
     missing: bool = False
     preview_image: str | None = None
+    # True when the user chose this cover. Auto-elected covers leave it False,
+    # so a scan is free to re-elect them; see ``_assign_scan_results``.
+    preview_pinned: bool = False
     media_metadata: dict[str, dict[str, Any]] = {}
     majority_ar: float | None = None
     harmonization_score: float = 0.0
@@ -997,7 +1000,20 @@ class DatasetManager:
         dataset.multimedia_count = len(ctx["multimedia_stems"])
         dataset.caption_count = len(ctx["caption_stems"])
         dataset.mask_count = len(ctx["mask_stems"])
-        dataset.preview_image = ctx["preview_candidate"]
+        # A cover the user pinned survives the scan; the auto candidate (the
+        # first non-audio file enumerated) only applies when nothing is pinned.
+        # Self-healing on disk truth: a pin whose file is gone clears itself and
+        # falls back, so deleting an image can never leave a card permanently
+        # blank with no way to fix it from the UI.
+        pinned = dataset.preview_image if dataset.preview_pinned else None
+        if pinned and not os.path.exists(os.path.join(dataset.path, pinned)):
+            logger.info(
+                "preview_pin_cleared_source_missing",
+                dataset=dataset.name, preview_image=pinned,
+            )
+            pinned = None
+            dataset.preview_pinned = False
+        dataset.preview_image = pinned or ctx["preview_candidate"]
 
         # Cache directory check
         cache_dir = os.path.join(dataset.path, ".cache")
@@ -1397,6 +1413,81 @@ class DatasetManager:
             )
 
         return dataset
+
+    def set_preview_image(self, name: str, rel_path: str | None) -> Dataset:
+        """Pin *rel_path* as the dataset's library cover, or unpin it.
+
+        ``rel_path=None`` clears the pin and re-elects the automatic candidate
+        immediately, so the user sees the result of unpinning without waiting
+        for the next scan.
+
+        The path is validated against disk truth and against the dataset root:
+        a cover is served straight back out over ``/media`` and the thumbnail
+        endpoint, so a value that escaped the dataset directory would be a
+        traversal by proxy.
+        """
+        if name not in self.datasets:
+            raise ValueError(f"Dataset '{name}' not found.")
+
+        dataset = self.datasets[name]
+
+        if rel_path is None:
+            dataset.preview_pinned = False
+            # Re-elect now rather than leaving the old pin showing until a scan.
+            dataset.preview_image = self._auto_preview_candidate(dataset)
+        else:
+            root = Path(dataset.path)
+            resolved = validate_path_within(root / rel_path, root)
+            if not resolved.is_file():
+                raise ValueError(f"'{rel_path}' does not exist in dataset '{name}'.")
+            ext = resolved.suffix.lower()
+            if ext not in MULTIMEDIA_EXTENSIONS or ext in AUDIO_EXTENSIONS:
+                # Audio has no renderable frame; anything non-multimedia is not
+                # a cover at all. Both would leave the card blank.
+                raise ValueError(f"'{rel_path}' cannot be used as a cover image.")
+
+            # Store the dataset-relative POSIX form, matching what the scanner
+            # writes and what every URL builder expects.
+            dataset.preview_image = resolved.relative_to(root).as_posix()
+            dataset.preview_pinned = True
+
+        self._persist_dataset(dataset)
+
+        loop = self._loop
+        if loop is not None:
+            from app.core.events import emit_entity_change
+            asyncio.run_coroutine_threadsafe(
+                emit_entity_change(
+                    event_manager.broadcast,
+                    entity="dataset",
+                    op="updated",
+                    id=dataset.id,
+                    payload=dataset.model_dump(),
+                ),
+                loop,
+            )
+
+        logger.info(
+            "dataset_preview_pinned" if rel_path else "dataset_preview_unpinned",
+            dataset=name, preview_image=dataset.preview_image,
+        )
+        return dataset
+
+    def _auto_preview_candidate(self, dataset: Dataset) -> str | None:
+        """First non-audio media file, in scan order — the unpinned default.
+
+        Mirrors the election in ``_enumerate_and_extract``; kept here so
+        unpinning does not have to run a full scan to answer the question.
+        """
+        if not os.path.isdir(dataset.path):
+            return None
+        for entry in sorted(os.scandir(dataset.path), key=lambda e: e.name):
+            if not entry.is_file():
+                continue
+            ext = os.path.splitext(entry.name)[1].lower()
+            if ext in MULTIMEDIA_EXTENSIONS and ext not in AUDIO_EXTENSIONS:
+                return entry.name
+        return None
 
     def get_dataset_pairs(self, name: str) -> list[dict]:
         if name not in self.datasets:

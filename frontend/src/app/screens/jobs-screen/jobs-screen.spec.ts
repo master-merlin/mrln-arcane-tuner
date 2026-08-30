@@ -58,8 +58,15 @@ function makeJob(over: Partial<Job> = {}): Job {
  * so the constructor's effects (sample/checkpoint/replay/log/sampling loads)
  * resolve synchronously and never hit the network.
  */
-function setup(): { fixture: ComponentFixture<JobsScreen>; view: JobsViewState; comp: JobsScreen } {
+function setup(adaptHistory: { events: unknown[] } = { events: [] }): {
+    fixture: ComponentFixture<JobsScreen>;
+    view: JobsViewState;
+    comp: JobsScreen;
+} {
     const jobService = {
+        getJobAdaptiveHistory: vi
+            .fn()
+            .mockReturnValue(of({ modules: [], heat: {}, ...adaptHistory })),
         getJobSamples: vi.fn().mockReturnValue(of([])),
         getJobCheckpoints: vi.fn().mockReturnValue(of([])),
         getJobReplay: vi.fn().mockReturnValue(of({ loss: [], available: true })),
@@ -875,5 +882,105 @@ describe('JobsScreen adaptive status chip (T11)', () => {
         const live = chips.find(c => c.textContent!.trim().endsWith('live'));
         expect(live).toBeTruthy();
         expect(chips.indexOf(chip)).toBe(chips.indexOf(live!) + 1);
+    });
+});
+
+/**
+ * LANE-35 — the chip must survive log-buffer eviction.
+ *
+ * `job.logs` is a bounded 1000-entry FIFO (`job_manager.py` appends then
+ * `pop(0)`). Adapt events are emitted only at adaptation moments while
+ * ordinary step lines stream into that same buffer continuously, so a rare
+ * event ages out BY CONSTRUCTION — the chip was guaranteed to vanish on any
+ * sufficiently long run, which is what the user saw past step 1000.
+ *
+ * The three T11 tests above all pass with the log-scan-only derivation, and
+ * so does the UAT-3.2 position pin: the chip was never wrong in POSITION, it
+ * was wrong in EXISTENCE, and a DOM-order test cannot see that. These tests
+ * reproduce the eviction — a full window with no `"adapt"` line left in it —
+ * and are the guard that fails when the chip is absent for a run that HAS
+ * adapted.
+ */
+describe('JobsScreen adaptive chip survives log eviction (LANE-35)', () => {
+    const adaptLine = (data: object) => JSON.stringify({ adapt: data });
+
+    /**
+     * A saturated 1000-entry FIFO of ordinary step lines — no adapt event left
+     * in the window. `loss` is deliberately omitted: it is orthogonal to the
+     * property under test (the absence of an `"adapt"` line), and 1000 loss
+     * points would drive a real uPlot draw that throws in jsdom.
+     */
+    const evictedLogs = (fromStep: number) =>
+        Array.from({ length: 1000 }, (_, i) =>
+            JSON.stringify({ step: fromStep + i, status: 'training', step_time: 2.7 }),
+        );
+
+    it('renders the durable n/m after the adapt event has aged out of job.logs', () => {
+        const { fixture, view } = setup({
+            events: [
+                { step: 1450, kind: 'narrow', active_count: 181, total_count: 224 },
+                { step: 1700, kind: 'narrow', active_count: 176, total_count: 224 },
+            ],
+        });
+        // Window covers steps 2000..2999: both adapt events have been evicted.
+        view.activeJobs.set([
+            makeJob({ status: JobStatus.RUNNING, logs: evictedLogs(2000) }),
+        ]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+
+        const chip = fixture.nativeElement.querySelector('[data-testid="adapt-chip"]');
+        expect(chip).toBeTruthy();
+        expect(chip!.textContent).toContain('176/224 layers');
+    });
+
+    it('a live event newer than the durable record wins (higher step)', () => {
+        const { fixture, view } = setup({
+            events: [{ step: 1450, kind: 'narrow', active_count: 181, total_count: 224 }],
+        });
+        view.activeJobs.set([
+            makeJob({
+                status: JobStatus.RUNNING,
+                logs: [adaptLine({ step: 1700, kind: 'narrow', active_count: 176, total_count: 224 })],
+            }),
+        ]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+
+        const chip = fixture.nativeElement.querySelector('[data-testid="adapt-chip"]');
+        expect(chip!.textContent).toContain('176/224 layers');
+    });
+
+    it('a latched live event is not lost when that line later evicts', () => {
+        const { fixture, view } = setup({ events: [] }); // durable served nothing yet
+        view.activeJobs.set([
+            makeJob({
+                status: JobStatus.RUNNING,
+                logs: [adaptLine({ step: 1700, kind: 'narrow', active_count: 176, total_count: 224 })],
+            }),
+        ]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="adapt-chip"]')).toBeTruthy();
+
+        // The FIFO rolls past it — same job, same component, no refetch.
+        view.activeJobs.set([
+            makeJob({ status: JobStatus.RUNNING, logs: evictedLogs(2000) }),
+        ]);
+        fixture.detectChanges();
+
+        const chip = fixture.nativeElement.querySelector('[data-testid="adapt-chip"]');
+        expect(chip).toBeTruthy();
+        expect(chip!.textContent).toContain('176/224 layers');
+    });
+
+    it('still renders nothing for a run that never adapted', () => {
+        const { fixture, view } = setup({ events: [] });
+        view.activeJobs.set([
+            makeJob({ status: JobStatus.RUNNING, logs: evictedLogs(2000) }),
+        ]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelector('[data-testid="adapt-chip"]')).toBeNull();
     });
 });

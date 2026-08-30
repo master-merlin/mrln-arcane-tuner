@@ -25,6 +25,7 @@ from app.core.dataset import portable
 from app.api.schemas.dataset_schemas import (
     CreateDatasetRequest,
     UpdateDatasetRequest,
+    SetPreviewRequest,
     CaptionRequest,
     ToggleEnabledRequest,
     ImportPathRequest,
@@ -120,6 +121,24 @@ async def update_dataset(name: str, request: UpdateDatasetRequest):
             new_tags=request.tags,
             new_notes=request.notes,
             new_kind=request.kind,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.put("/datasets/{name}/preview", response_model=Dataset)
+async def set_dataset_preview(name: str, request: SetPreviewRequest):
+    """Pin the dataset's library cover, or unpin it with ``image_rel_path: null``.
+
+    Without this the cover was whatever the scanner enumerated first, which the
+    user had no way to influence. Returns the full dataset so the caller can
+    replace its row; the change is also broadcast on the entity channel, so
+    every open surface refreshes on its own.
+    """
+    try:
+        logger.info("setting_dataset_preview", dataset_name=name, image=request.image_rel_path)
+        return await asyncio.to_thread(
+            dataset_manager.set_preview_image, name, request.image_rel_path,
         )
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -333,17 +352,30 @@ async def get_dataset_media(
 
 @router.get("/datasets/{name}/thumbnail")
 async def get_dataset_thumbnail(
-    image_rel_path: str = Query(...), dataset: Dataset = Depends(get_dataset_or_404),
+    image_rel_path: str = Query(...),
+    max_edge: int = Query(256),
+    dataset: Dataset = Depends(get_dataset_or_404),
 ):
-    """Serve a 256px WebP thumbnail for a dataset image; generates if missing."""
+    """Serve a WebP thumbnail for a dataset image; generates if missing.
+
+    *max_edge* selects the rendition (default 256). It becomes part of the
+    cached thumbnail's filename, so it is checked against an allowlist rather
+    than a range — an arbitrary integer must never reach a path.
+    """
     from app.core.dataset import thumbnails
+
+    if max_edge not in thumbnails.ALLOWED_MAX_EDGES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"max_edge must be one of {list(thumbnails.ALLOWED_MAX_EDGES)}",
+        )
 
     dataset_root = Path(dataset.path)
     # Validate the resolved source path stays inside the dataset directory.
     validate_path_within(dataset_root / image_rel_path, dataset_root)
 
     thumb_path = await asyncio.to_thread(
-        thumbnails.ensure_thumbnail, dataset.path, image_rel_path,
+        thumbnails.ensure_thumbnail, dataset.path, image_rel_path, max_edge,
     )
     if thumb_path is None:
         raise HTTPException(status_code=404, detail="Thumbnail unavailable")

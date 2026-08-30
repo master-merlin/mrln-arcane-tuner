@@ -84,6 +84,11 @@ function setup(): { fixture: ComponentFixture<JobsScreen>; view: JobsViewState; 
         getJobSamples: vi.fn().mockReturnValue(of([])),
         getJobCheckpoints: vi.fn().mockReturnValue(of([])),
         getJobReplay: vi.fn().mockReturnValue(of({ loss: [], available: true })),
+        // LANE-35: the screen fetches the durable adaptive timeline for the
+        // selected job; empty shape = a run that never adapted.
+        getJobAdaptiveHistory: vi
+            .fn()
+            .mockReturnValue(of({ events: [], modules: [], heat: {} })),
         getJobLogs: vi.fn().mockReturnValue(of([])),
         getSamplingStatus: vi.fn().mockReturnValue(of({ job_id: JOB_ID, sampling_paused: false })),
         getSamplingCadence: vi.fn().mockReturnValue(of({ job_id: JOB_ID, interval: 100, default_interval: 100 })),
@@ -189,8 +194,12 @@ describe('JobsScreen elapsed — the runner owns the number', () => {
         setNow(comp, T0 + 8 * 3600 * 1000);       // paused overnight
         fixture.detectChanges();
 
-        // The old wall-clock derivation reported 8 hours here.
-        expect((comp as any).elapsed()).toBe('1:40');
+        // The old wall-clock derivation reported 8 hours here. `1:41`, not
+        // `1:40`, because the job kept running for the one second between its
+        // last step log and `paused_at` — real run time, credited from the
+        // backend's own stamp rather than from whenever this client noticed.
+        // The eight paused hours are still excluded, which is what this pins.
+        expect((comp as any).elapsed()).toBe('1:41');
     });
 
     it('holds the final reading once the job completes', () => {
@@ -261,5 +270,276 @@ describe('JobsScreen — started-at is its own field', () => {
         fixture.detectChanges();
         expect((comp as any).startedAtLabel()).toBe('');
         expect(fixture.nativeElement.querySelector('[data-testid="job-started-at"]')).toBeFalsy();
+    });
+});
+
+/**
+ * Pause/resume — found by the user in UAT round 3, after the six above passed.
+ *
+ * Reported as three symptoms: on resume elapsed leapt forward by roughly the
+ * pause length, then snapped back a few seconds later, then read as if the run
+ * were going faster than real time. All three are one bug.
+ *
+ * `elapsed` ticks as `seconds + (now − atMs)`, where `atMs` is the wall-clock
+ * moment the last runner reading arrived. Freezing the DISPLAY while the job is
+ * not running left `atMs` behind by the whole pause; the instant the status
+ * flipped back to RUNNING that entire interval was added in one frame, and it
+ * stayed wrong until the next step log replaced the base.
+ *
+ * The fix holds the base against the clock while stopped, so `now − atMs` is
+ * ~0 at the moment of resume. The trainer's own number — which has always
+ * excluded paused time — remains the correction.
+ */
+describe('JobsScreen elapsed — across a pause', () => {
+    beforeEach(() => {
+        vi.useFakeTimers();
+        vi.setSystemTime(T0);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    /** Run for `runMs`, pause for `pauseMs`, resume. Returns the readings seen. */
+    function pauseCycle(runMs: number, pauseMs: number) {
+        const { fixture, view, comp } = setup();
+        const logs = [stepLine(10, 100)];
+        view.activeJobs.set([makeJob({ started_at: T0 / 1000, logs })]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+        const atFirstReading = (comp as any).elapsed();
+
+        // Run on with no new step log, then the trainer reports the pause.
+        setNow(comp, T0 + runMs);
+        fixture.detectChanges();
+        const beforePause = (comp as any).elapsed();
+
+        view.activeJobs.set([makeJob({
+            started_at: T0 / 1000, logs, status: JobStatus.PAUSED,
+            paused_at: (T0 + runMs) / 1000,
+        })]);
+        fixture.detectChanges();
+        const atPause = (comp as any).elapsed();
+
+        // Time passes while paused; the clock keeps ticking, the job does not.
+        setNow(comp, T0 + runMs + pauseMs);
+        fixture.detectChanges();
+        const whilePaused = (comp as any).elapsed();
+
+        // Resume: the status flips back BEFORE the next step log arrives.
+        view.activeJobs.set([makeJob({
+            started_at: T0 / 1000, logs, status: JobStatus.RUNNING,
+        })]);
+        fixture.detectChanges();
+        const atResume = (comp as any).elapsed();
+
+        return { fixture, view, comp, atFirstReading, beforePause, atPause, whilePaused, atResume };
+    }
+
+    it('does not add the pause to elapsed the moment the job resumes', () => {
+        // THE reported defect: a 50s pause used to appear in full, instantly.
+        const { beforePause, atResume } = pauseCycle(10_000, 50_000);
+
+        expect(beforePause).toBe('1:50');
+        expect(atResume).toBe('1:50');
+    });
+
+    it('holds elapsed still for the whole pause, however long', () => {
+        const { atPause, whilePaused } = pauseCycle(10_000, 50_000);
+        expect(atPause).toBe('1:50');
+        expect(whilePaused).toBe('1:50');
+    });
+
+    it('does not drop back to the last step reading when the pause begins', () => {
+        // The second, smaller jump: at the pause the display used to fall from
+        // its extrapolated value to the last step log's number — up to a step
+        // time, which on a video run is 30s of visible jump backwards.
+        const { atFirstReading, beforePause, atPause } = pauseCycle(30_000, 5_000);
+
+        expect(atFirstReading).toBe('1:40');
+        expect(beforePause).toBe('2:10');
+        expect(atPause).toBe('2:10');
+    });
+
+    it('resumes ticking at real time, not faster', () => {
+        const { fixture, comp, atResume } = pauseCycle(10_000, 50_000);
+        expect(atResume).toBe('1:50');
+
+        // 20 more seconds of running should add exactly 20 seconds.
+        setNow(comp, T0 + 10_000 + 50_000 + 20_000);
+        fixture.detectChanges();
+        expect((comp as any).elapsed()).toBe('2:10');
+    });
+
+    it('takes the post-resume trainer reading as the correction', () => {
+        const { fixture, view, comp } = pauseCycle(10_000, 50_000);
+
+        // The trainer's own number excludes the pause: 100s at the last step
+        // plus ~14s of real training since, NOT the 74s of wall clock.
+        view.activeJobs.set([makeJob({
+            started_at: T0 / 1000, status: JobStatus.RUNNING,
+            logs: [stepLine(10, 100), stepLine(11, 114)],
+        })]);
+        fixture.detectChanges();
+
+        expect((comp as any).elapsed()).toBe('1:54');
+    });
+
+    it('survives a second pause without accumulating error', () => {
+        const { fixture, view, comp } = pauseCycle(10_000, 50_000);
+        const logs = [stepLine(10, 100)];
+
+        // Second pause, 30s, with 10s of running in between.
+        setNow(comp, T0 + 70_000);
+        fixture.detectChanges();
+        view.activeJobs.set([makeJob({ started_at: T0 / 1000, logs, status: JobStatus.PAUSED })]);
+        fixture.detectChanges();
+        const held = (comp as any).elapsed();
+
+        setNow(comp, T0 + 100_000);
+        fixture.detectChanges();
+        view.activeJobs.set([makeJob({ started_at: T0 / 1000, logs, status: JobStatus.RUNNING })]);
+        fixture.detectChanges();
+
+        expect((comp as any).elapsed()).toBe(held);
+    });
+});
+
+/**
+ * UAT-3.9 residual — "still a bit wonky the first seconds after resume".
+ *
+ * The two big jumps above are pinned and gone. What was left is a stutter, and
+ * every test above is blind to it by construction: each asserts ONE value at
+ * ONE instant, and a clock that gains half a second, runs fast, then snaps
+ * backwards passes every single-instant assertion on the way past.
+ *
+ * So this guard samples the RENDERED string (`data-testid="job-elapsed"`)
+ * every 250 ms across a whole pause/resume and asserts the two properties a
+ * clock has to have:
+ *
+ *   1. it never runs backwards;
+ *   2. it never gains more than a second per real second.
+ *
+ * The resume flip is deliberately staged 400 ms AFTER a 1 Hz tick, because the
+ * staleness under test is `now − last tick` and every earlier spec happens to
+ * flip exactly on a tick, where that term is zero.
+ *
+ * Timeline (offsets from T0):
+ *   0       first step log, elapsed=100 → 1:40, RUNNING
+ *   8s      PAUSED, paused_at=+8s → display freezes at 1:48
+ *   20.4s   RUNNING again, 400 ms after the last tick, before any step log
+ *   26s     first post-resume step log, elapsed=112 — int-truncated, and one
+ *           poll period behind, because the trainer credits its own wake-up
+ *           latency to PAUSED time (signal_manager.py:73-78)
+ *   32s     end
+ */
+describe('JobsScreen elapsed — monotonic across the resume boundary (UAT-3.9)', () => {
+    beforeEach(() => {
+        // 'Date' is mandatory: without it RxJS reschedules its interval against
+        // the real clock forever and this spec hangs instead of failing.
+        vi.useFakeTimers({
+            toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'],
+        });
+        vi.setSystemTime(T0);
+    });
+    afterEach(() => vi.useRealTimers());
+
+    /** `m:ss` / `h:mm:ss` back to seconds. */
+    function parse(label: string): number {
+        return label.trim().split(':').map(Number).reduce((acc, p) => acc * 60 + p, 0);
+    }
+
+    it('never ticks backwards and never gains more than a second per second', () => {
+        const { fixture, view, comp } = setup();
+        const runningLogs = [stepLine(10, 100)];
+        view.activeJobs.set([makeJob({ started_at: T0 / 1000, logs: runningLogs })]);
+        view.selectedId.set(JOB_ID);
+        (comp as any).now.set(T0);
+        fixture.detectChanges();
+
+        const samples: Array<{ ms: number; seconds: number; label: string }> = [];
+        const read = (ms: number) => {
+            const el = fixture.nativeElement.querySelector('[data-testid="job-elapsed"]') as HTMLElement;
+            expect(el).toBeTruthy();
+            const label = el.textContent!.replace('elapsed', '').trim();
+            samples.push({ ms, seconds: parse(label), label });
+        };
+        read(T0);
+
+        /**
+         * Advance the wall clock in 250 ms slices, ticking the screen's 1 Hz
+         * `now` signal only on whole seconds — which is what the real
+         * `interval(1000)` does, and is the reason the flip below can land
+         * mid-second against a stale stamp.
+         */
+        let t = T0;
+        const advanceTo = (untilMs: number) => {
+            while (t < untilMs) {
+                t = Math.min(t + 250, untilMs);
+                vi.setSystemTime(t);
+                if ((t - T0) % 1000 === 0) (comp as any).now.set(t);
+                fixture.detectChanges();
+                read(t);
+            }
+        };
+
+        advanceTo(T0 + 8_000);
+
+        // Pause. The backend stamps paused_at as it flips the status.
+        view.activeJobs.set([makeJob({
+            started_at: T0 / 1000, logs: runningLogs,
+            status: JobStatus.PAUSED, paused_at: (T0 + 8_000) / 1000,
+        })]);
+        fixture.detectChanges();
+        read(t);
+        advanceTo(T0 + 20_000);
+
+        // Resume: 400 ms after the last tick, before any post-resume log.
+        t = T0 + 20_400;
+        vi.setSystemTime(t);
+        view.activeJobs.set([makeJob({
+            started_at: T0 / 1000, logs: runningLogs, status: JobStatus.RUNNING,
+        })]);
+        fixture.detectChanges();
+        read(t);
+
+        // The next 1 Hz repaint must show the honest number: 600 ms of run time
+        // on top of the 1:48 it froze at. Before the fix it showed 1:49 — the
+        // base was still stamped at the tick 400 ms BEFORE the flip, so that
+        // whole 400 ms was gained in a single frame and then carried.
+        advanceTo(T0 + 21_000);
+        expect(samples[samples.length - 1].label).toBe('1:48');
+
+        advanceTo(T0 + 26_000);
+
+        // First post-resume step log, lower than what is on screen.
+        view.activeJobs.set([makeJob({
+            started_at: T0 / 1000, status: JobStatus.RUNNING,
+            logs: [stepLine(10, 100), stepLine(11, 112)],
+        })]);
+        fixture.detectChanges();
+        read(t);
+        advanceTo(T0 + 32_000);
+
+        // 1. Monotonic. A clock that jumps backwards is the visible fault.
+        for (let i = 1; i < samples.length; i++) {
+            expect(
+                samples[i].seconds,
+                `sample ${i} at +${samples[i].ms - T0}ms went backwards: ` +
+                    `${samples[i - 1].label} → ${samples[i].label}`,
+            ).toBeGreaterThanOrEqual(samples[i - 1].seconds);
+        }
+
+        // 2. Never faster than real time. One second of slack absorbs the
+        //    display's own floor() and the 1 Hz repaint granularity; beyond
+        //    that it is inventing time.
+        for (let i = 0; i < samples.length; i++) {
+            for (let k = i + 1; k < samples.length; k++) {
+                const gained = samples[k].seconds - samples[i].seconds;
+                const real = (samples[k].ms - samples[i].ms) / 1000;
+                expect(
+                    gained,
+                    `+${samples[i].ms - T0}ms → +${samples[k].ms - T0}ms: gained ` +
+                        `${gained}s of elapsed in ${real}s of real time`,
+                ).toBeLessThanOrEqual(real + 1);
+            }
+        }
     });
 });

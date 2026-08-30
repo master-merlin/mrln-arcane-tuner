@@ -510,7 +510,7 @@ def test_minimax_h3_estimate_is_sane_order_of_magnitude():
         assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id
 
 
-def test_still_resolutions_ignored_for_image_family():
+def test_still_resolutions_ignored_for_image_family(frozen_gpu_snapshot):
     """The field is is_video-gated: a stale still_resolutions on an image job
     must not change its estimate (resolve_still_resolutions inherits base)."""
     defn = registry.get_definition("sdxl_base_1.0")
@@ -519,10 +519,11 @@ def test_still_resolutions_ignored_for_image_family():
     stale = VRAMEstimator.estimate(
         defn, {"quantization": "none", "still_resolutions": [4096]}
     ).to_dict()
-    # Compare only the model-derived fields: available/used/total/fits come
-    # from a LIVE NVML read and can jitter by a MB between the two calls
-    # (observed flake 2026-07-13 — 25871 vs 25872 available_mb).
-    volatile = {"available_mb", "total_mb", "used_mb", "fits", "warnings"}
-    plain_det = {k: v for k, v in plain.items() if k not in volatile}
-    stale_det = {k: v for k, v in stale.items() if k not in volatile}
-    assert plain_det == stale_det
+    # Whole-dict equality: ``frozen_gpu_snapshot`` replays ONE live NVML read
+    # for both calls, so the device-derived rows (available/used/total/fits and
+    # the warnings that interpolate them) are equal by construction rather than
+    # by exclusion. This used to filter a ``volatile`` set to dodge the same
+    # jitter (25871 vs 25872 available_mb, 2026-07-13) — but that filter also
+    # dropped ``warnings``, so a still_resolutions path that started emitting a
+    # warning on an image family would have passed silently. LANE-30.
+    assert plain == stale

@@ -122,12 +122,18 @@ describe('URL path-segment encoding contract', () => {
     });
 
     describe('media preview URLs', () => {
-        it('encodes the relative media path in the path branch', () => {
-            // Regression: the query branch encoded this value while the path
-            // branch did not — one function, one variable, two treatments.
-            const url = datasetPreviewUrl(API, `${API}/media`, 'ds', 'sub/shot#3.png');
-            expect(url).toContain('%23');
-            expect(url).not.toMatch(/#3\.png$/);
+        it('encodes the relative media path in BOTH branches', () => {
+            // Regression: the query branch encoded this value while the direct
+            // branch did not — one function, one variable, two treatments. A
+            // `#` left raw truncates the URL at the fragment.
+            const thumb = datasetPreviewUrl(API, `${API}/media`, 'ds', 'sub/shot#3.png');
+            expect(thumb).toContain('%23');
+            expect(thumb).not.toMatch(/#3\.png$/);
+
+            // GIFs take the direct branch — the one that used to leak the `#`.
+            const direct = datasetPreviewUrl(API, `${API}/media`, 'ds', 'sub/loop#3.gif');
+            expect(direct).toContain('%23');
+            expect(direct).not.toMatch(/#3\.gif$/);
         });
     });
 });

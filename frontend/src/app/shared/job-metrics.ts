@@ -205,6 +205,30 @@ export function latestAdaptState(logs: ReadonlyArray<string> | undefined): Adapt
     return events.length ? events[events.length - 1] : null;
 }
 
+/**
+ * The single precedence rule between the two sources that both carry adapt
+ * state: **the event with the higher `step` wins**, ties to `b`.
+ *
+ * LANE-35. The live log scan and the durable `adaptive_targeting.json`
+ * timeline describe the SAME monotonic event stream, so "newest step" is a
+ * total order over them and they cannot disagree ambiguously. Callers latch
+ * with this so a state that has aged out of the bounded log FIFO is never
+ * downgraded back to null (or to an older event) by a later scan.
+ *
+ * Known residual: a resume from an EARLIER checkpoint truncates the durable
+ * timeline (`_seed_events_from_history`), so a latch holding a higher-step
+ * event from the discarded segment stays until the run's new events pass it,
+ * or until the page is reloaded.
+ */
+export function newestAdaptState(
+    a: AdaptEvent | null | undefined,
+    b: AdaptEvent | null | undefined,
+): AdaptEvent | null {
+    if (!a) return b ?? null;
+    if (!b) return a;
+    return b.step >= a.step ? b : a;
+}
+
 /** Lowest loss in a series with the step it occurred at. */
 export function bestLoss(series: ReadonlyArray<LossPoint>): { loss: number; step: number } | null {
     let best = Infinity;
@@ -383,6 +407,100 @@ export function formatDuration(startedAtSec: number | undefined, endMs: number):
     const s = seconds % 60;
     if (h > 0) return `${h}:${m.toString().padStart(2, '0')}:${s.toString().padStart(2, '0')}`;
     return `${m}:${s.toString().padStart(2, '0')}`;
+}
+
+/**
+ * The subset of a job every surface needs to say how long it has been training.
+ * Structural, so both `Job` (services/job) and any test double satisfy it.
+ */
+export interface ElapsedJobLike {
+    started_at?: number;
+    /** Epoch seconds the backend stamped when it PAUSED the job. Cleared again
+     *  on resume, which is precisely why wall clock cannot be trusted here. */
+    paused_at?: number;
+    finished_at?: number;
+    /** Final RUN seconds the BACKEND persisted when the run completed
+     *  (`job_history.duration_seconds`). See `finalElapsedSeconds`. */
+    duration_seconds?: number;
+    logs?: ReadonlyArray<string>;
+}
+
+/**
+ * The trainer's FINAL run-time total for a finished job, or null.
+ *
+ * Server-owned and durable: `pipeline_train` writes
+ * `duration_seconds=self.logger_component.get_total_elapsed()` — literally the
+ * same function whose value rides in every step log as `elapsed` — and
+ * `GET /api/jobs/history` serves it on every row.
+ *
+ * This matters because `job.logs` is live-session-only: a reloaded page holds
+ * archived rows with `logs: []`, so the step-log reading is gone and only this
+ * field still knows how much of the wall clock was actually training. Without
+ * it the archive rows would quietly fall back to wall clock — pause included —
+ * the moment the user refreshed.
+ */
+export function finalElapsedSeconds(job: ElapsedJobLike): number | null {
+    if (!job.finished_at) return null;
+    const s = job.duration_seconds;
+    return typeof s === 'number' && Number.isFinite(s) && s >= 0 ? s : null;
+}
+
+/**
+ * RUN seconds as the trainer itself accounts for them, or null when the trainer
+ * has not spoken yet.
+ *
+ * This is THE owner of "how long has this job been training". Nothing else in
+ * the client is entitled to derive that number: only the runner knows how much
+ * of the wall clock was actually spent training
+ * (`TrainingLogger.get_total_elapsed` — wall clock, minus paused time, plus the
+ * offset carried over from earlier sessions of a resumed run), and it ships
+ * that figure in every step log as `elapsed`.
+ */
+export function runnerElapsedSeconds(logs: ReadonlyArray<string> | undefined): number | null {
+    const s = latestMetrics(logs)?.elapsed;
+    return typeof s === 'number' && Number.isFinite(s) && s >= 0 ? s : null;
+}
+
+/**
+ * Wall clock from `started_at` to the job's own end stamp (or now).
+ *
+ * Honest for exactly ONE window: before the first step log exists — queueing,
+ * model download, weight load — where no trainer reading can exist yet. After
+ * that it is wrong across a pause, because the backend CLEARS `paused_at` when
+ * it resumes a job (`job_manager.resume_job`) and never credits the interval
+ * back, so every paused second is counted as training. Use `elapsedLabel`
+ * unless you specifically want the pre-first-step window.
+ */
+export function wallClockElapsedLabel(job: ElapsedJobLike, nowMs: number): string {
+    const end = job.finished_at
+        ? job.finished_at * 1000
+        : job.paused_at
+          ? job.paused_at * 1000
+          : nowMs;
+    return formatDuration(job.started_at, end);
+}
+
+/**
+ * Elapsed RUN time for a job, formatted — the number every surface renders.
+ *
+ * Three sources, in descending authority, all of them the trainer's:
+ *   1. `duration_seconds` once the run has finished — the final total, and the
+ *      only one that survives a page reload.
+ *   2. the last step log's `elapsed` — the live reading.
+ *   3. wall clock — the pre-first-step window ONLY, where no trainer reading
+ *      can exist yet and wall clock is the honest answer.
+ *
+ * Callers that want a smoothly ticking display (the Jobs detail pane)
+ * extrapolate ON TOP of source 2 from a stamped base and re-base on every step;
+ * callers that render a compact secondary figure (the queue's recent/archive
+ * rows) call this and update once per step. Either way the underlying fact has
+ * one owner, so the two agree.
+ */
+export function elapsedLabel(job: ElapsedJobLike, nowMs: number): string {
+    const final = finalElapsedSeconds(job);
+    if (final != null) return formatSeconds(final);
+    const live = runnerElapsedSeconds(job.logs);
+    return live != null ? formatSeconds(live) : wallClockElapsedLabel(job, nowMs);
 }
 
 /** Grad-norm formatting: scientific for huge values, else fixed precision. */

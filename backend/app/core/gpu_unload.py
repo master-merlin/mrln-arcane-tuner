@@ -12,11 +12,37 @@ P2c / B-CLEAN-9).
 from __future__ import annotations
 
 import gc
+from collections.abc import Iterable
 
 import structlog
 import torch
 
 logger = structlog.get_logger(__name__)
+
+
+def gpu_batch_active(task_types: Iterable[str]) -> bool:
+    """True if any task of *task_types* is PENDING or RUNNING.
+
+    The shared "is someone else using this GPU model right now?" predicate for
+    the three GPU-plugin services' ``skip_if_batch_active`` mode. Each service
+    owns its own tuple of task types (with the evidence for what is in and what
+    is out on that constant); this only answers the question.
+
+    Imported lazily inside the function: ``task_manager`` pulls in the whole
+    task/event stack, and this module is imported by services that are
+    themselves imported at startup (ARCHITECTURE D1).
+
+    Callers MUST hold their service's ``_unload_lock`` across this check AND
+    the unload — on its own this is a read, not a guard.
+    """
+    from app.core.tasks.task import TaskStatus
+    from app.core.tasks.task_manager import task_manager
+
+    wanted = set(task_types)
+    return any(
+        t.type in wanted and t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
+        for t in task_manager.list()
+    )
 
 
 def unload_gpu_plugins(

@@ -4,6 +4,7 @@ Captioning Service for generating image captions using AI models.
 Uses a plugin architecture where each model is implemented as a separate class.
 """
 
+import os
 import threading
 
 from PIL import Image
@@ -15,12 +16,34 @@ from app.core.captioning.models import (
     JoyCaptionModel,
     YoutuVLModel,
 )
-from app.core.gpu_unload import unload_gpu_plugins
+from app.core.gpu_unload import gpu_batch_active, unload_gpu_plugins
 
 # Default number of frames sampled per video clip for captioning. Overridable
 # per-call via ``params['video_frames']`` (threaded through the batch/route the
 # same way other caption params flow).
 DEFAULT_VIDEO_FRAMES = 8
+
+# Seconds of captioning inactivity before a loaded caption model is released.
+#
+# Single-image captioning had no unload path at all: a batch frees its model in
+# its own ``finally``, but a one-off caption held VRAM until the user happened
+# to switch models. Unloading on every single caption would be worse than the
+# leak — interactive captioning is a caption-look-caption loop, and each one
+# would pay a full model load. An idle window frees the VRAM without charging
+# the interactive case for it.
+#
+# 0 (or negative) disables the idle unload entirely; the manual /unload route
+# and the batch worker's own unload are unaffected either way.
+IDLE_UNLOAD_SECONDS = float(os.environ.get("MRLN_CAPTION_IDLE_UNLOAD_SECONDS", "120"))
+
+# Task types that own the caption GPU plugins for their duration, so a guarded
+# unload must not rip a model out from under them.
+#
+# `caption_refine_batch` is deliberately ABSENT: refine rewrites existing
+# caption text through the LLM endpoint (Ollama/LM Studio) and never touches
+# CaptionService — `grep -rl CaptionService backend/app` does not list
+# `caption_refine_batch.py`. It holds no GPU caption model.
+_CAPTION_GUARD_TASK_TYPES = ("caption_batch",)
 
 
 class CaptionService:
@@ -42,6 +65,11 @@ class CaptionService:
     # pool via asyncio.to_thread, so the event loop keeps serving other
     # requests, including a new POST /batch, while it's in flight).
     _unload_lock = threading.Lock()
+    # Pending idle unload, or None. Guarded by _idle_lock — deliberately NOT
+    # _unload_lock, because the timer's own callback has to release its guard
+    # before calling unload_models(), and _unload_lock is not reentrant.
+    _idle_timer: threading.Timer | None = None
+    _idle_lock = threading.Lock()
 
     def __init__(self):
         # Must run before ANY plugin can load: Youtu-VL's remote processor code
@@ -94,18 +122,13 @@ class CaptionService:
 
         Returns ``True`` if the unload actually ran, ``False`` if skipped.
         """
+        # Whatever the outcome, a pending idle unload is now redundant: either
+        # this call frees the model, or a batch is running and the timer must
+        # not fire into it.
+        cls.cancel_idle_unload()
         with cls._unload_lock:
-            if skip_if_batch_active:
-                from app.core.tasks.task import TaskStatus
-                from app.core.tasks.task_manager import task_manager
-
-                active_batch = any(
-                    t.type == "caption_batch"
-                    and t.status in (TaskStatus.PENDING, TaskStatus.RUNNING)
-                    for t in task_manager.list()
-                )
-                if active_batch:
-                    return False
+            if skip_if_batch_active and gpu_batch_active(_CAPTION_GUARD_TASK_TYPES):
+                return False
 
             unload_gpu_plugins(
                 cls,
@@ -114,6 +137,52 @@ class CaptionService:
                 service_label="caption",
             )
             return True
+
+    @classmethod
+    def arm_idle_unload(cls, seconds: float | None = None) -> bool:
+        """(Re)arm the idle unload, replacing any pending one.
+
+        Called after a single caption completes. Each new caption pushes the
+        deadline out, so an interactive caption-look-caption loop never pays a
+        reload; the model is released only once the user actually stops.
+
+        The timer is a daemon so it can never hold up interpreter shutdown, and
+        it fires ``unload_models(skip_if_batch_active=True)`` — the same guarded
+        mode the manual route uses — so a batch that started in the meantime is
+        never unloaded out from under itself.
+
+        Returns True if a timer is now pending, False if idle unloading is off.
+        """
+        delay = IDLE_UNLOAD_SECONDS if seconds is None else seconds
+        cls.cancel_idle_unload()
+        if delay <= 0:
+            return False
+        timer = threading.Timer(delay, cls._idle_unload_fired)
+        timer.daemon = True
+        with cls._idle_lock:
+            cls._idle_timer = timer
+        timer.start()
+        return True
+
+    @classmethod
+    def cancel_idle_unload(cls) -> None:
+        """Cancel any pending idle unload. Safe to call when none is armed."""
+        with cls._idle_lock:
+            timer, cls._idle_timer = cls._idle_timer, None
+        if timer is not None:
+            timer.cancel()
+
+    @classmethod
+    def _idle_unload_fired(cls) -> None:
+        """Timer callback. Clears its own handle, THEN unloads.
+
+        The two steps take different locks and never nest: `unload_models`
+        calls `cancel_idle_unload`, which takes `_idle_lock`, and then takes
+        `_unload_lock` itself.
+        """
+        with cls._idle_lock:
+            cls._idle_timer = None
+        cls.unload_models(skip_if_batch_active=True)
 
     def supports_multi_image(self, model_id: str) -> bool:
         """Whether *model_id* can caption from multiple images (edit captions)."""

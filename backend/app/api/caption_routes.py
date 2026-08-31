@@ -167,6 +167,12 @@ async def generate_caption_api(request: GenerateCaptionRequest):
                     has_masked_caption=True,
                 )
 
+        # Single captions had no unload path at all — only a batch freed its
+        # model, so a one-off caption held VRAM until the user switched models.
+        # Arming rather than unloading keeps the interactive loop fast; each
+        # further caption pushes the deadline out.
+        CaptionService.arm_idle_unload()
+
         return {"caption": caption}
     except (OSError, RuntimeError, ValueError) as e:
         logger.error("caption_generation_failed", error=str(e), exc_info=True)

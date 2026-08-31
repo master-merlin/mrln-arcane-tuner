@@ -237,6 +237,12 @@ def run_caption_batch(
 
     caption_format = _get_caption_format(definition_id)
 
+    # A single caption arms an idle unload; a batch starting inside that window
+    # would otherwise have the timer fire mid-run. The timer's own guarded mode
+    # would refuse, but cancelling here removes the race rather than relying on
+    # the refusal, and the finally block below frees the model anyway.
+    CaptionService.cancel_idle_unload()
+
     try:
         service = _get_service()
 

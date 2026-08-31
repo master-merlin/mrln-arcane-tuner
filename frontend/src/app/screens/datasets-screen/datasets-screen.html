@@ -30,6 +30,10 @@
         </div>
     </div>
 
+    <!-- One-time migration off the pre-`<edge>/` thumbnail cache layout
+         (LANE-40). Renders nothing once there is nothing to reclaim. -->
+    <app-thumbnail-migration-banner/>
+
     <div class="ds-kpi-rail">
         <app-kpi-tile label="DATASETS" [value]="kpis().datasets" accent="brand" [sub]="datasetsSub()">
             @if (kpis().datasets > 0) {

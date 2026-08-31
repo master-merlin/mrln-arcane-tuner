@@ -88,6 +88,7 @@ def run_mask_generate_batch(
     model in finally."""
     ok = 0
     failed = 0
+    last_error: str | None = None
     cancelled = False
 
     try:
@@ -105,6 +106,7 @@ def run_mask_generate_batch(
                 ok += 1
             except Exception as exc:  # noqa: BLE001
                 failed += 1
+                last_error = str(exc) or type(exc).__name__
                 logger.warning(
                     "mask_generate_item_failed",
                     task_id=task_id, rel_path=rel, error=str(exc),
@@ -132,4 +134,6 @@ def run_mask_generate_batch(
     if cancelled:
         task_manager.finish_cancelled(task_id)
     else:
-        task_manager.complete(task_id)
+        # Terminal state from the tally, not from "we got here" — an all-failed
+        # batch used to report completed (LANE-52).
+        task_manager.finish_batch(task_id, ok=ok, failed=failed, error=last_error)

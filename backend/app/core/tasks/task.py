@@ -34,4 +34,14 @@ class Task(BaseModel):
     error: str | None = None
     # When False the task runs + broadcasts as usual but is hidden from the
     # user-facing Task Center (internal/background jobs, e.g. cache-stats warmup).
+    # It ALSO decides which lane the task runs on — see TaskManager._lane_for.
     user_visible: bool = True
+    # The lane this task was actually placed on, set by TaskManager.enqueue
+    # (None until then, and for tasks driven by hand in tests). Not the lane the
+    # caller asked for: a silent task is rerouted to the `:maintenance` sibling.
+    lane: str | None = None
+    # How many tasks must finish on `lane` before this one starts. 0 = next in
+    # line, or already running. A `pending` task with no stated reason for
+    # waiting is indistinguishable from a broken one (LANE-52), so this is the
+    # reason. Maintained by the lane worker; meaningless once terminal.
+    queue_position: int = 0

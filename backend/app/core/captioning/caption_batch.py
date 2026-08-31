@@ -229,6 +229,7 @@ def run_caption_batch(
     """
     ok = 0
     failed = 0
+    last_error: str | None = None
     cancelled = False
     consecutive_failures = 0
 
@@ -319,6 +320,7 @@ def run_caption_batch(
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 consecutive_failures += 1
+                last_error = str(exc) or type(exc).__name__
                 logger.warning(
                     "caption_batch_item_failed",
                     task_id=task_id,
@@ -353,4 +355,8 @@ def run_caption_batch(
     if cancelled:
         task_manager.finish_cancelled(task_id)
     else:
-        task_manager.complete(task_id)
+        # Terminal state from the tally, not from "we got here" (LANE-52). The
+        # api-* fast-abort above already fails mid-loop; this covers the case
+        # where every item failed without tripping the consecutive-run rule
+        # (a local model, or failures interleaved with successes).
+        task_manager.finish_batch(task_id, ok=ok, failed=failed, error=last_error)

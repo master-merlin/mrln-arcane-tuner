@@ -118,9 +118,17 @@ def run_caption_refine_batch(
 
     fmt = get_caption_format_for_definition(definition_id)
 
-    async def _run() -> None:
+    async def _run() -> tuple[int, int, str | None]:
+        """Refine every image; return ``(ok, failed, last_error)``.
+
+        The counters are RETURNED rather than kept private because the caller
+        decides the task's terminal state from them — see
+        ``TaskManager.finish_batch``. Before LANE-52 this coroutine returned
+        None and the caller called ``complete()`` unconditionally, so a batch in
+        which every single item raised still reported success."""
         ok = 0
         failed = 0
+        last_error: str | None = None
         for i, rel in enumerate(image_rel_paths):
             if task_manager.is_cancelled(task_id):
                 break
@@ -142,6 +150,9 @@ def run_caption_refine_batch(
                     if not fmt.detect(refined):
                         logger.warning("refine_structured_parse_failed", rel=rel)
                         failed += 1
+                        last_error = (
+                            f"model output was not valid {fmt.id} for {rel}"
+                        )
                         task_manager.update(
                             task_id, current=i + 1, item=rel, ok=ok, failed=failed
                         )
@@ -171,14 +182,23 @@ def run_caption_refine_batch(
                         target=target,
                         suggestion=refined,
                     )
-            except Exception:
+            except Exception as exc:
                 logger.exception("caption_refine_failed", rel=rel)
                 failed += 1
+                # An httpx.ReadTimeout stringifies to "" — a bare str(exc) would
+                # hand the user a task that failed for no stated reason, which is
+                # the same silence one layer down. Fall back to the class name.
+                last_error = str(exc) or type(exc).__name__
             task_manager.update(task_id, current=i + 1, item=rel, ok=ok, failed=failed)
+        return ok, failed, last_error
 
     try:
-        asyncio.run(_run())
-        task_manager.complete(task_id)
+        ok, failed, last_error = asyncio.run(_run())
     except Exception as e:  # noqa: BLE001
         logger.exception("caption_refine_batch_failed")
-        task_manager.fail(task_id, str(e))
+        task_manager.fail(task_id, str(e) or type(e).__name__)
+        return
+    if task_manager.is_cancelled(task_id):
+        task_manager.finish_cancelled(task_id)
+        return
+    task_manager.finish_batch(task_id, ok=ok, failed=failed, error=last_error)

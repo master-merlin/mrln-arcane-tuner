@@ -176,6 +176,7 @@ def run_video_split_batch(
     """
     ok = 0
     failed = 0
+    last_error: str | None = None
     cancelled = False
     produced: list[str] = []
 
@@ -236,6 +237,7 @@ def run_video_split_batch(
                 break
             except Exception as exc:  # noqa: BLE001
                 failed += 1
+                last_error = str(exc) or type(exc).__name__
                 logger.warning(
                     "video_segment_failed",
                     task_id=task_id,
@@ -272,4 +274,5 @@ def run_video_split_batch(
     if cancelled:
         task_manager.finish_cancelled(task_id)
     else:
-        task_manager.complete(task_id)
+        # Terminal state from the tally, not from "we got here" (LANE-52).
+        task_manager.finish_batch(task_id, ok=ok, failed=failed, error=last_error)

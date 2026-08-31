@@ -178,6 +178,13 @@ def test_worker_local_model_failures_do_not_fast_fail_and_still_unload(monkeypat
     )
 
     task = task_manager.get(t.id)
-    assert task.status.value == "completed"        # no fast-fail for local
+    # No FAST-fail for local: every image is attempted, the run is not aborted
+    # after N consecutive failures the way an api-* batch is.
     assert task.failed == 7                        # processed every image
     assert StubService.unloaded is True            # finally still unloads
+    # ...but "not fast-failed" is not "succeeded". This assertion read
+    # `== "completed"` until LANE-52: a batch in which all 7 items raised
+    # reported success, which is what the user hit on the refine batch. The
+    # tally decides the outcome (TaskManager.finish_batch).
+    assert task.status.value == "failed"
+    assert task.error is not None and "CUDA OOM" in task.error

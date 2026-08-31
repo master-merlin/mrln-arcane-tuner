@@ -176,6 +176,7 @@ def run_pipeline_batch(
     isolating per-item failures and checking cancellation per item."""
     ok = 0
     failed = 0
+    last_error: str | None = None
     cancelled = False
 
     try:
@@ -188,6 +189,7 @@ def run_pipeline_batch(
                 ok += 1
             except Exception as exc:  # noqa: BLE001
                 failed += 1
+                last_error = str(exc) or type(exc).__name__
                 logger.warning(
                     "pipeline_item_failed",
                     task_id=task_id,
@@ -203,4 +205,5 @@ def run_pipeline_batch(
     if cancelled:
         task_manager.finish_cancelled(task_id)
     else:
-        task_manager.complete(task_id)
+        # Terminal state from the tally, not from "we got here" (LANE-52).
+        task_manager.finish_batch(task_id, ok=ok, failed=failed, error=last_error)

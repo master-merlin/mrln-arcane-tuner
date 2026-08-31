@@ -199,3 +199,179 @@ def test_terminal_pruning_never_drops_active_tasks(tm):
 
     assert tm.get(active.id) is not None
     assert tm.get(active.id).status == TaskStatus.RUNNING
+
+
+class TestMaintenanceNeverBlocksUserWork:
+    """A task the user cannot see must never hold the lane the user's work runs
+    on (ARCHITECTURE D10, "never block a shared lane").
+
+    Measured on the live server during UAT round 4 (LANE-52): the boot-time
+    `cache_stats_warmup` (`user_visible=False`) ran 532 s on `lane="background"`
+    and a user-initiated caption-refine POSTed two minutes later sat `pending`
+    with `started_at=None` until the warm-up's exact finishing microsecond. One
+    FIFO thread per lane plus a silent tenant on that lane is starvation by
+    construction, and no amount of care inside either worker prevents it.
+
+    The rule is structural rather than per-callsite: `enqueue` routes any
+    `user_visible=False` task onto the lane's `:maintenance` sibling, so a
+    future silent task cannot be dropped onto a user lane by accident. Silent
+    tasks still serialise against EACH OTHER - that is the point, not the same
+    bug moved: unbounded latency between two housekeeping sweeps costs a user
+    nothing, while unbounded latency in front of a user's own request is the
+    defect.
+    """
+
+    def test_a_silent_task_does_not_delay_a_visible_one(self, tm):
+        started: list[str] = []
+        release = _threading.Event()
+
+        def slow_maintenance(task_id):
+            started.append("maintenance")
+            # Longer than the poll window below, so "the user's task ran" can
+            # only mean it overtook the sweep, never that the sweep ended first.
+            release.wait(30)
+
+        def user_work(task_id):
+            started.append("user")
+
+        warm = tm.create(type="cache_stats_warmup", title="Cache stats",
+                         user_visible=False)
+        refine = tm.create(type="caption_refine_batch", title="Refine", total=1)
+        tm.enqueue(warm.id, slow_maintenance, lane="background")
+        tm.enqueue(refine.id, user_work, lane="background")
+
+        # The user's task must reach a terminal state while the sweep runs on.
+        for _ in range(40):
+            if "user" in started:
+                break
+            _threading.Event().wait(0.05)
+
+        assert started[:1] == ["maintenance"], "the sweep never started"
+        assert "user" in started, (
+            "the user's task waited behind an invisible maintenance sweep"
+        )
+        assert tm.get(refine.id).status == TaskStatus.COMPLETED
+        assert tm.get(warm.id).status == TaskStatus.RUNNING
+        release.set()
+        tm.join_lane("background:maintenance", timeout=5)
+
+    def test_two_silent_tasks_still_serialise(self, tm):
+        """The fix must not turn maintenance into unbounded fan-out: two silent
+        sweeps share the maintenance lane and run one at a time."""
+        order: list[str] = []
+        gate = _threading.Event()
+
+        def first(task_id):
+            order.append("first-start")
+            gate.wait(5)
+            order.append("first-end")
+
+        def second(task_id):
+            order.append("second-start")
+
+        a = tm.create(type="cache_stats_warmup", title="a", user_visible=False)
+        b = tm.create(type="cache_stats_warmup", title="b", user_visible=False)
+        tm.enqueue(a.id, first, lane="background")
+        tm.enqueue(b.id, second, lane="background")
+
+        _threading.Event().wait(0.3)
+        assert order == ["first-start"]
+        gate.set()
+        tm.join_lane("background:maintenance", timeout=5)
+        assert order == ["first-start", "first-end", "second-start"]
+
+    def test_a_silent_gpu_task_is_still_refused_while_draining(self, tm, monkeypatch):
+        """Lane derivation happens AFTER the drain check, so a silent GPU task
+        cannot sneak past the drain gate by landing on `gpu:maintenance`."""
+        import sys
+
+        from app.core.drain import DrainActive
+        # `app.core.tasks.task_manager` as an ATTRIBUTE of the package is the
+        # singleton instance (re-exported by __init__), not the module — go
+        # through sys.modules or monkeypatch retargets the wrong object.
+        tm_mod = sys.modules["app.core.tasks.task_manager"]
+        monkeypatch.setattr(tm_mod, "is_draining", lambda: True)
+
+        silent = tm.create(type="cache_stats_warmup", title="x", user_visible=False)
+        with pytest.raises(DrainActive):
+            tm.enqueue(silent.id, lambda _id: None, lane="gpu")
+
+
+class TestQueuedTaskSaysWhyItWaits:
+    """`pending` with no reason is indistinguishable from broken - which is
+    exactly how the user read the nine-minute wait in UAT round 4 (LANE-52).
+    `queue_position` counts the tasks that must finish on this task's lane
+    before it starts; 0 means "next, or already running"."""
+
+    def test_position_counts_the_tasks_ahead(self, tm):
+        gate = _threading.Event()
+
+        a = tm.create(type="caption_batch", title="a")
+        b = tm.create(type="caption_batch", title="b")
+        c = tm.create(type="caption_batch", title="c")
+        tm.enqueue(a.id, lambda _id: gate.wait(5), lane="gpu")
+        for _ in range(100):
+            if tm.get(a.id).status == TaskStatus.RUNNING:
+                break
+            _threading.Event().wait(0.05)
+        tm.enqueue(b.id, lambda _id: None, lane="gpu")
+        tm.enqueue(c.id, lambda _id: None, lane="gpu")
+
+        assert tm.get(a.id).queue_position == 0, "a running task is not waiting"
+        assert tm.get(b.id).queue_position == 1, "b waits on the running task"
+        assert tm.get(c.id).queue_position == 2, "c waits on the running task and on b"
+
+        gate.set()
+        tm.join_lane("gpu", timeout=5)
+        assert tm.get(c.id).queue_position == 0
+
+    def test_position_shrinks_as_the_lane_drains(self, tm):
+        first_gate = _threading.Event()
+        second_gate = _threading.Event()
+
+        a = tm.create(type="caption_batch", title="a")
+        b = tm.create(type="caption_batch", title="b")
+        c = tm.create(type="caption_batch", title="c")
+        tm.enqueue(a.id, lambda _id: first_gate.wait(5), lane="gpu")
+        tm.enqueue(b.id, lambda _id: second_gate.wait(5), lane="gpu")
+        tm.enqueue(c.id, lambda _id: None, lane="gpu")
+
+        first_gate.set()
+        for _ in range(100):
+            if tm.get(c.id).queue_position == 1:
+                break
+            _threading.Event().wait(0.05)
+        assert tm.get(c.id).queue_position == 1, (
+            "the queue drained but the waiting task still advertises its old place"
+        )
+        second_gate.set()
+        tm.join_lane("gpu", timeout=5)
+
+    def test_the_task_names_the_lane_it_waits_on(self, tm):
+        t = tm.create(type="cache_stats_warmup", title="x", user_visible=False)
+        tm.enqueue(t.id, lambda _id: None, lane="background")
+        tm.join_lane("background:maintenance", timeout=5)
+        assert tm.get(t.id).lane == "background:maintenance"
+
+    def test_position_is_broadcast_when_it_changes(self, tm):
+        """The Task Center learns its place from the `task_update` frame, not
+        from a poll - so a shrinking position that is never broadcast is a
+        number nobody sees."""
+        sent: list[tuple[str, int]] = []
+        tm._broadcast = lambda task, throttle=False: sent.append(  # type: ignore[method-assign]
+            (task.id, task.queue_position))
+
+        gate = _threading.Event()
+        a = tm.create(type="caption_batch", title="a")
+        b = tm.create(type="caption_batch", title="b")
+        tm.enqueue(a.id, lambda _id: gate.wait(5), lane="gpu")
+        for _ in range(100):
+            if tm.get(a.id).status == TaskStatus.RUNNING:
+                break
+            _threading.Event().wait(0.05)
+        sent.clear()
+        tm.enqueue(b.id, lambda _id: None, lane="gpu")
+
+        assert (b.id, 1) in sent, "the queued task never announced its place"
+        gate.set()
+        tm.join_lane("gpu", timeout=5)

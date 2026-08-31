@@ -4,7 +4,9 @@ Covers: /api/system/restart, /api/system/logs, /api/system/logs/clear.
 """
 
 import asyncio
+import os
 import subprocess
+import sys
 
 from unittest.mock import patch, mock_open, AsyncMock, MagicMock
 from pathlib import Path
@@ -24,27 +26,92 @@ class TestRestartEndpoint:
         assert resp.status_code == 200
         assert "restart" in resp.json()["message"].lower()
 
-    def test_restart_spawn_does_not_inherit_console_handles(self):
-        """The spawned process must get DEVNULL stdio, never the parent's
-        handles: those can point at a dead pipe (e.g. the IDE terminal that
-        launched the original server crashed), and once that pipe's buffer
-        fills, the first console log write blocks while HOLDING the logging
-        lock — wedging the entire event loop (2026-07-16 live incident)."""
+    def test_restart_spawn_writes_to_a_file_it_can_never_block_on(self, tmp_path):
+        """Two properties at once, and the second was bought with the first.
+
+        The spawn must not inherit our stdio: those handles can point at a dead
+        pipe (the IDE terminal that launched the original server crashed), and
+        once that pipe's buffer fills, the first console log write blocks while
+        HOLDING the logging lock — wedging the entire event loop (2026-07-16
+        live incident, e2e3cfc8). But DEVNULL then made a failed restart
+        invisible everywhere (LANE-51), so the target must be a real FILE:
+        durable, and with no reader that can ever stall it.
+
+        Asserted on the artefact, not on the call: we write through the handle
+        the spawn was given and read the bytes back out of the restart log."""
         from app.api import system_routes
 
+        log_path = tmp_path / "restart.log"
+
+        def _child_writes(cmd, **kwargs):
+            kwargs["stdout"].write("CHILD-SAYS-HELLO\n")
+            return MagicMock()
+
         with (
-            patch("app.api.system_routes.subprocess.Popen") as popen,
+            patch.object(system_routes.restart_launcher, "RESTART_LOG_PATH", str(log_path)),
+            patch("app.api.system_routes.subprocess.Popen",
+                  side_effect=_child_writes) as popen,
             patch("app.api.system_routes.os._exit") as fake_exit,
             patch("app.api.system_routes.asyncio.sleep", new=AsyncMock()),
         ):
             asyncio.run(system_routes._restart_server_logic())
 
-        assert popen.called
         kwargs = popen.call_args.kwargs
         assert kwargs.get("stdin") is subprocess.DEVNULL
-        assert kwargs.get("stdout") is subprocess.DEVNULL
-        assert kwargs.get("stderr") is subprocess.DEVNULL
+        assert kwargs.get("stdout") is not subprocess.DEVNULL
+        assert kwargs.get("stdout") is kwargs.get("stderr")
+        assert kwargs["stdout"].closed, "the parent must drop its copy of the handle"
+        # The observable part: what the child wrote is on disk afterwards.
+        assert "CHILD-SAYS-HELLO" in log_path.read_text(encoding="utf-8")
         fake_exit.assert_called_once_with(0)
+
+    def test_restart_hands_off_to_the_launcher_with_a_command_it_accepts(self):
+        """The route and the launcher must agree on the command line. Pinned by
+        parsing the real argv with the real parser — a wiring mistake here would
+        otherwise only show up as a restart that silently never happened."""
+        from app.api import system_routes
+        from pathlib import Path as _Path
+
+        with (
+            patch("app.api.system_routes.subprocess.Popen") as popen,
+            patch("app.api.system_routes.os._exit"),
+            patch("app.api.system_routes.asyncio.sleep", new=AsyncMock()),
+        ):
+            asyncio.run(system_routes._restart_server_logic())
+
+        cmd = popen.call_args.args[0]
+        assert _Path(cmd[1]).name == "restart_launcher.py"
+        assert _Path(cmd[1]).exists()
+        opts, child = system_routes.restart_launcher._parse_args(cmd[2:])
+        assert opts["old_pid"] == str(os.getpid())
+        assert child[0] == sys.executable
+
+    def test_a_previous_restart_failure_is_reported_once(self, tmp_path, caplog):
+        """Nobody is alive to report a failed restart when it happens — the next
+        server to start is the first listener there is, and it must say so."""
+        import json
+        from app.api import system_routes
+
+        log_path = tmp_path / "restart.log"
+        log_path.write_text(
+            json.dumps({"event": "restart_failed", "exit_code": 3,
+                        "timestamp": "2026-08-31T18:14:56Z",
+                        "message": "the replacement server exited with code 3"}) + "\n",
+            encoding="utf-8")
+
+        with patch.object(system_routes.restart_launcher, "RESTART_LOG_PATH", str(log_path)):
+            with caplog.at_level("ERROR"):
+                first = system_routes.report_pending_restart_failure()
+            assert first is not None
+            assert "previous_restart_failed" in caplog.text
+            assert "exited with code 3" in caplog.text
+            # WHEN it failed must survive the hand-over; the log pipeline
+            # stamps its own `timestamp` over any it is handed.
+            assert "2026-08-31T18:14:56Z" in caplog.text
+
+            caplog.clear()
+            assert system_routes.report_pending_restart_failure() is None
+            assert "previous_restart_failed" not in caplog.text
 
 
 # ── Log Endpoints ────────────────────────────────────────────────────────

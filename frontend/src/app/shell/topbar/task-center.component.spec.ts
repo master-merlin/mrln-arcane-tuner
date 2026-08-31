@@ -1,5 +1,6 @@
 import type { Mock } from 'vitest';
 import { TestBed } from '@angular/core/testing';
+import type { ComponentFixture } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { TaskCenterComponent } from './task-center.component';
 import { TaskStore } from '../../state/task.store';
@@ -71,8 +72,13 @@ describe('TaskCenterComponent done-row summary', () => {
         const f = TestBed.createComponent(TaskCenterComponent);
         (f.componentInstance as any).toggle();
         f.detectChanges();
+        lastFixture = f;
         return f.nativeElement.textContent as string;
     }
+
+    /** The fixture mount() last rendered — for assertions that need the DOM
+     *  rather than the text (an absent block has no textContent to miss). */
+    let lastFixture: ComponentFixture<TaskCenterComponent>;
 
     it('shows "done" but never "failed" for a clean run', () => {
         const txt = mount([
@@ -108,6 +114,34 @@ describe('TaskCenterComponent done-row summary', () => {
             },
         ]);
         expect(txt).toContain('CUDA out of memory');
+    });
+
+    it('surfaces the reason on a COMPLETED task that had failures (LANE-52)', () => {
+        // A partially-failed batch finishes `completed` and carries the summary
+        // on `error` (TaskManager.finish_batch). The row used to render the
+        // error only when status === 'failed', so the reason was invisible on
+        // exactly the tasks whose outcome was ambiguous.
+        const txt = mount([
+            {
+                id: 'r5',
+                title: 'Refine captions · ds',
+                status: 'completed',
+                ok: 2,
+                failed: 1,
+                error: '1 of 3 items failed (last: ReadTimeout)',
+            },
+        ]);
+        expect(txt).toContain('1 of 3 items failed (last: ReadTimeout)');
+    });
+
+    it('renders no error block when a clean task has none', () => {
+        // Positive control for the two tests above: keying on `t.error` must
+        // not start printing an empty error row on every healthy task.
+        const txt = mount([
+            { id: 'r6', title: 'Captioning · ds', status: 'completed', ok: 4, failed: 0 },
+        ]);
+        expect(txt).not.toContain('items failed');
+        expect(byTestId(lastFixture, 'task-center-error')).toBeNull();
     });
 
     it('maps type → kind label + accent and uses dataset_name as subject', () => {

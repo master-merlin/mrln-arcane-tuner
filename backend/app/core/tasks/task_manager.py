@@ -105,6 +105,48 @@ class TaskManager:
             t.error = error
         self._finish(task_id, TaskStatus.FAILED)
 
+    def finish_batch(self, task_id: str, *, ok: int, failed: int,
+                     error: str | None = None) -> None:
+        """Terminal state for a COUNTED batch, derived from the batch's own tally
+        instead of from "the worker returned without raising".
+
+        Every counted adopter used to end in a bare ``complete(task_id)``: the
+        per-item ``except`` swallowed the exception into a ``failed`` counter and
+        nothing downstream ever read that counter. A refine batch in which the
+        ONE item timed out was therefore recorded ``status=completed, ok=0,
+        failed=1, error=None`` — the Task Center showed a finished task, nothing
+        had changed on disk, and the user had no reason given (UAT round 4,
+        LANE-52). That is the silent-failure shape ARCHITECTURE D10 forbids.
+
+        The rule, in one place so all adopters agree (RULE-21, one producer):
+
+        * ``failed == 0``           → COMPLETED, no error.
+        * ``failed > 0, ok == 0``   → FAILED. Nothing succeeded, so the task did
+          not do its job and must not present as success. ``error`` carries the
+          reason (the last item's exception text when the caller passes one).
+        * ``failed > 0, ok > 0``    → COMPLETED — real work landed and the
+          partial result is on disk — but ``error`` is set to the same summary
+          so the failure is still *stated*. A completed task carrying an error
+          is deliberate: the Task Center renders it whenever it is present.
+
+        Cancellation is NOT this method's business — a cancelled batch is
+        terminal via :meth:`finish_cancelled` before it gets here.
+        """
+        if failed <= 0:
+            self.complete(task_id)
+            return
+        total = ok + failed
+        summary = f"{failed} of {total} items failed"
+        if error:
+            summary = f"{summary} (last: {error})"
+        if ok <= 0:
+            self.fail(task_id, summary)
+            return
+        t = self._tasks.get(task_id)
+        if t:
+            t.error = summary
+        self.complete(task_id)
+
     def cancel(self, task_id: str) -> None:
         ev = self._cancels.get(task_id)
         if ev:

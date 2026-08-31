@@ -96,7 +96,12 @@ const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
                                     }
                                     @if (t.status === 'cancelled') { <span class="cancelled">· cancelled</span> }
                                 </div>
-                                @if (t.status === 'failed' && t.error) {
+                                <!-- Keyed on the error's PRESENCE, not on the
+                                     status: a partially-failed batch finishes
+                                     'completed' and still carries a reason
+                                     (TaskManager.finish_batch, LANE-52). Keying
+                                     on status === 'failed' hid it. -->
+                                @if (t.error) {
                                     <div class="tc-error" data-testid="task-center-error"
                                          [title]="t.error">{{ t.error }}</div>
                                 }

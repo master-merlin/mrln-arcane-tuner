@@ -30,7 +30,9 @@ def test_refine_batch_writes_suggestions_and_completes(mock_refine, mock_dm, moc
     assert sg.read_suggestion(str(tmp_path), "flux1-schnell", "img1") == "refined cap"
     # source caption passed to refine was the general caption
     assert mock_refine.await_args.args[2] == "general caption"
-    mock_tm.complete.assert_called_once_with("t1")
+    # The worker no longer decides "done" by reaching the end; it hands its
+    # tally to finish_batch, which derives the terminal state (LANE-52).
+    mock_tm.finish_batch.assert_called_once_with("t1", ok=1, failed=0, error=None)
 
 
 @patch.object(crb, "task_manager")
@@ -59,7 +61,9 @@ def test_refine_batch_masked_writes_masked_suggestion(mock_refine, mock_dm, mock
     assert sg.read_suggestion(str(tmp_path), "flux1-schnell", "img1") is None
     # source passed to refine was the masked caption
     assert mock_refine.await_args.args[2] == "masked source caption"
-    mock_tm.complete.assert_called_once_with("t1")
+    # The worker no longer decides "done" by reaching the end; it hands its
+    # tally to finish_batch, which derives the terminal state (LANE-52).
+    mock_tm.finish_batch.assert_called_once_with("t1", ok=1, failed=0, error=None)
 
 
 @patch.object(crb, "_emit_suggestion_written")
@@ -151,7 +155,9 @@ def test_refine_batch_auto_accept_promotes_variant(mock_refine, mock_dm, mock_tm
     mock_emit.assert_called_once()
     assert mock_emit.call_args.kwargs["definition_id"] == "flux1-schnell"
     assert mock_emit.call_args.kwargs["stem"] == "img1"
-    mock_tm.complete.assert_called_once_with("t1")
+    # The worker no longer decides "done" by reaching the end; it hands its
+    # tally to finish_batch, which derives the terminal state (LANE-52).
+    mock_tm.finish_batch.assert_called_once_with("t1", ok=1, failed=0, error=None)
 
 
 @patch.object(crb, "resolve_caption_target", side_effect=ValueError("unknown"))
@@ -175,7 +181,9 @@ def test_refine_batch_falls_back_when_target_unresolvable(mock_refine, mock_dm, 
     )
 
     assert mock_refine.await_args.kwargs["system_prompt"] is None
-    mock_tm.complete.assert_called_once_with("t1")
+    # The worker no longer decides "done" by reaching the end; it hands its
+    # tally to finish_batch, which derives the terminal state (LANE-52).
+    mock_tm.finish_batch.assert_called_once_with("t1", ok=1, failed=0, error=None)
 
 
 @patch.object(crb, "task_manager")
@@ -187,3 +195,4 @@ def test_refine_batch_unknown_dataset_fails(mock_refine, mock_dm, mock_tm, tmp_p
                                  definition_id="d", preset="standardize", model="m", base_url="http://test")
     mock_tm.fail.assert_called_once()
     mock_tm.complete.assert_not_called()
+    mock_tm.finish_batch.assert_not_called()

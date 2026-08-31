@@ -16,6 +16,7 @@ import {
     type DatasetSearchField,
 } from '../../state/search.store';
 import { IcoComponent } from '../../icons/ico.component';
+import { ThumbnailMigrationBanner } from '../../components/dataset/thumbnail-migration-banner/thumbnail-migration-banner';
 import { KpiTileComponent } from '../../ui/kpi-tile/kpi-tile.component';
 import { ChipTagComponent } from '../../ui/chip-tag/chip-tag.component';
 import { StatePillsComponent, StatePillsState, datasetStatePills } from '../../ui/state-pills/state-pills.component';
@@ -96,7 +97,7 @@ interface CacheStats {
 @Component({
     selector: 'app-datasets-screen',
     standalone: true,
-    imports: [IcoComponent, KpiTileComponent, ChipTagComponent, StatePillsComponent, FormatBytesPipe],
+    imports: [IcoComponent, KpiTileComponent, ChipTagComponent, StatePillsComponent, FormatBytesPipe, ThumbnailMigrationBanner],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './datasets-screen.html',
     styleUrl: './datasets-screen.css',

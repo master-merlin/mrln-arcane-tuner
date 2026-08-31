@@ -1,0 +1,25 @@
+@if (visible()) {
+    <div class="tmb" role="status" data-testid="thumb-migration-banner">
+        <app-ico name="HardDrive" [size]="16" class="tmb-ico"/>
+        <div class="tmb-text">
+            <span class="tmb-title" data-testid="thumb-migration-summary">
+                {{ survey()!.dataset_count }}
+                {{ survey()!.dataset_count === 1 ? 'dataset holds' : 'datasets hold' }}
+                stale thumbnail files from an older cache layout
+            </span>
+            <span class="tmb-sub">
+                <span class="mono">{{ survey()!.total_bytes | formatBytes }}</span>
+                can be reclaimed ({{ survey()!.total_files }} files). Your dataset covers are
+                already correct — this only deletes files nothing reads.
+            </span>
+        </div>
+        <button
+            class="btn"
+            type="button"
+            [disabled]="busy()"
+            data-testid="thumb-migration-run"
+            (click)="migrate()">
+            {{ busy() ? 'Cleaning up…' : 'Clean up' }}
+        </button>
+    </div>
+}

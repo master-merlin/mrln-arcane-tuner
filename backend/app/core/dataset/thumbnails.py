@@ -131,6 +131,63 @@ def thumbnail_paths_for(dataset_path: str, rel_path: str) -> list[Path]:
     ] + _legacy_thumbnail_paths(dataset_path, rel_path)
 
 
+def _iter_legacy_entries(dataset_path: str) -> "list[os.DirEntry[str]]":
+    """Return the flat-layout rendition entries directly inside ``.thumbnails/``.
+
+    The single definition of "this dataset has not been migrated yet". Both
+    :func:`legacy_layout_survey` (what the user is told) and
+    :func:`purge_legacy_layout` (what is actually deleted) enumerate through
+    here, so the count on the button and the count that is removed cannot
+    drift into promising a reclaim that does not happen.
+
+    ONE non-recursive ``scandir`` of a single directory: every live rendition
+    is one level deeper in ``<edge>/``, so nothing about the dataset's own
+    tree — which may hold tens of thousands of media files — is ever read.
+    That is what makes detection cheap enough to run for every dataset in the
+    library on one request.
+
+    Returns ``[]`` when there is no cache directory or it cannot be listed.
+    """
+    root = thumbnail_dir(dataset_path)
+    try:
+        # `with` so the directory handle is released even on a mid-iteration
+        # error (D10: every resource released in finally).
+        with os.scandir(root) as it:
+            entries = list(it)
+    except OSError:
+        # Missing directory is the common case (never-thumbnailed dataset) and
+        # is not worth a log line; a genuine permission error surfaces at the
+        # purge, which does log.
+        return []
+    return [
+        e for e in entries
+        if (e.name.endswith(".webp") or e.name.endswith(".webp.tmp"))
+        and e.is_file(follow_symlinks=False)
+    ]
+
+
+def legacy_layout_survey(dataset_path: str) -> tuple[int, int]:
+    """Return ``(file_count, total_bytes)`` of this dataset's flat renditions.
+
+    Detection half of the migration off the pre-``<edge>/`` layout. ``(0, 0)``
+    means the dataset is already migrated (or never had a cache) — that is the
+    value the caller uses to leave it alone, so it must be reachable without a
+    scan of any kind.
+
+    Read-only and side-effect free: a survey that repaired what it found could
+    not be run from a GET.
+    """
+    files = _iter_legacy_entries(dataset_path)
+    total = 0
+    for entry in files:
+        try:
+            total += entry.stat().st_size
+        except OSError:
+            # Vanished between listing and stat — count the file, not its size.
+            pass
+    return len(files), total
+
+
 def purge_legacy_layout(dataset_path: str) -> int:
     """Delete flat-layout renditions left behind by the pre-``<edge>/`` scheme.
 
@@ -140,27 +197,23 @@ def purge_legacy_layout(dataset_path: str) -> int:
     first scan after the upgrade instead of accumulating forever, and the
     renditions the user still looks at are regenerated on demand.
 
+    This IS the whole migration, and unlinking is all of it: nothing reads a
+    flat rendition any more (``thumbnail_path_for`` cannot name one), so the
+    pixels served were already correct and no rehash, rescore or rescan is
+    implied. `app/api/dataset/thumbnail_routes.py` drives it across the
+    library for datasets that are never scanned again.
+
     Returns the number of files removed (0 when there is nothing to do).
     """
     root = thumbnail_dir(dataset_path)
-    if not root.is_dir():
-        return 0
     removed = 0
-    try:
-        entries = list(root.iterdir())
-    except OSError as e:
-        logger.warning("thumbnail_legacy_purge_failed", path=str(root), error=str(e))
-        return 0
-    for path in entries:
-        if not (path.name.endswith(".webp") or path.name.endswith(".webp.tmp")):
-            continue
+    for entry in _iter_legacy_entries(dataset_path):
         try:
-            if path.is_file():
-                path.unlink()
-                removed += 1
+            os.unlink(entry.path)
+            removed += 1
         except OSError as e:
             logger.warning(
-                "thumbnail_legacy_purge_failed", path=str(path), error=str(e),
+                "thumbnail_legacy_purge_failed", path=entry.path, error=str(e),
             )
     if removed:
         logger.info("thumbnail_legacy_layout_purged", path=str(root), removed=removed)

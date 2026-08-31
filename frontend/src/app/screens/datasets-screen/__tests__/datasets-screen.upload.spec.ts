@@ -50,7 +50,7 @@ describe('DatasetsScreen — card drop routing', () => {
                 {
                     provide: DatasetService,
                     useValue: {
-                        getCacheStats: () => of(null),
+                        getCacheStats: () => of(null), getLegacyThumbnailSurvey: () => of({ datasets: [], dataset_count: 0, total_files: 0, total_bytes: 0 }),
                         getMpxDistribution: () => of(null),
                     },
                 },

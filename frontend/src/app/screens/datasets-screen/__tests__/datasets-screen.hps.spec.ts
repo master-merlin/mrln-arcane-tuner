@@ -60,7 +60,7 @@ describe('DatasetsScreen — HPS presentation (D6)', () => {
                 },
                 {
                     provide: DatasetService,
-                    useValue: { getCacheStats: () => of(null), getMpxDistribution: () => of(null) },
+                    useValue: { getCacheStats: () => of(null), getLegacyThumbnailSurvey: () => of({ datasets: [], dataset_count: 0, total_files: 0, total_bytes: 0 }), getMpxDistribution: () => of(null) },
                 },
                 { provide: ProjectService, useValue: { getProjectDatasets: () => of([]) } },
                 { provide: RuntimeConfigService, useValue: { mediaBaseUrl: '' } },

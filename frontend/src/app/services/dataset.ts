@@ -7,6 +7,33 @@ import { Observable } from 'rxjs';
 // circular dependency with task.store (which imports DatasetService).
 import type { Task } from '../state/task.store';
 
+/** One dataset that still holds flat-layout thumbnail renditions (LANE-40).
+ *  Mirrors the backend `ThumbnailLegacyEntry`; `bytes` is display-only. */
+export interface LegacyThumbnailEntry {
+  name: string;
+  files: number;
+  bytes: number;
+}
+
+/** `GET /api/datasets/thumbnails/legacy`. The totals are computed server-side
+ *  (ARCHITECTURE D10) — the banner gates on `total_files`, not on
+ *  `datasets.length`, so an older/newer payload still resolves the one
+ *  question the UI asks. */
+export interface LegacyThumbnailSurvey {
+  datasets: LegacyThumbnailEntry[];
+  dataset_count: number;
+  total_files: number;
+  total_bytes: number;
+}
+
+/** `POST /api/datasets/thumbnails/migrate`. */
+export interface ThumbnailMigrationStarted {
+  task_id: string;
+  dataset_count: number;
+  files: number;
+  bytes: number;
+}
+
 export interface Dataset {
   id: string;
   name: string;
@@ -400,6 +427,20 @@ export class DatasetService {
 
   getCacheStats(): Observable<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number }> {
     return this.http.get<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number }>(`${this.apiUrl}/cache/stats`);
+  }
+
+  /** Datasets still holding pre-`<edge>/` flat thumbnail renditions (LANE-40).
+   *  `total_files === 0` is the whole "nothing to do" test — read the server's
+   *  precomputed totals, never re-derive them from `datasets`, so a payload
+   *  that later grows a per-entry field still gates correctly. */
+  getLegacyThumbnailSurvey(): Observable<LegacyThumbnailSurvey> {
+    return this.http.get<LegacyThumbnailSurvey>(`${this.apiUrl}/thumbnails/legacy`);
+  }
+
+  /** Enqueue the one cancellable background sweep that reclaims them. 409 when
+   *  a sweep is already live or there is nothing to reclaim. */
+  startThumbnailMigration(): Observable<ThumbnailMigrationStarted> {
+    return this.http.post<ThumbnailMigrationStarted>(`${this.apiUrl}/thumbnails/migrate`, {});
   }
 
   /**

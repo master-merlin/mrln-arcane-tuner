@@ -24,6 +24,23 @@ _PROGRESS_MIN_DELTA = 0.02  # fraction of total
 # running) tasks are never pruned regardless of this cap.
 _MAX_TERMINAL = 500
 
+# Suffix of the sibling lane every user-INVISIBLE task is routed to. Housekeeping
+# and user work must not queue behind each other on one FIFO thread: on the live
+# server the silent boot-time `cache_stats_warmup` held `background` for 532 s
+# and a user's caption-refine, POSTed two minutes in, started at the warm-up's
+# exact finishing microsecond (UAT round 4 / LANE-52) — "never block a shared
+# lane" (ARCHITECTURE D10) broken by construction, not by a careless worker.
+#
+# Why a sibling lane rather than "run maintenance concurrently" or a priority
+# queue: lanes ARE this framework's concurrency unit (one FIFO thread each, and
+# `gpu`/`cpu`/`background` already partition by the resource a task contends
+# for). Adding a lane therefore changes nothing about how a task is written, and
+# it keeps the property that made lanes worth having — silent sweeps still
+# serialise against EACH OTHER, so two library walks never run at once. A
+# priority queue would not fix it: the warm-up was already RUNNING when the
+# refine arrived, and no priority preempts a started task.
+_MAINTENANCE_SUFFIX = ":maintenance"
+
 
 class TaskManager:
     """In-memory registry + lifecycle for background tasks. Singleton via the
@@ -44,6 +61,10 @@ class TaskManager:
         self._lock = threading.Lock()
         self._lanes: dict[str, list[tuple[str, object]]] = {}
         self._lane_threads: dict[str, threading.Thread] = {}
+        # lane -> id of the task its worker thread is currently executing. The
+        # queue alone cannot answer "how many finish before me": the task at the
+        # front has already been popped. Guarded by _lock.
+        self._lane_active: dict[str, str] = {}
         # FIFO of terminal task ids, oldest first — drives the prune in
         # _finish(). Guarded by _lock (multiple lanes can finish different
         # tasks concurrently on their own worker threads).
@@ -78,6 +99,7 @@ class TaskManager:
             return
         t.status = TaskStatus.RUNNING
         t.started_at = time.time()
+        t.queue_position = 0   # it is no longer waiting on anything
         self._broadcast(t)
 
     def update(self, task_id: str, *, current: int | None = None,
@@ -211,14 +233,49 @@ class TaskManager:
         except Exception as e:  # pragma: no cover
             logger.warning("dataset_invalidated_broadcast_failed", name=name, error=str(e))
 
+    def _lane_for(self, task_id: str, lane: str) -> str:
+        """The lane a task is actually placed on. A user-INVISIBLE task goes to
+        the requested lane's `:maintenance` sibling so housekeeping can never
+        queue in front of work the user is waiting on (see _MAINTENANCE_SUFFIX).
+
+        Derived from `user_visible` rather than passed by each caller on purpose:
+        a per-callsite rule is one forgotten keyword away from the LANE-52 stall
+        coming back, and the routing then holds for every silent task ever
+        added."""
+        t = self._tasks.get(task_id)
+        if t is not None and not t.user_visible:
+            return lane + _MAINTENANCE_SUFFIX
+        return lane
+
+    def _reposition_locked(self, lane: str) -> list[Task]:
+        """Recompute `queue_position` for everything still waiting on *lane* and
+        return the tasks whose value changed (the caller broadcasts them outside
+        the lock). Call site holds `_lock`."""
+        ahead = 1 if lane in self._lane_active else 0
+        changed: list[Task] = []
+        for i, (tid, _fn) in enumerate(self._lanes.get(lane, [])):
+            t = self._tasks.get(tid)
+            if t is None or t.queue_position == i + ahead:
+                continue
+            t.queue_position = i + ahead
+            changed.append(t)
+        return changed
+
     def enqueue(self, task_id: str, worker_fn, *, lane: str = "gpu") -> None:
         """Append (task_id, worker_fn) to a lane FIFO and ensure the lane's
         single worker thread is running. worker_fn is called as worker_fn(task_id)
         on the lane thread when this task reaches the front of the queue."""
+        # The drain gate is checked on the REQUESTED lane, before maintenance
+        # routing: a silent GPU task must not slip past it via `gpu:maintenance`.
         if lane == "gpu" and is_draining():
             raise DrainActive("Update pending — new GPU tasks are paused until restart.")
+        lane = self._lane_for(task_id, lane)
         with self._lock:
             self._lanes.setdefault(lane, []).append((task_id, worker_fn))
+            t = self._tasks.get(task_id)
+            if t is not None:
+                t.lane = lane
+            changed = self._reposition_locked(lane)
             # Presence in `_lane_threads` IS the "lane has a live worker" flag —
             # added here and removed by `_run_lane` when it drains, both under
             # `_lock`. This closes the is_alive() race where a thread caught
@@ -228,6 +285,8 @@ class TaskManager:
                 th = threading.Thread(target=self._run_lane, args=(lane,), daemon=True)
                 self._lane_threads[lane] = th
                 th.start()
+        for task in changed:
+            self._broadcast(task)
 
     def _run_lane(self, lane: str) -> None:
         while True:
@@ -235,30 +294,42 @@ class TaskManager:
                 queue = self._lanes.get(lane, [])
                 if not queue:
                     self._lane_threads.pop(lane, None)  # release the lane under lock
+                    self._lane_active.pop(lane, None)
                     return
                 task_id, worker_fn = queue.pop(0)
+                self._lane_active[lane] = task_id
+                changed = self._reposition_locked(lane)
+            for task in changed:
+                self._broadcast(task)
 
-            # Cancelled before it ran → finalize as cancelled, skip the worker.
-            if self.is_cancelled(task_id):
-                self._finish(task_id, TaskStatus.CANCELLED)
-                continue
-
-            self.start(task_id)
             try:
-                worker_fn(task_id)
-            except Exception as e:  # worker should normally finalize itself
-                logger.warning("task_worker_crashed", task_id=task_id, error=str(e))
-                t = self.get(task_id)
-                if t and t.status == TaskStatus.RUNNING:
-                    self.fail(task_id, str(e))
-            else:
-                t = self.get(task_id)
-                if t and t.status == TaskStatus.RUNNING:
-                    # Worker returned without finalizing → infer from cancel flag.
-                    if not self.is_cancelled(task_id):
-                        self.complete(task_id)
-                    else:
-                        self._finish(task_id, TaskStatus.CANCELLED)
+                # Cancelled before it ran → finalize as cancelled, skip the worker.
+                if self.is_cancelled(task_id):
+                    self._finish(task_id, TaskStatus.CANCELLED)
+                    continue
+
+                self.start(task_id)
+                try:
+                    worker_fn(task_id)
+                except Exception as e:  # worker should normally finalize itself
+                    logger.warning("task_worker_crashed", task_id=task_id, error=str(e))
+                    t = self.get(task_id)
+                    if t and t.status == TaskStatus.RUNNING:
+                        self.fail(task_id, str(e))
+                else:
+                    t = self.get(task_id)
+                    if t and t.status == TaskStatus.RUNNING:
+                        # Worker returned without finalizing → infer from cancel flag.
+                        if not self.is_cancelled(task_id):
+                            self.complete(task_id)
+                        else:
+                            self._finish(task_id, TaskStatus.CANCELLED)
+            finally:
+                # Clear the "one ahead of you" marker in the gap before the next
+                # pop, so a task enqueued in that window is not told it waits on
+                # a task that already ended.
+                with self._lock:
+                    self._lane_active.pop(lane, None)
 
     def join_lane(self, lane: str, timeout: float | None = None) -> None:
         """Test helper — block until the lane's worker thread drains."""

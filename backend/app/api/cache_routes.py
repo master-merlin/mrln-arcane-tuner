@@ -101,6 +101,12 @@ class CacheStatsResponse(BaseModel):
     embedding_bytes: int
     cached_datasets: int
     dataset_root_bytes: int
+    # False when no aggregation has completed yet and the numbers above are
+    # placeholder zeros rather than a measurement. APPENDED to the response with
+    # a True default (ARCHITECTURE D2, public surfaces are append-only): every
+    # existing client keeps parsing the payload and reads `ready: true` for the
+    # warm case, which is what it has always been served.
+    ready: bool = True
 
 
 class PurgeCacheResponse(BaseModel):
@@ -406,6 +412,12 @@ def _aggregate_cache_stats() -> dict[str, Any]:
 # instantly within the TTL; recomputed on a cold/stale GET and warmed at startup
 # by a silent background task.
 _CACHE_STATS_TTL_S = 120.0
+# What a cold cache reports. Zeros, not a guess and not a stale neighbour's
+# number — paired with `ready: False` so nobody mistakes them for a measurement.
+_EMPTY_CACHE_STATS: dict[str, int] = {
+    "total_bytes": 0, "latent_bytes": 0, "embedding_bytes": 0,
+    "cached_datasets": 0, "dataset_root_bytes": 0,
+}
 _cache_stats_value: dict | None = None
 _cache_stats_at: float = 0.0
 # Single-flight guard for the background recompute. Set from the event loop
@@ -484,20 +496,28 @@ async def cache_stats():
     after any idle gap longer than the TTL paid the full sweep. The startup
     warm-up hid that: it made the cost look like a once-per-boot event.
 
-    Now an existing value is ALWAYS returned immediately and a recompute is
-    queued on the background lane when it is stale. This is a "size on disk"
-    KPI, so serving it one refresh-interval old is the right trade. The only
-    remaining inline wait is the cold case where no value exists at all, which
-    the startup warm-up normally covers before the first navigation.
+    An existing value is ALWAYS returned immediately and a recompute is queued
+    on the maintenance lane when it is stale. This is a "size on disk" KPI, so
+    serving it one refresh-interval old is the right trade.
+
+    The COLD case — no value at all — used to run the sweep inline. Measured on
+    the live server, that held one request open **479.81 s** while the Datasets
+    screen waited on it, and because the inline path did not take
+    `_begin_refresh` it walked the library in parallel with the startup warm-up
+    doing the identical work (UAT round 4, LANE-52). The wait was bounded only
+    by the size of the user's library, which is no bound at all
+    (ARCHITECTURE D10). So a cold cache now answers honestly and at once:
+    placeholder zeros with ``ready=false``, and the one sweep queued behind the
+    single-flight guard. The caller decides how to render "not measured yet";
+    it never decides to wait nine minutes.
     """
     if _cache_stats_value is not None:
         if _get_fresh_cache_stats() is None:
             _schedule_cache_stats_refresh()
         return _cache_stats_value
 
-    stats = await asyncio.to_thread(_aggregate_cache_stats)
-    _store_cache_stats(stats)
-    return stats
+    _schedule_cache_stats_refresh()
+    return {**_EMPTY_CACHE_STATS, "ready": False}
 
 
 @router.get("/datasets/{name}/cache/list", response_model=CacheListResponse)

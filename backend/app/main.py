@@ -88,12 +88,16 @@ async def lifespan(app: FastAPI):
     _update_task = asyncio.create_task(self_update_service.run_periodic_check())
 
     # Warm the cross-dataset cache-stats aggregation in the background so the
-    # datasets KPI is ready by the time the user navigates (silent — hidden from
-    # the Task Center). Non-GPU 'background' lane so it never blocks GPU work.
-    from app.api.cache_routes import run_cache_stats_refresh
-    _warm = task_manager.create(type="cache_stats_warmup", title="Cache stats",
-                                user_visible=False)
-    task_manager.enqueue(_warm.id, run_cache_stats_refresh, lane="background")
+    # datasets KPI is ready by the time the user navigates. Through
+    # `_schedule_cache_stats_refresh` and NOT by hand: creating + enqueueing the
+    # worker here skipped `_begin_refresh`, so the boot sweep ran beside a
+    # request-triggered one on the same library AND then released, in its
+    # finally, a guard it had never claimed (RULE-21, one producer; LANE-52).
+    # The task is silent (`user_visible=False`), which routes it to the
+    # `background:maintenance` lane — housekeeping never queues in front of the
+    # user's own work.
+    from app.api.cache_routes import _schedule_cache_stats_refresh
+    _schedule_cache_stats_refresh()
 
     from app.core.logger import set_logging_loop
     set_logging_loop(loop)

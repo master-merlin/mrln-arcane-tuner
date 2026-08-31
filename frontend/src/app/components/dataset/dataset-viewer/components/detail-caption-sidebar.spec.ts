@@ -735,3 +735,74 @@ describe('DetailCaptionSidebar — Lyrics editor (audio files, C0)', () => {
         expect(cmp.lyricsText()).toBe('a different song');
     });
 });
+
+describe('DetailCaptionSidebar — a disabled Generate says why (LANE-46)', () => {
+    function mountWithSettings(state: Record<string, unknown> | null) {
+        const fixture = mount();
+        fixture.detectChanges();
+        const cmp = fixture.componentInstance as any;
+        cmp.internalShowCaptionPanel.set(true);
+        if (state) cmp.onSettingsChange(state);
+        fixture.detectChanges();
+        return fixture;
+    }
+
+    function base(overrides: Record<string, unknown>) {
+        return {
+            modelId: 'api-openai', resolvedModelId: 'api-openai',
+            systemPrompt: '', resolvedSystemPrompt: '', wildcard: '',
+            params: {}, captionInstructions: '', ...overrides,
+        };
+    }
+
+    it('names the Base URL, not a key, when Local / Custom is unconfigured', () => {
+        const fixture = mountWithSettings(base({
+            modelId: 'api-custom', resolvedModelId: 'api-custom', apiConfigured: false,
+        }));
+        const btn = fixture.nativeElement.querySelector('[data-testid="generate-caption"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(true);
+        expect(btn.title).toContain('Base URL');
+        expect(btn.title).toContain('Server screen');
+        expect(btn.title).not.toContain('API key');
+        const note = fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]');
+        expect(note).toBeTruthy();
+        expect(note.textContent).toContain('Base URL');
+    });
+
+    it('names the API key for a hosted provider', () => {
+        const fixture = mountWithSettings(base({ apiConfigured: false }));
+        const btn = fixture.nativeElement.querySelector('[data-testid="generate-caption"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(true);
+        expect(btn.title).toContain('API key');
+        expect(btn.title).toContain('openai');
+        expect(fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]')).toBeTruthy();
+    });
+
+    it('a configured provider leaves the button enabled and the reason absent', () => {
+        const fixture = mountWithSettings(base({ apiConfigured: true }));
+        const btn = fixture.nativeElement.querySelector('[data-testid="generate-caption"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(false);
+        expect(btn.title).not.toContain('No API key');
+        expect(fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]')).toBeNull();
+    });
+
+    it('a local model is never API-blocked', () => {
+        const fixture = mountWithSettings(base({
+            modelId: 'florence-2', resolvedModelId: 'florence-2', apiConfigured: undefined,
+        }));
+        const btn = fixture.nativeElement.querySelector('[data-testid="generate-caption"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(false);
+        expect(fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]')).toBeNull();
+    });
+
+    it('the toast on the blocked path names the same missing value', () => {
+        const fixture = mountWithSettings(base({
+            modelId: 'api-custom', resolvedModelId: 'api-custom', apiConfigured: false,
+        }));
+        const cmp = fixture.componentInstance as any;
+        const toast = (cmp as { toast: { error: (m: string) => void } }).toast;
+        const spy = vi.spyOn(toast, 'error');
+        cmp.generateCaption();
+        expect(spy).toHaveBeenCalledWith(expect.stringContaining('Base URL'));
+    });
+});

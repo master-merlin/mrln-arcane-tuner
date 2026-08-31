@@ -16,6 +16,20 @@ import { detect } from './caption/ideogram-format';
 import { IdeogramCaptionEditorComponent } from './caption/ideogram-caption-editor';
 import { StructuredCaptionModalComponent } from '../../../../modals/structured-caption/structured-caption-modal';
 
+/** Sentence for a disabled Generate button — names the value that is actually
+ *  missing for the provider that is actually selected. Local / Custom is gated
+ *  on a Base URL (an OpenAI-compatible server needs no key); every hosted
+ *  provider is gated on a key. Getting this wrong sent users hunting for an API
+ *  key their Ollama server does not have (LANE-46). */
+export function apiBlockedReasonFor(modelId: string): string {
+    if (modelId === 'api-custom') {
+        return 'No Base URL for Local / Custom — set it in Connection above, '
+            + 'or configure the LLM endpoint on the Server screen.';
+    }
+    const provider = modelId.replace(/^api-/, '');
+    return `No API key for ${provider} — paste it in Connection above and press Save.`;
+}
+
 @Component({
     selector: 'app-detail-caption-sidebar',
     standalone: true,
@@ -186,7 +200,9 @@ import { StructuredCaptionModalComponent } from '../../../../modals/structured-c
 
                     <div class="shrink-0 px-3 pb-2 pt-2 space-y-2">
                         <button (click)="generateCaption()" [disabled]="isGeneratingCaption() || apiBlocked()"
-                            class="w-full py-2 rounded-theme-lg font-bold text-xs shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 group"
+                            data-testid="generate-caption"
+                            [title]="apiBlocked() ? apiBlockedReason() : 'Generate a caption for this image'"
+                            class="w-full py-2 rounded-theme-lg font-bold text-xs shadow-lg transition-all active:scale-95 flex items-center justify-center gap-2 group disabled:opacity-40 disabled:cursor-not-allowed"
                             [class.bg-brand]="!isGeneratingCaption()"
                             [class.hover:bg-brand/90]="!isGeneratingCaption()"
                             [class.text-white]="!isGeneratingCaption()"
@@ -201,6 +217,10 @@ import { StructuredCaptionModalComponent } from '../../../../modals/structured-c
                                 <span>Generate Caption</span>
                             }
                         </button>
+
+                        @if (apiBlocked()) {
+                            <p class="text-[10px] text-danger leading-snug" data-testid="generate-blocked-reason">{{ apiBlockedReason() }}</p>
+                        }
 
                         @if (suggestedCaption(); as suggestion) {
                             <div class="p-2 bg-brand/10 rounded-theme-md border border-brand/30 animate-fadeIn">
@@ -332,6 +352,11 @@ export class DetailCaptionSidebarComponent {
      *  Generate button disables reactively when the selected api-* provider
      *  has no usable key (same gate as the mass-caption modal). */
     protected apiBlocked = signal<boolean>(false);
+    /** Why Generate is disabled, named for the provider actually selected. A
+     *  disabled control with no stated reason is the silent-failure form
+     *  (ARCHITECTURE D10) — the toast behind this button can never fire,
+     *  because the button that would fire it is disabled. */
+    protected apiBlockedReason = signal<string>('');
     currentSettings: CaptionSettingsState | null = null;
     private lastModelId: string | null = null;
 
@@ -487,13 +512,17 @@ export class DetailCaptionSidebarComponent {
         this.lastModelId = state.resolvedModelId;
         this.currentSettings = state;
         this.apiBlocked.set(state.apiConfigured === false);
+        this.apiBlockedReason.set(
+            state.apiConfigured === false ? apiBlockedReasonFor(state.modelId) : '');
     }
 
     generateCaption() {
         const pair = this.currentPair();
         if (!pair || !this.currentSettings) return;
         if (this.currentSettings.apiConfigured === false) {
-            this.toast.error('Configure the API provider key first.');
+            // Same sentence as the button's tooltip: for Local / Custom the
+            // missing value is a Base URL, not a key.
+            this.toast.error(apiBlockedReasonFor(this.currentSettings.modelId));
             return;
         }
 

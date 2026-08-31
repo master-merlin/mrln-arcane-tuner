@@ -16,6 +16,7 @@ from pydantic import BaseModel
 from app.core.llm.openai_compat import list_models
 from app.core.llm.provider_settings import (
     PROVIDERS,
+    effective_base_url,
     get_provider_raw,
     mask_key,
     resolve_provider,
@@ -33,7 +34,13 @@ class ProviderStatus(BaseModel):
     provider: str
     configured: bool
     key_masked: str
+    #: The EFFECTIVE endpoint, not the stored one — same value the request will
+    #: use, because both come from ``effective_base_url`` (RULE-21).
     base_url: str
+    #: Origin of ``base_url``: "provider" | "server_settings" | "builtin" | "none"
+    #: (ECOSYSTEM §6). Named for the surface the user configured, not the settings
+    #: module: they have never heard of ``llm_refine``, they used the Server screen.
+    base_url_source: str
 
 
 class ProviderUpdateRequest(BaseModel):
@@ -49,12 +56,18 @@ class ProviderModelsResponse(BaseModel):
 
 def _status(provider: str) -> ProviderStatus:
     raw = get_provider_raw(provider)
-    configured = bool(raw["base_url"]) if provider == "custom" else bool(raw["api_key"])
+    # Same resolver the request uses, so "configured ✓" and where the call
+    # actually goes cannot disagree (RULE-21). For custom that means an endpoint
+    # inherited from Server settings reads as configured — because it is usable.
+    effective = effective_base_url(provider)
+    configured = (
+        bool(effective.base_url) if provider == "custom" else bool(raw["api_key"]))
     return ProviderStatus(
         provider=provider,
         configured=configured,
         key_masked=mask_key(raw["api_key"]),
-        base_url=raw["base_url"],
+        base_url=effective.base_url,
+        base_url_source=effective.source,
     )
 
 

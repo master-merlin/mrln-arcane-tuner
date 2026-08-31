@@ -10,6 +10,7 @@ from app.api.dataset.analysis_routes import router as analysis_router
 from app.api.dataset.upscale_routes import router as upscale_router
 from app.api.dataset.overlay_routes import router as overlay_router
 from app.api.dataset.stats_routes import router as stats_router
+from app.api.dataset.thumbnail_routes import router as thumbnail_migration_router
 from app.api.dataset.video_routes import router as video_router
 
 router = APIRouter()
@@ -17,6 +18,15 @@ router = APIRouter()
 # (``/datasets/stats/...``) matches before crud_router's
 # ``/datasets/{name}`` catch-all could shadow it.
 router.include_router(stats_router)
+# Mounted early for the same reason, but state what that is worth honestly:
+# NO route in crud_router currently matches ``/datasets/thumbnails/legacy`` or
+# ``/datasets/thumbnails/migrate``, so today the position changes nothing —
+# reversing these two lines leaves every test green. It is defence in depth
+# against a future ``/datasets/{name}/<literal>`` sibling, and the thing that
+# would actually catch such a collision is the endpoint-identity pin in
+# test_thumbnail_migration.py (which resolves the path and asserts WHICH
+# handler answers), not this ordering.
+router.include_router(thumbnail_migration_router)
 router.include_router(crud_router)
 router.include_router(control_router)
 router.include_router(adjustment_router)

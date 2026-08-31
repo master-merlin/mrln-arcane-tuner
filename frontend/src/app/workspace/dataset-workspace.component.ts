@@ -628,7 +628,8 @@ export class DatasetWorkspaceComponent {
 
         this.overlay.openModal('confirm', {
             title: 'Delete this entry?',
-            message: 'This image and its caption are permanently removed from the dataset. This cannot be undone.',
+            message: 'This image is permanently removed from the dataset, along with its caption, mask, '
+                + 'masked copy and control images. This cannot be undone.',
             confirmLabel: 'Delete',
             destructive: true,
             onConfirm: () => {

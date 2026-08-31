@@ -122,6 +122,20 @@ interface FileRow {
     excluded: boolean;
 }
 
+/**
+ * The canonical stem harmonization renames every pair to.
+ *
+ * This is an ECHO of a name the BACKEND produces — `DatasetManager.harmonize_files`
+ * builds it with `re.sub(r'[^a-zA-Z0-9]+', '_', dataset.name).strip('_').lower()`.
+ * Showing it in the confirm dialog is only honest if the two agree, so the pair
+ * ("Aston Martin Valkyrie" -> "aston_martin_valkyrie") is asserted on BOTH sides:
+ * here in `analyze.component.spec.ts` and against the real rename in
+ * `backend/tests/test_harmonize_confirm_contract.py`.
+ */
+export function harmonizedStem(datasetName: string): string {
+    return datasetName.replace(/[^a-zA-Z0-9]+/g, '_').replace(/^_+|_+$/g, '').toLowerCase();
+}
+
 const CHART_W = 820;
 const CHART_H = 180;
 const PAD_L = 38;
@@ -1598,7 +1612,7 @@ export class AnalyzeModalComponent implements OnInit {
         if (!name) return;
         this.overlay.openModal('confirm', {
             title: 'Delete this image?',
-            message: `${path} will be permanently removed, along with its caption and any masks. This cannot be undone.`,
+            message: `${path} will be permanently removed, along with its caption, mask, masked copy and control images. This cannot be undone.`,
             confirmLabel: 'Delete',
             destructive: true,
             onConfirm: () => {
@@ -1625,7 +1639,7 @@ export class AnalyzeModalComponent implements OnInit {
         if (!name) return;
         this.overlay.openModal('confirm', {
             title: 'Delete this image?',
-            message: `${r.path} will be permanently removed, along with its caption and any masks. This cannot be undone.`,
+            message: `${r.path} will be permanently removed, along with its caption, mask, masked copy and control images. This cannot be undone.`,
             confirmLabel: 'Delete',
             destructive: true,
             onConfirm: () => {
@@ -1734,8 +1748,11 @@ export class AnalyzeModalComponent implements OnInit {
         this.overlay.openModal('confirm', {
             title: `Harmonize "${name}"?`,
             message:
-                `This converts non-JPG images to JPG, renames files to a canonical sequence, ` +
-                `and crops them to the majority aspect ratio. It rewrites files on disk and cannot be undone.`,
+                `Every image is converted to JPG and renamed to a canonical ` +
+                `"${harmonizedStem(name)}_00001.jpg" sequence; its caption, mask, masked copy ` +
+                `and control images are renamed with it. Pixels are not resized or cropped — ` +
+                `use "Crop all" for that. Audio pairs are left untouched. ` +
+                `This rewrites files on disk and cannot be undone.`,
             confirmLabel: 'Harmonize',
             destructive: true,
             onConfirm: () => {

@@ -232,8 +232,20 @@ Counts here are pinned by `backend/tests/test_architecture_family_counts.py` —
 | `wan21`           | WAN 2.1 (T2V 1.3B / 14B, I2V 14B 480P / 720P; UMT5-XXL, CLIP i2v encoder) | latent_diffusion | `is_video`, `has_image_encoder` |
 | `wan22`           | WAN 2.2 (dual-expert MoE, A14B T2V / I2V)                          | latent_diffusion    | `is_video`, `dual_expert`           |
 | `wan22_ti2v_5b`   | WAN 2.2 TI2V 5B (dense)                                            | latent_diffusion    | `is_video`, `has_image_encoder`     |
-| `minimax_h3`      | MiniMax H3 (text / first-last-frame / reference → video+audio) — 33B dense single-stream DiT | latent_diffusion    | `is_video`, `has_audio`             |
+| `minimax_h3`      | MiniMax H3 (text / first-last-frame / reference → video+audio) — 33B dense single-stream DiT. **Scaffold only: all three definitions carry `unavailable_reason` and are gated out of every user-facing enumeration** (see below) | latent_diffusion    | `is_video`, `has_audio`             |
 | `ace_step15`      | ACE-Step 1.5 (Turbo / XL Base) — 48kHz Oobleck audio VAE           | latent_diffusion    | `is_audio_family`                   |
+
+**A family may ship before it can train.** `ModelDefinition.unavailable_reason` (optional, default
+`None` = available) is the one place the product records that a definition exists but must not be
+offered: a non-empty value gates it out of every USER-FACING enumeration and is the refusal message
+`create_job` / `start_job` return. It is deliberately **per definition, not per family**, so a
+family's variants clear independently as each becomes real. The gate is enforced at the user-facing
+layer ONLY — `ModelRegistry` keeps every definition, because the registry-wide coverage sweeps (a
+VRAM entry per family, LoRA target lists, TE-loading contracts, `resolve_capabilities`) are what
+make un-gating safe later; a gate that empties those tables has been built one layer too deep.
+`minimax_h3` is the current and only holder: it is a complete PR0 scaffold whose training path was
+never built, and before the gate a user could pick it, price it, queue it and start it, learning
+otherwise 90 seconds into a run.
 
 Each family implements `Loader` (`IModelLoader`), `Saver` (`IModelSaver`), `Driver` (`IModelDriver`, phased forward pass), `Trainer` (`GenericTrainingPipeline` hooks), and `Sampler` (inference preview, with true cond+uncond CFG on image and video families). The `wan_shared` package holds the code wan21/wan22/wan22_ti2v_5b share so they stay byte-identical by construction; `prx_shared` does the same for `prx` and `prx_pixel`.
 

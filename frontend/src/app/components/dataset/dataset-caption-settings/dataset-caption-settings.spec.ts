@@ -534,3 +534,88 @@ describe('DatasetCaptionSettings — delete template via confirm modal', () => {
         expect(svc.recordUse).not.toHaveBeenCalled();
     });
 });
+
+describe('DatasetCaptionSettingsComponent — inherited endpoint (LANE-46)', () => {
+    async function mountWithStatus(status: Record<string, unknown>) {
+        TestBed.configureTestingModule({
+            providers: [
+                { provide: DatasetService, useValue: { unloadModels: vi.fn().mockReturnValue(of({})) } },
+                { provide: ProjectService, useValue: {
+                    activeDatasetProject: () => null,
+                    getPreferences: vi.fn(() => of({
+                        selected_caption_model: 'api-custom',
+                        qwen3_variant: '4B-Instruct', active_caption_template: null,
+                    })),
+                    updatePreferences: vi.fn().mockReturnValue(of({})),
+                } },
+                { provide: TemplateService, useValue: {
+                    listCaptioningTemplates: vi.fn((modelId: string) => of([makeTemplate(modelId)])),
+                    recordUse: vi.fn(),
+                    createCaptioningTemplate: vi.fn().mockReturnValue(of(makeTemplate('x', 'new'))),
+                    updateTemplate: vi.fn().mockReturnValue(of({})),
+                    deleteTemplate: vi.fn().mockReturnValue(of({ status: 'ok' })),
+                } },
+                { provide: ApiCaptionService, useValue: {
+                    listProviders: vi.fn().mockReturnValue(of([status])),
+                    updateProvider: vi.fn().mockReturnValue(of(status)),
+                    listModels: vi.fn().mockReturnValue(of([])),
+                } },
+                { provide: OverlayStore, useValue: { openModal: vi.fn() } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DatasetCaptionSettingsComponent);
+        fixture.detectChanges();
+        const comp = fixture.componentInstance as any;
+        comp.switchMode('api');
+        comp.onModelChange('api-custom');
+        // Re-deliver statuses after the model restore — covers either arrival
+        // order of the two init requests.
+        comp.loadProviderStatuses();
+        fixture.detectChanges();
+        // NgModel pushes the value into the DOM on a resolved promise, so the
+        // input is still empty at this point — the whole reason this spec
+        // asserts on the element and not on the signal behind it.
+        await fixture.whenStable();
+        fixture.detectChanges();
+        return fixture;
+    }
+
+    afterEach(() => TestBed.resetTestingModule());
+
+    it('renders the inherited Base URL in the field and says where it came from', async () => {
+        const fixture = await mountWithStatus({
+            provider: 'custom', configured: true, key_masked: '',
+            base_url: 'http://localhost:11434', base_url_source: 'server_settings',
+        });
+        const input = fixture.nativeElement.querySelector('[data-testid="api-base-url"]') as HTMLInputElement;
+        expect(input).toBeTruthy();
+        expect(input.value).toBe('http://localhost:11434');
+        const note = fixture.nativeElement.querySelector('[data-testid="api-base-url-inherited"]');
+        expect(note).toBeTruthy();
+        expect(note.textContent).toContain('Server settings');
+        expect(note.textContent).toContain('overrides it for captioning');
+        // Inherited counts as configured — badge and request agree.
+        expect(fixture.nativeElement.querySelector('[data-testid="api-key-status"]').textContent)
+            .toContain('configured');
+    });
+
+    it('does not claim inheritance when the value is the provider own store', async () => {
+        const fixture = await mountWithStatus({
+            provider: 'custom', configured: true, key_masked: '',
+            base_url: 'http://box:8000/v1', base_url_source: 'provider',
+        });
+        const input = fixture.nativeElement.querySelector('[data-testid="api-base-url"]') as HTMLInputElement;
+        expect(input.value).toBe('http://box:8000/v1');
+        expect(fixture.nativeElement.querySelector('[data-testid="api-base-url-inherited"]')).toBeNull();
+    });
+
+    it('nothing configured anywhere leaves the field empty and the note absent', async () => {
+        const fixture = await mountWithStatus({
+            provider: 'custom', configured: false, key_masked: '',
+            base_url: '', base_url_source: 'none',
+        });
+        const input = fixture.nativeElement.querySelector('[data-testid="api-base-url"]') as HTMLInputElement;
+        expect(input.value).toBe('');
+        expect(fixture.nativeElement.querySelector('[data-testid="api-base-url-inherited"]')).toBeNull();
+    });
+});

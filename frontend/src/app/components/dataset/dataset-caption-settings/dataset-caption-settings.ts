@@ -151,6 +151,11 @@ export interface CaptionSettingsState {
                             data-testid="api-base-url"
                             placeholder="Base URL, e.g. http://localhost:11434/v1"
                             class="w-full bg-surface-low border border-surface-mid text-text-secondary text-xs rounded-theme-md px-2 py-1.5 outline-none focus:border-brand">
+                        @if (activeProviderStatus()?.base_url_source === 'server_settings') {
+                            <p class="text-[10px] text-text-subtle italic leading-snug" data-testid="api-base-url-inherited">
+                                From your Server settings LLM endpoint. Editing it here overrides it for captioning only.
+                            </p>
+                        }
                     }
                     <div class="flex gap-2">
                         <input type="password" [ngModel]="keyInput()" (ngModelChange)="keyInput.set($event)"

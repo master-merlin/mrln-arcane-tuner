@@ -8,7 +8,10 @@ export interface ApiProviderStatus {
     provider: string;
     configured: boolean;
     key_masked: string;
+    /** The EFFECTIVE endpoint the backend will call, not just the stored one. */
     base_url: string;
+    /** Where `base_url` came from. `'none'` is a real value, never `''`. */
+    base_url_source: 'provider' | 'server_settings' | 'builtin' | 'none';
 }
 
 @Injectable({ providedIn: 'root' })

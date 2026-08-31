@@ -22,6 +22,10 @@ from app.core.llm.openai_compat import (
 MODULE = "api_captioning"
 PROVIDERS = tuple(PROVIDER_BASE_URLS)  # ("openai", ..., "custom")
 
+#: The Server screen's LLM endpoint (caption *refinement*). The custom captioning
+#: provider inherits its ``base_url`` — see ``effective_base_url``.
+SERVER_SETTINGS_MODULE = "llm_refine"
+
 
 def _manager():
     """Indirection seam — patched in tests."""
@@ -35,6 +39,53 @@ class ProviderConfig:
     provider: str
     base_url: str
     api_key: str
+
+
+@dataclass(frozen=True)
+class EffectiveBaseUrl:
+    """A provider's endpoint plus where it came from, for the UI to explain it."""
+
+    base_url: str
+    #: One of "provider" | "server_settings" | "builtin" | "none"
+    #: (ECOSYSTEM §6 ``ProviderStatus.base_url_source``). "none" is a real value:
+    #: "configured nowhere" must be distinguishable from a field a client could
+    #: not parse, so this is never "" and never None.
+    source: str
+
+
+def effective_base_url(provider: str) -> EffectiveBaseUrl:
+    """The ONE producer of a provider's endpoint (RULE-21).
+
+    Precedence: the provider's own store → (``custom`` only) the Server screen's
+    LLM endpoint → the builtin preset → nothing.
+
+    ``resolve_provider`` and the ``/api-providers`` status route MUST both read
+    this. The defect it closes (UAT-4.3): the badge said "configured" off one
+    store while the request that followed resolved off another, so what the user
+    was told and what actually happened could not be made to agree.
+
+    **Only the base URL is inherited, never the model.** ``llm_refine.model`` is a
+    TEXT model chosen for refining caption prose (default ``qwen2.5:7b-instruct``);
+    captioning sends it an IMAGE. Prefilling it would hand the user a default that
+    errors on first use, so the caption model stays empty and ``Fetch models``
+    fills it from the now-known server (user's call, UAT-4.3; pinned by
+    ``test_provider_settings.py::test_model_is_never_inherited_from_server_settings``).
+    """
+    if provider not in PROVIDERS:
+        raise ValueError(f"Unknown provider '{provider}'")
+    own = get_provider_raw(provider)["base_url"].strip()
+    if own:
+        return EffectiveBaseUrl(own, "provider")
+    if provider == "custom":
+        inherited = str(
+            (_manager().get_module_settings(SERVER_SETTINGS_MODULE) or {}).get(
+                "base_url", "") or "").strip()
+        if inherited:
+            return EffectiveBaseUrl(inherited, "server_settings")
+    builtin = PROVIDER_BASE_URLS.get(provider) or ""
+    if builtin:
+        return EffectiveBaseUrl(builtin, "builtin")
+    return EffectiveBaseUrl("", "none")
 
 
 def get_provider_raw(provider: str) -> dict:
@@ -75,11 +126,12 @@ def resolve_provider(provider: str) -> ProviderConfig:
     if provider not in PROVIDERS:
         raise ValueError(f"Unknown provider '{provider}'")
     raw = get_provider_raw(provider)
-    base_url = PROVIDER_BASE_URLS[provider] or raw["base_url"]
+    base_url = effective_base_url(provider).base_url
     if not base_url:
         raise ValueError(
             "Base URL is not configured for the Custom provider. "
-            "Set it in the captioning API settings.")
+            "Set it in the captioning API settings, or configure the LLM "
+            "endpoint on the Server screen.")
     if provider != "custom" and not raw["api_key"]:
         raise ValueError(
             f"No API key configured for provider '{provider}'. "

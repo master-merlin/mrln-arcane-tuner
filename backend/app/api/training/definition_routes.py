@@ -33,7 +33,14 @@ logger = get_logger(__name__)
 
 @router.get("/models/definitions", response_model=list[dict[str, Any]])
 async def list_model_definitions():
-    """List all available model definitions with introspection data."""
+    """List the model definitions the user may choose from, with introspection.
+
+    USER-FACING enumeration: definitions carrying an ``unavailable_reason``
+    (ECOSYSTEM §6) are excluded via ``available_definitions()``. This is the
+    data source for both the Models screen and the training model picker, so a
+    gated definition disappears from both at once. The registry itself keeps
+    them — see ``ModelRegistry.list_models``.
+    """
     from app.engine.models.registry import registry
     from app.core.captioning.formats import get_caption_format_for_definition
 
@@ -41,7 +48,7 @@ async def list_model_definitions():
     # ModelOverrideManager.get_override per definition (was N+1 settings.json reads).
     all_settings = await ModelOverrideManager.get_all_async()
     results = []
-    for def_id, defn in registry._definitions.items():
+    for def_id, defn in registry.available_definitions().items():
         data = defn.model_dump()
         data["component_paths"] = {
             k: v.get("path", "") for k, v in data.get("components", {}).items()

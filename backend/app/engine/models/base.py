@@ -1338,7 +1338,12 @@ class TrainingPlugin(ABC):
         # require an edit (paired) dataset when an edit model is selected.
         edit_map = {}
 
-        for model in registry._definitions.values():
+        # USER-FACING enumeration: this builds the training form's model picker
+        # (the model_family + definition_id enums, their labels, the
+        # family -> definitions backend_map and the edit_map), so it reads the
+        # gated view. A definition carrying an ``unavailable_reason``
+        # (ECOSYSTEM §6) must not be selectable here — the registry keeps it.
+        for model in registry.available_definitions().values():
             if model.family not in families:
                 families.append(model.family)
             if model.family not in definition_map:

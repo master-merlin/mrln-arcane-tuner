@@ -92,13 +92,26 @@ def test_inspect_checkpoint_success(mock_to_thread, mock_inspect, client):
 # ── Model Definition Routes ─────────────────────────────────────────────
 
 
-@patch("app.engine.models.registry.ModelRegistry._definitions", new_callable=lambda: property(lambda self: {}))
-def test_list_model_definitions(mock_defs, client):
-    mock_def = MagicMock()
-    mock_def.model_dump.return_value = {"id": "sdxl", "family": "sdxl", "name": "SDXL", "components": {}}
-    with patch.dict("app.engine.models.registry.registry._definitions", {"sdxl": mock_def}, clear=True):
+def test_list_model_definitions(client):
+    """The route must SERVE the stubbed definition, not merely answer 200.
+
+    Was vacuous until 2026-08-31 (LANE-45): it patched
+    ``ModelRegistry._definitions`` with ``property(lambda self: {})``, so every
+    instance access returned a FRESH empty dict — the ``patch.dict`` stub below
+    it never reached the route, which dutifully returned ``[]`` and a 200. The
+    class dict is now patched directly and the payload is asserted, so the test
+    fails if the enumerator stops enumerating.
+    """
+    from app.engine.core.definitions import ModelDefinition
+    from app.engine.models.registry import ModelRegistry
+
+    defn = ModelDefinition(id="sdxl", family="sdxl", name="SDXL")
+    with patch.dict(ModelRegistry._definitions, {"sdxl": defn}, clear=True):
         response = client.get("/api/models/definitions")
     assert response.status_code == 200
+    body = response.json()
+    assert [d["id"] for d in body] == ["sdxl"], body
+    assert body[0]["name"] == "SDXL"
 
 
 @patch("app.api.training.definition_routes.asyncio.to_thread")

@@ -4,8 +4,8 @@ Every HTTP/WS test here drives the app through Starlette's ``TestClient``, which
 calls the ASGI callable in-process. That covers routing, schemas and handlers,
 but it never touches the thing an operator actually launches::
 
-    uvicorn app.main:app --host 0.0.0.0 --port 8000      # start_backend.{ps1,bat,sh}
-    python -m uvicorn app.main:app --host 0.0.0.0 ...    # entrypoint.sh (container)
+    venv/…/python -m uvicorn app.main:app --host … --port …  # start_backend.{ps1,bat,sh}
+    python -m uvicorn app.main:app --host … --port …         # entrypoint.sh (container)
 
 So the ASGI *server* is untested by construction, and that is not theoretical:
 the venv's ``uvicorn`` was deleted outright. A failed in-place upgrade (pip
@@ -119,6 +119,29 @@ def _launch_targets() -> dict[Path, str]:
     return targets
 
 
+#: Every launcher must reach uvicorn through the INTERPRETER, never through
+#: the `uvicorn` console script. Matches `python -m uvicorn`, `python3 -m
+#: uvicorn`, `python.exe -m uvicorn` and any absolute/relative path ending in
+#: one of those (`venv/bin/python`, `venv\Scripts\python.exe`).
+_PYTHON_DASH_M_UVICORN_RE = re.compile(r"\bpython(?:3(?:\.\d+)?|\.exe)?\s+-m\s+uvicorn\b")
+
+
+def _launch_invocations() -> dict[Path, str]:
+    """The one line in each launch script that actually starts uvicorn."""
+    invocations: dict[Path, str] = {}
+    for script in _LAUNCHERS:
+        if not script.exists():
+            continue
+        for raw in script.read_text(encoding="utf-8", errors="replace").splitlines():
+            line = raw.strip()
+            if not line or line.startswith(_COMMENT_PREFIXES):
+                continue
+            if _ASGI_TARGET_RE.search(line):
+                invocations[script] = line
+                break
+    return invocations
+
+
 def _agreed_target() -> str:
     targets = _launch_targets()
     distinct = set(targets.values())
@@ -216,8 +239,19 @@ class TestTheAsgiServerIsInstalled:
 
 
 class TestBothLaunchFormsResolve:
-    """``start_backend.*`` runs the console script; ``entrypoint.sh`` runs
-    ``python -m uvicorn``. They fail independently, so both are pinned."""
+    """Both ways of reaching uvicorn must work in this venv.
+
+    CORRECTION (2026-08-31, LANE-48): this class used to say
+    "``start_backend.*`` runs the console script". That stopped being true at
+    ``6e65e390`` — all four launchers now go through ``python -m uvicorn``
+    (see ``TestTheLaunchersAndTheAppAgree::
+    test_every_launcher_invokes_uvicorn_through_the_interpreter``, which
+    enforces it rather than describing it). The console-script assertions
+    below are kept as **venv-integrity** checks, not launcher checks: a
+    missing ``uvicorn`` console script is the fingerprint of the failed
+    in-place upgrade described in this module's docstring, and it is cheaper
+    to notice here than when the server will not come up.
+    """
 
     def test_the_console_script_is_declared_and_loadable(self):
         entry_points = [
@@ -229,8 +263,9 @@ class TestBothLaunchFormsResolve:
         assert callable(entry_points[0].load())
 
     def test_the_console_script_exists_for_this_interpreter(self):
-        """``start_backend.*`` activates the venv and then calls a bare
-        ``uvicorn``, so it resolves through PATH. If the venv's launcher is
+        """A venv-integrity check, not a launcher check (see the class
+        docstring: no launcher calls the console script any more). If the
+        venv's launcher is
         gone but a *global* uvicorn is installed — the state a failed in-place
         upgrade leaves behind, since pip cannot overwrite a running
         ``uvicorn.exe`` — PATH silently falls through to the global one, which
@@ -280,6 +315,46 @@ class TestTheLaunchersAndTheAppAgree:
             f"launch scripts disagree on the ASGI target: {targets}. One of "
             "them starts a different app than the others."
         )
+
+    def test_every_launcher_invokes_uvicorn_through_the_interpreter(self):
+        """``python -m uvicorn``, never the bare ``uvicorn`` console script.
+
+        ``6e65e390`` fixed ``start_backend.sh`` calling the console-script
+        shim, whose shebang embeds the ABSOLUTE path of the interpreter that
+        created the venv: copy, move or rename the checkout and it dies —
+        quietly, with an error that names a path nobody recognises. All four
+        launchers now carry a comment saying why they use ``-m``, but
+        ``_ASGI_TARGET_RE`` accepts BOTH forms, so until this test only the
+        prose enforced it and the shim could return with a green gate
+        (LESSONS 2026-08-14).
+
+        A positive assertion on the launchers' own bytes, so it needs no
+        offender-scan control (CONVENTIONS rule 11) — but it does need to
+        prove it read something, hence the count check: a moved or renamed
+        launcher must fail here rather than silently shrink the set.
+        """
+        invocations = _launch_invocations()
+        present = [script for script in _LAUNCHERS if script.exists()]
+
+        assert len(invocations) >= 3, (
+            f"only parsed {len(invocations)} uvicorn invocation(s) out of "
+            f"{len(_LAUNCHERS)} launcher(s) — the scripts or _ASGI_TARGET_RE "
+            "moved, and this test would otherwise be asserting nothing."
+        )
+        assert len(invocations) == len(present), (
+            "a launcher exists on disk but no uvicorn invocation was parsed "
+            f"from it: {sorted(str(p) for p in set(present) - set(invocations))}"
+        )
+
+        for script, line in sorted(invocations.items()):
+            assert _PYTHON_DASH_M_UVICORN_RE.search(line), (
+                f"{script.name} starts uvicorn as `{line}`. It must invoke it "
+                "through the interpreter (`python -m uvicorn`): the `uvicorn` "
+                "console script hard-codes the absolute path of the "
+                "interpreter that built the venv, so a copied, moved or "
+                "renamed checkout fails to start with an error that points "
+                "at a path that no longer exists."
+            )
 
     def test_the_target_resolves_to_this_app(self):
         """uvicorn's own import path, on the exact string the scripts pass."""

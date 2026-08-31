@@ -1,4 +1,4 @@
-import { ChangeDetectionStrategy, Component, computed, effect, ElementRef, HostListener, inject, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, DestroyRef, effect, ElementRef, HostListener, inject, signal } from '@angular/core';
 import { firstValueFrom } from 'rxjs';
 import { Dataset, DatasetService, type MpxDistribution } from '../../services/dataset';
 import { DatasetUploadService } from '../../services/dataset-upload.service';
@@ -78,7 +78,25 @@ interface CacheStats {
     embedding_bytes: number;
     cached_datasets: number;
     dataset_root_bytes: number;
+    /**
+     * False when the backend has not finished its first library sweep and the
+     * numbers above are placeholder zeros. Optional: an older backend omits the
+     * field, and its payload is always a real measurement.
+     */
+    ready?: boolean;
 }
+
+/**
+ * Cold-cache re-poll for `/datasets/cache/stats`. The backend answers a cold
+ * request instantly with `ready: false` rather than holding it open for the
+ * library sweep (LANE-52: one such request was measured at 479.81 s), so the
+ * screen has to come back for the answer. Bounded on purpose — 12 attempts at
+ * 5 s is one minute of asking, after which the tile keeps saying "calculating"
+ * instead of polling for the life of the session (ARCHITECTURE D10, every wait
+ * bounded).
+ */
+const CACHE_STATS_RETRY_MS = 5000;
+const CACHE_STATS_MAX_ATTEMPTS = 12;
 
 /**
  * Datasets screen — KPI rail + scope-aware library grid.
@@ -116,6 +134,8 @@ export class DatasetsScreen {
     // component fixture), where no ElementRef node injector exists. Only the
     // render path needs it (menu focus management), so a null host is fine.
     private host = inject(ElementRef, { optional: true }) as ElementRef<HTMLElement> | null;
+    private destroyRef = inject(DestroyRef);
+    private cacheStatsTimer: ReturnType<typeof setTimeout> | null = null;
 
     /** Dataset ids that belong to the active project, when one is scoped. */
     private projectDatasetIds = signal<Set<string>>(new Set());
@@ -153,13 +173,13 @@ export class DatasetsScreen {
             // Errors surface as toasts via the entity-store base; nothing to do.
         });
 
-        // Fetch global cache stats once on mount so the CACHED tile sub-line
-        // can show "L latents · E embeds" sizes. Non-fatal — if the endpoint
-        // fails, cacheStats stays null and the sub falls back to just the
+        // Fetch global cache stats on mount so the CACHED tile sub-line can
+        // show "L latents · E embeds" sizes. Non-fatal — if the endpoint fails,
+        // cacheStats stays null and the sub falls back to just the
         // "D / N datasets" fraction (see cachedSub() below).
-        this.datasetsApi.getCacheStats().subscribe({
-            next: (s: CacheStats) => this.cacheStats.set(s),
-            error: () => undefined,
+        this.loadCacheStats();
+        this.destroyRef.onDestroy(() => {
+            if (this.cacheStatsTimer !== null) clearTimeout(this.cacheStatsTimer);
         });
 
         // Fetch cross-dataset MPx distribution once on mount so the IMAGES
@@ -585,6 +605,31 @@ export class DatasetsScreen {
      *  loaded once on mount. `null` while the request is in flight or if
      *  the endpoint errored out — the CACHED sub falls back gracefully. */
     protected cacheStats = signal<CacheStats | null>(null);
+
+    /**
+     * Ask for the cross-dataset disk figures, and keep asking (bounded) while
+     * the backend reports `ready: false`.
+     *
+     * A not-ready payload is NOT stored: its zeros are placeholders, and
+     * writing them would turn "calculating…" into a confident "0 B" for a
+     * library holding 85 GB. Leaving the signal null keeps the honest
+     * calculating state the template already renders.
+     */
+    private loadCacheStats(attempt = 0): void {
+        this.datasetsApi.getCacheStats().subscribe({
+            next: (s: CacheStats) => {
+                if (s?.ready === false) {
+                    if (attempt + 1 < CACHE_STATS_MAX_ATTEMPTS) {
+                        this.cacheStatsTimer = setTimeout(
+                            () => this.loadCacheStats(attempt + 1), CACHE_STATS_RETRY_MS);
+                    }
+                    return;
+                }
+                this.cacheStats.set(s);
+            },
+            error: () => undefined,
+        });
+    }
 
     /** Cross-dataset MPx + mean image-size aggregate from
      *  `DatasetService.getMpxDistribution()`. Drives the IMAGES tile's

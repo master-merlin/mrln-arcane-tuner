@@ -66,7 +66,9 @@ const TASK_KINDS: Record<string, { kind: string; accent: string }> = {
                             @let v = view(t);
                             <div class="tc-row" [style.--accent]="v.accent">
                                 <div class="tc-kind">{{ v.kind }}
-                                    @if (t.status === 'pending') { <span class="tc-q">· Queued</span> }
+                                    @if (t.status === 'pending') {
+                                        <span class="tc-q" data-testid="task-center-queued">· {{ queued(t) }}</span>
+                                    }
                                 </div>
                                 <div class="tc-subject" [title]="v.subject">{{ v.subject }}</div>
                                 <div class="bar"><i [style.width.%]="pct(t)"></i></div>
@@ -193,6 +195,23 @@ export class TaskCenterComponent {
             subject: t.dataset_name ?? tail ?? head ?? '',
             accent: known?.accent ?? 'var(--color-border-default)',
         };
+    }
+
+    /**
+     * Why a `pending` task is waiting. "Queued" alone is the string the user
+     * stared at for nine minutes before reporting the feature as broken (UAT
+     * round 4, LANE-52) — it is true and says nothing. `queue_position` counts
+     * the tasks the backend must finish on this task's lane first, so 0 means
+     * the lane is about to pick it up and anything higher names the wait.
+     *
+     * Falls back to the bare word when the field is absent (an older backend);
+     * never invents a number it was not told.
+     */
+    protected queued(t: Task): string {
+        const ahead = t.queue_position;
+        if (ahead === undefined || ahead === null) return 'Queued';
+        if (ahead <= 0) return 'Queued · next';
+        return ahead === 1 ? 'Queued · 1 ahead' : `Queued · ${ahead} ahead`;
     }
 
     protected pct(t: { current: number; total: number }): number {

@@ -425,8 +425,15 @@ export class DatasetService {
       `${this.apiUrl}/scan-all/batch?force_full=${forceFull}`, {});
   }
 
-  getCacheStats(): Observable<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number }> {
-    return this.http.get<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number }>(`${this.apiUrl}/cache/stats`);
+  /**
+   * Cross-dataset disk figures. `ready` is false when the backend has not
+   * finished its first library sweep and the byte counts are placeholder zeros
+   * — it answers immediately rather than holding the request open for the walk
+   * (LANE-52 measured one such hold at 479.81 s). Callers must not render a
+   * not-ready payload as a measurement.
+   */
+  getCacheStats(): Observable<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number; ready?: boolean }> {
+    return this.http.get<{ total_bytes: number; latent_bytes: number; embedding_bytes: number; cached_datasets: number; dataset_root_bytes: number; ready?: boolean }>(`${this.apiUrl}/cache/stats`);
   }
 
   /** Datasets still holding pre-`<edge>/` flat thumbnail renditions (LANE-40).

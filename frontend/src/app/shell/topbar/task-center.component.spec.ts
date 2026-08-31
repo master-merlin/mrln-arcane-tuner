@@ -238,3 +238,67 @@ describe('TaskCenterComponent persistent trigger + clear', () => {
         expect(clearRecent).toHaveBeenCalledTimes(1);
     });
 });
+
+
+describe('TaskCenterComponent queued reason', () => {
+    /**
+     * "Queued" on its own is true and useless. During UAT round 4 a refine task
+     * sat pending for nine minutes behind an invisible boot sweep and the user
+     * reported the feature as broken, because nothing on screen distinguished
+     * "waiting its turn" from "hung" (LANE-52).
+     */
+    function mount(active: any[]) {
+        TestBed.resetTestingModule();
+        TestBed.configureTestingModule({
+            imports: [TaskCenterComponent],
+            providers: [
+                {
+                    provide: TaskStore,
+                    useValue: {
+                        active: signal(active),
+                        activeCount: signal(active.length),
+                        recent: signal([]),
+                        cancel: () => undefined,
+                    },
+                },
+            ],
+        });
+        const f = TestBed.createComponent(TaskCenterComponent);
+        (f.componentInstance as any).toggle();
+        f.detectChanges();
+        return f;
+    }
+
+    const pending = (extra: Record<string, unknown>) => ({
+        id: 'q1', type: 'caption_refine_batch', title: 'Refine · ds',
+        status: 'pending', current: 0, total: 4, ...extra,
+    });
+
+    it('names how many tasks are ahead of a waiting one', () => {
+        const f = mount([pending({ queue_position: 3, lane: 'gpu' })]);
+        expect(byTestId(f, 'task-center-queued')!.nativeElement.textContent).toContain('3 ahead');
+    });
+
+    it('says a lone waiting task is next rather than implying a backlog', () => {
+        const f = mount([pending({ queue_position: 0, lane: 'background' })]);
+        const txt = byTestId(f, 'task-center-queued')!.nativeElement.textContent!;
+        expect(txt).toContain('next');
+        expect(txt).not.toContain('ahead');
+    });
+
+    it('falls back to the bare word when the backend sends no position', () => {
+        const f = mount([pending({})]);
+        const txt = byTestId(f, 'task-center-queued')!.nativeElement.textContent!;
+        expect(txt).toContain('Queued');
+        expect(txt).not.toContain('ahead');
+        expect(txt).not.toContain('next');
+    });
+
+    it('says nothing about the queue once the task is running', () => {
+        const f = mount([{
+            id: 'r1', type: 'caption_refine_batch', title: 'Refine · ds',
+            status: 'running', current: 1, total: 4, queue_position: 0,
+        }]);
+        expect(byTestId(f, 'task-center-queued')).toBeNull();
+    });
+});

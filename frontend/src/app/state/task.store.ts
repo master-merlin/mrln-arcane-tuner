@@ -22,6 +22,15 @@ export interface Task {
     finished_at: number | null;
     error: string | null;
     user_visible?: boolean;
+    /** Lane the backend actually placed this task on; null before it is queued. */
+    lane?: string | null;
+    /**
+     * How many tasks must finish on `lane` before this one starts (0 = next, or
+     * already running). A `pending` task that gives no reason for waiting reads
+     * as a broken one — that is how a nine-minute queue was reported as a
+     * failure in UAT round 4 (LANE-52). Optional: older backends omit it.
+     */
+    queue_position?: number;
 }
 
 export interface RecentTask extends Task { recordedAt: number; }

@@ -37,7 +37,11 @@ export function apiBlockedReasonFor(modelId: string): string {
     // `w-full`, not a fixed `w-80` — see the note on detail-masking-sidebar:
     // details-mode's rail owns the width, and a pinned 320px host was clipped
     // (not scrolled) the moment the rail was narrower than that.
-    host: { class: 'w-full h-full flex flex-col' },
+    // A window resize (and a zoom change, which fires one) can change the
+    // scrollbar gutter the overflow backdrop has to match. Angular removes this
+    // listener with the view, so the teardown is the framework's, not a flag of
+    // ours that could quietly stop working.
+    host: { class: 'w-full h-full flex flex-col', '(window:resize)': 'matchOverflowBackdropGutter()' },
     imports: [FormsModule, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent, IdeogramCaptionEditorComponent, StructuredCaptionModalComponent],
     template: `
         <div class="w-full h-full border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
@@ -99,7 +103,7 @@ export function apiBlockedReasonFor(modelId: string): string {
                             #captionEditor
                             [(ngModel)]="captionText"
                             (ngModelChange)="onCaptionChange()"
-                            (scroll)="syncOverflowBackdrop()"
+                            (scroll)="syncOverflowBackdropOffsets()"
                             [class.text-transparent]="tokenInfo()?.will_truncate"
                             class="absolute inset-0 w-full h-full bg-transparent text-text-secondary p-3 resize-none focus:outline-none font-mono text-xs leading-relaxed whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
                             placeholder="Enter caption for this image..."
@@ -398,24 +402,42 @@ export class DetailCaptionSidebarComponent {
     private captionEditor = viewChild<ElementRef<HTMLTextAreaElement>>('captionEditor');
     private overflowBackdrop = viewChild<ElementRef<HTMLElement>>('overflowBackdrop');
 
-    /** Drive the read layer from the scrolled layer. Called from the textarea's
-     *  (scroll) and whenever the backdrop appears/reflows, because a layer that
-     *  is created while the editor is already scrolled starts at 0. */
-    protected syncOverflowBackdrop(): void {
+    /** The scroll path, and NOTHING else on it: two property writes, no layout
+     *  read, no style write. Runs from the textarea's (scroll), i.e. once per
+     *  frame of a gesture — measured at 8.2 µs/event when it also computed the
+     *  gutter, 3.1 µs as two writes (LANE-50, LESSONS 2026-08-31). */
+    protected syncOverflowBackdropOffsets(): void {
         const backdrop = this.overflowBackdrop()?.nativeElement;
         const editor = this.captionEditor()?.nativeElement;
         if (!backdrop || !editor) return;
-        // The textarea reserves a gutter for its scrollbar, so it wraps text in a
-        // NARROWER box than the full-width backdrop: same font, ~2 more lines, and
-        // the two layers drift apart even with the offsets mirrored (measured in
-        // the browser: scrollHeight 395 vs 356, so the tail was unreachable).
-        // Give the backdrop the same gutter, measured off the live element —
-        // scrollbar width is a user/OS setting, never a constant.
+        backdrop.scrollTop = editor.scrollTop;
+        backdrop.scrollLeft = editor.scrollLeft;
+    }
+
+    /** The layout path, on the events that can actually change the answer: the
+     *  backdrop appearing, the caption reflowing, a window resize (which is also
+     *  what a zoom change fires). The textarea reserves a gutter for its
+     *  scrollbar, so it wraps text in a NARROWER box than the full-width
+     *  backdrop: same font, ~2 more lines, and the two layers drift apart even
+     *  with the offsets mirrored (measured in the browser: scrollHeight 395 vs
+     *  356, so the tail of the caption was unreachable). Give the backdrop the
+     *  same gutter, measured off the live element — scrollbar width is a user/OS
+     *  setting, never a constant.
+     *
+     *  This converges in one pass and cannot oscillate: both inputs (the
+     *  TEXTAREA's border box vs client box, and the backdrop's own paddingLeft)
+     *  are independent of the paddingRight it writes, and the backdrop is
+     *  absolutely positioned, so its wrapping can never resize the textarea it
+     *  is measured against. Verified in the browser — three consecutive passes
+     *  give the same padding and the same scrollHeight on both layers. */
+    protected matchOverflowBackdropGutter(): void {
+        const backdrop = this.overflowBackdrop()?.nativeElement;
+        const editor = this.captionEditor()?.nativeElement;
+        if (!backdrop || !editor) return;
         const gutter = editor.offsetWidth - editor.clientWidth;
         const base = parseFloat(getComputedStyle(backdrop).paddingLeft) || 0;
         backdrop.style.paddingRight = `${base + gutter}px`;
-        backdrop.scrollTop = editor.scrollTop;
-        backdrop.scrollLeft = editor.scrollLeft;
+        this.syncOverflowBackdropOffsets();
     }
 
     protected showTokenCount = computed(() => this.tokenInfo() != null);
@@ -436,13 +458,16 @@ export class DetailCaptionSidebarComponent {
         this.llm.refresh();
 
         // The overflow backdrop is created the moment a caption overruns the
-        // token limit, and re-flows on every keystroke; either can leave the
-        // read layer at a different offset than the layer holding the scrollbar.
-        // Re-mirror on both. DOM writes only — no signal is written here.
+        // token limit, and re-flows on every keystroke; either can leave the read
+        // layer at a different offset than the layer holding the scrollbar, and
+        // either can change whether the textarea shows a scrollbar at all. These
+        // are the paths where the gutter can change — a scroll gesture is not one
+        // of them, which is why the measurement lives here and not on (scroll).
+        // DOM writes only — no signal is written here.
         effect(() => {
             this.overflowBackdrop();
             this.captionText();
-            this.syncOverflowBackdrop();
+            this.matchOverflowBackdropGutter();
         });
 
         // Sync textarea with the active pair's caption (or its masked variant)

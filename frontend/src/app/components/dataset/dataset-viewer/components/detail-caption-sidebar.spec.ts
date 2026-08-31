@@ -191,21 +191,64 @@ describe('DetailCaptionSidebar — token counter', () => {
         expect(backdrop.scrollLeft).toBe(11);
     });
 
+    /** jsdom reports 0 for every box metric. Fake the textarea's border/client
+     *  box so a scrollbar gutter exists at all, and count the reads so a test
+     *  can see WHICH path measured. */
+    function fakeGutter(textarea: HTMLTextAreaElement, gutter: number) {
+        const counter = { reads: 0 };
+        Object.defineProperty(textarea, 'offsetWidth', {
+            get() { counter.reads++; return 338; }, configurable: true,
+        });
+        Object.defineProperty(textarea, 'clientWidth', {
+            get() { counter.reads++; return 338 - gutter; }, configurable: true,
+        });
+        return counter;
+    }
+
     it('the backdrop wraps in the same width as the textarea (scrollbar gutter)', () => {
-        const { textarea, backdrop } = mountTruncating();
+        const { fixture, textarea, backdrop } = mountTruncating();
         // Measured in the browser: the textarea reserves a 10px scrollbar gutter,
         // so it wrapped into ~2 more lines than the full-width backdrop and the
         // tail of the caption stayed unreachable even with the offsets mirrored.
-        Object.defineProperty(textarea, 'offsetWidth', { value: 338, configurable: true });
-        Object.defineProperty(textarea, 'clientWidth', { value: 328, configurable: true });
+        fakeGutter(textarea, 10);
         backdrop.style.paddingLeft = '12px';
         makeScrollable(textarea);
         makeScrollable(backdrop);
 
-        textarea.dispatchEvent(new Event('scroll'));
+        // A reflow of the caption is one of the paths that may change the gutter.
+        fixture.componentInstance.captionText.set('a caption long enough to overrun the limit, now longer');
+        fixture.detectChanges();
 
         expect(backdrop.style.paddingRight).toBe('22px');   // 12 base + 10 gutter
     });
+
+    // ── The split: measuring is a layout path, scrolling is not ───────────
+    // Measured in the browser at 8.2 µs/scroll-event with the gutter computed
+    // inline vs 3.1 µs as two writes. Read-then-write per scroll tick is the
+    // layout-thrash shape this project has been bitten by twice (LANE-29/31).
+    it('the scroll path does not measure: no box read, no style write', () => {
+        const { fixture, textarea, backdrop } = mountTruncating();
+        backdrop.style.paddingLeft = '12px';
+        makeScrollable(textarea);
+        makeScrollable(backdrop);
+        const counter = fakeGutter(textarea, 10);
+        fixture.componentInstance.captionText.set('reflow once so the gutter is applied');
+        fixture.detectChanges();
+        expect(backdrop.style.paddingRight).toBe('22px');
+
+        // Now change what a measurement WOULD return, and scroll 5 times.
+        Object.defineProperty(textarea, 'clientWidth', { get: () => 300, configurable: true });
+        const readsBefore = counter.reads;
+        for (let i = 1; i <= 5; i++) {
+            textarea.scrollTop = i * 10;
+            textarea.dispatchEvent(new Event('scroll'));
+        }
+
+        expect(backdrop.scrollTop).toBe(50);                 // the offsets still mirror
+        expect(counter.reads).toBe(readsBefore);             // ...without reading layout
+        expect(backdrop.style.paddingRight).toBe('22px');    // ...and without writing style
+    });
+
 
     it('the backdrop never owns a second scroll position (overflow-hidden, not auto)', () => {
         const { backdrop } = mountTruncating();
@@ -263,6 +306,79 @@ describe('DetailCaptionSidebar — token counter', () => {
         http.verify();
         // The global vi.restoreAllMocks() does NOT undo fake timers; a leaked
         // install would hang every later spec (teardown waits on real timers).
+        vi.useRealTimers();
+    });
+});
+
+// The teardown case destroys the fixture mid-test, so it gets its own module:
+// a destroy inside the token-counter block leaves that describe's shared
+// TestBed instantiated and cascades into every later spec in it.
+describe('DetailCaptionSidebar — the gutter is re-measured on resize, and not after destroy (LANE-50)', () => {
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+    });
+
+    it('a window resize re-measures the gutter, and stops doing so once destroyed', () => {
+        localStorage.clear();
+        TestBed.configureTestingModule({
+            imports: [DetailCaptionSidebarComponent],
+            providers: [
+                provideHttpClient(withFetch()),
+                provideHttpClientTesting(),
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DetailCaptionSidebarComponent);
+        fixture.componentRef.setInput('datasetName', 'ds');
+        fixture.componentRef.setInput('currentPair', { media_file: 'a.png', caption_file: 'a.txt', caption_content: 'hello world' });
+        const http = TestBed.inject(HttpTestingController);
+        const store = TestBed.inject(ModelContextStore);
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        fixture.componentInstance.captionText.set('a caption long enough to overrun the limit');
+        fixture.detectChanges();
+        vi.advanceTimersByTime(400);
+        http.expectOne('/api/caption-context/token-count')
+            .flush({ tokens: 145, limit: 75, will_truncate: true, cutoff_char_index: 20 });
+        fixture.detectChanges();
+
+        const el = fixture.nativeElement as HTMLElement;
+        const textarea = el.querySelector('textarea') as HTMLTextAreaElement;
+        const backdrop = el.querySelector('[data-testid="caption-overflow-backdrop"]') as HTMLElement;
+        Object.defineProperty(textarea, 'offsetWidth', { get: () => 338, configurable: true });
+        Object.defineProperty(textarea, 'clientWidth', { get: () => 328, configurable: true });
+        Object.defineProperty(backdrop, 'scrollTop', { value: 0, writable: true, configurable: true });
+        Object.defineProperty(textarea, 'scrollTop', { value: 0, writable: true, configurable: true });
+        backdrop.style.paddingLeft = '12px';
+
+        window.dispatchEvent(new Event('resize'));
+        expect(backdrop.style.paddingRight).toBe('22px');    // 12 base + 10 gutter
+
+        Object.defineProperty(textarea, 'clientWidth', { get: () => 320, configurable: true });
+        window.dispatchEvent(new Event('resize'));
+        expect(backdrop.style.paddingRight).toBe('30px');    // re-measured: 12 + 18
+
+        // Teardown asserted by its EFFECT, not by a flag: the component still
+        // holds a reference to this (now detached) node, so a listener that
+        // outlived the view would happily keep writing to it.
+        fixture.destroy();
+        Object.defineProperty(textarea, 'clientWidth', { get: () => 300, configurable: true });
+        window.dispatchEvent(new Event('resize'));
+        expect(backdrop.style.paddingRight).toBe('30px');
+
+        for (let i = 0; i < 10; i++) {
+            const pending = http.match(() => true);
+            if (pending.length === 0) break;
+            pending.forEach(r => {
+                if (r.request.url.includes('/templates')) r.flush([]);
+                else if (r.request.url.includes('/caption-suggestions')) r.flush({ definition_id: null, items: [] });
+                else r.flush({});
+            });
+        }
+    });
+
+    afterEach(() => {
         vi.useRealTimers();
     });
 });

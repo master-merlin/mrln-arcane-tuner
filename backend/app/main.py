@@ -108,6 +108,13 @@ async def lifespan(app: FastAPI):
 
     logger.info("starting_api", log_level=LOG_LEVEL)
 
+    # If the PREVIOUS restart never came up, say so here — this is the first
+    # moment anyone is listening again (LANE-51). The record outlives the dead
+    # process in restart.log; this reports it once into the log the Server
+    # screen shows.
+    from app.api.system_routes import report_pending_restart_failure
+    report_pending_restart_failure()
+
     # No runtime-config.json write here. The file is still SHIPPED and still
     # fetched by the SPA at bootstrap — what was retired is the backend
     # rewriting it at runtime, into `frontend/public/` (the SOURCE checkout),

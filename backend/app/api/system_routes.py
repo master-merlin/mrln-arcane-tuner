@@ -14,6 +14,16 @@ from pydantic import BaseModel
 from app.core.logger import SERVER_LOG_PATH, get_logger
 from app.core.self_update import self_update_service
 
+# ``restart_launcher`` sits at backend/ rather than inside ``app`` because it
+# runs BEFORE and AROUND the server and must never import the app (same reason,
+# and the same anchored-append pattern, as ``port_resolver`` in
+# ``app/core/container_config.py`` — see its comment for the measurement).
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+if _BACKEND_DIR not in sys.path:
+    sys.path.append(_BACKEND_DIR)
+
+import restart_launcher  # noqa: E402 - requires the sys.path line above
+
 router = APIRouter(prefix="/system", tags=["System"])
 logger = get_logger(__name__)
 
@@ -85,12 +95,80 @@ _LOG_FILE = SERVER_LOG_PATH
 _BOOT_TIME = time.time()
 
 
+def report_pending_restart_failure() -> dict | None:
+    """Surface a previous restart's failure in the app's own log, once.
+
+    A restart that fails leaves nobody running to tell anyone: the console this
+    process was watching is gone with the process, and ``server.log`` is
+    unlinked by ``setup_logging`` on the next startup. So the launcher's record
+    outlives it in ``restart.log``, and the first server to start afterwards —
+    which is the user's recovery, ``start_backend.bat`` — says it out loud in
+    the log the Server screen already shows.
+
+    Returns the record it reported, or None. Never raises: this runs on the
+    startup path, and a diagnostic may never be a reason not to start.
+    """
+    try:
+        pending = restart_launcher.pending_failure()
+        if pending is None:
+            return None
+        logger.error(
+            "previous_restart_failed",
+            restart_log=str(restart_launcher.RESTART_LOG_PATH),
+            # ``timestamp`` is renamed, never forwarded: the log pipeline stamps
+            # its own, so passing the record's through silently loses WHEN the
+            # restart failed — measured on the live run that verified this path.
+            failed_at=pending.get("timestamp"),
+            **{k: v for k, v in pending.items()
+               if k not in ("level", "service", "event", "timestamp")},
+        )
+        restart_launcher.mark_reported()
+        return pending
+    except Exception as e:  # noqa: BLE001 - see docstring
+        logger.warning("restart_report_failed", error=str(e))
+        return None
+
+
 async def _restart_server_logic() -> None:
-    """Restart the server on Windows by spawning a new process."""
+    """Hand this server's port to a replacement, through the launcher.
+
+    We do NOT spawn the replacement directly any more (LANE-51). Doing so meant
+    (a) its output went to DEVNULL, so a start that failed was invisible in the
+    console, in the logs and in the app, and (b) this process slept 1.0 s and
+    exited, overlapping the two servers on one port by construction.
+
+    ``restart_launcher`` waits for this process to release the port, resolves
+    the port afresh (settings may have moved it since this process launched),
+    starts the replacement with the restart log as its stdout/stderr, and
+    watches it until it serves or dies. See that module's docstring.
+    """
     await asyncio.sleep(2.0)  # Let the HTTP response flush
 
     orig_args = getattr(sys, "orig_argv", [sys.executable] + sys.argv)
-    cmd = [sys.executable] + list(orig_args[1:])
+    replacement = [sys.executable] + list(orig_args[1:])
+    cmd = [
+        sys.executable,
+        restart_launcher.__file__,
+        "--old-pid", str(os.getpid()),
+        "--",
+        *replacement,
+    ]
+
+    try:
+        # A FILE, never our own stdio: our handles may be a dead pipe (the IDE
+        # terminal that launched the original server is gone), and a full pipe
+        # blocks console logging while holding the logging lock — freezing the
+        # whole event loop (e2e3cfc8, live incident 2026-07-16). A file has no
+        # reader that can stall it, so the property is kept while the output
+        # survives. Even the launcher's own traceback lands here.
+        log_handle = restart_launcher.open_log()
+    except OSError as e:
+        # A restart we could not observe is a restart we do not perform: this
+        # server keeps serving and says why, which is recoverable. Spawning
+        # blind is what LANE-51 was.
+        logger.error("restart_log_unavailable", error=str(e),
+                     path=str(restart_launcher.RESTART_LOG_PATH))
+        return
 
     try:
         restart_env = os.environ.copy()
@@ -101,19 +179,29 @@ async def _restart_server_logic() -> None:
             close_fds=True,
             cwd=os.getcwd(),
             env=restart_env,
-            # Never inherit our stdio: it may be a dead pipe (e.g. the IDE
-            # terminal that launched the original server is gone), and a full
-            # pipe blocks console logging while holding the logging lock —
-            # freezing the whole event loop. File/WS logging is unaffected.
             stdin=subprocess.DEVNULL,
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
+            stdout=log_handle,
+            stderr=log_handle,
         )
     except OSError as e:
         logger.error("restart_spawn_failed", error=str(e))
         return
+    finally:
+        # The child holds its own duplicate of the handle.
+        log_handle.close()
 
-    await asyncio.sleep(1.0)
+    # The last thing this console ever shows: where the rest of the story is.
+    # Silence with no explanation was the user-visible half of LANE-51.
+    logger.info(
+        "restart_handoff",
+        restart_log=str(restart_launcher.RESTART_LOG_PATH),
+        message=("this console goes quiet now — the replacement server's output and "
+                 "the outcome of its start are written to restart.log"),
+    )
+
+    # Not a port handoff (the launcher waits for the port itself) — only a
+    # window for that last line to reach the queued WebSocket log mirror.
+    await asyncio.sleep(0.25)
     os._exit(0)
 
 

@@ -143,6 +143,101 @@ describe('DetailCaptionSidebar — token counter', () => {
         expect(spans[1].textContent).toBe('OVERFLOWtext');
     });
 
+    // ── LANE-50: the scrolled layer is not the layer that is read ─────────
+    // jsdom has no layout engine: Element.scrollTop is a hard 0 and writes to
+    // it are dropped. Give the two elements their own writable scrollTop/
+    // scrollLeft so a scroll offset can exist at all. This substitutes for the
+    // BROWSER, not for the seam under test — nothing about the component's
+    // sync is stubbed, and the browser gesture is verified separately with
+    // Playwright.
+    function makeScrollable(el: HTMLElement) {
+        Object.defineProperty(el, 'scrollTop', { value: 0, writable: true, configurable: true });
+        Object.defineProperty(el, 'scrollLeft', { value: 0, writable: true, configurable: true });
+    }
+
+    function mountTruncating() {
+        const { fixture, http, store } = mountCounter();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        fixture.componentInstance.captionText.set('a caption long enough to overrun the limit');
+        fixture.detectChanges();
+        vi.advanceTimersByTime(400);
+        http.expectOne('/api/caption-context/token-count')
+            .flush({ tokens: 145, limit: 75, will_truncate: true, cutoff_char_index: 20 });
+        fixture.detectChanges();
+        const el = fixture.nativeElement as HTMLElement;
+        return {
+            fixture,
+            textarea: el.querySelector('textarea') as HTMLTextAreaElement,
+            backdrop: el.querySelector('[data-testid="caption-overflow-backdrop"]') as HTMLElement,
+        };
+    }
+
+    it('scrolling the textarea moves the BACKDROP — the layer the user actually reads', () => {
+        const { textarea, backdrop } = mountTruncating();
+        makeScrollable(textarea);
+        makeScrollable(backdrop);
+        expect(backdrop.scrollTop).toBe(0);
+
+        // The gesture: the user scrolls the transparent textarea (it owns the
+        // scrollbar). Assert the OTHER element moved — asserting the element we
+        // drove is exactly the test that let this ship.
+        textarea.scrollTop = 137;
+        textarea.scrollLeft = 11;
+        textarea.dispatchEvent(new Event('scroll'));
+
+        expect(backdrop.scrollTop).toBe(137);
+        expect(backdrop.scrollLeft).toBe(11);
+    });
+
+    it('the backdrop wraps in the same width as the textarea (scrollbar gutter)', () => {
+        const { textarea, backdrop } = mountTruncating();
+        // Measured in the browser: the textarea reserves a 10px scrollbar gutter,
+        // so it wrapped into ~2 more lines than the full-width backdrop and the
+        // tail of the caption stayed unreachable even with the offsets mirrored.
+        Object.defineProperty(textarea, 'offsetWidth', { value: 338, configurable: true });
+        Object.defineProperty(textarea, 'clientWidth', { value: 328, configurable: true });
+        backdrop.style.paddingLeft = '12px';
+        makeScrollable(textarea);
+        makeScrollable(backdrop);
+
+        textarea.dispatchEvent(new Event('scroll'));
+
+        expect(backdrop.style.paddingRight).toBe('22px');   // 12 base + 10 gutter
+    });
+
+    it('the backdrop never owns a second scroll position (overflow-hidden, not auto)', () => {
+        const { backdrop } = mountTruncating();
+        // A driven layer with overflow-auto can be scrolled out of sync by any
+        // gesture the browser routes to it; hidden still accepts a programmatic
+        // scrollTop. (Computed style is proven in the browser, not here.)
+        expect(backdrop.className).toContain('overflow-hidden');
+        expect(backdrop.className).not.toContain('overflow-auto');
+    });
+
+    it('prove the negative: no backdrop when the caption fits, and the plain textarea still scrolls', () => {
+        const { fixture, http, store } = mountCounter();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        fixture.componentInstance.captionText.set('short caption');
+        fixture.detectChanges();
+        vi.advanceTimersByTime(400);
+        http.expectOne('/api/caption-context/token-count')
+            .flush({ tokens: 12, limit: 75, will_truncate: false, cutoff_char_index: null });
+        fixture.detectChanges();
+
+        const el = fixture.nativeElement as HTMLElement;
+        expect(el.querySelector('[data-testid="caption-overflow-backdrop"]')).toBeNull();
+        const textarea = el.querySelector('textarea') as HTMLTextAreaElement;
+        expect(textarea.className).not.toContain('text-transparent');
+        makeScrollable(textarea);
+        textarea.scrollTop = 64;
+        textarea.dispatchEvent(new Event('scroll'));   // handler must be a no-op, not a throw
+        expect(textarea.scrollTop).toBe(64);
+    });
+
     afterEach(() => {
         // The AI-captioning child panel (open by default) fires its own
         // unrelated init requests (.../preferences, .../templates/captioning).

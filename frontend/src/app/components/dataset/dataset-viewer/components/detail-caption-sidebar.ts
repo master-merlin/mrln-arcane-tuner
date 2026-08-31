@@ -1,4 +1,4 @@
-import { Component, input, output, model, inject, signal, computed, effect, ChangeDetectionStrategy } from '@angular/core';
+import { Component, input, output, model, inject, signal, computed, effect, viewChild, ElementRef, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dataset-caption-settings/dataset-caption-settings';
 import { CaptionSuggestionReviewComponent } from './caption-suggestion-review';
@@ -85,14 +85,21 @@ export function apiBlockedReasonFor(modelId: string): string {
                         />
                     } @else {
                         @if (tokenInfo()?.will_truncate) {
-                            <div aria-hidden="true" data-testid="caption-overflow-backdrop"
-                                 class="absolute inset-0 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words overflow-auto pointer-events-none text-text-secondary">
+                            <!-- The layer the user actually READS: the textarea above goes
+                                 text-transparent and keeps only the caret and the scrollbar,
+                                 so this one is driven, never self-scrolled. overflow-hidden
+                                 (not overflow-auto) on purpose — a driven layer must not own
+                                 a second, independent scroll position (LANE-50). -->
+                            <div #overflowBackdrop aria-hidden="true" data-testid="caption-overflow-backdrop"
+                                 class="absolute inset-0 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap break-words overflow-hidden pointer-events-none text-text-secondary">
                                 <span>{{ captionHead() }}</span><span class="text-danger opacity-60">{{ captionOverflow() }}</span>
                             </div>
                         }
                         <textarea
+                            #captionEditor
                             [(ngModel)]="captionText"
                             (ngModelChange)="onCaptionChange()"
+                            (scroll)="syncOverflowBackdrop()"
                             [class.text-transparent]="tokenInfo()?.will_truncate"
                             class="absolute inset-0 w-full h-full bg-transparent text-text-secondary p-3 resize-none focus:outline-none font-mono text-xs leading-relaxed whitespace-pre-wrap break-words scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
                             placeholder="Enter caption for this image..."
@@ -384,6 +391,33 @@ export class DetailCaptionSidebarComponent {
         return dot > 0 ? base.slice(0, dot) : base;
     });
 
+    /** The transparent textarea owns the scrollbar; the backdrop owns the pixels
+     *  the user reads. Mirror one onto the other — without this the thumb moves
+     *  and the text does not (LANE-50). Both refs are optional: the backdrop only
+     *  exists while the caption overruns the token limit. */
+    private captionEditor = viewChild<ElementRef<HTMLTextAreaElement>>('captionEditor');
+    private overflowBackdrop = viewChild<ElementRef<HTMLElement>>('overflowBackdrop');
+
+    /** Drive the read layer from the scrolled layer. Called from the textarea's
+     *  (scroll) and whenever the backdrop appears/reflows, because a layer that
+     *  is created while the editor is already scrolled starts at 0. */
+    protected syncOverflowBackdrop(): void {
+        const backdrop = this.overflowBackdrop()?.nativeElement;
+        const editor = this.captionEditor()?.nativeElement;
+        if (!backdrop || !editor) return;
+        // The textarea reserves a gutter for its scrollbar, so it wraps text in a
+        // NARROWER box than the full-width backdrop: same font, ~2 more lines, and
+        // the two layers drift apart even with the offsets mirrored (measured in
+        // the browser: scrollHeight 395 vs 356, so the tail was unreachable).
+        // Give the backdrop the same gutter, measured off the live element —
+        // scrollbar width is a user/OS setting, never a constant.
+        const gutter = editor.offsetWidth - editor.clientWidth;
+        const base = parseFloat(getComputedStyle(backdrop).paddingLeft) || 0;
+        backdrop.style.paddingRight = `${base + gutter}px`;
+        backdrop.scrollTop = editor.scrollTop;
+        backdrop.scrollLeft = editor.scrollLeft;
+    }
+
     protected showTokenCount = computed(() => this.tokenInfo() != null);
     protected captionHead = computed(() => {
         const cut = this.tokenInfo()?.cutoff_char_index;
@@ -400,6 +434,16 @@ export class DetailCaptionSidebarComponent {
         // Refine button's enabled/disabled state is correct even if the
         // sidebar mounts without the top bar).
         this.llm.refresh();
+
+        // The overflow backdrop is created the moment a caption overruns the
+        // token limit, and re-flows on every keystroke; either can leave the
+        // read layer at a different offset than the layer holding the scrollbar.
+        // Re-mirror on both. DOM writes only — no signal is written here.
+        effect(() => {
+            this.overflowBackdrop();
+            this.captionText();
+            this.syncOverflowBackdrop();
+        });
 
         // Sync textarea with the active pair's caption (or its masked variant)
         // whenever the user navigates to a different image or toggles the

@@ -7,11 +7,22 @@ following the same pattern as CaptionService and MaskingService.
 from __future__ import annotations
 
 import os
+import threading
 
 from PIL import Image
 
-from app.core.gpu_unload import unload_gpu_plugins
+from app.core.gpu_unload import gpu_batch_active, unload_gpu_plugins
 from app.core.scoring.models import ScoringModel, HPSv2Model
+
+# Task types that own the scoring GPU plugin for their duration, so a global
+# unload must not rip a model out from under them.
+#
+# `rescan_batch` is the ONLY one: scoring has no batch task of its own — the
+# score-batch task was removed and scoring now runs only inside a rescan, whose
+# worker owns the model and frees it in its own `finally`
+# (rescan_batch.py:47-49, `_unload() → ScoringService.unload_models()`).
+# `grep -rl ScoringService backend/app` names no other task worker.
+_SCORING_GUARD_TASK_TYPES = ("rescan_batch",)
 
 
 class ScoringService:
@@ -24,6 +35,10 @@ class ScoringService:
 
     _instance: ScoringService | None = None
     _active_model_id: str | None = None
+    # Guards unload_models(skip_if_batch_active=True)'s check-then-act, so a
+    # rescan cannot start between "no rescan is running" and the unload.
+    # Same shape and same reason as CaptionService._unload_lock.
+    _unload_lock = threading.Lock()
 
     def __init__(self) -> None:
         self.plugins: dict[str, ScoringModel] = {
@@ -44,14 +59,30 @@ class ScoringService:
         cls._instance = None
 
     @classmethod
-    def unload_models(cls) -> None:
-        """Unload all models from memory and clear CUDA cache."""
-        unload_gpu_plugins(
-            cls,
-            plugins=cls._instance.plugins if cls._instance else {},
-            active_attr="_active_model_id",
-            service_label="scoring",
-        )
+    def unload_models(cls, *, skip_if_batch_active: bool = False) -> bool:
+        """Unload all models from memory and clear CUDA cache.
+
+        ``skip_if_batch_active=True`` (the ``/system/gpu/unload`` route's mode)
+        — the check for a pending/running rescan PLUS the unload itself run
+        under ``_unload_lock``, atomically, mirroring
+        ``CaptionService.unload_models``. Internal callers (``score_image``
+        switching models, ``rescan_batch``'s own ``finally`` unload,
+        ``reset_instance``) pass the default ``False`` and unload
+        unconditionally.
+
+        Returns ``True`` if the unload actually ran, ``False`` if skipped.
+        """
+        with cls._unload_lock:
+            if skip_if_batch_active and gpu_batch_active(_SCORING_GUARD_TASK_TYPES):
+                return False
+
+            unload_gpu_plugins(
+                cls,
+                plugins=cls._instance.plugins if cls._instance else {},
+                active_attr="_active_model_id",
+                service_label="scoring",
+            )
+            return True
 
     def score_image(self, image_path: str, model_id: str, params: dict) -> float:
         """

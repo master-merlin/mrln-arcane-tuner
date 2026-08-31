@@ -234,3 +234,172 @@ async def apply_update():
         raise HTTPException(status_code=403, detail="Self-update is not available.")
     self_update_service.apply()
     return {"message": "Update started. Watch the update.status events for progress."}
+
+
+# ── GPU plugin models: what is resident, and free it on demand ────────────
+#
+# The three GPU-plugin services are a closed set (they are exactly the classes
+# that route through `core/gpu_unload.unload_gpu_plugins`). Each row is
+# (wire id, human label, module, class, active-key attribute).
+#
+# The wire id is NOT the class name: it is a frozen public id (ECOSYSTEM §6),
+# so renaming `CaptionService` must not rename `caption` on the wire.
+#
+# The trainer is deliberately absent: it runs in its own process and frees its
+# VRAM on exit, so there is nothing this process could unload for it.
+_GPU_SERVICES: tuple[tuple[str, str, str, str, str], ...] = (
+    (
+        "caption",
+        "Captioning",
+        "app.core.captioning.caption_service",
+        "CaptionService",
+        "_active_model_key",
+    ),
+    (
+        "masking",
+        "Masking",
+        "app.core.masking.masking_service",
+        "MaskingService",
+        "_active_model_id",
+    ),
+    (
+        "scoring",
+        "Scoring",
+        "app.core.scoring.scoring_service",
+        "ScoringService",
+        "_active_model_id",
+    ),
+)
+
+
+class GpuServiceState(BaseModel):
+    """One GPU-plugin service's residency. ``model`` is display-only — the
+    three services own their key formats independently, so no client may
+    branch on its shape."""
+
+    service: str
+    label: str
+    loaded: bool
+    model: str | None = None
+
+
+class GpuSkipped(BaseModel):
+    """A service the unload left alone, and the reason to show the user."""
+
+    service: str
+    reason: str
+
+
+class GpuLoadedResponse(BaseModel):
+    """Which GPU-plugin services hold a model right now.
+
+    ``any_loaded`` is precomputed rather than left to the client as
+    ``services.some(...)`` (ARCHITECTURE D10, "compute at write time"): it is
+    the single boolean the topbar's positive-only control gates on, so a client
+    that does not yet know about a newly added service still hides the button
+    correctly.
+    """
+
+    any_loaded: bool
+    services: list[GpuServiceState]
+
+
+class GpuUnloadResponse(GpuLoadedResponse):
+    """Result of a global unload: what was actually freed, and what was not.
+
+    ``any_loaded`` / ``services`` are re-read AFTER the unload, so the client
+    never has to guess; a service in ``skipped`` will still show ``loaded``.
+    """
+
+    unloaded: list[str]
+    skipped: list[GpuSkipped]
+
+
+def _gpu_service_class(module_path: str, class_name: str):
+    """Import a GPU-plugin service class LAZILY.
+
+    Never at module import: these modules pull in torch and the plugin stacks,
+    and nothing imported at startup may raise (ARCHITECTURE D1). Importing does
+    NOT construct the singleton, so this cannot load a model.
+    """
+    import importlib
+
+    return getattr(importlib.import_module(module_path), class_name)
+
+
+def _gpu_snapshot() -> GpuLoadedResponse:
+    """Read residency from the CLASS-level active-key attributes.
+
+    Cheap and side-effect free by construction: it reads a class attribute and
+    never calls ``get_instance()``, so a service whose singleton was never
+    constructed reports "nothing loaded" without constructing one — and no code
+    path here can load a model in order to answer whether a model is loaded.
+    """
+    states: list[GpuServiceState] = []
+    for service_id, label, module_path, class_name, active_attr in _GPU_SERVICES:
+        cls = _gpu_service_class(module_path, class_name)
+        key = getattr(cls, active_attr, None)
+        states.append(
+            GpuServiceState(
+                service=service_id,
+                label=label,
+                loaded=bool(key),
+                model=str(key) if key else None,
+            )
+        )
+    return GpuLoadedResponse(
+        any_loaded=any(s.loaded for s in states),
+        services=states,
+    )
+
+
+def _gpu_unload_all() -> GpuUnloadResponse:
+    """Unload every GPU-plugin service that is not busy, then re-read state.
+
+    Every service is asked in its ``skip_if_batch_active=True`` mode, whose
+    check-then-act is closed under that service's ``_unload_lock`` — so a batch
+    that starts concurrently either loses the race and is not started until the
+    unload completes, or wins it and the unload is skipped. Without that mode
+    this route would free a model out from under a running batch.
+    """
+    unloaded: list[str] = []
+    skipped: list[GpuSkipped] = []
+
+    for service_id, label, module_path, class_name, active_attr in _GPU_SERVICES:
+        cls = _gpu_service_class(module_path, class_name)
+        was_loaded = bool(getattr(cls, active_attr, None))
+        ran = cls.unload_models(skip_if_batch_active=True)
+        if not ran:
+            skipped.append(
+                GpuSkipped(
+                    service=service_id,
+                    reason=f"{label.lower()} is busy — a batch task is using the model",
+                )
+            )
+        elif was_loaded:
+            unloaded.append(service_id)
+
+    after = _gpu_snapshot()
+    return GpuUnloadResponse(
+        any_loaded=after.any_loaded,
+        services=after.services,
+        unloaded=unloaded,
+        skipped=skipped,
+    )
+
+
+@router.get("/gpu/loaded", response_model=GpuLoadedResponse)
+async def get_gpu_loaded():
+    """Which GPU-plugin services currently hold a model. Loads nothing."""
+    return _gpu_snapshot()
+
+
+@router.post("/gpu/unload", response_model=GpuUnloadResponse)
+async def unload_gpu_models():
+    """Free VRAM held by the caption/masking/scoring models, on user request.
+
+    Runs in a worker thread: the unload does ``gc.collect()`` +
+    ``torch.cuda.synchronize()`` + ``empty_cache()``, which blocks for as long
+    as the driver needs, and must not stall the event loop.
+    """
+    return await asyncio.to_thread(_gpu_unload_all)

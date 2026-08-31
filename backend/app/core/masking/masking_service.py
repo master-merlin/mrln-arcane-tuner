@@ -1,5 +1,6 @@
 
 import os
+import threading
 
 import numpy as np
 import structlog
@@ -9,7 +10,7 @@ from app.core.dataset.media_types import (
     IMAGE_EXTENSION_PREFERENCE,
     IMAGE_EXTENSIONS,
 )
-from app.core.gpu_unload import unload_gpu_plugins
+from app.core.gpu_unload import gpu_batch_active, unload_gpu_plugins
 from app.core.masking.models import (
     MaskingModel,
     RemBGModel,
@@ -17,6 +18,20 @@ from app.core.masking.models import (
 )
 
 logger = structlog.get_logger(__name__)
+
+# Task types that own the masking GPU plugins for their duration, so a global
+# unload must not rip a model out from under them.
+#
+# `mask_generate_batch` is here because its worker calls
+# `service.generate_mask(...)` per item (mask_generate_batch.py:103), which
+# loads the plugin.
+#
+# `mask_apply_batch` is deliberately ABSENT: it wraps `MaskingService.mass_apply`
+# (mask_apply_batch.py:47), which composites already-written mask files onto the
+# images and never touches `self.plugins` — grepping the whole `mass_apply` body
+# for `plugin`/`load`/`generate_mask` returns nothing. It therefore holds no GPU
+# model and cannot be interrupted by an unload.
+_MASKING_GUARD_TASK_TYPES = ("mask_generate_batch",)
 
 class MaskingService:
     """
@@ -27,6 +42,10 @@ class MaskingService:
     """
     _instance = None
     _active_model_id = None
+    # Guards unload_models(skip_if_batch_active=True)'s check-then-act, so a
+    # mask batch cannot start between "no batch is running" and the unload.
+    # Same shape and same reason as CaptionService._unload_lock.
+    _unload_lock = threading.Lock()
 
     def __init__(self):
         # Register available model plugins
@@ -202,11 +221,38 @@ class MaskingService:
             "missing_masks": missing_masks,
         }
 
-    def unload_models(self):
-        """Unload all model plugins and clear memory."""
-        unload_gpu_plugins(
-            self.__class__,
-            plugins=self.plugins,
-            active_attr="_active_model_id",
-            service_label="masking",
-        )
+    @classmethod
+    def unload_models(cls, *, skip_if_batch_active: bool = False) -> bool:
+        """Unload all model plugins and clear memory.
+
+        A classmethod so the global GPU-unload route can reach it without
+        constructing the singleton (and therefore without loading anything);
+        still callable as ``service.unload_models()`` from the existing
+        instance call sites.
+
+        ``skip_if_batch_active=True`` (the ``/system/gpu/unload`` route's mode)
+        — the check for a pending/running mask batch PLUS the unload itself run
+        under ``_unload_lock``, atomically, mirroring
+        ``CaptionService.unload_models``. Internal callers (``generate_mask``
+        switching models, the batch worker's own ``finally``) always pass the
+        default ``False`` and unload unconditionally: a batch calling this on
+        itself is expected, not a race.
+
+        Returns ``True`` if the unload actually ran, ``False`` if skipped.
+        """
+        with cls._unload_lock:
+            if skip_if_batch_active and gpu_batch_active(_MASKING_GUARD_TASK_TYPES):
+                return False
+
+            # The singleton's plugin dict, not `self.plugins`: the only
+            # non-singleton construction in the tree is
+            # `pipeline_data.py:583`, which calls `mass_apply` only (no plugin
+            # load) and runs in the trainer subprocess, so no other instance
+            # can be holding a loaded plugin.
+            unload_gpu_plugins(
+                cls,
+                plugins=cls._instance.plugins if cls._instance else {},
+                active_attr="_active_model_id",
+                service_label="masking",
+            )
+            return True

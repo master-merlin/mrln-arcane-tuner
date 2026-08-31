@@ -14,6 +14,8 @@ import { DownloadIndicatorComponent } from './download-indicator.component';
 import { UpdateIndicatorComponent } from './update-indicator.component';
 import { NotificationPanelComponent } from './notification-panel.component';
 import { TaskCenterComponent } from './task-center.component';
+import { GpuUnloadButtonComponent } from './gpu-unload-button.component';
+import { GpuResidencyStore } from '../../state/gpu-residency.store';
 import { ScopeStore } from '../../state/scope.store';
 import { ThemeStore } from '../../state/theme.store';
 import { ProjectService } from '../../services/project.service';
@@ -36,7 +38,7 @@ interface Crumb {
 @Component({
     selector: 'app-topbar',
     standalone: true,
-    imports: [ContextSwitcherComponent, IcoComponent, DownloadIndicatorComponent, UpdateIndicatorComponent, NotificationPanelComponent, TaskCenterComponent],
+    imports: [ContextSwitcherComponent, IcoComponent, DownloadIndicatorComponent, UpdateIndicatorComponent, NotificationPanelComponent, TaskCenterComponent, GpuUnloadButtonComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './topbar.component.html',
 })
@@ -46,6 +48,7 @@ export class TopbarComponent {
     protected theme = inject(ThemeStore);
     protected projects = inject(ProjectService);
     protected llm = inject(LlmAvailabilityStore);
+    private gpu = inject(GpuResidencyStore);
 
     constructor() {
         // Probe for the LLM endpoint (Ollama / LM Studio) AFTER the first
@@ -62,6 +65,11 @@ export class TopbarComponent {
         // positive-only (`@if (llm.available())`), so it is hidden either way
         // until the probe resolves and then simply appears.
         afterNextRender(() => this.llm.refresh());
+
+        // Same reasoning for the GPU-residency poll: its button is
+        // positive-only, nothing on first paint depends on the answer, and the
+        // poll stops itself while the tab is hidden.
+        afterNextRender(() => this.gpu.start());
     }
 
     /** Open the Server screen (where the LLM endpoint is configured). */

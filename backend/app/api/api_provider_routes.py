@@ -13,6 +13,7 @@ import httpx
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.core.llm.base_url_conventions import is_usable_endpoint
 from app.core.llm.openai_compat import list_models
 from app.core.llm.provider_settings import (
     PROVIDERS,
@@ -60,8 +61,13 @@ def _status(provider: str) -> ProviderStatus:
     # actually goes cannot disagree (RULE-21). For custom that means an endpoint
     # inherited from Server settings reads as configured — because it is usable.
     effective = effective_base_url(provider)
+    # Not ``bool(effective.base_url)``: a non-empty string that cannot address
+    # anything is not configuration, and reporting it as configured is how the
+    # badge went green over a request that 502s (LANE-49).
     configured = (
-        bool(effective.base_url) if provider == "custom" else bool(raw["api_key"]))
+        is_usable_endpoint(effective.base_url)
+        if provider == "custom"
+        else bool(raw["api_key"]))
     return ProviderStatus(
         provider=provider,
         configured=configured,

@@ -59,7 +59,11 @@ def test_effective_base_url_source_precedence(fake_settings):
     _set_server_llm(fake_settings, base_url="http://localhost:11434",
                     model="qwen2.5:7b-instruct", provider="ollama")
     eff = provider_settings.effective_base_url("custom")
-    assert (eff.base_url, eff.source) == ("http://localhost:11434", "server_settings")
+    # The SERVER_ROOT stored on the Server screen, in the OPENAI_API_BASE
+    # convention this function's consumers require (LANE-49). Asserting the
+    # stored string back is what let a value that 404s ship: see
+    # test_llm_base_url_conventions.py for the pins on the requested URL.
+    assert (eff.base_url, eff.source) == ("http://localhost:11434/v1", "server_settings")
 
     # The provider's own store wins over the inherited value.
     provider_settings.set_provider("custom", base_url="http://box:8000/v1")
@@ -94,7 +98,7 @@ def test_resolve_provider_inherits_the_server_base_url(fake_settings):
     """The endpoint configured once on the Server screen is usable for captioning."""
     _set_server_llm(fake_settings, base_url="http://localhost:11434")
     cfg = provider_settings.resolve_provider("custom")
-    assert cfg.base_url == "http://localhost:11434"
+    assert cfg.base_url == "http://localhost:11434/v1"  # consumer convention (LANE-49)
     provider_settings.validate_caption_model("api-custom")  # no raise
 
 
@@ -175,7 +179,7 @@ def test_custom_is_configured_when_the_endpoint_is_inherited(client, fake_settin
     after = next(p for p in client.get("/api/captions/api-providers").json()
                  if p["provider"] == "custom")
     assert after["configured"] is True
-    assert after["base_url"] == "http://localhost:11434"
+    assert after["base_url"] == "http://localhost:11434/v1"  # consumer convention (LANE-49)
     assert after["base_url_source"] == "server_settings"
 
 

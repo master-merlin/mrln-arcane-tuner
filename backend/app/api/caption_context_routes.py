@@ -22,12 +22,17 @@ logger = get_logger(__name__)
 
 @router.get("/definitions", response_model=list[DefinitionRef])
 async def list_definitions() -> list[DefinitionRef]:
-    """List registered model definitions (id, family, name) for the selector."""
+    """List the selectable model definitions (id, family, name) for the selector.
+
+    USER-FACING enumeration: gated definitions (ECOSYSTEM §6
+    ``unavailable_reason``) are excluded — captioning FOR a model the user can
+    never train is a dead end that only reveals itself at job start.
+    """
     from app.core.captioning.formats import get_caption_format_for_definition
     from app.engine.models.registry import registry
 
     out: list[DefinitionRef] = []
-    for def_id in registry.list_models():
+    for def_id in registry.list_available_models():
         defn = registry.get_definition(def_id)
         if defn is not None:
             out.append(

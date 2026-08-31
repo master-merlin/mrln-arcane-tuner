@@ -30,6 +30,32 @@ class ModelDefinition(BaseModel):
         0, description="Paired control-image inputs (0 = standard T2I)"
     )
 
+    # Why this definition is not offered to the user, or None when it is.
+    # ECOSYSTEM §6 (reserved 2026-08-31, LANE-45 / DECISION-26 (a)). A non-empty
+    # value gates the definition out of every USER-FACING enumeration and is the
+    # message the job seam refuses with; None (the default) means available, so
+    # no existing definition changes meaning (ARCHITECTURE D2: additive).
+    #
+    # Deliberately ONE string rather than `available: bool` + a separate reason:
+    # two fields can disagree, and a gate that cannot state why is exactly the
+    # unsourced silencing CONVENTIONS forbids — you cannot hide a definition
+    # here without writing down what is missing.
+    #
+    # INVARIANT: this gates the USER-FACING layer only. ModelRegistry keeps every
+    # definition, gated or not, because the registry-wide coverage sweeps (a VRAM
+    # entry per family, LoRA target lists, TE-loading contracts,
+    # resolve_capabilities) enumerate them to catch a family that misses a
+    # surface — those are the guards that make ungating safe later. Read it
+    # through registry.is_definition_available() / list_available_models() /
+    # available_definitions(), never by re-deriving the truthiness at a call site.
+    unavailable_reason: str | None = Field(
+        None,
+        description=(
+            "Why this definition is not offered to the user (None = available). "
+            "Gates user-facing enumeration and job creation; never the registry."
+        ),
+    )
+
     # --- Introspection fields (auto-enriched) ---
     detected_precision: dict[str, str] = Field(
         default_factory=dict,

@@ -11,6 +11,26 @@ id: minimax-h3-t2va
 family: minimax_h3
 name: MiniMax H3 (text -> video+audio)
 version: '1.0'
+# GATED OUT OF USER-FACING ENUMERATION (ECOSYSTEM §6 `unavailable_reason`,
+# DECISION-26 (a), 2026-08-31). PER-DEFINITION on purpose: each of the three
+# minimax_h3 definitions is gated for its OWN reasons and CLEARS INDEPENDENTLY
+# of the other two — deleting this key here offers this definition again and
+# changes nothing for its siblings. Do NOT collapse the three into one shared
+# family-level string; `test_definition_availability_gate.py` pins that they
+# stay distinct. The code, tests, vendored transformer and this file stay in
+# the tree meanwhile, and the registry-wide coverage sweeps keep enumerating
+# the family.
+#
+# t2va's gate is the BASE CASE and nothing else: the family cannot train at
+# all. `driver.py:50` `_lands_in_pr1()` raises for `encode_text` (:143),
+# `forward_pass` (:170) and `get_saver` (:178), and `trainer.py:39`
+# `_setup_family` raises before any of them is reached. Nothing about this
+# definition's own architecture_params is wrong — `mode: t2v` (:42) is
+# accurate — so this is the one that clears the moment the trainer lands.
+unavailable_reason: >-
+  MiniMax-H3 training is not built yet: this release ships the scaffold only
+  (loader, video contract and vendored model classes), so a run would fail
+  during setup. The definition stays in the tree and returns with the trainer.
 defaults:
   resolution: 768
   scheduler: flow_match

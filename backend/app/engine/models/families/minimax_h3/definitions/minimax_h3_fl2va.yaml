@@ -11,6 +11,34 @@ id: minimax-h3-fl2va
 family: minimax_h3
 name: MiniMax H3 (first/last frame -> video+audio)
 version: '1.0'
+# GATED OUT OF USER-FACING ENUMERATION (ECOSYSTEM §6 `unavailable_reason`,
+# DECISION-26 (a), 2026-08-31). PER-DEFINITION on purpose: each of the three
+# minimax_h3 definitions is gated for its OWN reasons and CLEARS INDEPENDENTLY
+# of the other two — deleting this key here offers this definition again and
+# changes nothing for its siblings. Do NOT collapse the three into one shared
+# family-level string; `test_definition_availability_gate.py` pins that they
+# stay distinct. The code, tests, vendored transformer and this file stay in
+# the tree meanwhile, and the registry-wide coverage sweeps keep enumerating
+# the family.
+#
+# fl2va carries the base case PLUS a defect of its own, and this is the one
+# DECISION-26 turned on: IT IS NOT A FIRST/LAST-FRAME MODEL YET. Per the
+# PR1 MARKER on `mode: both` below, "both" is the ONLY thing that
+# differentiates this definition from minimax-h3-t2va — same transformer
+# subfolder, same control_inputs: 0, otherwise byte-identical
+# architecture_params, and NO first/last-frame conditioning mechanism wired
+# anywhere (no conditioning-frame injection into the packed sequence, no
+# dedicated parameters). So this definition must NOT clear when the trainer
+# lands: it clears only once real first/last-frame conditioning exists AND a
+# test pins it, or it does not clear at all. Offering it earlier would promise
+# conditioning the model silently ignores, which is worse than not shipping it.
+unavailable_reason: >-
+  This is not a first/last-frame model yet, only a name for one: no
+  first/last-frame conditioning is wired up anywhere, and today the ONLY thing
+  separating this definition from the plain text-to-video one is a flag. It
+  would accept your first and last frames and quietly ignore them. Training
+  for this family is not built yet either. It returns when the conditioning is
+  real, not before.
 defaults:
   resolution: 768
   scheduler: flow_match

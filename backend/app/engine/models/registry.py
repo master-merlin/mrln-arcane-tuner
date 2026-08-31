@@ -365,8 +365,56 @@ class ModelRegistry:
 
     @classmethod
     def list_models(cls) -> list[str]:
-        """Return all registered model definition IDs."""
+        """Return ALL registered model definition IDs, gated ones included.
+
+        This is the INTERNAL view. The registry-wide coverage sweeps (a VRAM
+        entry per family, LoRA target lists, TE-loading contracts,
+        ``resolve_capabilities``) enumerate it to catch a family that misses a
+        surface, so it must never be filtered — that is the guard that makes
+        ungating a definition safe later. Anything the USER chooses from wants
+        :meth:`list_available_models` instead.
+        """
         return list(cls._definitions.keys())
+
+    # ── Availability gate (ECOSYSTEM §6 `unavailable_reason`, LANE-45) ────
+
+    @classmethod
+    def is_definition_available(cls, definition_id: str) -> bool:
+        """True when *definition_id* may be offered to the user.
+
+        An UNKNOWN id is reported available: this answers "is this definition
+        gated", not "does it exist", and the callers that care about existence
+        (the job seam, the VRAM route) already have their own 404/lookup path.
+        Conflating the two would turn every typo into a gate message.
+        """
+        defn = cls._definitions.get(definition_id)
+        return defn is None or not defn.unavailable_reason
+
+    @classmethod
+    def unavailable_reason(cls, definition_id: str) -> str | None:
+        """The gate's stated reason for *definition_id*, or None if available."""
+        defn = cls._definitions.get(definition_id)
+        return defn.unavailable_reason if defn is not None else None
+
+    @classmethod
+    def available_definitions(cls) -> dict[str, ModelDefinition]:
+        """The USER-FACING view of the registry, insertion order preserved.
+
+        Every surface that enumerates definitions or families FOR THE USER
+        builds on this; nothing re-derives ``if defn.unavailable_reason`` at a
+        call site, because this project's most-repeated defect is one
+        enumeration surface out of step with the others.
+        """
+        return {
+            did: defn
+            for did, defn in cls._definitions.items()
+            if not defn.unavailable_reason
+        }
+
+    @classmethod
+    def list_available_models(cls) -> list[str]:
+        """Return the definition IDs the user may choose from."""
+        return list(cls.available_definitions().keys())
 
     @classmethod
     def count(cls) -> int:

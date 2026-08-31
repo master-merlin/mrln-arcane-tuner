@@ -380,6 +380,49 @@ class JobManager:
 
         self._recovery_jobs.clear()
 
+    def _require_available_definition(self, definition_id: str | None) -> None:
+        """Refuse a job against a definition gated by ``unavailable_reason``.
+
+        Belt and braces for the user-facing enumeration gate (ECOSYSTEM §6): a
+        definition hidden from the picker is still reachable over HTTP, and a
+        hidden-but-reachable endpoint is how this defect comes back. Raises
+        ``ValueError`` (the training routes map that to HTTP 400) carrying the
+        definition's own stated reason, so the answer is honest rather than a
+        bare 404.
+
+        Runs at BOTH ends of the job lifecycle deliberately. ``create_job``
+        stops the queue entry ever existing; ``start_job`` is the seam every
+        launch path funnels through — the API route, ``advance_queue``'s
+        auto-start, ``restart_job``, ``resume_from_checkpoint`` and crash
+        recovery — and the one that triggers the multi-hundred-GB preflight
+        download, so a row already in the DB from before the gate cannot spend
+        a night fetching weights it will then refuse to train on.
+
+        Unknown ids pass: existence is not this guard's question (see
+        ``ModelRegistry.is_definition_available``), and a registry that has not
+        finished initializing must not turn every job into a refusal.
+        """
+        if not definition_id:
+            return
+        try:
+            from app.engine.models.registry import registry
+
+            reason = registry.unavailable_reason(definition_id)
+        except Exception as e:  # registry not ready — fail open, same as above
+            logger.warning(
+                "availability_gate_lookup_failed",
+                definition_id=definition_id,
+                error=str(e),
+            )
+            return
+        if reason:
+            logger.info(
+                "job_refused_unavailable_definition",
+                definition_id=definition_id,
+                reason=reason,
+            )
+            raise ValueError(f"'{definition_id}' cannot be trained: {reason}")
+
     def _apply_video_contract(
         self, config: dict[str, Any], definition_id: str | None
     ) -> None:
@@ -469,6 +512,9 @@ class JobManager:
 
     def create_job(self, plugin_id: str, config: dict[str, Any]) -> Job:
         """Create a new pending job and register it."""
+        # Availability gate FIRST: refuse before any contract derivation, DB row
+        # or broadcast, so a gated definition leaves no trace behind.
+        self._require_available_definition(config.get("definition_id") or plugin_id)
         self._apply_video_contract(config, config.get("definition_id") or plugin_id)
         self._apply_capability_allowlist(
             config, config.get("definition_id") or plugin_id
@@ -1388,6 +1434,12 @@ class JobManager:
         job = self.get_job(job_id)
         if not job:
             raise ValueError("Job not found")
+
+        # Before the RUNNING check and before any download: a job row created
+        # while the definition was still ungated must not launch now.
+        self._require_available_definition(
+            job.config.get("definition_id") or job.plugin_id
+        )
 
         if job.status == JobStatus.RUNNING:
             raise ValueError("Job already running")

@@ -11,6 +11,30 @@ id: minimax-h3-ref2va
 family: minimax_h3
 name: MiniMax H3 (reference -> video+audio)
 version: '1.0'
+# GATED OUT OF USER-FACING ENUMERATION (ECOSYSTEM §6 `unavailable_reason`,
+# DECISION-26 (a), 2026-08-31). PER-DEFINITION on purpose: each of the three
+# minimax_h3 definitions is gated for its OWN reasons and CLEARS INDEPENDENTLY
+# of the other two — deleting this key here offers this definition again and
+# changes nothing for its siblings. Do NOT collapse the three into one shared
+# family-level string; `test_definition_availability_gate.py` pins that they
+# stay distinct. The code, tests, vendored transformer and this file stay in
+# the tree meanwhile, and the registry-wide coverage sweeps keep enumerating
+# the family.
+#
+# ref2va carries the base case PLUS a defect of its own, and unlike fl2va its
+# blocker is not merely unbuilt but UNANSWERED: reference conditioning is not
+# modelled because H3-Context-IR is closed-source (see the control_inputs and
+# transformer.subfolder comments below), which is why the tree homes that
+# question on PR4 rather than on the trainer's PR1. As with fl2va, `mode: both`
+# is the only thing separating this from plain text-to-video. This definition
+# may therefore stay gated after the other two clear, and must not be swept
+# back in alongside them.
+unavailable_reason: >-
+  Reference conditioning is not modelled: the reference encoder this
+  definition would need is not publicly available, so there is nothing behind
+  the reference input — today the only thing separating it from plain
+  text-to-video is a flag. Training for this family is not built yet either.
+  It returns if and when the reference path is settled.
 defaults:
   resolution: 768
   scheduler: flow_match

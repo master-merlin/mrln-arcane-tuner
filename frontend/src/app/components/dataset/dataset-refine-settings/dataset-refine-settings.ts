@@ -1,6 +1,7 @@
 import { ChangeDetectionStrategy, Component, OnInit, computed, effect, inject, output, signal } from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { DatasetService } from '../../../services/dataset';
+import { LlmSettingsService } from '../../../services/llm-settings.service';
 import { CaptionContextService } from '../../../services/caption-context.service';
 import { ModelContextStore, DefinitionRef } from '../../../state/model-context.store';
 import { ToastService } from '../../../services/toast';
@@ -100,6 +101,7 @@ export class DatasetRefineSettingsComponent implements OnInit {
     settingsChanged = output<RefineSettingsState | null>();
 
     private api = inject(DatasetService);
+    private llmSettings = inject(LlmSettingsService);
     private captionContext = inject(CaptionContextService);
     private toast = inject(ToastService);
     protected modelContext = inject(ModelContextStore);
@@ -108,6 +110,10 @@ export class DatasetRefineSettingsComponent implements OnInit {
     protected available = signal<boolean | null>(null);
     protected installed = signal<string[]>([]);
     protected curated = signal<string[]>([]);
+    /** `llm_refine.model` — the Server-screen default, '' when unset. */
+    protected defaultModel = signal<string>('');
+    /** The settings request has answered (successfully or not). Gates seeding. */
+    protected settingsResolved = signal<boolean>(false);
     protected pulling = signal<string | null>(null);
     protected picking = signal<boolean>(false);
     protected definitions = signal<DefinitionRef[]>([]);
@@ -147,12 +153,43 @@ export class DatasetRefineSettingsComponent implements OnInit {
                 this.available.set(r.available);
                 this.installed.set(r.installed ?? []);
                 this.curated.set(r.curated ?? []);
-                if (!this.model() && r.installed?.length) this.model.set(r.installed[0]);
-                else if (!this.model() && r.curated?.length) this.model.set(r.curated[0]);
+                this.seedModel();
             },
             error: () => { this.available.set(false); },
         });
+        // The configured default (Server screen → LLM Refine Endpoint). Both
+        // requests are in flight at once, so seeding never assumes an order —
+        // see `seedModel`, which refuses to guess until this one has answered.
+        this.llmSettings.get().subscribe({
+            next: s => { this.defaultModel.set(s.model?.trim() ?? ''); this.settingsResolved.set(true); this.seedModel(); },
+            // A failed settings load must still release the gate, or the panel
+            // would sit with no model forever waiting on an answer that is
+            // never coming.
+            error: () => { this.settingsResolved.set(true); this.seedModel(); },
+        });
         this.captionContext.listDefinitions().subscribe(d => this.definitions.set(d ?? []));
+    }
+
+    /**
+     * Choose an initial model, best available first: the configured default,
+     * then anything installed, then a curated tag.
+     *
+     * Two independent responses call this, so it is guarded twice. It never
+     * overwrites a model already set — the second response must not undo the
+     * first, nor undo a pick the user made in between. And it does not fall
+     * back before the settings request has answered: the model list usually
+     * wins the race, and seeding `installed[0]` on arrival would silently
+     * beat the configured default every time, which is the exact bug this
+     * panel had before the Server-screen picker existed.
+     */
+    private seedModel(): void {
+        if (this.model() || !this.settingsResolved()) return;
+        const saved = this.defaultModel();
+        if (saved) { this.model.set(saved); return; }
+        const installed = this.installed();
+        if (installed.length) { this.model.set(installed[0]); return; }
+        const curated = this.curated();
+        if (curated.length) this.model.set(curated[0]);
     }
 
     protected onPickDefinition(id: string): void {

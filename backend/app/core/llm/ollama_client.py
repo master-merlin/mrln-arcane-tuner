@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 
 from app.core.logger import get_logger
+from app.core.llm.base_url_conventions import to_server_root
 from app.core.url_guard import validate_base_url
 
 logger = get_logger(__name__)
@@ -47,7 +48,13 @@ class OllamaClient:
         host synchronously; an async caller constructing a client with a
         hostile hostname pays that resolution on its event loop.
         """
-        self._base = validate_base_url(base_url)
+        # SERVER_ROOT convention: every method here appends its own full path
+        # (``/v1/chat/completions``, ``/api/tags``), so a value stored in the
+        # OPENAI_API_BASE spelling would double-suffix -- LM Studio's own
+        # documented endpoint is ``http://localhost:1234/v1``, and typing it
+        # into the Server screen produced ``/v1/v1/chat/completions``.
+        # ``to_server_root`` is idempotent (LANE-49).
+        self._base = validate_base_url(to_server_root(base_url))
         self._injected = client
 
     def _acquire(self) -> tuple[httpx.AsyncClient, bool]:

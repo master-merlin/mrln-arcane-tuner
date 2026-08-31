@@ -13,6 +13,8 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from app.core.llm import refine_settings
+from app.core.llm.base_url_conventions import is_usable_endpoint, to_openai_api_base
 from app.core.llm.openai_compat import (
     API_MODEL_PREFIX,
     PROVIDER_BASE_URLS,
@@ -24,7 +26,7 @@ PROVIDERS = tuple(PROVIDER_BASE_URLS)  # ("openai", ..., "custom")
 
 #: The Server screen's LLM endpoint (caption *refinement*). The custom captioning
 #: provider inherits its ``base_url`` — see ``effective_base_url``.
-SERVER_SETTINGS_MODULE = "llm_refine"
+SERVER_SETTINGS_MODULE = refine_settings.MODULE
 
 
 def _manager():
@@ -64,6 +66,18 @@ def effective_base_url(provider: str) -> EffectiveBaseUrl:
     store while the request that followed resolved off another, so what the user
     was told and what actually happened could not be made to agree.
 
+    **The return value is always in the OPENAI_API_BASE convention**
+    (:mod:`app.core.llm.base_url_conventions`), because that is what this
+    function's consumers -- ``openai_compat.list_models`` / ``chat_vision`` --
+    append their resource path to. Inheriting from the Server screen is
+    therefore a *transform*, not a copy: that store holds a SERVER_ROOT
+    (``http://localhost:11434``), and LANE-46 copied it verbatim into a consumer
+    that builds ``{base}/models``. Measured against a live Ollama: ``/models``
+    answers 404, ``/v1/models`` answers 200 -- and because ``configured`` was
+    ``bool(base_url)``, the badge went green off a value that could not answer
+    (LANE-49). The transform is idempotent, so a user who has already typed a
+    ``/v1``-suffixed URL into either field gets exactly one.
+
     **Only the base URL is inherited, never the model.** ``llm_refine.model`` is a
     TEXT model chosen for refining caption prose (default ``qwen2.5:7b-instruct``);
     captioning sends it an IMAGE. Prefilling it would hand the user a default that
@@ -75,16 +89,22 @@ def effective_base_url(provider: str) -> EffectiveBaseUrl:
         raise ValueError(f"Unknown provider '{provider}'")
     own = get_provider_raw(provider)["base_url"].strip()
     if own:
-        return EffectiveBaseUrl(own, "provider")
+        return EffectiveBaseUrl(to_openai_api_base(own), "provider")
     if provider == "custom":
-        inherited = str(
-            (_manager().get_module_settings(SERVER_SETTINGS_MODULE) or {}).get(
-                "base_url", "") or "").strip()
+        # ``stored_base_url_of`` and NOT ``refine_settings.base_url()``: the
+        # latter applies the localhost default, and inheriting a default nobody
+        # chose would make a fresh install report "configured" off an endpoint
+        # the user has never seen. Read through ``_manager()`` so this module
+        # keeps ONE settings seam.
+        inherited = refine_settings.stored_base_url_of(
+            _manager().get_module_settings(SERVER_SETTINGS_MODULE) or {})
         if inherited:
-            return EffectiveBaseUrl(inherited, "server_settings")
+            return EffectiveBaseUrl(to_openai_api_base(inherited), "server_settings")
     builtin = PROVIDER_BASE_URLS.get(provider) or ""
     if builtin:
-        return EffectiveBaseUrl(builtin, "builtin")
+        # Already in this convention (openai_compat.py:27-33); normalised anyway
+        # so there is exactly one exit shape rather than one per branch.
+        return EffectiveBaseUrl(to_openai_api_base(builtin), "builtin")
     return EffectiveBaseUrl("", "none")
 
 
@@ -132,6 +152,17 @@ def resolve_provider(provider: str) -> ProviderConfig:
             "Base URL is not configured for the Custom provider. "
             "Set it in the captioning API settings, or configure the LLM "
             "endpoint on the Server screen.")
+    if not is_usable_endpoint(base_url):
+        # Same predicate the status badge uses, so "not configured" and "the
+        # request refused" cannot disagree (RULE-21 / LANE-49). Without this a
+        # scheme-less host reaches ``openai_compat``, whose guard answers
+        # "Provider base URL must start with http:// or https://" from three
+        # layers down, as a 502.
+        raise ValueError(
+            f"Base URL {base_url!r} is not a usable endpoint for the Custom "
+            "provider - it must be an absolute http:// or https:// URL "
+            "(e.g. http://localhost:11434). Fix it in the captioning API "
+            "settings, or on the Server screen if it was inherited from there.")
     if provider != "custom" and not raw["api_key"]:
         raise ValueError(
             f"No API key configured for provider '{provider}'. "

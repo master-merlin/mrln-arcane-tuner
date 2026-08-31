@@ -300,11 +300,14 @@ async def refine_batch_api(request: RefineBatchRequest):
     ``background`` lane and can proceed alongside a GPU captioning task. Each
     image's caption is refined and written as a pending suggestion (the user
     accepts via the suggestion routes — the live variant is never overwritten)."""
-    from app.core.settings_manager import SettingsManager
+    from app.core.llm import refine_settings
 
-    settings = SettingsManager.get_instance().get_module_settings("llm_refine") or {}
-    base_url = settings.get("base_url", "http://localhost:11434")
-    model = request.model or settings.get("model", "qwen2.5:7b-instruct")
+    # Through the accessor, not `.get(key, default)`: `llm_refine.model` is a
+    # present-but-EMPTY key in the wild, and `dict.get` returns "" for a present
+    # key, which Ollama answers with 400 "model is required" (LANE-49).
+    settings = refine_settings.raw_settings()
+    base_url = refine_settings.base_url_of(settings)
+    model = (request.model or "").strip() or refine_settings.model_of(settings)
     task = task_manager.create(
         type="caption_refine_batch",
         title=f"Refine captions ({request.definition_id})",

@@ -6,6 +6,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from app.core.llm import refine_settings
 from app.core.llm.caption_refine import refine_caption
 from app.core.llm.ollama_client import OllamaClient
 from app.core.logger import get_logger
@@ -15,8 +16,9 @@ from app.core.url_guard import OutboundUrlRejected
 router = APIRouter(prefix="/api/llm-refine", tags=["llm-refine"])
 logger = get_logger(__name__)
 
-CURATED_MODELS = ["qwen2.5:7b-instruct", "llama3.1:8b-instruct-q4_K_M", "qwen2.5:3b-instruct"]
-_DEFAULT_BASE_URL = "http://localhost:11434"
+#: Re-exported from the settings accessor so the route and the fallback model
+#: cannot drift apart (``refine_settings.DEFAULT_MODEL`` is ``CURATED_MODELS[0]``).
+CURATED_MODELS = refine_settings.CURATED_MODELS
 
 
 def _settings() -> dict:
@@ -28,8 +30,7 @@ def _make_client() -> OllamaClient:
     (the sink), which raises ``OutboundUrlRejected`` for a destination this
     server may not request while hosted. This function does NOT re-check —
     a second copy of the rule here is how the first one drifts."""
-    base = _settings().get("base_url", _DEFAULT_BASE_URL)
-    return OllamaClient(base_url=base)
+    return OllamaClient(base_url=refine_settings.base_url_of(_settings()))
 
 
 def _client_or_400() -> OllamaClient:
@@ -48,7 +49,12 @@ def _client_or_400() -> OllamaClient:
 
 
 def _default_model() -> str:
-    return _settings().get("model", CURATED_MODELS[0])
+    """The configured refine model, or the curated fallback.
+
+    Reads through ``refine_settings`` because a PRESENT-but-empty ``model`` key
+    is what ``dict.get(key, default)`` hands straight to Ollama (LANE-49).
+    """
+    return refine_settings.model_of(_settings())
 
 
 class ModelsResponse(BaseModel):

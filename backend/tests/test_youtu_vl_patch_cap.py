@@ -194,3 +194,106 @@ def test_generate_reduces_patches_relative_to_uncapped_default(tmp_path):
     capped_patches = int(plugin.processor.last_image_inputs["spatial_shapes"][0].prod().item())
     assert capped_patches < uncapped_patches
     assert capped_patches <= 256
+
+
+class _RefusesTheCap(Siglip2ImageProcessorFast):
+    """A fast processor that raises when `generate()` tries to write
+    `max_num_patches` onto it.
+
+    Stands in for the real hazard the `except Exception` in `generate()`
+    exists for: a future transformers/remote-code revision making the
+    attribute read-only, a slotted or frozen processor, a property with a
+    validating setter. The class is a REAL `Siglip2ImageProcessorFast`
+    subclass because production gates the write on
+    `isinstance(..., Siglip2ImageProcessorFast)` -- a duck-typed stand-in
+    would never reach the try block at all, and the test would pass while
+    exercising nothing.
+
+    Arming is deferred so the base `__init__` can set the attribute
+    normally; only the write from `generate()` is refused.
+    """
+
+    _armed = False
+    #: Unique, and reachable by no other path than the raised exception --
+    #: not a substring of any command, log format or fixture the plugin
+    #: echoes (LESSONS 2026-08-31: a marker that also travels through your
+    #: own logging proves the string existed, not that the mechanism ran).
+    MARKER = "max-num-patches-setter-refused-9f31"
+
+    def __setattr__(self, name, value):
+        if name == "max_num_patches" and getattr(self, "_armed", False):
+            raise RuntimeError(self.MARKER)
+        super().__setattr__(name, value)
+
+
+def _plugin_that_cannot_apply_the_cap() -> YoutuVLModel:
+    plugin = _plugin_with_fakes()
+    refusing = _RefusesTheCap(max_num_patches=256)
+    refusing._armed = True
+    plugin.processor = _FakeYoutuVLProcessor(refusing)
+    return plugin
+
+
+def test_a_failed_cap_application_is_logged_and_never_swallowed(tmp_path, caplog):
+    """`5e8598cf` replaced `except Exception: pass` around the instance-level
+    cap write with a WARNING, and the log line was the entire fix -- so the
+    log line is the entire guard (LESSONS 2026-08-14, gap (b): the key
+    `youtu_vl_max_num_patches_not_applied` appeared in no test).
+
+    Two claims, both asserted on observable output:
+
+      1. The failure is REPORTED -- the event key, the cause, and the value
+         that failed to apply are all on the record. A silent failure here
+         is the exact class of bug the cap exists to prevent (an unapplied
+         cap let a 4000x3000 image reach 36520 patches and allocate 79.5 GB).
+      2. The failure is NOT FATAL -- captioning still completes, because
+         `apply_chat_template`'s own `processor_kwargs` cap (the one that
+         actually bounds the sequence) is independent of this write.
+    """
+    import logging
+
+    plugin = _plugin_that_cannot_apply_the_cap()
+    params = {"image_path": _write_huge_image(tmp_path), "max_num_patches": 256}
+
+    with caplog.at_level(logging.WARNING, logger="app.core.captioning.models.youtu_vl"):
+        caption = plugin.generate(_huge_image(), params)
+
+    assert caption == "a caption", (
+        "a processor that refuses the instance-level cap must not abort "
+        "captioning -- the apply_chat_template route caps independently"
+    )
+    assert "youtu_vl_max_num_patches_not_applied" in caplog.text, (
+        "generate() swallowed a failed max_num_patches application without a "
+        "word. That is the `except Exception: pass` this fix removed: the cap "
+        "silently stops applying and nothing anywhere says so."
+    )
+    assert _RefusesTheCap.MARKER in caplog.text, (
+        "the warning fired but dropped the cause; `error=str(e)` is the only "
+        "thing that tells the next reader WHY the cap did not apply"
+    )
+    assert "256" in caplog.text, "the warning does not record the cap value that failed to apply"
+
+    # The cap that actually bounds the sequence is still in force -- this
+    # warning is a report, not a fallback.
+    assert plugin.processor.last_max_image_patches == 256
+
+
+def test_no_warning_when_the_cap_applies_cleanly(tmp_path, caplog):
+    """PROVE THE NEGATIVE: the same code path, same assertions' subject, with
+    a processor that accepts the write. If this ever logs, the warning is
+    firing on the happy path and the guard above would pass for the wrong
+    reason."""
+    import logging
+
+    plugin = _plugin_with_fakes()
+    params = {"image_path": _write_huge_image(tmp_path), "max_num_patches": 128}
+
+    with caplog.at_level(logging.WARNING, logger="app.core.captioning.models.youtu_vl"):
+        caption = plugin.generate(_huge_image(), params)
+
+    assert caption == "a caption"
+    assert "youtu_vl_max_num_patches_not_applied" not in caplog.text
+    assert plugin.processor.image_processor.max_num_patches == 128, (
+        "the instance-level write is what this warning guards; if it never "
+        "happens, the try block is dead and both tests are theatre"
+    )

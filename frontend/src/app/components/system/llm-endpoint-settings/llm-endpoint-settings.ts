@@ -1,4 +1,7 @@
-import { ChangeDetectionStrategy, Component, OnInit, computed, inject, signal } from '@angular/core';
+import {
+    ChangeDetectionStrategy, Component, ElementRef, OnInit,
+    afterRenderEffect, computed, inject, signal, viewChild,
+} from '@angular/core';
 import { FormsModule } from '@angular/forms';
 import { IcoComponent } from '../../../icons/ico.component';
 import { LlmSettingsService } from '../../../services/llm-settings.service';
@@ -69,14 +72,23 @@ const PROVIDER_DEFAULTS: Record<LlmProvider, string> = {
                      and ngModel's writeValue does not retry: measured
                      selectedIndex -1 for [ngValue], [value] and an optgroup
                      variant, and 0 for this plain binding. A blank select here
-                     is not cosmetic — Save would persist the blank. -->
-                <select class="select mono"
+                     is not cosmetic — Save would persist the blank.
+
+                     [value] alone is not enough either, and that is LANE-49:
+                     when the bound value matches no option YET, the browser's
+                     selectedness reset picks the first ENABLED option, so a
+                     stored empty value painted the first installed model. The
+                     afterRenderEffect in the constructor re-applies the value
+                     after every render. -->
+                <select #modelSelect class="select mono"
                         [value]="model()"
                         (change)="model.set($any($event.target).value)"
                         data-testid="llm-model">
-                    @if (!model()) {
-                        <option value="" disabled>Select a model…</option>
-                    }
+                    <!-- Always rendered and never disabled: this is the option
+                         that must be SELECTABLE when nothing is saved, both so
+                         the control can display "nothing" and so the user can
+                         go back to no default. -->
+                    <option value="">{{ noDefaultLabel() }}</option>
                     @if (orphanModel(); as orphan) {
                         <optgroup label="Configured (not reported by this endpoint)">
                             <option [value]="orphan">{{ orphan }}</option>
@@ -94,8 +106,8 @@ const PROVIDER_DEFAULTS: Record<LlmProvider, string> = {
                     }
                 </select>
                 <div class="sc-model-row">
-                    <p class="sc-hint">
-                        @if (!model()) { used by caption refine when a dataset does not override it }
+                    <p class="sc-hint" data-testid="llm-model-hint">
+                        @if (!model()) { no default saved — caption refine will use {{ fallbackModel() || 'the backend default' }} }
                         @else if (selectedIsInstalled()) { installed on this endpoint }
                         @else { not installed — refine will fail until it is pulled }
                     </p>
@@ -154,7 +166,26 @@ export class LlmEndpointSettingsComponent implements OnInit {
     /** Tag currently being pulled, or null. */
     readonly pulling = signal<string | null>(null);
 
+    private readonly modelSelect = viewChild<ElementRef<HTMLSelectElement>>('modelSelect');
+
     readonly providerDefault = computed(() => PROVIDER_DEFAULTS[this.provider()]);
+
+    /**
+     * What the backend falls back to when `llm_refine.model` is unset.
+     *
+     * `curated[0]` IS that fallback — `refine_settings.DEFAULT_MODEL` is
+     * `CURATED_MODELS[0]` and the equality is pinned server-side
+     * (`test_refine_settings_empty_as_absent.py::test_the_curated_default_is_the_first_curated_model`),
+     * so naming it here does not invent a second source of truth.
+     */
+    readonly fallbackModel = computed(() => this.curated()[0] ?? '');
+
+    /** Label of the "nothing is saved" option. Says what will happen, not just
+     *  that a choice is missing. */
+    readonly noDefaultLabel = computed(() => {
+        const fallback = this.fallbackModel();
+        return fallback ? `No default — uses ${fallback}` : 'No default';
+    });
 
     /** Curated models not present on the endpoint — the "pull me" set. */
     readonly suggested = computed(() =>
@@ -175,6 +206,25 @@ export class LlmEndpointSettingsComponent implements OnInit {
         if (!saved) return null;
         return this.installed().includes(saved) || this.suggested().includes(saved) ? null : saved;
     });
+
+    constructor() {
+        // LANE-49: the control must display what is SAVED.
+        //
+        // `model()` and storage were both "" and the picker still painted
+        // `gemma3:12b`, because [value] is applied when the <select> is updated
+        // and its @if/@for options are created AFTER that — so the value
+        // matches nothing, and the HTML "ask for a reset" algorithm then selects
+        // the first enabled option. Every later option change re-runs that
+        // algorithm, so this has to re-run too, not just once on load.
+        //
+        // Reading the option sources makes this fire on exactly those changes.
+        afterRenderEffect(() => {
+            const want = this.model();
+            this.installed(); this.suggested(); this.orphanModel();  // option sources
+            const el = this.modelSelect()?.nativeElement;
+            if (el && el.value !== want) el.value = want;
+        });
+    }
 
     ngOnInit(): void {
         this.settings.get().subscribe({

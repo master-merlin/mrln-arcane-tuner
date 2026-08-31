@@ -131,5 +131,107 @@ describe('LlmEndpointSettingsComponent', () => {
         expect(ci.reachable()).toBeNull();
     });
 
+
+    // ---------------------------------------------------------------------
+    // LANE-49: the control must display what is SAVED.
+    //
+    // These assert on the RENDERED <select>.value, never on `model()`. The
+    // existing tests above all read the signal, and the signal was correct the
+    // whole time: it was `''`, storage was `''`, and the browser still painted
+    // `gemma3:12b`. A select whose bound value matches only a DISABLED option
+    // falls back to the first enabled one, so the picker showed a model that
+    // had never been saved and the user had no reason to press Save.
+    // ---------------------------------------------------------------------
+
+    function modelSelect(fixture: { nativeElement: HTMLElement }): HTMLSelectElement {
+        return fixture.nativeElement.querySelector('[data-testid="llm-model"]') as HTMLSelectElement;
+    }
+
+    it('shows no model when none is saved, even though models are installed', async () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        // The exact stored shape from the machine that reproduced the defect.
+        flushInit(http, { base_url: 'http://localhost:11434', provider: 'ollama', model: '' },
+            { installed: ['gemma3:12b', 'qwen2.5:7b-instruct'], curated: ['qwen2.5:7b-instruct'] });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        fixture.detectChanges();
+
+        expect(fixture.componentInstance.model()).toBe('');
+        // The assertion the old tests could not make.
+        expect(modelSelect(fixture).value).toBe('');
+        const selected = modelSelect(fixture).selectedOptions[0];
+        expect(selected?.textContent?.trim()).toContain('No default');
+        // ...and it must be a real choice, not a placeholder the user cannot
+        // return to. A DISABLED placeholder is what produced the defect: the
+        // browser's selectedness reset skips disabled options, so it painted
+        // the first installed model instead.
+        expect(selected?.disabled).toBe(false);
+    });
+
+    it('shows the saved model when the endpoint reports it', async () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        flushInit(http, { base_url: 'u', model: 'gemma3:12b' },
+            { installed: ['gemma3:12b', 'qwen2.5:7b-instruct'] });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        fixture.detectChanges();
+
+        expect(modelSelect(fixture).value).toBe('gemma3:12b');
+    });
+
+    it('shows the saved model even when the endpoint does not list it', async () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        // Ollama down / model deleted: the orphan option must be the rendered
+        // selection, or Save would persist a blank over an untouched setting.
+        flushInit(http, { base_url: 'u', model: 'gemma3:12b' }, { installed: ['llama3.1:8b'] });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        fixture.detectChanges();
+
+        expect(modelSelect(fixture).value).toBe('gemma3:12b');
+    });
+
+    it('names the fallback the backend will actually use when nothing is saved', async () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        // `curated[0]` IS the backend fallback (refine_settings.DEFAULT_MODEL
+        // == llm_refine_routes.CURATED_MODELS[0], pinned in
+        // backend/tests/test_refine_settings_empty_as_absent.py), so "no
+        // default" can be stated without inventing a second source of truth.
+        flushInit(http, { base_url: 'u', model: '' },
+            { installed: [], curated: ['qwen2.5:7b-instruct', 'llama3.1:8b'] });
+        fixture.detectChanges();
+        await fixture.whenStable();
+        fixture.detectChanges();
+
+        // Scoped to the hint element: `qwen2.5:7b-instruct` is also an option in
+        // the picker, so asserting on the card's whole textContent passes
+        // whether or not the hint names anything (measured — that version of
+        // this test survived deleting `fallbackModel`).
+        const hint = fixture.nativeElement.querySelector('[data-testid="llm-model-hint"]');
+        expect(hint?.textContent).toContain('qwen2.5:7b-instruct');
+        expect(hint?.textContent).toContain('no default saved');
+    });
+
+    it('does not persist a model the user never chose', () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        flushInit(http, { base_url: 'http://localhost:11434', model: '' },
+            { installed: ['gemma3:12b'] });
+        fixture.detectChanges();
+        fixture.componentInstance.saveAndTest();
+
+        const put = http.expectOne(r => r.method === 'PUT' && r.url === '/api/settings/llm_refine');
+        // Save must write back the same empty the card is displaying, not the
+        // option the browser happened to paint.
+        expect(put.request.body.model).toBe('');
+        put.flush({});
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: [], available: true });
+        fixture.detectChanges();
+    });
+
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });

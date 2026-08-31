@@ -16,10 +16,20 @@ const PROVIDER_DEFAULTS: Record<LlmProvider, string> = {
 
 /**
  * LLM endpoint config card for the Server screen. Reads/writes the
- * `llm_refine` settings module (base URL + provider) and offers a
- * "Save & Test" action that persists the settings then probes
+ * `llm_refine` settings module (base URL + provider + default model) and
+ * offers a "Save & Test" action that persists the settings then probes
  * `GET /api/llm-refine/models`, showing reachability + model count and
  * refreshing the shared {@link LlmAvailabilityStore}.
+ *
+ * The default-model picker exists because the card configured an endpoint you
+ * could not choose a model on. The backend half was already there and already
+ * consumed — `llm_refine.model` is what `_default_model()` reads
+ * (`api/llm_refine_routes.py:50`) — but nothing ever wrote it, so every refine
+ * fell back to `CURATED_MODELS[0]` or to whatever the per-dataset panel
+ * happened to pick first. This is the writer.
+ *
+ * Models are probed on init, not only on "Save & Test": a picker that is empty
+ * until you press a button is not a picker.
  */
 @Component({
     selector: 'app-llm-endpoint-settings',
@@ -52,6 +62,52 @@ const PROVIDER_DEFAULTS: Record<LlmProvider, string> = {
                     <p class="sc-hint">endpoint of the local LLM server</p>
                 </div>
             </div>
+            <div class="sc-field">
+                <label class="field-label">Default model</label>
+                <!-- Deliberately NOT ngModel. This select's options arrive from
+                     an HTTP response, so the value is written before they exist,
+                     and ngModel's writeValue does not retry: measured
+                     selectedIndex -1 for [ngValue], [value] and an optgroup
+                     variant, and 0 for this plain binding. A blank select here
+                     is not cosmetic — Save would persist the blank. -->
+                <select class="select mono"
+                        [value]="model()"
+                        (change)="model.set($any($event.target).value)"
+                        data-testid="llm-model">
+                    @if (!model()) {
+                        <option value="" disabled>Select a model…</option>
+                    }
+                    @if (orphanModel(); as orphan) {
+                        <optgroup label="Configured (not reported by this endpoint)">
+                            <option [value]="orphan">{{ orphan }}</option>
+                        </optgroup>
+                    }
+                    @if (installed().length) {
+                        <optgroup label="Installed">
+                            @for (m of installed(); track m) { <option [value]="m">{{ m }}</option> }
+                        </optgroup>
+                    }
+                    @if (suggested().length) {
+                        <optgroup label="Suggested — pull before first use">
+                            @for (m of suggested(); track m) { <option [value]="m">{{ m }}</option> }
+                        </optgroup>
+                    }
+                </select>
+                <div class="sc-model-row">
+                    <p class="sc-hint">
+                        @if (!model()) { used by caption refine when a dataset does not override it }
+                        @else if (selectedIsInstalled()) { installed on this endpoint }
+                        @else { not installed — refine will fail until it is pulled }
+                    </p>
+                    @if (model() && !selectedIsInstalled()) {
+                        <button type="button" class="btn sm" (click)="pullSelected()"
+                                [disabled]="pulling() !== null || reachable() === false"
+                                data-testid="llm-model-pull">
+                            {{ pulling() === model() ? 'Pulling…' : 'Pull' }}
+                        </button>
+                    }
+                </div>
+            </div>
             <div class="sc-save-row">
                 @if (reachable() === true) {
                     <span class="chip success" data-testid="llm-status"><span class="dot"></span> Reachable · {{ modelCount() }} models</span>
@@ -72,6 +128,8 @@ const PROVIDER_DEFAULTS: Record<LlmProvider, string> = {
         .sc-field { display: flex; flex-direction: column; min-width: 0; }
         .sc-hint { font-size: 10.5px; color: var(--color-text-disabled); margin: 5px 0 0; }
         .sc-save-row { display: flex; align-items: center; justify-content: flex-end; gap: 10px; }
+        .sc-model-row { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+        .sc-model-row .sc-hint { flex: 1 1 auto; min-width: 0; }
     `],
 })
 export class LlmEndpointSettingsComponent implements OnInit {
@@ -87,15 +145,55 @@ export class LlmEndpointSettingsComponent implements OnInit {
     readonly reachable = signal<boolean | null>(null);
     readonly modelCount = signal<number>(0);
 
+    /** Persisted default refine model (`llm_refine.model`). */
+    readonly model = signal<string>('');
+    /** Models the endpoint reports as present. */
+    readonly installed = signal<string[]>([]);
+    /** Backend's curated list, whether or not they are installed. */
+    readonly curated = signal<string[]>([]);
+    /** Tag currently being pulled, or null. */
+    readonly pulling = signal<string | null>(null);
+
     readonly providerDefault = computed(() => PROVIDER_DEFAULTS[this.provider()]);
+
+    /** Curated models not present on the endpoint — the "pull me" set. */
+    readonly suggested = computed(() =>
+        this.curated().filter(c => !this.installed().includes(c)),
+    );
+
+    readonly selectedIsInstalled = computed(() => this.installed().includes(this.model()));
+
+    /**
+     * A saved model the endpoint does not currently list — Ollama down, a model
+     * deleted, a URL pointed somewhere else. It gets its own option so the
+     * `<select>` has something to bind to: an ngModel value absent from the
+     * option list renders blank, and the next Save would then persist that
+     * blank over a setting the user never touched.
+     */
+    readonly orphanModel = computed(() => {
+        const saved = this.model().trim();
+        if (!saved) return null;
+        return this.installed().includes(saved) || this.suggested().includes(saved) ? null : saved;
+    });
 
     ngOnInit(): void {
         this.settings.get().subscribe({
             next: s => {
                 if (s.base_url) this.baseUrl.set(s.base_url);
                 if (s.provider === 'ollama' || s.provider === 'lmstudio') this.provider.set(s.provider);
+                if (s.model) this.model.set(s.model);
             },
             error: () => { /* leave defaults; the card is still usable */ },
+        });
+        // Populate the picker without requiring a Save & Test. Failure is not
+        // reported here: on first load an unconfigured endpoint is the normal
+        // case, and a red toast for it would be noise, not information.
+        this.datasets.listRefineModels().subscribe({
+            next: r => {
+                this.installed.set(r.installed ?? []);
+                this.curated.set(r.curated ?? []);
+            },
+            error: () => { /* leave the picker to whatever Save & Test finds */ },
         });
     }
 
@@ -109,7 +207,11 @@ export class LlmEndpointSettingsComponent implements OnInit {
     saveAndTest(): void {
         this.testing.set(true);
         this.reachable.set(null);
-        this.settings.save({ base_url: this.baseUrl(), provider: this.provider() }).subscribe({
+        this.settings.save({
+            base_url: this.baseUrl(),
+            provider: this.provider(),
+            model: this.model(),
+        }).subscribe({
             next: () => this.probe(),
             error: () => {
                 this.testing.set(false);
@@ -125,6 +227,8 @@ export class LlmEndpointSettingsComponent implements OnInit {
                 this.testing.set(false);
                 this.reachable.set(!!r.available);
                 this.modelCount.set((r.installed?.length ?? 0));
+                this.installed.set(r.installed ?? []);
+                this.curated.set(r.curated ?? []);
                 // Sync the shared availability store off this same probe result
                 // (no extra HTTP round-trip) so the top-bar icon + LLM-gated
                 // controls reflect the freshly-saved endpoint immediately.
@@ -142,6 +246,31 @@ export class LlmEndpointSettingsComponent implements OnInit {
                 this.availability.checked.set(true);
                 this.toast.error('LLM endpoint unreachable.');
             },
+        });
+    }
+
+    /**
+     * Pull the selected model onto the endpoint.
+     *
+     * Ollama does NOT fetch on demand: inference goes to
+     * `/v1/chat/completions` (`core/llm/ollama_client.py:71`), which answers
+     * "model not found" rather than downloading, so an explicit pull is the
+     * only way a suggested model becomes usable.
+     */
+    pullSelected(): void {
+        const tag = this.model().trim();
+        if (!tag || this.pulling()) return;
+        this.pulling.set(tag);
+        this.datasets.pullRefineModel(tag).subscribe({
+            next: ({ ok }) => {
+                this.pulling.set(null);
+                if (!ok) { this.toast.error(`Pull failed: ${tag}`); return; }
+                this.installed.update(xs => xs.includes(tag) ? xs : [...xs, tag]);
+                this.availability.installed.set(this.installed());
+                this.modelCount.set(this.installed().length);
+                this.toast.success(`Pulled ${tag}.`);
+            },
+            error: () => { this.pulling.set(null); this.toast.error(`Pull failed: ${tag}`); },
         });
     }
 }

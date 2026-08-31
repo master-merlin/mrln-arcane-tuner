@@ -21,14 +21,27 @@ function setup() {
     return { fixture, http, store };
 }
 
+/** The three requests ngOnInit fires, flushed in one call. */
+function flushInit(
+    http: HttpTestingController,
+    opts: { curated?: string[]; installed?: string[]; available?: boolean; model?: string } = {},
+) {
+    http.expectOne('/api/llm-refine/models').flush({
+        curated: opts.curated ?? [],
+        installed: opts.installed ?? [],
+        available: opts.available ?? true,
+    });
+    http.expectOne('/api/settings/llm_refine').flush(opts.model === undefined ? {} : { model: opts.model });
+    http.expectOne('/api/caption-context/definitions').flush([]);
+}
+
 describe('DatasetRefineSettingsComponent', () => {
     it('loads models on init and emits a complete state', () => {
         const { fixture, http } = setup();
         const emitted: (RefineSettingsState | null)[] = [];
         fixture.componentInstance.settingsChanged.subscribe(s => emitted.push(s));
-        fixture.detectChanges(); // ngOnInit → GET models + definitions
-        http.expectOne('/api/llm-refine/models').flush({ curated: ['qwen2.5:7b-instruct'], installed: ['qwen2.5:7b-instruct'], available: true });
-        http.expectOne('/api/caption-context/definitions').flush([]);
+        fixture.detectChanges(); // ngOnInit → GET models + settings + definitions
+        flushInit(http, { curated: ['qwen2.5:7b-instruct'], installed: ['qwen2.5:7b-instruct'] });
         fixture.detectChanges();
         const last = emitted[emitted.length - 1];
         expect(last).not.toBeNull();
@@ -42,8 +55,7 @@ describe('DatasetRefineSettingsComponent', () => {
         const emitted: (RefineSettingsState | null)[] = [];
         fixture.componentInstance.settingsChanged.subscribe(s => emitted.push(s));
         fixture.detectChanges();
-        http.expectOne('/api/llm-refine/models').flush({ curated: ['m'], installed: ['m'], available: true });
-        http.expectOne('/api/caption-context/definitions').flush([]);
+        flushInit(http, { curated: ['m'], installed: ['m'] });
         fixture.detectChanges();
         // flux1 → auto resolves to natural language
         const ci = fixture.componentInstance as unknown as {
@@ -60,8 +72,7 @@ describe('DatasetRefineSettingsComponent', () => {
         const emitted: (RefineSettingsState | null)[] = [];
         fixture.componentInstance.settingsChanged.subscribe(s => emitted.push(s));
         fixture.detectChanges();
-        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: [], available: false });
-        http.expectOne('/api/caption-context/definitions').flush([]);
+        flushInit(http, { available: false });
         fixture.detectChanges();
         expect(emitted[emitted.length - 1]).toBeNull();
     });
@@ -69,13 +80,46 @@ describe('DatasetRefineSettingsComponent', () => {
     it('pulls a curated model and selects it', () => {
         const { fixture, http } = setup();
         fixture.detectChanges();
-        http.expectOne('/api/llm-refine/models').flush({ curated: ['qwen2.5:3b-instruct'], installed: [], available: true });
-        http.expectOne('/api/caption-context/definitions').flush([]);
+        flushInit(http, { curated: ['qwen2.5:3b-instruct'] });
         fixture.detectChanges();
         fixture.componentInstance.pull('qwen2.5:3b-instruct');
         http.expectOne('/api/llm-refine/pull').flush({ ok: true });
         fixture.detectChanges();
         expect(fixture.componentInstance.model()).toBe('qwen2.5:3b-instruct');
+    });
+
+    it('seeds from the configured default, not from the first installed model', () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        flushInit(http, {
+            installed: ['llama3.1:8b-instruct-q4_K_M', 'qwen2.5:7b-instruct'],
+            model: 'qwen2.5:7b-instruct',
+        });
+        fixture.detectChanges();
+        // installed[0] is the OTHER model — this passes only because the saved
+        // default won, which is the whole point of the Server-screen picker.
+        expect(fixture.componentInstance.model()).toBe('qwen2.5:7b-instruct');
+    });
+
+    it('falls back to the first installed model when no default is configured', () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        flushInit(http, { installed: ['llama3.1:8b-instruct-q4_K_M', 'qwen2.5:7b-instruct'] });
+        fixture.detectChanges();
+        expect(fixture.componentInstance.model()).toBe('llama3.1:8b-instruct-q4_K_M');
+    });
+
+    it('does not let a late settings response overwrite a model already chosen', () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        // Models land first and seed installed[0]; the user then picks another.
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['a', 'b'], available: true });
+        fixture.componentInstance.model.set('b');
+        // The settings request resolves afterwards, carrying a different default.
+        http.expectOne('/api/settings/llm_refine').flush({ model: 'a' });
+        http.expectOne('/api/caption-context/definitions').flush([]);
+        fixture.detectChanges();
+        expect(fixture.componentInstance.model()).toBe('b');
     });
 
     afterEach(() => TestBed.inject(HttpTestingController).verify());

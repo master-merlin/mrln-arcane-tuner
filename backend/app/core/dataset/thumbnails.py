@@ -90,25 +90,53 @@ def thumbnail_path_for(
     return thumbnail_dir(dataset_path) / str(max_edge) / f"{_flat_stem(rel_path)}.webp"
 
 
+def _legacy_path_for(
+    dataset_path: str, rel_path: str, max_edge: int = _MAX_EDGE_DEFAULT,
+) -> Path:
+    """Return the ONE pre-``<edge>/`` flat name this source+size was written to.
+
+    The old scheme encoded the default size by its ABSENCE
+    (``.thumbnails/<stem>.webp``) and every other size with an ``@`` suffix
+    (``.thumbnails/<stem>@<edge>.webp``).
+
+    Composed from *rel_path*, never recovered from a directory listing,
+    because a source filename may legitimately contain ``[``, ``*`` or ``?``.
+
+    **Composing it does not make it unambiguous.** ``foo@1024.webp`` is the
+    name the old scheme gave BOTH the 1024 rendition of ``foo.png`` AND the
+    default rendition of a source named ``foo@1024.png`` — that collision is
+    exactly what `a5003618` fixed by moving the size into a directory, and it
+    is a property of the bytes on disk, not of how they are addressed. Any
+    caller reading a non-default name back must prove provenance for itself;
+    :func:`_adopt_legacy_rendition` does it by pixel size.
+    """
+    root = thumbnail_dir(dataset_path)
+    stem = _flat_stem(rel_path)
+    if max_edge == _MAX_EDGE_DEFAULT:
+        return root / f"{stem}.webp"
+    return root / f"{stem}@{max_edge}.webp"
+
+
 def _legacy_thumbnail_paths(dataset_path: str, rel_path: str) -> list[Path]:
     """Return this source's renditions under the PRE-``<edge>/`` flat layout.
 
-    The old scheme wrote ``.thumbnails/<stem>.webp`` for the default size and
-    ``.thumbnails/<stem>@<edge>.webp`` for the others. Those names are
-    enumerated literally from :data:`ALLOWED_MAX_EDGES` — never globbed and
-    never matched against a directory listing — because a source filename may
-    legitimately contain ``[``, ``*`` or ``?``, which a glob would interpret
-    instead of match, and ``@``, which a prefix scan would mis-attribute.
+    One name per allowed edge, each composed by :func:`_legacy_path_for` —
+    never globbed and never matched against a directory listing — because a
+    source filename may legitimately contain ``[``, ``*`` or ``?``, which a
+    glob would interpret instead of match, and ``@``, which a prefix scan
+    would mis-attribute.
+
+    Sharing the composition with :func:`_adopt_legacy_rendition` is what makes
+    adoption safe to trust: the name invalidation DELETES on a pixel change is
+    by construction the same name a first view PROMOTES, so a rendition can
+    never be adopted after the edit that should have retired it.
 
     Included in invalidation so a churned item cleans up its own orphans;
     whole-dataset cleanup is :func:`purge_legacy_layout`.
     """
-    root = thumbnail_dir(dataset_path)
-    stem = _flat_stem(rel_path)
-    return [root / f"{stem}.webp"] + [
-        root / f"{stem}@{edge}.webp"
+    return [
+        _legacy_path_for(dataset_path, rel_path, edge)
         for edge in ALLOWED_MAX_EDGES
-        if edge != _MAX_EDGE_DEFAULT
     ]
 
 
@@ -294,10 +322,123 @@ def ensure_thumbnail(
     if dst_path.exists():
         return dst_path
     if not os.path.exists(src_path):
+        # Before the source exists check, adoption would resurrect a tile for
+        # a file the dataset no longer has.
         return None
+    if _adopt_legacy_rendition(dataset_path, rel_path, max_edge, src_path, dst_path):
+        return dst_path
     if generate_thumbnail(src_path, dst_path, max_edge):
         return dst_path
     return None
+
+
+def _adopt_legacy_rendition(
+    dataset_path: str,
+    rel_path: str,
+    max_edge: int,
+    src_path: str,
+    dst_path: Path,
+) -> bool:
+    """Move this source's flat-layout rendition into ``<edge>/``. LANE-53.
+
+    `a5003618` relocated the cache and `thumbnail_path_for` stopped being able
+    to name a flat file, so every dataset still in the old layout has no
+    readable cache AT ALL and decodes the full-size source for every tile of a
+    first view. MEASURED on a quiet machine over
+    ``Acura_NSX_Type_S_2022`` (25 media, 621 MB of source): 49.80 s to
+    regenerate its 25 tiles at edge 256 (1.99 s mean, 3.93 s worst) against
+    2.82 ms for the same 25 cache hits. 87 of the 95 cached datasets in that
+    library had no ``256/`` directory, so it was the normal first view, not an
+    edge case.
+
+    The pixels were always valid — LANE-40 (`609475ca`) established that and
+    then unlinked them anyway, which prices a rename as a re-decode.
+
+    **Gated on pixel size, because the legacy name is ambiguous.** Composing
+    the name from *rel_path* is not enough: ``foo@1024.webp`` is what the old
+    scheme called both ``foo.png``'s 1024 rendition and ``foo@1024.png``'s
+    default one, so adopting it by name alone re-opens the collision
+    `a5003618` closed — MEASURED, not theorised: an earlier revision of this
+    function served ``foo@1024.png``'s 256px tile as ``foo.png``'s 1024 cover,
+    and the test meant to catch it passed anyway because it happened to read
+    the two sources in the order that consumed the file first. So:
+
+    * default size — ``<stem>.webp`` is a name the old scheme gave to nothing
+      else, so provenance is settled; ``<= 256`` is a sanity check only (all
+      3180 flat default renditions measured in the user's library were
+      exactly 256).
+    * every other size — adopt only when the rendition's long edge is EXACTLY
+      *max_edge*. A default rendition is capped at 256 and so can never be
+      1024px; equality therefore proves the file is not the colliding one.
+      It also refuses the 20-odd renditions of sources smaller than the
+      requested edge, which regenerate instead — cheap, and the alternative
+      is guessing.
+
+    Reading the size is a header parse, not a decode: Pillow fills ``.size``
+    from the WEBP header without touching the pixel data.
+
+    Also gated on ``rendition mtime >= source mtime``. Invalidation already removes
+    the legacy names whenever the app changes a source
+    (:func:`thumbnail_paths_for` includes them), so a stale flat rendition can
+    only come from an edit that bypassed the app — 27 of the 3180 flat
+    renditions measured in that library were exactly that, so the gate does
+    fire. Failing the gate is not an error: the caller regenerates.
+
+    Returns ``True`` only when *dst_path* now holds the adopted bytes.
+    """
+    legacy_path = _legacy_path_for(dataset_path, rel_path, max_edge)
+    try:
+        legacy_mtime = legacy_path.stat().st_mtime_ns
+        source_mtime = os.stat(src_path).st_mtime_ns
+    except OSError:
+        # No flat rendition (the common case on a migrated dataset), or it
+        # vanished between listing and stat. Regenerate.
+        return False
+    if legacy_mtime < source_mtime:
+        return False
+    if not _legacy_rendition_matches_edge(legacy_path, max_edge):
+        return False
+
+    dst_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # os.replace, not copy: LANE-40 promised the user these bytes go away,
+        # and a copy would leave the survey offering to reclaim a file the
+        # cache had started depending on. Atomic within one filesystem, so a
+        # concurrent reader never observes a half-moved rendition.
+        os.replace(legacy_path, dst_path)
+    except OSError as e:
+        logger.warning(
+            "thumbnail_legacy_adopt_failed",
+            path=str(legacy_path),
+            error=str(e),
+        )
+        return False
+    logger.debug("thumbnail_legacy_adopted", path=str(dst_path))
+    return True
+
+
+def _legacy_rendition_matches_edge(legacy_path: Path, max_edge: int) -> bool:
+    """Is *legacy_path* provably a rendition of *max_edge*? See the caller.
+
+    Unreadable is ``False``: a rendition that cannot be opened is not one we
+    can vouch for, and regenerating is always available.
+    """
+    from PIL import Image
+
+    try:
+        with Image.open(legacy_path) as im:
+            long_edge = max(im.size)
+    except Exception as e:  # noqa: BLE001 — Pillow raises broadly on bad input
+        logger.warning(
+            "thumbnail_legacy_adopt_unreadable",
+            path=str(legacy_path),
+            error=str(e),
+        )
+        return False
+
+    if max_edge == _MAX_EDGE_DEFAULT:
+        return long_edge <= _MAX_EDGE_DEFAULT
+    return long_edge == max_edge
 
 
 def invalidate_thumbnail(dataset_path: str, rel_path: str) -> None:

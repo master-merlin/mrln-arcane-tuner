@@ -8,14 +8,17 @@ until someone rescans it"*.
 
 **That premise is wrong, and the first test in this file is what proves it.**
 `ensure_thumbnail` derives its path only from `thumbnail_path_for`, which knows
-only the new layout, so a flat file is *unreachable*: the thumbnail regenerates
-from source and the served pixels are correct with no rescan at all. What the
-merge really left behind is narrower — **orphan bytes that no read path can
-ever reclaim**, on every dataset nobody happens to rescan, with nothing in the
-app to say they are there.
+only the new layout, so a flat file was *unreachable*: the thumbnail
+regenerated from source and the served pixels were correct with no rescan at
+all.
 
-So the migration is an `unlink` sweep, not a rescan: these tests pin the
-survey/purge contract at the bytes-on-disk level, and pin the negative (a
+**LANE-53 amends what that costs.** LANE-40 read "unreachable" as "harmless
+bytes" and priced the remedy as `unlink`. Regenerating is not free: MEASURED
+at **49.80 s to rebuild one 25-image dataset's tiles**, on a library where 87
+of 95 cached datasets had no ``256/`` directory at all. So a first view now
+ADOPTS the flat rendition — a rename into ``<edge>/`` — and the sweep is what
+clears whatever no read ever claimed. See ``test_thumbnail_adoption.py``; the
+survey/purge contract pinned below is unchanged, including the negative (a
 dataset already in the new layout is neither offered nor touched).
 """
 
@@ -92,32 +95,33 @@ def _make_dataset(path: Path, name: str) -> Dataset:
 # ── The defect, stated as observable output ──────────────────────────────
 
 
-def test_a_legacy_rendition_is_unreachable_but_never_reclaimed(tmp_path):
-    """Serving is already correct — the bytes are the defect.
+def test_a_read_now_reclaims_the_flat_rendition_by_adopting_it(tmp_path):
+    """SUPERSEDED BY LANE-53 — was ``..._unreachable_but_never_reclaimed``.
 
-    Two assertions, and the SECOND one is the bug:
+    The original asserted the opposite of the last line below: that a read
+    "did not, and cannot" reclaim the flat bytes, and that a blue source must
+    come back blue even with a red flat rendition beside it. Both were true of
+    the code, and both encoded the wrong contract — the price of "cannot
+    reclaim" is that the source is decoded instead, MEASURED at 49.80 s for
+    one 25-image dataset (see ``test_thumbnail_adoption.py``).
 
-    1. the pixels served for a blue source are blue, even though a red flat
-       rendition sits in ``.thumbnails/`` (positive control: if the flat file
-       were still addressable this would come back red, which is exactly the
-       shape the previous round's collision guard caught);
-    2. after that read, every flat byte is still on disk. No read path can
-       reach them and no read path deletes them, so on a dataset nobody
-       rescans they are permanent.
+    What survives from the original, and must: the served PATH is the
+    ``<edge>/`` one. Only the bytes' provenance changed, so the ``foo@512``
+    collision `a5003618` fixed stays fixed — pinned directly by
+    ``test_a_source_whose_own_name_contains_a_size_suffix_is_not_confused``.
     """
     ds = _legacy_dataset(tmp_path / "ds", stems=("foo",))
-    before = _flat_webp_bytes(ds)
-    assert before > 0, "fixture must actually contain flat renditions"
+    assert _flat_webp_bytes(ds) > 0, "fixture must contain flat renditions"
+    adopted = (ds / ".thumbnails" / "foo.webp").read_bytes()
 
     served = thumbnails.ensure_thumbnail(str(ds), "foo.png")
 
     assert served == ds / ".thumbnails" / "256" / "foo.webp"
-    assert _near(_pixel(served), BLUE), (
-        "the flat rendition must be unreachable — red here would mean the "
-        "old layout is still being served"
+    assert served.read_bytes() == adopted, (
+        "the flat rendition's own bytes must be reused, not re-derived"
     )
-    # The defect: reading did not, and cannot, reclaim them.
-    assert _flat_webp_bytes(ds) == before
+    # Reclaimed by the read itself — the orphan is gone, not duplicated.
+    assert not (ds / ".thumbnails" / "foo.webp").exists()
 
 
 # ── Detection ────────────────────────────────────────────────────────────
@@ -259,6 +263,13 @@ def test_survey_route_is_not_shadowed_by_the_dataset_name_parameter(
     own pixels through ``/datasets/{name}/thumbnail``.
     """
     ds = _legacy_dataset(tmp_path / "thumbnails", stems=("foo",))
+    # A second, ALREADY-migrated item carries the routing assertion. The
+    # original read `foo.png` and asserted blue, which silently depended on
+    # the flat rendition being unreachable; LANE-53 adopts it instead, and a
+    # routing test must not turn red over a cache-layout change it is not
+    # about. `foo`'s flat files still make the survey half meaningful.
+    _source(ds / "live.png", BLUE)
+    _webp(ds / ".thumbnails" / "256" / "live.webp", BLUE)
     _install_datasets(monkeypatch, {"thumbnails": _make_dataset(ds, "thumbnails")})
 
     survey = client.get("/api/datasets/thumbnails/legacy")
@@ -273,7 +284,7 @@ def test_survey_route_is_not_shadowed_by_the_dataset_name_parameter(
     # ... and the same-named dataset's own thumbnail route still resolves.
     own = client.get(
         "/api/datasets/thumbnails/thumbnail",
-        params={"image_rel_path": "foo.png", "max_edge": 256},
+        params={"image_rel_path": "live.png", "max_edge": 256},
     )
     assert own.status_code == 200
     assert _near(_pixel_of_response(own.content), BLUE)

@@ -1,6 +1,7 @@
 """Contract tests for the transformers 5.x upgrade."""
 
 import pathlib
+from unittest.mock import patch
 
 import pytest
 import torch
@@ -569,6 +570,133 @@ def test_repair_is_a_noop_when_buffers_are_already_persistent():
     assert torch.all(rope.inv_freq == 0), "not touched -- persistent buffers are the checkpoint's job"
 
 
+@patch("app.core.captioning.models.youtu_vl.AutoProcessor")
+@patch("app.core.captioning.models.youtu_vl.AutoModelForCausalLM")
+def test_load_repairs_the_rope_buffers_of_the_model_it_just_built(mock_model_cls, mock_proc_cls):
+    """The CALL SITE, not the function (LESSONS 2026-08-14, gap (a)).
+
+    Every test above proves `_repair_nonpersistent_rope_buffers` does the
+    right thing when someone calls it. None of them proved anyone does:
+    `youtu_vl.py`'s `self._repair_nonpersistent_rope_buffers(self.model)`
+    could be deleted and the whole suite stayed green (mutation-proved,
+    30 passed with the line removed). The two existing tests that reach
+    `load()` structurally cannot see it -- `test_youtu_vl_load_omits_
+    tqdm_class` hands it an ALREADY-PERSISTENT buffer (nothing to repair,
+    so a missing call is indistinguishable from a working one) and
+    `test_youtu_vl_load_installs_the_shim_without_caption_service` aborts
+    inside `with_progress`, before the model exists.
+
+    The failure a missing call ships has no loud symptom: `inv_freq` ~ 0
+    makes RoPE position-invariant (cos=1, sin=0 everywhere) and the model
+    emits the degenerate 'skyskysky...' repetition -- captions that are
+    syntactically fine and semantically garbage.
+
+    So this hands `load()` a model tree whose RoPE buffer is
+    NON-persistent and zeroed -- the exact state transformers 5.x's
+    meta-device materialization leaves behind -- and asserts on the
+    OBSERVABLE state of that buffer after `load()` returns, never on a
+    spy or a call count. Mocking stops at `from_pretrained` (the layer
+    BELOW the contract); the repair itself is the real production code.
+    """
+    from types import SimpleNamespace
+    from unittest.mock import MagicMock
+
+    from app.core.captioning.models.youtu_vl import YoutuVLModel
+    from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
+
+    config = SimpleNamespace(rope_theta=500000.0, hidden_size=256, num_attention_heads=4)
+    rope = _FakeDefaultRope(config)
+    fake_model = torch.nn.Module()
+    fake_model.rotary_emb = rope
+    mock_model_cls.from_pretrained.return_value = fake_model
+    mock_proc_cls.from_pretrained.return_value = MagicMock()
+
+    assert torch.all(rope.inv_freq == 0), (
+        "precondition: the buffer must start uninitialized, or a no-op repair "
+        "would be indistinguishable from a working one -- which is exactly how "
+        "this call site went unpinned"
+    )
+    assert "inv_freq" in rope._non_persistent_buffers_set, (
+        "precondition: only NON-persistent buffers are at risk; a persistent "
+        "one makes the repair skip and this test vacuous"
+    )
+
+    YoutuVLModel(service=MagicMock()).load()
+
+    assert mock_model_cls.from_pretrained.called, (
+        "load() never built the model -- this test aborted before the line it "
+        "exists to pin and is proving nothing"
+    )
+    expected_inv_freq, expected_scaling = ROPE_INIT_FUNCTIONS["default"](
+        config, rope.inv_freq.device
+    )
+    assert not torch.all(rope.inv_freq == 0), (
+        "load() returned a model whose non-persistent RoPE buffer is still "
+        "zeroed: nothing called _repair_nonpersistent_rope_buffers(self.model). "
+        "This model would caption every image as degenerate token repetition "
+        "with no error, no warning and no crash."
+    )
+    assert torch.allclose(rope.inv_freq, expected_inv_freq)
+    assert rope.attention_scaling == expected_scaling
+
+
+#: transformers 5.x deprecations. Kept as module state so the scan and its
+#: positive control below cannot drift apart -- a control that tests a
+#: different needle than the guard proves nothing about the guard.
+DEPRECATED_TRANSFORMERS_KWARGS = ("torch_dtype=", "use_fast=")
+
+
+def _deprecated_kwarg_offenders(root: pathlib.Path) -> list[str]:
+    """Every `*.py` under *root* naming a deprecated transformers kwarg."""
+    offenders = []
+    for path in sorted(root.rglob("*.py")):
+        source = path.read_text(encoding="utf-8")
+        for bad in DEPRECATED_TRANSFORMERS_KWARGS:
+            if bad in source:
+                offenders.append(f"{path}: {bad}")
+    return offenders
+
+
+def test_the_deprecated_kwarg_scan_catches_a_known_offender(tmp_path):
+    """Positive control for the collect-offenders guard below (CONVENTIONS
+    rule 11). An empty offender list is the same object whether nothing is
+    wrong or the scanner stopped looking, so the scan is shown here to catch
+    a file it is meant to catch -- and to stay quiet on one it is not.
+
+    Without this, a drifted needle, a renamed directory or a change of file
+    extension turns `test_no_deprecated_transformers_kwargs_remain` green
+    PERMANENTLY, and a dead guard is worse than no guard because nobody
+    writes the check that already exists.
+    """
+    clean = tmp_path / "clean"
+    (clean / "nested").mkdir(parents=True)
+    (clean / "nested" / "loader.py").write_text(
+        "model = AutoModel.from_pretrained(repo, dtype=torch.float16)\n", encoding="utf-8"
+    )
+    assert _deprecated_kwarg_offenders(clean) == [], (
+        "the control's own clean fixture trips the scan; the needles are "
+        "matching something they should not"
+    )
+
+    dirty = tmp_path / "dirty"
+    (dirty / "nested").mkdir(parents=True)
+    (dirty / "nested" / "loader.py").write_text(
+        "model = AutoModel.from_pretrained(repo, torch_dtype=torch.float16)\n",
+        encoding="utf-8",
+    )
+    (dirty / "proc.py").write_text(
+        "proc = AutoProcessor.from_pretrained(repo, use_fast=True)\n", encoding="utf-8"
+    )
+
+    caught = _deprecated_kwarg_offenders(dirty)
+    assert len(caught) == 2, f"scan missed a planted offender: {caught}"
+    assert any("torch_dtype=" in row and "nested" in row for row in caught), (
+        "the scan does not recurse into subdirectories -- app/core/captioning "
+        "has several, so most of its files would go unscanned"
+    )
+    assert any("use_fast=" in row for row in caught)
+
+
 def test_no_deprecated_transformers_kwargs_remain():
     """torch_dtype= and use_fast= are deprecated in 5.x. They still work today,
     so nothing else would catch their eventual removal.
@@ -589,10 +717,14 @@ def test_no_deprecated_transformers_kwargs_remain():
     backend_root = pathlib.Path(__file__).resolve().parents[1]
     captioning_root = backend_root / "app/core/captioning"
 
-    offenders = []
-    for path in captioning_root.rglob("*.py"):
-        source = path.read_text(encoding="utf-8")
-        for bad in ("torch_dtype=", "use_fast="):
-            if bad in source:
-                offenders.append(f"{path}: {bad}")
-    assert offenders == []
+    # A second, cheaper anti-vacuity check alongside the positive control in
+    # `test_the_deprecated_kwarg_scan_catches_a_known_offender`: the scan can
+    # only be trusted if it read something. A moved package makes rglob()
+    # return nothing and `offenders == []` pass while checking no code at all.
+    scanned = list(captioning_root.rglob("*.py"))
+    assert len(scanned) >= 10, (
+        f"only {len(scanned)} python file(s) under {captioning_root} -- the "
+        "captioning package moved and this scan is asserting about an empty set"
+    )
+
+    assert _deprecated_kwarg_offenders(captioning_root) == []

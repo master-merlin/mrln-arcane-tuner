@@ -1,5 +1,7 @@
 # MRLN Arcane Tuner
 
+![MRLN Arcane Tuner — dataset-first LoRA training studio: dataset curation, model-aware captions, and a unified trainer across image and video model families](docs/images/mrln-arcane-tuner-hero.png)
+
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
 `v0.7.9-beta` · PyTorch 2.12.1 local / 2.11.0 container · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
@@ -349,7 +351,7 @@ MRLN Arcane Tuner is a full-stack application with a FastAPI backend and an Angu
 └──────────────────────────────────────────────────────┘
 ```
 
-For the full component and API route inventory, see [`documentation/ARCHITECTURE.md`](documentation/ARCHITECTURE.md).
+For the full component and API route inventory, see [`docs/ARCHITECTURE.md`](docs/ARCHITECTURE.md).
 
 ---
 
@@ -430,7 +432,7 @@ Training is configured through a **dynamic JSON Schema-driven UI** — the form 
 
 #### Supported Model Families
 
-**29 families, 54 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](documentation/ARCHITECTURE.md#model-families).
+**29 families, 54 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](docs/ARCHITECTURE.md#model-families).
 
 This table is generated from `backend/app/engine/models/families/` and pinned by `backend/tests/test_readme_family_table.py`, so a family added without a row here fails the gate. It listed three of twenty-eight until 2026-08-28 — there is no text-encoder column because populating it accurately for every family means reading every loader, and twenty-five blanks would say less than no column at all.
 
@@ -627,7 +629,7 @@ Combine **Inspect** results with **Targeted Layer Training** — inspect a refer
 
 Detailed architecture documentation, including full API route inventory and component listing:
 
-- [**ARCHITECTURE.md**](documentation/ARCHITECTURE.md) — System architecture, API routes, frontend components, conventions
+- [**ARCHITECTURE.md**](docs/ARCHITECTURE.md) — System architecture, API routes, frontend components, conventions
 
 ---
 

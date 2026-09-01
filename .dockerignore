@@ -5,6 +5,7 @@
 .claude/
 docs/
 documentation/
+_docs/
 **/__pycache__/
 **/*.pyc
 

@@ -4,7 +4,7 @@
 .*/
 *.md
 !README.md
-!documentation/**/*.md
+!docs/**/*.md
 !backend/app/engine/models/families/*/vendor/*.md
 
 # ========================
@@ -31,12 +31,13 @@ backend/tests/tests.log
 # ========================
 # Workspace-level directories
 # ========================
-# `/docs/*`, not `/docs/`: excluding the DIRECTORY makes git skip it entirely,
-# and a re-include below can never resurface a file whose parent is excluded.
-# Excluding its CONTENTS instead keeps `docs/audits/` and `docs/superpowers/`
-# pruned (they are directories, so git still does not descend) while letting
-# the three named developer references be re-included at the end of this file.
-/docs/*
+# `_docs/` is the INTERNAL documentation tree — audits enumerating weaknesses in
+# this codebase (some unfixed) and internal plans. It was called `docs/` until
+# 2026-09-01, when the public documentation took that name to match the GitHub
+# convention (LANE-62). Ignored as a whole DIRECTORY, which is the strongest
+# form available: git does not descend into it, so nothing inside can be
+# resurfaced by a later re-include, deliberately or by accident.
+_docs/
 /adapters/
 /scripts/
 graphify-out/
@@ -90,20 +91,26 @@ _harness/
 # hold the private surface back: `.*/` (line 4), `*.md` (line 5) and `/docs/*`.
 # They stay. The public surface is re-included here, explicitly and by name.
 #
-# RULE: re-include a DOCUMENT BY NAME, never a DIRECTORY.
-# Measured evidence: a `!docs/` re-include publishes 169 files, including
-# `docs/audits/` (documents enumerating weaknesses in this codebase, some
-# unfixed) and `docs/superpowers/` internal plans. A directory re-include
-# publishes whatever is added to that directory later, by anyone, with no
-# review step and no diff that reads as a disclosure. A name cannot.
+# RULE: re-include a DOCUMENT BY NAME, never a DIRECTORY — with ONE deliberate
+# exception, `!docs/**/*.md` on line 7, which carries the public documentation.
+# The rule's evidence still holds: a directory re-include publishes whatever is
+# added to that directory later, by anyone, with no review step and no diff that
+# reads as a disclosure. It was measured — a `!docs/` re-include once published
+# 169 files, including audits enumerating unfixed weaknesses and internal plans.
+# What changed on 2026-09-01 (LANE-62) is WHERE that material lives: it is now
+# under `_docs/`, ignored as a whole directory above, so `docs/` is public by
+# CONSTRUCTION rather than public by exception. The residual risk is real and
+# named: anything dropped into `docs/` is published without a name-level gate.
+# Keep internal material in `_docs/`; if that ever stops being reliable, revert
+# to per-name re-includes here.
 # `LICENSE` needs no entry here: it has no extension, so no rule matches it.
 !.github/
 !.github/**
 !SECURITY.md
 !CONTRIBUTING.md
 !CHANGELOG.md
-# Contributors need these three to submit work that passes the gate. They
-# describe conventions, not weaknesses.
-!docs/API_CONVENTIONS.md
-!docs/LOGGING.md
-!docs/TESTING.md
+# API_CONVENTIONS.md, LOGGING.md and TESTING.md used to need explicit entries
+# here. They no longer do: they live in `docs/`, which line 7 re-includes.
+# The redirect stub at the OLD architecture path stays tracked by name: the
+# path is referenced upstream, and a 404 is worse than a one-click redirect.
+!documentation/ARCHITECTURE.md

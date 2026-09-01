@@ -177,7 +177,14 @@ const THUMB_FALLBACK_DATA_URI =
         .si-tag.brand   { background: var(--color-brand);   color: white; }
         .si-tag.warning { background: var(--color-warning); color: oklch(0.18 0.05 75); }
         .si-tag.success { background: color-mix(in oklab, var(--color-success) 80%, transparent); color: white; display: inline-flex; align-items: center; gap: 4px; }
-        .si-tag.danger  { background: color-mix(in oklab, var(--color-danger) 80%, transparent); color: white; display: inline-flex; align-items: center; gap: 4px; }
+        /* Opaque like its .brand / .warning siblings, NOT 80% like .success:
+           the 80% let the card behind it raise the fill's luminance, and in the
+           light theme that walked this white-on-danger badge to 2.97:1 — under
+           the 3:1 of WCAG 1.4.11 — even after LANE-36 darkened --color-danger.
+           Opaque, it is 3.80:1 whatever sits behind it. (.si-tag.success has
+           the same 80% shape against white; green is a separate measurement
+           and is not this lane's, but it is the next one to check.) */
+        .si-tag.danger  { background: var(--color-danger); color: white; display: inline-flex; align-items: center; gap: 4px; }
         .si-tag.dark    { background: oklch(0.10 0.01 265 / 0.7); color: var(--color-text-secondary); font-weight: 600; }
         .si-tag.mono { font-family: var(--font-mono); }
 
@@ -195,15 +202,15 @@ const THUMB_FALLBACK_DATA_URI =
             bottom: 10px;
             background: oklch(0.08 0.01 265 / 0.78);
             backdrop-filter: blur(6px);
-            border: 1px solid oklch(0.70 0.17 25 / 0.4);
+            border: 1px solid color-mix(in oklab, var(--color-danger) 40%, transparent);
             box-shadow: 0 2px 6px oklch(0 0 0 / 0.55);
             color: var(--color-danger);
             width: 28px; height: 28px;
             border-radius: var(--radius-theme-md);
         }
         .si-delete:hover {
-            background: oklch(0.70 0.17 25 / 0.25);
-            border-color: oklch(0.70 0.17 25 / 0.7);
+            background: color-mix(in oklab, var(--color-danger) 25%, transparent);
+            border-color: color-mix(in oklab, var(--color-danger) 70%, transparent);
         }
         .si-delete:disabled { opacity: 0.5; cursor: not-allowed; }
 

@@ -46,19 +46,37 @@
     --color-success-soft: oklch(0.40 0.10 155);
     --color-warning: oklch(0.75 0.16 75);
     --color-warning-soft: oklch(0.42 0.10 75);
-    --color-danger: oklch(0.70 0.17 25);
+    /* Every white-on-danger surface must clear the 3:1 WCAG 1.4.11 asks of a
+       non-text control, so the LIGHTNESS of this token is a contract, not a
+       preference — `backend/tests/test_danger_contrast_guard.py` recomputes the
+       ratio from this line and fails below 3:1. It was oklch(0.70 0.17 25) =
+       rgb(246,109,103), which measured 2.88:1 against white OPAQUE, i.e. every
+       white-glyph-on-danger control in the product was under the bar and no
+       alpha could rescue it (DECISION-22 option (a), LANE-36). This is
+       rgb(221,86,82): 3.80:1 white-on-solid, and 3.36:1 for the one surface
+       that composites it at 80% over the lightest tokened backdrop.
+       Darker than this trades the failure rather than fixing it — the token
+       ALSO carries danger-as-text on dark surfaces, which falls to 2.91:1 on
+       --color-surface-high at the overlay token's 0.55 lightness. 0.63 is the
+       darkest value that keeps that side above 3:1 in the dark theme while
+       clearing 3:1 white-on-danger; measurements in the guard's table. */
+    --color-danger: oklch(0.63 0.17 25);
     --color-danger-soft: oklch(0.42 0.12 25);
     /* Danger fill for a control composited over ARBITRARY PHOTO PIXELS, where
-       the backdrop is not a token and cannot be reasoned about. `--color-danger`
-       is rgb(246,109,103): at the 0.80 alpha these overlays used it measured
-       2.53:1 white-glyph-to-fill over a near-white photo (RGB 220/221/219),
-       under the 3:1 WCAG 1.4.11 asks of a non-text control — and 2.88:1 even
-       fully opaque, so no alpha rescues that hue. This is rgb(201,47,51) and at
-       0.88 measures 4.47:1 over pure white, 4.71:1 over the bright photo,
-       6.38:1 over a near-black one; opaque (the hover state) 5.33:1 flat.
+       the backdrop is not a token and cannot be reasoned about — which is the
+       whole reason this survives LANE-36's darkening of `--color-danger`.
+       Against a TOKENED backdrop the new `--color-danger` clears the bar on its
+       own; against a photo it does not have the headroom: at 0.88 over a
+       near-white photo (RGB 220/221/219) it measures 3.41:1 and over pure white
+       3.25:1, so a blown highlight walks a shipped control to the edge of 3:1
+       with nothing left. This is rgb(201,47,51) and at 0.88 measures 4.49:1
+       over pure white, 4.71:1 over the bright photo, 6.33:1 over a near-black
+       one; opaque (the hover state) 5.33:1 flat.
        Theme-INDEPENDENT on purpose, the `.hps-pill` pattern: the glyph over it
        is a fixed `white`, so a fill that flipped with the theme would ship
-       white-on-light. Deliberately NOT overridden in the light block below. */
+       white-on-light. Deliberately NOT overridden in the light block below.
+       ONLY for photo-composited fills: `.tile-action` on the grid tile and the
+       masking sidebar's delete. A tokened surface uses `--color-danger`. */
     --color-danger-overlay: oklch(0.55 0.19 25);
 
     /* ── Chart / data-vis ── */
@@ -256,8 +274,19 @@ input[type="checkbox"]:not(.sr-only):not(.peer) {
 
    Only surfaces, text, borders, nav, overlay, the glass utilities, and
    shadow depths are re-mapped. Brand, semantic status (success/warning/
-   danger), and chart colors are intentionally shared with the dark theme —
-   they read acceptably on a light background.
+   danger), and chart colors are intentionally shared with the dark theme.
+
+   For `--color-danger` that sharing is now load-bearing rather than merely
+   acceptable: the token's white-on-danger duty (a fixed `white` glyph on a
+   danger fill) has the SAME requirement in both themes, so a value that
+   flipped here would have to satisfy the dark theme's constraint anyway.
+   LANE-36 measured the consequence of leaving it: the light theme is the
+   loser on the OTHER duty — danger-as-text reads 3.58:1 on --color-base and
+   2.64:1 on --color-surface-high, under the 4.5:1 body text asks. That is a
+   real gap and it is recorded, not fixed here: no single lightness satisfies
+   both themes' text duty (dark needs a light red, light needs a dark one), so
+   the fix is a per-theme text token, which is a design decision and not this
+   lane's. DECISION-22 is where it lands.
 
    `html[data-theme="light"]` (specificity 0,1,1) deliberately outranks the
    `@theme`-generated `:root`/`:host` block (0,1,0), so these win regardless

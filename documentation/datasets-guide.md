@@ -35,9 +35,11 @@ that guard anything permanent.
 ![Dataset Library — KPI rail, search/filter bar and the dataset grid](images/datasets-library-overview.png)
 
 Opens at `/datasets` (the app's default route). The header shows **Dataset
-Library**, the dataset count and image count for the active scope, three view
-buttons (grid density) and, when the library needs it, a **Repair cache**
-button (see "Thumbnail cache repair" below).
+Library**, the dataset count and image count for the active scope, **Rescan**
+/ **Import Dataset** / **New Dataset** buttons and, when the library needs it,
+a **Repair cache** banner (see "Thumbnail cache repair" below). There is no
+density control here — density only applies to the Workspace Browse grid
+(below), one dataset at a time.
 
 ### KPI rail
 
@@ -192,9 +194,19 @@ A segmented control switches the workspace body between three modes:
   each with a live count.
 - **Masked** / **Overlay** toggles — swap the grid to show masked images (or
   edited overlays) instead of originals. Disabled when the dataset has none.
-- **Density** slider (3–7 columns) and **Enable all** (re-includes every
-  excluded image — excluding an image keeps it in the dataset but skips it at
-  training time; this is the bulk undo for that).
+- **Enable all** — re-includes every excluded image (excluding an image keeps
+  it in the dataset but skips it at training time; this is the bulk undo for
+  that).
+
+### Density
+
+A slider in the Browse toolbar sets how many columns the grid uses, from 3
+(fewest, largest tiles) to 7 (most, smallest tiles), defaulting to 5. Fewer
+columns trade sweep speed for per-tile detail — easier to judge a crop, a
+mask overlay or a caption at a glance; more columns trade detail for an
+overview of more of the dataset at once. The setting lives on the workspace
+session, not on the dataset: it resets to 5 the next time you open a
+workspace, even for the same dataset.
 
 ### Filmstrip
 
@@ -304,23 +316,53 @@ next time you train or analyze, just not for free.
 
 Opened via the workspace's **Mass caption** button.
 
-![Mass caption modal — Generate tab](images/mass-caption-modal.png)
+![Mass caption modal — Generate tab, Local neural architecture (the default)](images/mass-caption-modal.png)
 
 Two tabs:
 
-- **Generate** — pick a local vision model or an OpenAI-compatible API
-  provider, its common parameters (temperature, top-p, max tokens — the exact
-  set of extra parameters depends on the model you pick, since each captioning
-  model defines its own schema), an optional system prompt and custom
-  instructions, then run over the whole dataset (or just the images still
-  missing a caption, depending on the strategy you choose — keep vs.
-  overwrite). Progress is a background task with live per-image status.
+- **Generate** — captioning strategy (**Incremental**, only images without a
+  caption yet, vs **Destructive**, recaption everything), then a neural
+  architecture toggle between **Local** and **API**:
+  - **Local** is the default — pick a local vision model (Florence-2, Qwen3
+    VL, Youtu-VL, JoyCaption; each with its own variant sizes and parameter
+    schema — temperature, top-p, max tokens, etc.), an optional wildcard
+    value, system prompt and custom instructions.
+  - **API** swaps the model picker for a provider (OpenAI, Anthropic, Gemini,
+    OpenRouter, or any OpenAI-compatible server) plus its endpoint/key
+    fields, since captioning then runs against that provider instead of your
+    GPU.
+
+  ![Mass caption modal — Generate tab, API neural architecture](images/mass-caption-modal-api.png)
+
+  Either way, running captions over the dataset (or just the images still
+  missing one, per the strategy above) is a background task with live
+  per-image status.
 - **Refine** — rewrite *existing* captions with a local LLM via Ollama.
   Presets: `standardize` and `synonym_merge`; style is auto (derived from the
   active model's text encoder — CLIP/SDXL-style models get tag-style
   captions, T5/large-context models get natural language) or an explicit
   override (natural language / tags). Requires Ollama reachable — the modal
   says so plainly when it isn't.
+
+### Structured caption editor
+
+Some captioning models (currently Ideogram 4's model-aware re-caption) write
+a *structured* JSON caption instead of a plain sentence — a high-level
+description plus separate style (aesthetics, lighting, medium, a render
+field), a color palette, a background description and a list of individual
+scene elements, each of which can carry its own bounding box on the image.
+Once a definition's caption format is structured, a tile whose caption
+parses as that JSON shows a compact summary in the grid with an expand icon
+(**Edit full structured caption**) instead of a plain caption box.
+
+Clicking it opens a wide two-pane editor: the image with its element
+bounding boxes overlaid (and a draw toggle to add or resize one) on the
+left, the structured fields on the right — high-level description, style,
+palette, background, an **Add element** list, and (for anything the form
+doesn't cover) a raw-JSON escape hatch. **Save** writes the edited JSON back
+as the caption; **Cancel** or Esc discards the edit. This is reachable both
+from the Browse grid tile and from the Details-mode caption sidebar, sharing
+the same modal.
 
 ### Mass mask
 

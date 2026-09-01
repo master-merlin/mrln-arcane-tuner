@@ -118,7 +118,7 @@ def config_log_level(level_str: str = "INFO"):
     # protocol as its logger (uvicorn/protocols/websockets/websockets_impl.py),
     # so this logger's DEBUG stream is one per-frame "> TEXT '…' [N bytes]"
     # trace per WebSocket frame sent or received. That is not an application
-    # log: it is unparseable as JSON (docs/LOGGING.md golden rule 1) and it
+    # log: it is unparseable as JSON (_docs/LOGGING.md golden rule 1) and it
     # rides on a logger name that none of the "websockets"-prefixed
     # suppressions below can match. Threshold only — uvicorn's real INFO
     # lifecycle lines, warnings and errors all still surface.
@@ -141,7 +141,7 @@ def _quiet_noisy_loggers() -> None:
 
 def _add_service(_logger, _name, event_dict):
     """R-LOG-07: stamp every FastAPI-side log entry with the canonical
-    ``service`` identifier from ``docs/LOGGING.md`` universal_json_schema.
+    ``service`` identifier from ``_docs/LOGGING.md`` universal_json_schema.
 
     The trainer subprocess writes its own JSONL stream via
     :class:`JobLogWriter` with a different envelope shape, and is

@@ -1,7 +1,7 @@
 """Regression guard: every `print(` in in-scope files must be annotated.
 
 Enforces the safety-net annotation convention defined in
-`docs/LOGGING.md` `<the_golden_rules>` `[THE PRINT BOUNDARY]`: any
+`_docs/LOGGING.md` `<the_golden_rules>` `[THE PRINT BOUNDARY]`: any
 `print()` call in production code must either be removed or carry an
 inline comment of the form `# safety-net print: <reason>` either on
 the same line or within the 3 lines immediately preceding the call.
@@ -9,7 +9,7 @@ the same line or within the 3 lines immediately preceding the call.
 If this test fails, either:
   1. Remove the new print() (route through JobLogWriter / logger), or
   2. If it is genuinely a safety net (bootstrap or fail-safe), annotate
-     it with `# safety-net print: <reason>` and update docs/LOGGING.md
+     it with `# safety-net print: <reason>` and update _docs/LOGGING.md
      if the reason class is new.
 """
 from __future__ import annotations
@@ -90,5 +90,5 @@ def test_no_unannotated_prints(path: Path) -> None:
             f"{formatted}\n\n"
             "Either remove the print (route through JobLogWriter / logger), "
             "or annotate it with `# safety-net print: <reason>` "
-            "(see docs/LOGGING.md THE PRINT BOUNDARY)."
+            "(see _docs/LOGGING.md THE PRINT BOUNDARY)."
         )

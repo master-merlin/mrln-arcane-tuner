@@ -24,7 +24,7 @@ class TaskEnqueuedResponse(BaseModel):
 
 
 class ErrorResponse(BaseModel):
-    """Standard error envelope (``docs/API_CONVENTIONS.md`` → error_responses).
+    """Standard error envelope (``_docs/API_CONVENTIONS.md`` → error_responses).
 
     Every error response — HTTPExceptions, validation failures, and the
     unhandled-500 fallback — is serialized through this shape so clients can

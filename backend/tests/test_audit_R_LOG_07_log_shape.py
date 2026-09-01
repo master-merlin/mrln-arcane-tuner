@@ -1,5 +1,5 @@
 """R-LOG-07 regression guard: every emitted log entry must carry the
-universal JSON schema fields per docs/LOGGING.md.
+universal JSON schema fields per _docs/LOGGING.md.
 
 The universal schema requires: timestamp, level, service, message,
 trace_id, span_id, context. In structlog terms:

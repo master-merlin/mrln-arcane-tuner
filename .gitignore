@@ -109,7 +109,9 @@ _harness/
 !SECURITY.md
 !CONTRIBUTING.md
 !CHANGELOG.md
-# API_CONVENTIONS.md, LOGGING.md and TESTING.md used to need explicit entries
-# here. They no longer do: they live in `docs/`, which line 7 re-includes.
+# API_CONVENTIONS.md, LOGGING.md and TESTING.md are INTERNAL (`_docs/`) as of
+# 2026-09-02, on the user's word: "we will not publish the harness". They were
+# re-included here briefly by the release-hardening pass; nothing under docs/
+# was ever pushed, so nothing public changed.
 # `documentation/` no longer exists: ARCHITECTURE.md moved to `docs/` and the
 # user chose a clean rename over a redirect stub (LANE-62, 2026-09-01).

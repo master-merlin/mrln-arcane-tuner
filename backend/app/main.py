@@ -240,7 +240,7 @@ async def _drain_active_handler(request, exc):
 
 
 # ── Exception Handlers ───────────────────────────────────────────────────
-# All error responses share the standard envelope (docs/API_CONVENTIONS.md):
+# All error responses share the standard envelope (_docs/API_CONVENTIONS.md):
 #   {"detail": <message>, "error_code": <token>, "context": {...}}
 # `detail` is preserved verbatim from the raised HTTPException so consumers
 # that read structured detail payloads (e.g. the import-dataset 409 conflict
@@ -327,7 +327,7 @@ async def global_exception_handler(request: Request, exc: Exception):
 async def logging_middleware(request: Request, call_next):
     """Inject per-request trace ID + span ID and log request lifecycle.
 
-    Per docs/LOGGING.md universal_json_schema (R-LOG-07), every log
+    Per _docs/LOGGING.md universal_json_schema (R-LOG-07), every log
     entry must carry both ``trace_id`` (correlates across services —
     sourced from the ``X-Trace-ID`` request header when present) and
     ``span_id`` (unique per request inside this service).

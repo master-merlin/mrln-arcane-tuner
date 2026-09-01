@@ -112,7 +112,7 @@ def open_log(path: str | None = None):
 
 
 def record(handle, event: str, level: str = "info", **fields) -> None:
-    """Append one single-line JSON record (docs/LOGGING.md schema).
+    """Append one single-line JSON record (_docs/LOGGING.md schema).
 
     Never raises: a diagnostic that can take the restart down is worse than the
     silence it replaces.

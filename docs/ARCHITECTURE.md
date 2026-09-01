@@ -341,9 +341,9 @@ Projects and templates are portable as ZIP archives with a manifest envelope (`k
 - **State:** Signals only (`signal()`, `computed()`, `input()`, `output()`, `model()`); shared state in `state/` stores
 - **Control flow:** `@if`, `@for`, `@switch` (no legacy `*ngIf`/`*ngFor`)
 - **API URLs:** Dynamic via `RuntimeConfigService` (no hardcoded ports)
-- **API responses:** Pydantic `response_model` on routes; `ErrorResponse` (`error_code`) envelope via `main.py` exception handlers; `api/schemas/` holds the shared models. See `docs/API_CONVENTIONS.md`.
+- **API responses:** Pydantic `response_model` on routes; `ErrorResponse` (`error_code`) envelope via `main.py` exception handlers; `api/schemas/` holds the shared models. See `_docs/API_CONVENTIONS.md`.
 - **Logging:** Structured JSON via `structlog` with per-request trace IDs
-- **Testing:** Vitest (unit) + Playwright (E2E); `data-testid` attributes for selectors. See `docs/TESTING.md`.
+- **Testing:** Vitest (unit) + Playwright (E2E); `data-testid` attributes for selectors. See `_docs/TESTING.md`.
 
 ## Integration Points
 

@@ -129,7 +129,7 @@ class TestUvicornErrorThreshold:
     def test_debug_level_does_not_enable_ws_frame_traces(self):
         """App-level DEBUG must not turn on ``uvicorn.error`` DEBUG — that
         stream is the websockets per-frame trace, which is pure noise in
-        server.log and unparseable as JSON (docs/LOGGING.md golden rule 1)."""
+        server.log and unparseable as JSON (_docs/LOGGING.md golden rule 1)."""
         try:
             config_log_level("DEBUG")
 

@@ -176,7 +176,8 @@ A segmented control switches the workspace body between three modes:
   per-image caption editing inline, mass-action buttons, filter chips and a
   filmstrip at the bottom.
 - **Details** — a single-image, larger view (loaded lazily) for closer
-  caption/mask editing and per-image trim controls.
+  caption/mask editing and per-image trim controls. See
+  [Details — one image, closely](#details--one-image-closely) below.
 - **Edit** — the per-image, non-destructive adjustment pipeline (loaded
   lazily): stacked `.cube` LUTs, per-channel Bézier curves and per-range HSL
   adjustments. Nothing here is written until you export or run Mass edit /
@@ -213,6 +214,70 @@ workspace, even for the same dataset.
 A scrubber along the bottom of the workspace, color-coded per image
 (masked / captioned-only / missing), for jumping directly to any image's
 position without scrolling the grid.
+
+### Details — one image, closely
+
+Once you've swept the grid, Details is where you settle on any one image —
+click a tile, or switch the mode segment to Details, and the workspace splits
+into three panes: masking on the left, the image itself in the center, and
+its caption on the right. Prev/Next (or the filmstrip) step through the
+dataset without leaving the mode.
+
+![Details mode — mask, image and caption panes](images/details-mode-overview.png)
+
+**The mask pane** shows the current mask as a thumbnail if one exists, with
+hover actions to preview the masked composite or delete the mask; if there is
+none, it shows "No mask detected" and a collapsible mask-generation panel
+below (SAM 3 by default, same model choices as Mass mask) so you can mask
+just this one image without opening the batch modal. A "Masked view" toggle
+at the top swaps the center image for the masked version — the same toggle
+that lives in the Browse toolbar, mirrored here.
+
+**The center pane** is the image (or video, with trim handles) at whatever
+zoom you set, plus a footer strip: pin as library cover, open the Adjust
+editor (switches to Edit mode on this image), open Crop, exclude from
+training, or delete the entry outright. Excluding is reversible from the
+Browse toolbar's "Enable all"; delete is not.
+
+**The caption pane** is the same inline caption editor as the Browse grid's
+tile, just with more room — useful when a caption needs real edits rather
+than a quick generate-and-move-on.
+
+**Judging whether an image is worth keeping** is what this mode is for: with
+the mask, the full-size image and the caption all in view at once, you can
+see in one glance whether the mask is clean, the caption matches what SAM
+found, and the image itself is sharp enough to train on — three separate
+"good enough?" checks the Browse grid's small tiles can't answer on their
+own.
+
+### Mask preview
+
+Opened from the Details mode mask pane — the hover preview icon opens the
+**composite** view (mode `preview`), clicking the mask thumbnail itself
+opens the **raw alpha** view (mode `mask`). Two tabs at the top switch
+between them.
+
+![Mask preview modal — composite view with alpha-mix slider](images/mask-preview-modal.png)
+
+In composite mode, a slider controls how strongly the mask is mixed over the
+source image (0-100%, live re-render) — useful for judging mask edges before
+you commit to it. **Bake mask** writes a masked image file at the current
+mix; it's the only irreversible action in the modal, and is disabled when
+there's no raw mask to bake. Raw-alpha mode instead shows the mask file's
+resolution and size on disk, with no bake action — it's a read-only check
+that the mask itself (not a composite) is what you expect.
+
+### Similar images
+
+Reachable from the Analyze modal's Files tab, per-row "view near-duplicates"
+action (see [Analyze](#analyze) below) — opens a cluster of the original
+image plus every near-duplicate the similarity search found, each tagged
+with its similarity percentage and a higher-res / lower-res / same-res badge
+against the original. **Delete** on a card is permanent: the image, its
+caption and any mask are removed from disk immediately, no confirm beyond
+the button itself — the modal's footer says so. Use it to thin out
+near-duplicate bursts (a burst-mode shoot, or the same subject re-captioned)
+without the mask/caption editing detour the grid would otherwise want.
 
 ## Modals reachable from the Workspace
 

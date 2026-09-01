@@ -334,6 +334,68 @@ The canvas footer's **OVR** toggle switches the image between its edited
 version and the original — the same before/after check the Browse grid and
 Details mode use, wherever an overlay exists.
 
+## Validate — check before you train
+
+Editing changes pixels; validating tells you whether the dataset is actually
+ready. Three signals feed that judgment, and all three surface right on the
+tile so you never have to leave the grid to see them.
+
+### HPS quality score
+
+Every image gets an HPSv2 aesthetic score, **but only as a side effect of a
+rescan** — there's no separate "score this dataset" button, so a freshly
+imported dataset shows no HPS pill until its first rescan runs (Full or
+Incremental both score). Once scored, each tile carries an **HPS** pill in
+its header band, colour-coded to the same bands the Low-HPS filters use:
+
+| Score | Colour |
+| --- | --- |
+| ≥ 0.27 | green (success) |
+| 0.24 – 0.27 | amber (warning) |
+| < 0.24 | red (danger) |
+
+![Browse-mode grid — HPS pills, H/C/M state pills and the exclude icon on every tile, filter chips with live counts along the top](images/workspace-browse-overview.png)
+
+The card-level badge on the Library screen is the dataset's median; the
+**Low HPS** filter chip (Library and Browse-mode toolbar) and the smart
+filter on the Library screen both key off that same 0.27 line. A red or
+amber pill isn't a verdict on its own — it's a flag to open Details and look
+at the actual image before deciding whether to exclude it.
+
+### State pills and badges
+
+Every tile carries the same three-letter **H / C / M** readiness pills
+(Harmonized / Captioned / Masked) as the Library card, but per-image instead
+of per-dataset — hover any pill for a tooltip explaining exactly why it's lit
+or grey (Harmonized means the file already matches the dataset's majority
+aspect ratio **and** needs no outstanding crop; a file still waiting on Crop
+all reads as un-harmonized even if its ratio already matches). An **OVR**
+badge in the corner marks a tile with a saved Edit-mode overlay; on edit
+(paired) datasets, a pair badge shows the control-slot count or an amber
+**UNPAIRED** warning when a target has no control image and would be skipped
+at training time.
+
+### Exclude — skip an image without deleting it
+
+Every tile's action row carries an exclude toggle (the crossed-out warning
+icon) alongside pin / adjust / crop / delete. Excluding an image keeps it and
+its caption and mask on disk untouched — it just gets skipped at training
+time, and the tile dims to signal that. It's the reversible middle ground
+between "keep it" and **Delete entry** (which removes the file for good):
+exclude anything you're unsure about, come back to it later, and use
+**Enable all** in the Browse toolbar as the bulk undo. The **Excluded** filter
+chip isolates everything currently skipped so a pass doesn't get lost in the
+full grid.
+
+### Reading the two review surfaces together
+
+The **Analyze** modal (below) is where you read the dataset in aggregate —
+distributions, near-duplicate clusters, and the caption vocabulary's own
+Top-terms / Orphan-tags / Contradictions view. **Mask preview** (above) is
+where you check one mask's edge quality before trusting it. Between the tile
+pills, Analyze's Files/Caption tabs, and Mask preview, the workspace gives
+you dataset-wide, per-image and per-mask review without a fourth screen.
+
 ## Modals reachable from the Workspace
 
 ### Analyze

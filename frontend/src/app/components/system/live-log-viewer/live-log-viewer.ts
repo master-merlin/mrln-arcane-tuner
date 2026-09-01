@@ -151,7 +151,7 @@ const LEVEL_CHIPS: { key: Exclude<LogLevel, 'UNKNOWN'>; tone: string }[] = [
         .log-row:nth-child(even) { background: var(--color-terminal-row-alt); }
         .log-row[data-level="WARNING"]  { border-left-color: var(--color-warning); }
         .log-row[data-level="ERROR"]    { border-left-color: var(--color-danger); }
-        .log-row[data-level="CRITICAL"] { border-left-color: var(--color-danger); background: oklch(0.70 0.17 25 / 0.10); }
+        .log-row[data-level="CRITICAL"] { border-left-color: var(--color-danger); background: color-mix(in oklab, var(--color-danger) 10%, transparent); }
         .log-row .ln { flex: 0 0 auto; color: var(--color-text-disabled); font-size: 10px; user-select: none; min-width: 26px; text-align: right; }
         .log-row .lvl { flex: 0 0 auto; font-size: 9.5px; font-weight: 700; letter-spacing: 0.04em; min-width: 62px; white-space: nowrap; }
         .log-row .msg { flex: 1 1 auto; min-width: 0; color: var(--color-text-secondary); }

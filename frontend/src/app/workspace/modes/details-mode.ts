@@ -218,11 +218,11 @@ import type { DatasetPair } from '../../services/dataset';
         }
         .footer-action.brand:hover { background: oklch(0.68 0.13 55 / 0.22); }
         .footer-action.danger {
-            background: oklch(0.70 0.17 25 / 0.12);
+            background: color-mix(in oklab, var(--color-danger) 12%, transparent);
             color: var(--color-danger);
-            border-color: oklch(0.70 0.17 25 / 0.28);
+            border-color: color-mix(in oklab, var(--color-danger) 28%, transparent);
         }
-        .footer-action.danger:hover { background: oklch(0.70 0.17 25 / 0.25); }
+        .footer-action.danger:hover { background: color-mix(in oklab, var(--color-danger) 25%, transparent); }
         /* Exclude toggle — matches the Analyze modal's pattern. */
         .footer-action.exclude {
             background: var(--color-surface-mid);

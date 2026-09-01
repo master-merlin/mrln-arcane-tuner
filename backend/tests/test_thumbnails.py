@@ -340,7 +340,14 @@ def test_invalidate_also_drops_this_source_legacy_flat_renditions(tmp_path):
 
 
 def test_purge_legacy_layout_clears_orphans_and_spares_live_renditions(tmp_path):
-    """Orphans are removed on the first scan, not left to accumulate."""
+    """Orphans are removed on the first scan, not left to accumulate.
+
+    Every file here is one the sweep can name a reason for, which is why they
+    all still go (LANE-53 only spared what it cannot classify): three hold
+    ``b"orphan"`` rather than image bytes, so provenance cannot be proved and
+    adoption refuses them, and ``a@512`` is superseded by the live ``512/``
+    rendition beside it.
+    """
     _make_image(tmp_path / "a.jpg")
     live = thumbnails.ensure_thumbnail(str(tmp_path), "a.jpg", 512)
     assert live is not None and live.exists()
@@ -355,14 +362,15 @@ def test_purge_legacy_layout_clears_orphans_and_spares_live_renditions(tmp_path)
     for p in orphans:
         p.write_bytes(b"orphan")
 
-    removed = thumbnails.purge_legacy_layout(str(tmp_path))
+    outcome = thumbnails.purge_legacy_layout(str(tmp_path))
 
-    assert removed == len(orphans)
+    assert outcome.removed == len(orphans)
+    assert outcome.adopted == 0
     assert [p for p in orphans if p.exists()] == []
     assert live.exists(), "the purge reached into a per-size directory"
     # Idempotent: nothing left to do on the next scan.
-    assert thumbnails.purge_legacy_layout(str(tmp_path)) == 0
+    assert thumbnails.purge_legacy_layout(str(tmp_path)) == (0, 0, 0)
 
 
 def test_purge_legacy_layout_is_a_noop_without_a_cache(tmp_path):
-    assert thumbnails.purge_legacy_layout(str(tmp_path)) == 0
+    assert thumbnails.purge_legacy_layout(str(tmp_path)) == (0, 0, 0)

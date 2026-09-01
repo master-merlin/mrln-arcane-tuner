@@ -102,6 +102,32 @@ describe('ThumbnailMigrationBanner', () => {
         expect(text(fixture)).not.toMatch(/rescan/i);
     });
 
+    /**
+     * LANE-53. This copy used to read "this only deletes files nothing reads",
+     * which described `purge_legacy_layout` accurately and sold the user the
+     * exact action that cost him the 38.69 s first view the banner is about:
+     * the sweep now ADOPTS what it can prove and deletes the remainder, so a
+     * sentence promising deletion-only is a claim about code that is no longer
+     * true. Pinned as a pair — the operation the sweep performs must be named,
+     * and the one it no longer performs must not be, or the copy can drift
+     * back to either half on its own.
+     */
+    it('says the sweep moves tiles, and never promises a delete-only pass', () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        http.expectOne(SURVEY_URL).flush({
+            datasets: [{ name: 'alpha', files: 4, bytes: 2048 }],
+            dataset_count: 1, total_files: 4, total_bytes: 2048,
+        });
+        fixture.detectChanges();
+
+        const copy = text(fixture);
+        expect(copy).toMatch(/moves every tile it can prove/i);
+        expect(copy).toMatch(/rebuilt from the full-size source/i);
+        expect(copy).not.toMatch(/only deletes/i);
+        expect(copy).not.toMatch(/can be reclaimed/i);
+    });
+
     it('gates on the server total, not on the length of the list', () => {
         const { fixture, http } = setup();
         fixture.detectChanges();

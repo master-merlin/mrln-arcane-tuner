@@ -690,10 +690,12 @@ class DatasetManager:
 
         dataset.missing = False
 
-        # One-shot cleanup of the pre-`<edge>/` flat thumbnail layout. Those
-        # renditions are unreachable now (their names encoded the size with a
-        # `@`, which collided across sources); this is where they stop
-        # accumulating. No-op after the first scan of a dataset.
+        # One-shot migration off the pre-`<edge>/` flat thumbnail layout. Those
+        # renditions are unaddressable now (their names encoded the size with a
+        # `@`, which collided across sources), but they are not worthless: the
+        # sweep ADOPTS every one whose provenance it can prove into `<edge>/`
+        # and deletes only the rest (LANE-53). This is where the flat layout
+        # stops accumulating. No-op after the first scan of a dataset.
         from app.core.dataset import thumbnails
 
         thumbnails.purge_legacy_layout(dataset.path)

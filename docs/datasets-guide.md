@@ -96,7 +96,7 @@ Hovering a card reveals its action row:
 | **Analyze dataset** | Opens the Analyze modal — distributions, near-duplicates, per-file table, Harmonize, Crop all. |
 | **Cache administration** | Opens the Cache modal. Disabled ("No cache data") when the dataset has never been cached. |
 | **Download as zip** | Streams a plain zip of the dataset's files. |
-| **Export (portable zip + metadata)** | Opens the export-options modal — choose which extra data (captions, masks, templates) rides along, per group. |
+| **Export (portable zip + metadata)** | One click, no picker — downloads the dataset's own portable archive (see "Move on" below). |
 | **Upload images to this dataset** | Adds files to the existing dataset (matches the same import path as drag-and-drop). |
 | **Delete from library** | Opens the delete confirm (see below). Rewrites nothing until you confirm. |
 
@@ -566,6 +566,53 @@ color grade, a denoise pass or an upscale you tuned on one photo gets applied
 consistently across a dataset without re-tuning it per image. Only images
 with an existing overlay recipe appear as sources; targets already carrying
 an overlay are flagged (they will be overwritten) but not excluded.
+
+## Move on — export, train, and where the LoRA lands
+
+Once a dataset reads clean in Validate, there are two ways to move it
+forward: take it out of the app, or take it into a training run.
+
+### Export — a portable archive
+
+**Download as zip** (Library card actions, above) streams a plain zip of the
+files as they sit on disk — no manifest, just the folder contents. **Export
+(portable zip + metadata)** is the one you want for round-tripping into
+another install or another machine: it's a single click with no picker, and
+it packages the dataset's own folder — images, captions (both the general
+`.txt` files and any `captions/<definition>/` variants), masks, control
+images and any saved Edit-mode overlays — plus a `manifest.json` describing
+the dataset's database fields (name, category, trigger word, tags,
+description, notes, and so on). Two things never ride along: the
+`.cache`/`.thumbnails` folders (derived data that regenerates on first use)
+and anything that only makes sense on the machine that made it — the
+dataset's internal id, its filesystem path, and its cache/scan bookkeeping
+reset on the receiving end. The Library toolbar's **Import Dataset** button
+reads that same manifest back in, so a
+dataset exported from one install lands ready to browse — not re-imported
+from scratch — on another.
+
+### Selecting a dataset into a training run
+
+The Training screen's per-dataset row (its **Concepts** group) is where a
+prepared dataset actually gets used: pick it by name from a dropdown that's
+scoped to the datasets attached to the current project (or, outside a
+project, every dataset in the library), then set a caption prefix and a
+caption-dropout rate for that dataset specifically. A training config can
+carry more than one dataset row — each with its own prefix and dropout — so
+several curated datasets can feed one run without merging their folders.
+Nothing here duplicates files: the trainer reads straight from the dataset's
+own folder, which is why the curation work above (harmonize, caption, mask,
+exclude) has to be finished before the run starts, not after.
+
+### Where a finished LoRA lands
+
+A training run writes its checkpoints to
+`outputs/<lora name>_<model family>/`, named from the job's own LoRA name
+and the model family it trained against — not the dataset's name, since one
+dataset can feed runs against several families. The Jobs screen is where you
+get the file back out: each checkpoint row carries a **Download LoRA
+.safetensors** action, so you don't need to go find the output folder on
+disk to use what you trained.
 
 ## Recipes
 

@@ -418,6 +418,11 @@ Group the datasets, templates and job history for one LoRA effort so you stop re
 
 ---
 
+### 🧩 Templates
+A saved configuration you reuse instead of re-deciding it every time — a caption system prompt, masking parameters, a training config per model family, or a set of adaptive-targeting knobs. Created where you tune it (the Datasets tab's caption/masking settings, the Training screen's Template Selection and Adaptive Layer Targeting cards) and listed together on one `/templates` screen, Global or scoped to a project, with per-row edit / edit-JSON / branch / delete plus export and import (single template or a filtered bundle, with an import plan that flags name clashes and missing model definitions first). See [`docs/templates-guide.md`](docs/templates-guide.md).
+
+---
+
 ### 🤖 AI Services
 
 Integrated AI models for automated dataset annotation, running as GPU-backed batch services:

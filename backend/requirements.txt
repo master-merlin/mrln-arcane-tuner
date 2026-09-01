@@ -22,6 +22,7 @@ diffusers==0.40.0
 dill==0.4.0  # HELD with multiprocess below. Dependabot #18 proposed 0.4.1 and the install FAILS: multiprocess 0.70.19 declares dill>=0.4.1 while datasets 4.5.0 declares dill<0.4.1, so the pair cannot both move while datasets is pinned here. datasets 5.0.1 widens it to dill<0.4.2 — that bump is the unblocker, and it is a major, so it is its own decision.
 duckduckgo_search==8.1.1
 einops==0.8.2
+execnet==2.1.2  # pytest-xdist's only dependency (LANE-63)
 fastapi==0.141.1
 filelock==3.32.4
 flatbuffers==25.12.19
@@ -90,6 +91,12 @@ pyreadline3==3.5.6; sys_platform == 'win32'
 # declares both pins — see its own line for why that one is inert.)
 pytest==9.1.1
 pytest-asyncio==1.4.0
+# Test-only (DECISION-27, LANE-63): the gate runs `-n auto --dist loadgroup`;
+# pytest.ini stays serial-default. Exact pin because "latest compatible" is a
+# resolver outcome, not a tested pair — the pair is smoke-tested by
+# test_xdist_pair_smoke.py, which goes red if a pytest bump breaks xdist's hooks
+# instead of letting the gate quietly fall back to one worker.
+pytest-xdist==3.8.0
 python-dateutil==2.9.0.post0
 python-multipart==0.0.32
 pytorch_optimizer==3.10.1

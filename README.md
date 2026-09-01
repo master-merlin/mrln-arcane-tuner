@@ -449,7 +449,7 @@ Supports batch mass-apply across entire datasets.
 
 ### ⚙️ Training Configuration
 
-Training is configured through a **dynamic JSON Schema-driven UI** — the form auto-generates from model-family definitions, so new fields appear automatically without frontend code changes.
+Training is configured through a **dynamic JSON Schema-driven UI** — the form auto-generates from model-family definitions, so new fields appear automatically without frontend code changes. See [`docs/training-guide.md`](docs/training-guide.md) for the full storyline: picking a model, attaching datasets, reading the VRAM estimate, Adaptive Layer Targeting, and every field on the form grouped as the screen groups them.
 
 #### Supported Model Families
 

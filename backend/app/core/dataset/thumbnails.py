@@ -13,10 +13,11 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import NamedTuple
 
 import structlog
 
-from app.core.dataset.media_types import VIDEO_EXTENSIONS
+from app.core.dataset.media_types import MULTIMEDIA_EXTENSIONS, VIDEO_EXTENSIONS
 
 logger = structlog.get_logger(__name__)
 
@@ -45,6 +46,13 @@ ALLOWED_MAX_EDGES = (256, 512, 1024, 1536)
 # thumbnail path mirrors the canonical video set instead of an mp4-only
 # literal that silently skipped webm/mkv/avi clips.
 _VIDEO_EXTS = VIDEO_EXTENSIONS
+# What :func:`_flat_stem` puts between the components of a subdirectory
+# source's path. Defined once because :func:`purge_legacy_layout` reads it as
+# evidence: a leftover flat name containing it can only have come from a source
+# BELOW the dataset root, which no enumerator here walks, so the purge must not
+# conclude that such a name is orphaned. If these two drift, the purge starts
+# deleting renditions of files it never looked for.
+_FLAT_STEM_SEP = "__"
 
 
 def thumbnail_dir(dataset_path: str) -> Path:
@@ -62,7 +70,9 @@ def _flat_stem(rel_path: str) -> str:
     survives into a path component of ours.
     """
     p = Path(rel_path.replace("\\", "/"))
-    return "__".join((*p.parent.parts, p.stem)) if p.parent.parts else p.stem
+    if not p.parent.parts:
+        return p.stem
+    return _FLAT_STEM_SEP.join((*p.parent.parts, p.stem))
 
 
 def thumbnail_path_for(
@@ -216,36 +226,176 @@ def legacy_layout_survey(dataset_path: str) -> tuple[int, int]:
     return len(files), total
 
 
-def purge_legacy_layout(dataset_path: str) -> int:
-    """Delete flat-layout renditions left behind by the pre-``<edge>/`` scheme.
+def _iter_thumbnailable_sources(dataset_path: str) -> list[str] | None:
+    """Return the ``rel_path`` of every source in this dataset that owns a name.
 
-    Only files DIRECTLY inside ``.thumbnails/`` are removed; every current
+    Deliberately the SAME enumeration rule as the scan's own
+    (``DatasetManager._prepare_scan``: one non-recursive ``scandir`` of the
+    dataset root, files only, dot/tilde names skipped, extension in
+    ``MULTIMEDIA_EXTENSIONS``) and off the SAME constant, so "which files this
+    dataset contains" cannot mean two things. Non-recursive is not a shortcut
+    here — it is the scan's contract, which is why a flat rendition whose name
+    carries :data:`_FLAT_STEM_SEP` is one this function is *known* not to
+    cover, and :func:`purge_legacy_layout` treats it as unclassified rather
+    than as an orphan.
+
+    Audio is included even though it never had a thumbnail: a name it composes
+    is a name a root-level image of the same stem would compose too (the flat
+    stem drops the extension), so including it can only ever spare a file, and
+    the destination it would adopt to is the same one either way.
+
+    ``None`` (not ``[]``) when the root cannot be listed, and the distinction
+    is the difference between a reclaim and a wipe: an EMPTY dataset legitimately
+    owns none of its flat renditions and they are all orphans, while an
+    UNREADABLE one has told us nothing and every leftover must be kept.
+    Collapsing the two would let a momentary listing failure delete the whole
+    cache of a perfectly healthy dataset.
+    """
+    try:
+        with os.scandir(dataset_path) as it:
+            entries = list(it)
+    except OSError as e:
+        logger.warning(
+            "thumbnail_legacy_sources_unreadable", path=dataset_path, error=str(e),
+        )
+        return None
+    return [
+        e.name for e in entries
+        if not e.name.startswith((".", "~"))
+        and os.path.splitext(e.name.lower())[1] in MULTIMEDIA_EXTENSIONS
+        and e.is_file(follow_symlinks=False)
+    ]
+
+
+class LegacyLayoutOutcome(NamedTuple):
+    """What :func:`purge_legacy_layout` did to one dataset's flat renditions.
+
+    Three counts and not one, because "reclaimed" and "adopted" are opposite
+    things happening to the same bytes and the user is owed the difference:
+    ``adopted`` renditions were MOVED into ``<edge>/`` and are now serving
+    tiles, ``removed`` ones were deleted, ``kept`` ones were left exactly where
+    they are. ``adopted + removed + kept`` equals what
+    :func:`legacy_layout_survey` counted, so nothing the user was shown can
+    silently go missing.
+    """
+
+    adopted: int
+    removed: int
+    kept: int
+
+
+def purge_legacy_layout(dataset_path: str) -> LegacyLayoutOutcome:
+    """Adopt every flat-layout rendition it can, then delete only the rest.
+
+    Only files DIRECTLY inside ``.thumbnails/`` are considered; every current
     rendition lives one level deeper in ``<edge>/``, so this cannot touch a
-    live cache. Called once per dataset scan — the orphans go away on the
-    first scan after the upgrade instead of accumulating forever, and the
-    renditions the user still looks at are regenerated on demand.
+    live cache. Driven once per dataset scan, and across the whole library by
+    `app/api/dataset/thumbnail_routes.py` for datasets that are never scanned
+    again.
 
-    This IS the whole migration, and unlinking is all of it: nothing reads a
-    flat rendition any more (``thumbnail_path_for`` cannot name one), so the
-    pixels served were already correct and no rehash, rescore or rescan is
-    implied. `app/api/dataset/thumbnail_routes.py` drives it across the
-    library for datasets that are never scanned again.
+    **LANE-53 — this used to be `unlink` and nothing else, and that was the
+    defect.** LANE-40 established that a flat rendition is unreachable and
+    priced the remedy accordingly; unreachable says nothing about what the
+    reader does instead, and what it does instead is decode the full-size
+    source. So the sweep offered to reclaim a few hundred MB and, in doing so,
+    guaranteed the 38.69 s first view (MEASURED, 25 media / 621 MB of source)
+    that :func:`_adopt_legacy_rendition` exists to prevent — and it did it
+    *before* the read path ever got the chance, because a user who is told
+    about dead bytes presses the button before he opens the dataset. **A
+    remedy that makes the reported problem permanent is not a remedy.**
 
-    Returns the number of files removed (0 when there is nothing to do).
+    Three passes, in this order, and the order is load-bearing:
+
+    1. **Claim.** For every source × every allowed edge, compose the ONE flat
+       name that source+size was written to (:func:`_legacy_path_for`) and, if
+       it is on disk, hand it to :func:`_adopt_legacy_rendition` — the same
+       function, with the same two gates, that a first view uses. There is no
+       second implementation of the gates to drift (RULE-21).
+    2. **Re-list.** Whatever the claim pass adopted is gone from the directory,
+       so the survivors are read from disk rather than reasoned about. That is
+       what makes the outcome independent of the order the sources were
+       enumerated in: ``foo@1024.webp`` is a name BOTH ``foo.png``@1024 and
+       ``foo@1024.png``@256 compose, and whichever asks first, only the one
+       whose pixel size matches can take it.
+    3. **Classify.** A survivor is deleted only when this function can say why:
+
+       * *refused* — a known source claimed the name and every claimant's gates
+         said no (stale, or the pixels are not that size). No read path will
+         ever adopt it either, so it is dead by construction.
+       * *residue* — a ``.webp.tmp`` from an interrupted write. Never a
+         complete rendition, whatever its name.
+       * *orphaned* — the root was READ, no source composes the name, and the
+         name carries no :data:`_FLAT_STEM_SEP`, so it can only have come from
+         a root-level source and that source is gone.
+
+       Everything else is **kept**. A name with ``__`` may belong to a
+       subdirectory source (``control/img.png`` → ``control__img.webp``) that
+       no enumerator here walks, and a root that would not list has told us
+       nothing about any name at all. *Uncertain is not a licence to delete* —
+       leaving a file costs its bytes, deleting it costs the decode this whole
+       lane exists to avoid. The count is reported, not swallowed.
     """
     root = thumbnail_dir(dataset_path)
+    entries = _iter_legacy_entries(dataset_path)
+    if not entries:
+        # The common case (already migrated, or no cache at all). Return before
+        # reading the dataset root: a migrated library must stay one directory
+        # read per dataset.
+        return LegacyLayoutOutcome(0, 0, 0)
+
+    sources = _iter_thumbnailable_sources(dataset_path)
+    on_disk = {e.name for e in entries}
+    claimed: set[str] = set()
+    adopted = 0
+    for rel_path in sources or ():
+        for edge in ALLOWED_MAX_EDGES:
+            legacy_name = _legacy_path_for(dataset_path, rel_path, edge).name
+            if legacy_name not in on_disk:
+                continue
+            claimed.add(legacy_name)
+            if _adopt_legacy_rendition(
+                dataset_path,
+                rel_path,
+                edge,
+                os.path.join(dataset_path, rel_path),
+                thumbnail_path_for(dataset_path, rel_path, edge),
+            ):
+                adopted += 1
+
     removed = 0
+    kept = 0
     for entry in _iter_legacy_entries(dataset_path):
+        name = entry.name
+        if name in claimed:
+            reason = "refused"
+        elif name.endswith(".webp.tmp"):
+            reason = "residue"
+        elif _FLAT_STEM_SEP in name or sources is None:
+            # Possibly a subdirectory source's rendition, or the root would not
+            # list at all and we know nothing about any of them. Not ours to
+            # judge either way.
+            kept += 1
+            continue
+        else:
+            reason = "orphaned"
         try:
             os.unlink(entry.path)
             removed += 1
         except OSError as e:
+            # It is still on disk, so it is kept — the counts describe the
+            # directory, not the intent.
+            kept += 1
             logger.warning(
-                "thumbnail_legacy_purge_failed", path=entry.path, error=str(e),
+                "thumbnail_legacy_purge_failed",
+                path=entry.path, reason=reason, error=str(e),
             )
-    if removed:
-        logger.info("thumbnail_legacy_layout_purged", path=str(root), removed=removed)
-    return removed
+
+    if adopted or removed or kept:
+        logger.info(
+            "thumbnail_legacy_layout_purged",
+            path=str(root), adopted=adopted, removed=removed, kept=kept,
+        )
+    return LegacyLayoutOutcome(adopted, removed, kept)
 
 
 def generate_thumbnail(
@@ -384,9 +534,18 @@ def _adopt_legacy_rendition(
     renditions measured in that library were exactly that, so the gate does
     fire. Failing the gate is not an error: the caller regenerates.
 
+    Refuses outright when *dst_path* already exists. `ensure_thumbnail` returns
+    before it ever gets here in that case, but :func:`purge_legacy_layout`
+    sweeps sources it has not read, and ``os.replace`` would overwrite a live
+    ``<edge>/`` rendition with an older flat one — a cache going BACKWARDS in
+    time. The check belongs here, next to the write it protects, and not at
+    each call site that has to remember it.
+
     Returns ``True`` only when *dst_path* now holds the adopted bytes.
     """
     legacy_path = _legacy_path_for(dataset_path, rel_path, max_edge)
+    if dst_path.exists():
+        return False
     try:
         legacy_mtime = legacy_path.stat().st_mtime_ns
         source_mtime = os.stat(src_path).st_mtime_ns

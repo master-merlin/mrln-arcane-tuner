@@ -179,16 +179,28 @@ def test_survey_does_not_walk_the_dataset_tree(tmp_path, monkeypatch):
 
 
 def test_survey_and_purge_share_one_predicate(tmp_path):
-    """The count the user is shown and the count that is deleted are the same
+    """The count the user is shown and the count the sweep acts on are the same
     number, produced by the same enumerator — a survey that drifts from the
-    purge would promise a reclaim it does not perform."""
+    sweep would promise a migration it does not perform.
+
+    **AMENDED BY LANE-53.** This asserted ``surveyed == removed``, which was
+    true and was the wrong contract: it can only hold if the sweep deletes
+    everything it sees, which is the defect. Every surveyed file is still
+    accounted for, but now by one of three outcomes — here the four real
+    renditions are ADOPTED (the 64 px sources make ``@1024`` a downscale to
+    64 px, so only the default size proves out) and only the temp residue is
+    deleted. The arithmetic is pinned exhaustively in
+    ``test_thumbnail_purge_adoption.py``.
+    """
     ds = _legacy_dataset(tmp_path / "ds", stems=("foo", "bar"))
     _webp(ds / ".thumbnails" / "stale.webp.tmp", RED)
 
     surveyed, _ = thumbnails.legacy_layout_survey(str(ds))
-    removed = thumbnails.purge_legacy_layout(str(ds))
+    outcome = thumbnails.purge_legacy_layout(str(ds))
 
-    assert surveyed == removed == 5
+    assert surveyed == 5
+    assert outcome.adopted + outcome.removed + outcome.kept == surveyed
+    assert outcome.adopted == 2, "the sweep destroyed renditions it could adopt"
     assert thumbnails.legacy_layout_survey(str(ds)) == (0, 0)
 
 
@@ -197,7 +209,7 @@ def test_purge_spares_live_renditions_of_a_migrated_dataset(tmp_path):
     live = ds / ".thumbnails" / "256" / "baz.webp"
     before = live.read_bytes()
 
-    assert thumbnails.purge_legacy_layout(str(ds)) == 0
+    assert thumbnails.purge_legacy_layout(str(ds)) == (0, 0, 0)
     assert live.read_bytes() == before
 
 
@@ -295,12 +307,22 @@ def _pixel_of_response(payload: bytes) -> tuple[int, int, int]:
         return im.convert("RGB").getpixel((5, 5))
 
 
-def test_migrate_route_reclaims_the_bytes_and_leaves_migrated_data_alone(
+def test_migrate_route_moves_what_it_can_and_reclaims_the_rest(
     client, tmp_path, monkeypatch,
 ):
-    """End to end on observable output: bytes gone from the legacy datasets,
-    byte-identical renditions on the already-migrated one, and the sources
-    still serving correct pixels afterwards."""
+    """End to end on observable output: the flat layout is gone from the legacy
+    dataset, the already-migrated one is byte-identical, and the tiles the
+    sweep could prove are now SERVING rather than deleted.
+
+    **RENAMED AND REWRITTEN BY LANE-53** — was
+    ``..._reclaims_the_bytes_and_leaves_migrated_data_alone``, whose last line
+    asserted ``_near(..., BLUE)``: that the tile served after the sweep is the
+    SOURCE's colour, i.e. that the sweep had thrown the cached rendition away
+    and the next view re-derived it. It passed for two months and it is the
+    defect stated as the contract — the button the user was offered to fix his
+    slow first view was the thing guaranteeing it. The tracer is RED here for
+    exactly one reason: only adopted bytes can be red.
+    """
     from app.core.tasks.task_manager import task_manager
 
     legacy = _legacy_dataset(tmp_path / "a", stems=("foo", "bar"))
@@ -326,7 +348,14 @@ def test_migrate_route_reclaims_the_bytes_and_leaves_migrated_data_alone(
 
     assert _flat_webp_bytes(legacy) == 0
     assert live.read_bytes() == live_before, "a migrated dataset must be untouched"
-    assert _near(_pixel(thumbnails.ensure_thumbnail(str(legacy), "foo.png")), BLUE)
+
+    for stem in ("foo", "bar"):
+        served = thumbnails.ensure_thumbnail(str(legacy), f"{stem}.png")
+        assert served == legacy / ".thumbnails" / "256" / f"{stem}.webp"
+        assert _near(_pixel(served), RED), (
+            f"{stem}'s tile is the source's colour — the sweep destroyed the "
+            "rendition and the view re-derived it, which is LANE-53's defect"
+        )
 
 
 def test_migrate_route_is_single_flight(client, tmp_path, monkeypatch):

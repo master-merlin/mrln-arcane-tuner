@@ -5,12 +5,14 @@
             <span class="tmb-title" data-testid="thumb-migration-summary">
                 {{ survey()!.dataset_count }}
                 {{ survey()!.dataset_count === 1 ? 'dataset holds' : 'datasets hold' }}
-                stale thumbnail files from an older cache layout
+                thumbnail files from an older cache layout
             </span>
             <span class="tmb-sub">
                 <span class="mono">{{ survey()!.total_bytes | formatBytes }}</span>
-                can be reclaimed ({{ survey()!.total_files }} files). Your dataset covers are
-                already correct — this only deletes files nothing reads.
+                in {{ survey()!.total_files }} files the app cannot read yet. Your dataset
+                covers are already correct, but each one is rebuilt from the full-size
+                source until this runs — it moves every tile it can prove into the current
+                layout and deletes only the rest.
             </span>
         </div>
         <button
@@ -19,7 +21,7 @@
             [disabled]="busy()"
             data-testid="thumb-migration-run"
             (click)="migrate()">
-            {{ busy() ? 'Cleaning up…' : 'Clean up' }}
+            {{ busy() ? 'Repairing…' : 'Repair cache' }}
         </button>
     </div>
 }

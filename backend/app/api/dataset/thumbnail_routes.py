@@ -5,21 +5,25 @@ called :func:`purge_legacy_layout` from ``_prepare_scan``. That purge is
 correct and does nothing until a scan runs, so a library of datasets nobody
 rescans keeps its flat renditions forever.
 
-**What is and is not wrong with those datasets.** Their covers are *fine*:
-``thumbnail_path_for`` cannot name a flat file, so `ensure_thumbnail`
-regenerates from source and serves correct pixels (pinned by
-``test_a_legacy_rendition_is_unreachable_but_never_reclaimed``). What is wrong
-is that the flat files are unreachable AND unreclaimable — dead bytes with no
-read path and no delete path, and nothing in the app that says they exist.
+**What is and is not wrong with those datasets.** Their covers are *correct*:
+``thumbnail_path_for`` cannot name a flat file, so `ensure_thumbnail` falls
+back to the source. What is wrong is what that fallback COSTS — a full decode
+of a 25 MB source per tile, MEASURED at 38.69 s for one 25-image dataset — and
+LANE-40 shipped this sweep believing the answer was to delete the very bytes
+that make it unnecessary. It no longer does: :func:`purge_legacy_layout`
+adopts every rendition whose provenance it can prove into ``<edge>/`` and
+deletes only what it can name a reason for (LANE-53). **The sweep is now a
+repair, and the reclaim is the part that is left over.**
 
-So this is a **disk reclaim, not a rescan**, and the distinction is the whole
-design: a rescan rehashes and rescores every file, which would put minutes of
-GPU/CPU work behind a button whose entire job is ``unlink``. The routes here
+It is still **not a rescan**, and that distinction is the rest of the design:
+a rescan rehashes and rescores every file, which would put minutes of GPU/CPU
+work behind a button that moves files within one directory. The routes here
 never scan, never touch the database, and never broadcast
 ``dataset.invalidated`` — no counter, no ``media_metadata`` key and no
-servable path changes, so fanning out N dataset refetches would cost the
-client a full reload for a zero observable delta. The client re-runs the
-survey when the task finishes instead.
+servable path changes (an adopted rendition lands on the path
+``thumbnail_path_for`` already names), so fanning out N dataset refetches
+would cost the client a full reload for a zero observable delta. The client
+re-runs the survey when the task finishes instead.
 """
 
 from __future__ import annotations
@@ -52,7 +56,10 @@ class ThumbnailLegacyEntry(BaseModel):
 
     name: str                               # dataset name (registry key)
     files: int                              # flat renditions found
-    bytes: int                              # reclaimable size, display-only
+    # Size the flat layout occupies, display-only. NOT a reclaim forecast:
+    # most of it is adopted rather than freed (LANE-53), and the split is only
+    # knowable per file, after the gates have run.
+    bytes: int
 
 
 class ThumbnailLegacySurveyResponse(BaseModel):
@@ -75,8 +82,8 @@ class ThumbnailMigrationStartedResponse(BaseModel):
 
     task_id: str                            # follow on the Task Center / /ws
     dataset_count: int                      # datasets the sweep will visit
-    files: int                              # flat renditions it expects to drop
-    bytes: int                              # bytes it expects to reclaim
+    files: int                              # flat renditions it will deal with
+    bytes: int                              # bytes those renditions occupy
 
 
 # ── Detection ────────────────────────────────────────────────────────────
@@ -130,36 +137,48 @@ def _live_migration_id() -> str | None:
 
 
 def run_thumbnail_migration(task_id: str, datasets: list[Dataset]) -> None:
-    """Purge the flat layout from each of *datasets*, one dataset per step.
+    """Migrate the flat layout of each of *datasets*, one dataset per step.
 
     Runs on the shared non-GPU ``background`` lane, so it is bounded twice
-    over: the work is a fixed list of directory-entry removals decided before
-    the task was created (it cannot grow while running), and the cancel flag
-    is checked before every dataset, so the user can hand the lane back at any
-    step boundary. The per-dataset purge itself is the unit of interruption —
-    it is a handful of ``unlink`` calls and splitting it finer would buy
+    over: the work is a fixed list of datasets decided before the task was
+    created (it cannot grow while running), and the cancel flag is checked
+    before every dataset, so the user can hand the lane back at any step
+    boundary. The per-dataset sweep itself is the unit of interruption — it is
+    a directory of renames and unlinks and splitting it finer would buy
     nothing.
+
+    ``ok`` counts every rendition the sweep DEALT WITH, adopted or removed,
+    because the Task Center's progress must not fall when a dataset turns out
+    to be salvageable. What actually happened to those files is the difference
+    between adopted and removed, which is what the log line and the follow-up
+    survey report — LANE-53: most of what this used to delete is a rename.
 
     Finalizes itself (complete / cancelled); a raised exception is left to the
     lane runner's failure path.
     """
     ok = 0
+    adopted = removed = kept = 0
     for index, dataset in enumerate(datasets):
         if task_manager.is_cancelled(task_id):
             logger.info(
                 "thumbnail_migration_cancelled",
                 task_id=task_id, done=index, total=len(datasets), files=ok,
+                adopted=adopted, removed=removed, kept=kept,
             )
             task_manager.finish_cancelled(task_id)
             return
-        removed = thumbnails.purge_legacy_layout(dataset.path)
-        ok += removed
+        outcome = thumbnails.purge_legacy_layout(dataset.path)
+        adopted += outcome.adopted
+        removed += outcome.removed
+        kept += outcome.kept
+        ok = adopted + removed
         task_manager.update(
             task_id, current=index + 1, item=dataset.name, ok=ok,
         )
     logger.info(
         "thumbnail_migration_complete",
         task_id=task_id, datasets=len(datasets), files=ok,
+        adopted=adopted, removed=removed, kept=kept,
     )
     task_manager.complete(task_id)
 
@@ -193,7 +212,7 @@ async def start_thumbnail_migration() -> ThumbnailMigrationStartedResponse:
     size = sum(b for _, _, b in rows)
     task = task_manager.create(
         type=TASK_TYPE,
-        title=f"Thumbnail cleanup · {len(datasets)} datasets",
+        title=f"Thumbnail cache repair · {len(datasets)} datasets",
         total=len(datasets),
     )
     task_manager.enqueue(

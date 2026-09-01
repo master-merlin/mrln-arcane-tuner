@@ -78,7 +78,7 @@ export class ThumbnailMigrationBanner {
                 this.taskId.set(null);
                 this.busy.set(false);
                 if (task.status === 'failed') {
-                    this.toast.error(`Thumbnail cleanup failed: ${task.error ?? 'unknown error'}`);
+                    this.toast.error(`Thumbnail cache repair failed: ${task.error ?? 'unknown error'}`);
                 }
                 this.refresh();
             });

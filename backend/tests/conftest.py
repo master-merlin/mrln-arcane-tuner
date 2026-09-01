@@ -66,8 +66,14 @@ def _isolate_test_logging():
     # Remove any remaining handlers (console, websocket) attached by setup_logging
     root.handlers = []
 
-    # Dedicated test log file — reset on each session
-    test_log_path = os.path.join(os.path.dirname(__file__), "tests.log")
+    # Dedicated test log file — reset on each session. Under pytest-xdist every
+    # worker is its own session, so the name carries the worker id
+    # (tests-gw3.log); serial = tests.log, unchanged (LANE-63, root conftest).
+    from pathlib import Path
+
+    from tests.support.worker_paths import worker_suffixed
+
+    test_log_path = str(worker_suffixed(Path(__file__).resolve().parent / "tests.log"))
     if os.path.exists(test_log_path):
         try:
             os.remove(test_log_path)

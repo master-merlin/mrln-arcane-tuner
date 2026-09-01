@@ -10,10 +10,26 @@ from typing import Any
 import structlog
 
 
-# Absolute path to backend/server.log, anchored to this file so it is independent
-# of the process CWD (whether the backend was launched via start_backend.bat,
-# uvicorn from the repo root, an IDE run config, or a restart subprocess).
-SERVER_LOG_PATH = Path(__file__).resolve().parents[2] / "server.log"
+def _resolve_server_log_path() -> Path:
+    """Where this process writes (and resets) its server log.
+
+    Default: ``backend/server.log``, anchored to this file so it is independent of
+    the process CWD (start_backend.bat, uvicorn from the repo root, an IDE run
+    config, a restart subprocess). ``MRLN_SERVER_LOG_PATH`` (ECOSYSTEM §6,
+    LANE-63) overrides it; its one producer is the test root conftest, which
+    diverts every pytest process — and every xdist worker — to its own file so a
+    test run never unlinks or appends to the log of a backend that is live on
+    this box. Read once at import: ``setup_logging`` runs at ``app.main`` import
+    time, so the seam has to be settled before then, which is exactly when the
+    root conftest sets it.
+    """
+    override = os.environ.get("MRLN_SERVER_LOG_PATH")
+    if override:
+        return Path(override).expanduser().resolve()
+    return Path(__file__).resolve().parents[2] / "server.log"
+
+
+SERVER_LOG_PATH = _resolve_server_log_path()
 
 # The PREVIOUS session's log. `setup_logging` MOVES `server.log` here instead of
 # deleting it, and that difference is the whole point (LANE-56, measured

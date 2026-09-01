@@ -191,6 +191,20 @@ describe('viewer-grid-view — tile header band is one laid-out row', () => {
         expect(band.querySelector('.hps-pill')!.className).toContain('shrink-0');
         expect(band.querySelector('[data-testid="tile-actions"]')!.className).toContain('shrink-0');
     });
+
+    it('keeps the filename start-aligned so truncation clips the END, never the front', () => {
+        // UAT 2026-09-02: with `text-center` on the truncating label, a name
+        // that overflowed its box was clipped on BOTH sides — the ellipsis
+        // marks only the end, so "alfa-romeo-…" rendered as "-romeo-…" with
+        // no sign anything was missing. Centred nowrap overflow is clipped
+        // symmetrically; only start-aligned text keeps the front visible.
+        // Alignment cannot be observed in jsdom (no layout), so the pin is
+        // the class contract itself.
+        const fixture = render([makePair(0)], 4, null);
+        const name = fixture.nativeElement.querySelector('[data-testid="tile-filename"]')!;
+        expect(name.className).toContain('truncate');
+        expect(name.className).not.toContain('text-center');
+    });
 });
 
 describe('viewer-grid-view — column count is capped by the measured width', () => {

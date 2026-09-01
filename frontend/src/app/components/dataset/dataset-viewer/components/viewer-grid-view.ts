@@ -188,6 +188,12 @@ export interface GridCropRequest {
                                   what shipped. The rails carry NO min-w-0, and the pill
                                   and the button row are shrink-0, so a rail can never be
                                   squeezed below its content and re-create the overlap.
+                                  The label must stay START-aligned: centred nowrap text
+                                  that overflows its box is clipped on BOTH ends, and
+                                  text-overflow only marks the end — a text-center here
+                                  silently ate the front of every filename once the band
+                                  tightened (UAT 2026-09-02). Alignment is invisible
+                                  while the name fits, because the box hugs the text.
                                   The band is pointer-events-none so clicks still reach
                                   the thumbnail; only the pill and the buttons take them. -->
                              <div class="absolute top-2 left-2 right-2 z-20 flex items-start gap-2 pointer-events-none"
@@ -201,7 +207,7 @@ export interface GridCropRequest {
                                     </span>
                                  }
                               </div>
-                              <div class="min-w-0 bg-surface-low/80 text-text-primary text-[10px] px-2 py-0.5 rounded-theme-md border border-border-subtle font-mono truncate text-center"
+                              <div class="min-w-0 bg-surface-low/80 text-text-primary text-[10px] px-2 py-0.5 rounded-theme-md border border-border-subtle font-mono truncate"
                                    data-testid="tile-filename"
                                    [title]="pair.media_file">
                                   {{ pair.media_file }}

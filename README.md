@@ -368,17 +368,28 @@ Automatic directory scanning with image–caption pairing. Supports `.png`, `.jp
 The library card and workspace details footer both need one representative image, and by default that's just whatever the scanner enumerates first. A pin control (left of *Adjust image* in a grid tile's top-right cluster, left of *Adjust* in the details footer) lets you choose it instead — it's a toggle, so unpinning re-elects the automatic choice immediately. The pin is persisted (`datasets.preview_pinned`, `PUT /datasets/{name}/preview`) and **survives a rescan** — every scan used to overwrite the cover with the next enumerated file, which is what made pinning worth having in the first place. If the pinned file is later deleted, the next scan clears the pin and falls back rather than showing a hole. Library and workspace-grid covers are served from a sized thumbnail rendition, not the full training source.
 
 #### Image Manipulation
-A 9-stage non-destructive adjustment pipeline that processes images before training:
+A non-destructive adjustment pipeline, ten operations deep, that renders into
+a saved overlay rather than touching the source file until you explicitly
+Save, Bake in, or apply it to other images ("Mass edit"):
 
-| Stage                              | Controls                                                                  |
-| ---------------------------------- | ------------------------------------------------------------------------- |
-| Brightness, Contrast, Saturation   | Standard exposure adjustments                                             |
-| Hue                                | Global color rotation                                                     |
-| Curves                             | Per-channel Bézier curves (RGB + individual R/G/B) with dropdown presets  |
-| Stacked LUT                        | Apply `.cube` LUT files with adjustable strength blending                 |
-| HSL                                | Selective hue/saturation/lightness control per color range                |
-| Sharpness                          | Detail enhancement                                                        |
-| Noise                              | Grain control                                                             |
+| Stage                | Controls                                                                  |
+| -------------------- | -------------------------------------------------------------------------- |
+| White Balance         | Temperature / tint                                                        |
+| Curves                | Per-channel Bézier curves (master + individual R/G/B)                     |
+| Color & Tone          | Hue rotation, saturation, contrast                                        |
+| HSL                   | Selective hue/saturation/lightness control per color range                |
+| Sharpen               | Unsharp mask / kernel / high-pass, with radius, amount and threshold      |
+| Vignette              | Amount, midpoint, feather, circular or rectangular shape                  |
+| Lens                  | Barrel distortion and vertical/horizontal keystone correction, auto-crop  |
+| Stacked LUT           | Apply `.cube` LUT files, tetrahedral interpolation, adjustable strength   |
+| Color Match           | Match tone/color to a reference image (CDF or wavelet method); always applies first, not reorderable |
+
+Three further stages run a model rather than a formula, so results can vary
+run to run — Denoise, Face Restore and Upscale (restoration/upscale models
+you supply, tile-based). Every enabled operation is individually toggleable
+and drag-reorderable (except Color Match). Cropping is a **separate,
+destructive** editor — it changes the image's aspect-ratio bucket, so it is
+not part of this pipeline.
 
 All adjustments include a real-time canvas preview with live histogram visualization.
 

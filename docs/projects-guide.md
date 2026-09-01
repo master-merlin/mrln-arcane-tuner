@@ -1,27 +1,37 @@
 # Projects
 
-A project groups the things that belong to one LoRA effort — the datasets you
-train from, the caption/mask/training templates you tuned for them, and the
-job history that resulted — so you don't have to re-pick the same dataset and
-re-configure the same training settings every time you start a new run for
-the same subject.
+A project is a reusable way of working, not a folder for one LoRA. The thing
+that makes it durable is configuration, not data: branch a caption template,
+a mask template, and a training template per model family into a project
+once, tuned to how a particular client or subject wants their LoRAs done, and
+those branches stay put in the project's own template rows independent of
+any dataset. Datasets pass through — link one in, train from it, unlink it
+when you're done — while the project keeps the decisions. Two clients who
+each want their captions written a certain way and their training tuned for
+two different model families can each have a project that remembers that;
+when either one comes back with a new batch of photos, you link the new
+dataset in and nothing else has to be re-decided.
 
 ## What you can actually do with it
 
+- Branch a global caption/mask/training/adaptive-targeting template into the
+  project so it's tuned for this client or subject without touching the
+  shared original — and keep more than one training template per project
+  (one per model family you train this client against; templates are keyed
+  by project **and** model definition, so they don't collide).
 - Create a project, link one or more existing datasets to it (or create a
   dataset directly inside it), and everything downstream — Training, Quick
   Train, the Analyze panel — can be scoped to just that project instead of
   your whole library.
-- Branch a global caption/mask/training/adaptive-targeting template into the
-  project so you can tune it for this subject without touching the shared
-  original.
 - Launch a training run in three steps from a project's Quick Train tab
-  without leaving the page, or hand the same picks to the full Training
-  screen for finer control.
+  without leaving the page, picking up whichever branched template already
+  matches the dataset's model family, or hand the same picks to the full
+  Training screen for finer control.
 - Export a project (its branched templates plus its datasets, chosen
   per-dataset as embedded / referenced / excluded) as one portable zip, and
   import it — or a lone dataset zip, or a lone template zip — back in through
-  the same wizard.
+  the same wizard, so a client's whole way-of-working travels to another
+  machine intact.
 - See, at a glance, how many datasets, templates and active jobs belong to
   each project, and how many runs it has produced.
 
@@ -166,15 +176,21 @@ you're returned to the Projects list.
 
 ## Recipes
 
-**Start a new LoRA effort from scratch.** New project → name it and pick a
-color → Datasets tab → New dataset (or Link existing) → Templates tab →
-Branch a caption/mask/training template if the global default needs tuning
-for this subject → Quick Train.
+**Set up a client once.** New project → name it and pick a color → Templates
+tab → Branch a caption template for how they like things captioned, and a
+training template per model family you train them against (each one keyed to
+its own model definition, so a second model's template doesn't overwrite the
+first). This is the work that only has to happen once per client.
 
-**Reuse a project's setup for a variant.** Export the project (templates as
-embed, datasets as reference so the zip stays small) → Import into a fresh
-project → the branched templates and dataset links come across; swap the
-linked dataset for the variant's.
+**A new dataset arrives.** Datasets tab → New dataset (or Link existing) →
+Quick Train, which already offers the project's own branched templates —
+nothing about captioning style or training settings needs deciding again.
+Repeat this recipe alone for every future batch from the same client.
+
+**Reuse a project's setup for a variant client.** Export the project
+(templates as embed, datasets as reference so the zip stays small) → Import
+into a fresh project → the branched templates come across; swap in the new
+client's dataset and adjust only what's actually different for them.
 
 **Clean up after a project is done.** Datasets tab → Remove all (datasets
 stay in the library, just unlinked) → Delete project from the header. Nothing

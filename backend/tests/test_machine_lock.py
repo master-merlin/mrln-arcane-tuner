@@ -206,9 +206,12 @@ def test_a_grouped_test_holds_its_group_lock_while_it_runs():
         raise RuntimeError("deliberate")
 
 
-def _child_pytest(lock_dir_: Path, *extra: str, raise_: bool) -> subprocess.CompletedProcess:
-    env = dict(os.environ, **{LOCK_DIR_ENV: str(lock_dir_)})
-    env.pop("PYTEST_XDIST_WORKER", None)
+def _child_pytest(lock_dir_: Path, *extra: str, raise_: bool,
+                  env_extra: dict | None = None) -> subprocess.CompletedProcess:
+    env = dict(os.environ, **{LOCK_DIR_ENV: str(lock_dir_)}, **(env_extra or {}))
+    # An invented worker id keeps the child's logs off the serial names the
+    # parent pytest may be holding open (see test_xdist_worker_isolation.py).
+    env["PYTEST_XDIST_WORKER"] = "gwLock"
     if raise_:
         env["MRLN_LOCK_PROBE_RAISE"] = "1"
     return subprocess.run(
@@ -243,13 +246,8 @@ def test_a_grouped_test_errors_naming_the_holder_when_the_bound_runs_out(tmp_pat
             assert time.time() < deadline, "A never took the lock"
             time.sleep(0.05)
         holder_pid = read_holder(p).pid  # see the launcher note above
-        env_timeout = {"MRLN_MACHINE_LOCK_TIMEOUT": "0.5"}
-        env = dict(os.environ, **{LOCK_DIR_ENV: str(tmp_path)}, **env_timeout)
-        env.pop("PYTEST_XDIST_WORKER", None)
-        proc = subprocess.run(
-            [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider",
-             f"{__file__}::test_a_grouped_test_holds_its_group_lock_while_it_runs"],
-            cwd=str(BACKEND), env=env, capture_output=True, text=True, timeout=300)
+        proc = _child_pytest(tmp_path, raise_=False,
+                             env_extra={"MRLN_MACHINE_LOCK_TIMEOUT": "0.5"})
         assert proc.returncode != 0
         assert "1 error" in proc.stdout or "1 failed" in proc.stdout, proc.stdout[-1500:]
         assert f"pid {holder_pid}" in proc.stdout, proc.stdout[-1500:]

@@ -19,7 +19,7 @@ import { TestBed } from '@angular/core/testing';
 import { of, Subject } from 'rxjs';
 import { settle } from '../../../testing/async';
 import { signal } from '@angular/core';
-import { AnalyzeModalComponent } from './analyze.component';
+import { AnalyzeModalComponent, harmonizedStem } from './analyze.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { DatasetService } from '../../services/dataset';
@@ -259,6 +259,41 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         expect(api.taskHarmonize).toHaveBeenCalled();
         expect(comp.harmonizeTaskId()).toBe('h1');
         expect(comp.harmonizing()).toBe(true);
+    });
+
+    /**
+     * LANE-54. From 117918e2 to 2026-08-31 this dialog said harmonize "crops
+     * them to the majority aspect ratio". It never has — cropping is the
+     * separate "Crop all" button beside it. The copy is pinned here, and each
+     * operation it names is pinned to the behaviour that performs it in
+     * `backend/tests/test_harmonize_confirm_contract.py`.
+     */
+    it('harmonize confirm describes what the backend actually does', () => {
+        const overlay = TestBed.inject(OverlayStore);
+        // Re-open with the name whose canonical stem the backend guard asserts
+        // on disk ("Aston Martin Valkyrie" -> aston_martin_valkyrie_00001.jpg).
+        overlay.openModal('analyze', { datasetName: 'Aston Martin Valkyrie' });
+        const { comp } = make();
+        const openSpy = vi.spyOn(overlay, 'openModal');
+        comp.harmonize();
+
+        const msg = (openSpy.mock.calls.at(-1)![1] as { message: string }).message;
+        expect(msg).toBe(
+            'Every image is converted to JPG and renamed to a canonical '
+            + '"aston_martin_valkyrie_00001.jpg" sequence; its caption, mask, masked copy '
+            + 'and control images are renamed with it. Pixels are not resized or cropped — '
+            + 'use "Crop all" for that. Audio pairs are left untouched. '
+            + 'This rewrites files on disk and cannot be undone.',
+        );
+        // The claim that was false for seven weeks, in the form it took.
+        expect(msg).not.toContain('majority aspect ratio');
+    });
+
+    it('harmonizedStem mirrors the backend snake-case rule', () => {
+        // Same transform as re.sub(r'[^a-zA-Z0-9]+', '_', name).strip('_').lower().
+        expect(harmonizedStem('Aston Martin Valkyrie')).toBe('aston_martin_valkyrie');
+        expect(harmonizedStem('  My-Set (v2)!  ')).toBe('my_set_v2');
+        expect(harmonizedStem('ds1')).toBe('ds1');
     });
 
     it('harmonize completion clears harmonizing and refetches', async () => {

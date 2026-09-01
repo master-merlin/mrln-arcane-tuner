@@ -269,7 +269,7 @@ export class SimilarImagesModalComponent implements OnInit {
         if (!name) return;
         this.overlay.openModal('confirm', {
             title: 'Delete this image?',
-            message: `${it.path} will be permanently removed, along with its caption and any masks. This cannot be undone.`,
+            message: `${it.path} will be permanently removed, along with its caption, mask, masked copy and control images. This cannot be undone.`,
             confirmLabel: 'Delete',
             destructive: true,
             onConfirm: () => {

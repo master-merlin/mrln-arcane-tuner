@@ -7,6 +7,7 @@ import type { DatasetPair, PairMetadata } from '../../../../services/dataset';
 import { ModelContextStore } from '../../../../state/model-context.store';
 import { PREVIEW_MAX_EDGE, staysAnimated } from '../../../../shared/media-preview';
 import { createInViewTracker } from '../../../../shared/in-view-tracker';
+import { createGridFit, effectiveColumns } from '../../../../shared/grid-fit';
 import { detect, parse, serialize, normalize } from './caption/ideogram-format';
 
 /**
@@ -67,8 +68,9 @@ export interface GridCropRequest {
             </div>
             }
 
-            <div class="grid gap-8"
-                 [style.grid-template-columns]="'repeat(' + density() + ', minmax(0, 1fr))'">
+            <div class="grid gap-8" #gridHost
+                 [attr.data-effective-density]="gridColumns()"
+                 [style.grid-template-columns]="'repeat(' + gridColumns() + ', minmax(0, 1fr))'">
                 @for (pair of pairs(); track pair.stem; let i = $index) {
                     <div [attr.data-media-file]="pair.media_file"
                          [attr.data-index]="i"
@@ -76,12 +78,10 @@ export interface GridCropRequest {
                          class="tile bg-surface-mid/50 border border-surface-mid rounded-theme-xl overflow-hidden flex flex-col group hover:border-brand/50 transition-all hover:shadow-xl hover:shadow-brand/10 h-[480px]">
                         <!-- Media Thumbnail -->
                          <div class="h-80 bg-media-backdrop relative cursor-pointer overflow-hidden flex-shrink-0" (click)="detailRequested.emit(i)">
-                             <!-- Filename Overlay (top-center) -->
-                             <div class="absolute top-2 left-1/2 -translate-x-1/2 pointer-events-none z-[5] max-w-[58%]">
-                                 <div class="bg-surface-low/80 text-text-primary text-[10px] px-2 py-0.5 rounded-theme-md border border-border-subtle font-mono truncate text-center">
-                                     {{ pair.media_file }}
-                                 </div>
-                             </div>
+                             <!-- Filename, HPS pill and the action row are ONE flex row now —
+                                  see the "Tile header band" block at the bottom of this
+                                  thumbnail box. They used to be three independent
+                                  absolute top-2 … overlays. -->
 
                              <!-- Loading dots — sit behind the media (z-index 0).
                                   Hidden once the tile's media reports a load
@@ -133,15 +133,6 @@ export interface GridCropRequest {
                                  <span class="bg-surface-low/70 text-text-primary text-xs px-2 py-1 rounded-theme-md">Open Detail</span>
                              </div>
                              
-                             <!-- HPS pill (top-left) — shared .hps-pill from components.css -->
-                             @if (pair.metadata?.quality_score != null) {
-                                <span [class]="'absolute top-2 left-2 z-20 hps-pill ' + hpsTone(pair.metadata!.quality_score!)"
-                                      title="HPSv2 quality score">
-                                    <span class="hps-pill-label">HPS</span>
-                                    <span class="hps-pill-value">{{ pair.metadata!.quality_score!.toFixed(4) }}</span>
-                                </span>
-                             }
-
                              <!-- OVR badge (bottom-left) — adjustment-pipeline overlay present. -->
                              @if (pair.metadata?.has_overlay) {
                                  <span class="tile-ovr-badge" title="Adjustment overlay applied">
@@ -177,8 +168,48 @@ export interface GridCropRequest {
                                 <app-state-pills [state]="pairState(pair)"/>
                              </span>
                              
-                             <!-- Action Buttons (top-right): pin + adjust + crop + eye toggle + delete — matches detail view order -->
-                              <div [class]="'absolute top-2 right-2 flex gap-1 bg-transparent z-10 transition-all ' + (pair.metadata?.enabled === false || isCover(pair) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')">
+                             <!-- Tile header band (top overlay) — ONE flex row: HPS pill ·
+                                  filename · action buttons.
+                                  These three were three independent absolute top-2 …
+                                  siblings with no layout relationship: two intrinsically
+                                  sized flankers (pill 87.1px, five-button row 133px) and a
+                                  max-w-[58%] label centred BETWEEN them, so as the tile
+                                  narrowed the fixed widths ate a growing share while the
+                                  label kept claiming its percentage and ran underneath both.
+                                  Measured on the live grid: 1920/density 5 (the shipped
+                                  default) put the label 45.9px under the action row;
+                                  1440/density 5 put it 42.9px under the pill AND 88.7px
+                                  under the actions; 1280/density 7 pushed the action row
+                                  2.9px past the tile's own inset.
+                                  As a flex row the label yields — it truncates instead of
+                                  being occluded — and the two side rails share flex-1
+                                  (basis 0) so it stays centred on the tile for as long as
+                                  there is room, keeping the wide-window layout identical to
+                                  what shipped. The rails carry NO min-w-0, and the pill
+                                  and the button row are shrink-0, so a rail can never be
+                                  squeezed below its content and re-create the overlap.
+                                  The band is pointer-events-none so clicks still reach
+                                  the thumbnail; only the pill and the buttons take them. -->
+                             <div class="absolute top-2 left-2 right-2 z-20 flex items-start gap-2 pointer-events-none"
+                                  data-testid="tile-header-band">
+                              <div class="flex-1 flex justify-start">
+                                 @if (pair.metadata?.quality_score != null) {
+                                    <span [class]="'shrink-0 pointer-events-auto hps-pill ' + hpsTone(pair.metadata!.quality_score!)"
+                                          title="HPSv2 quality score">
+                                        <span class="hps-pill-label">HPS</span>
+                                        <span class="hps-pill-value">{{ pair.metadata!.quality_score!.toFixed(4) }}</span>
+                                    </span>
+                                 }
+                              </div>
+                              <div class="min-w-0 bg-surface-low/80 text-text-primary text-[10px] px-2 py-0.5 rounded-theme-md border border-border-subtle font-mono truncate text-center"
+                                   data-testid="tile-filename"
+                                   [title]="pair.media_file">
+                                  {{ pair.media_file }}
+                              </div>
+                              <div class="flex-1 flex justify-end">
+                              <!-- Action Buttons: pin + adjust + crop + eye toggle + delete — matches detail view order -->
+                              <div [class]="'shrink-0 flex gap-1 bg-transparent pointer-events-auto transition-all ' + (pair.metadata?.enabled === false || isCover(pair) ? 'opacity-100' : 'opacity-0 group-hover:opacity-100')"
+                                   data-testid="tile-actions">
                                  @if (pair.media_type !== 'audio') {
                                  <button (click)="onPinClick(pair, $event)"
                                          data-testid="grid-pin-cover"
@@ -209,6 +240,8 @@ export interface GridCropRequest {
                                     <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"></path></svg>
                                  </button>
                               </div>
+                              </div>
+                             </div>
                         </div>
                         
                          <!-- Editable Caption Area -->
@@ -444,9 +477,17 @@ export class ViewerGridViewComponent {
      *  toolbar) the internal mass-actions strip is redundant — pass true
      *  to hide it. Defaults false so the legacy dataset-viewer is unaffected. */
     hideToolbar = input<boolean>(false);
-    /** Grid column count (3-7). Default 5 keeps legacy callers (which
-     *  don't pass density) at the previous `2xl:grid-cols-5` peak. */
+    /** Requested grid column count (3-7) from the density slider. This is a
+     *  REQUEST, not the layout: `gridColumns()` caps it against the width the
+     *  grid actually has, because a column count with no viewport term put
+     *  every tile's header band into a collision on a laptop. Default 5 keeps
+     *  legacy callers (which don't pass density) at the previous
+     *  `2xl:grid-cols-5` peak — the cap, not a new constant, is the fix. */
     density = input<number>(5);
+    /** The column count actually painted, whenever it is below `density()`.
+     *  Emitted so the toolbar readout can tell the truth instead of showing
+     *  a 7 next to five columns. */
+    effectiveDensityChange = output<number>();
     /** Media file of the currently-selected pair (driven by the workspace
      *  cursor — filmstrip seeks, details navigation, etc.). When this
      *  changes the matching tile gets a brand-coloured outline AND is
@@ -479,6 +520,18 @@ export class ViewerGridViewComponent {
     private variantText = signal<Record<string, string>>({});
 
     private scrollHost = viewChild<ElementRef<HTMLElement>>('scrollHost');
+    private gridHost = viewChild<ElementRef<HTMLElement>>('gridHost');
+
+    /** Measured content width of the grid element (0 until first measure). */
+    private gridFit = createGridFit();
+
+    /**
+     * The column count the grid paints: the requested density, capped by how
+     * many `MIN_TILE_PX` tiles the measured width actually holds. Before the
+     * first measurement (and wherever `ResizeObserver` is absent) this is the
+     * requested density unchanged — the pre-existing behaviour.
+     */
+    protected gridColumns = computed(() => effectiveColumns(this.gridFit.width(), this.density()));
 
     /**
      * `media_file` keys whose overlay URL returned an error (404, etc).
@@ -610,6 +663,18 @@ export class ViewerGridViewComponent {
             queueMicrotask(() => this.inView.refresh(this.scrollHost()?.nativeElement));
         });
         inject(DestroyRef).onDestroy(() => this.inView.destroy());
+
+        // Measure the grid element as soon as it exists, and keep measuring it.
+        // `observe` is idempotent per element, so re-running on every render is
+        // free; the tracker holds at most one observer.
+        effect(() => {
+            const host = this.gridHost()?.nativeElement;
+            if (host) this.gridFit.observe(host);
+        });
+        inject(DestroyRef).onDestroy(() => this.gridFit.destroy());
+
+        // Tell the host what is actually painted so its readout cannot lie.
+        effect(() => this.effectiveDensityChange.emit(this.gridColumns()));
 
         // Seed the variant display buffer whenever the definition, the resolved
         // variant map, or the pair list changes. Reads inputs reactively and

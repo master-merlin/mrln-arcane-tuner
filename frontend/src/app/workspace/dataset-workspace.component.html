@@ -228,7 +228,11 @@
                     <input type="range" min="3" max="7" step="1"
                            [value]="density()"
                            (input)="onDensityChange(($any($event.target).value))"/>
-                    <span class="mono ws-density-val">{{ density() }}</span>
+                    <span class="mono ws-density-val"
+                          [class.opacity-60]="effectiveDensity() < density()"
+                          [title]="effectiveDensity() < density()
+                              ? 'Showing ' + effectiveDensity() + ' columns — ' + density() + ' would make each tile too narrow for its filename and buttons'
+                              : effectiveDensity() + ' columns'">{{ effectiveDensity() }}</span>
                     <span class="ws-divider thin"></span>
                     <button class="btn ghost sm" type="button" (click)="enableAll()"
                             [disabled]="pairs().length === 0"
@@ -248,6 +252,7 @@
                         [visiblePairs]="visiblePairs()"
                         [datasetName]="dataset()?.name ?? w.datasetId"
                         [density]="density()"
+                        (effectiveDensityChange)="onEffectiveDensity($event)"
                         [activeMediaFile]="activeMediaFile()"
                         [showMasked]="showMasked()"
                         [showOverlay]="showOverlay()"

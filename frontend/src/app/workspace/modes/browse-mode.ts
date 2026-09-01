@@ -45,6 +45,7 @@ type GridPair = DatasetPair & { _captionDirty?: boolean; _variantCaption?: strin
             [apiUrl]="rtc.apiUrl"
             [hideToolbar]="true"
             [density]="density()"
+            (effectiveDensityChange)="effectiveDensityChange.emit($event)"
             [lastUpdateTime]="mediaItems.mediaRev()"
             [activeMediaFile]="activeMediaFile()"
             [showMasked]="showMasked()"
@@ -91,8 +92,12 @@ export class BrowseMode {
     visiblePairs = input.required<DatasetPair[]>();
     /** HTTP-name of the dataset (URL slug). */
     datasetName = input.required<string>();
-    /** Grid column count (3-7) from the secondary toolbar density slider. */
+    /** Requested grid column count (3-7) from the secondary toolbar density
+     *  slider. The grid caps it against its own measured width. */
     density = input<number>(5);
+    /** Column count the grid actually paints, forwarded up so the toolbar
+     *  readout shows what is on screen rather than what was asked for. */
+    effectiveDensityChange = output<number>();
     /** Currently-active pair's `media_file` (driven by the workspace
      *  cursor — filmstrip seek, details-mode navigation, etc.). When
      *  non-null, the grid scrolls that tile into view and outlines it. */

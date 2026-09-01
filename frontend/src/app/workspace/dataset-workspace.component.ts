@@ -198,7 +198,13 @@ export class DatasetWorkspaceComponent {
     protected filter = signal<
         'all' | 'enabled' | 'excluded' | 'captioned' | 'masked' | 'low_hps'
     >('all');
+    /** Requested grid columns (3-7). The grid caps this against its own
+     *  measured width and reports back through `onEffectiveDensity`, so the
+     *  readout can show what is painted rather than what was asked for. */
     protected density = signal<number>(5);
+    /** Columns the grid actually paints; equals `density()` until the window
+     *  is too narrow to lay a tile's header band out at that count. */
+    protected effectiveDensity = signal<number>(5);
     /** Render masked variants of images + masked_caption_content when true. */
     protected showMasked = signal<boolean>(false);
     /** Render edited overlays in place of originals when true (legacy default). */
@@ -511,6 +517,10 @@ export class DatasetWorkspaceComponent {
 
     protected setFilter(v: 'all' | 'enabled' | 'excluded' | 'captioned' | 'masked' | 'low_hps'): void {
         this.filter.set(v);
+    }
+
+    protected onEffectiveDensity(n: number): void {
+        if (Number.isFinite(n) && n > 0) this.effectiveDensity.set(n);
     }
 
     protected onDensityChange(v: number | string): void {

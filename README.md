@@ -402,6 +402,11 @@ Tiled neural upscaling using ESRGAN and SwinIR models for images that need highe
 
 ---
 
+### 📁 Projects
+Group the datasets, templates and job history for one LoRA effort so you stop re-picking the same dataset and re-configuring the same training settings for every run. A project scopes its own branched caption/mask/training/adaptive-targeting templates (independent copies of the global ones), links existing datasets without moving files, and exposes a three-step Quick Train flow for launching a run without leaving the page. Export bundles a project's templates and datasets (embed / reference / exclude, chosen per dataset) into one portable zip; the same import wizard detects whether a zip is a dataset, a template bundle or a full project. See [`documentation/projects-guide.md`](documentation/projects-guide.md).
+
+---
+
 ### 🤖 AI Services
 
 Integrated AI models for automated dataset annotation, running as GPU-backed batch services:

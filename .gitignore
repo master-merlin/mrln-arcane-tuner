@@ -111,6 +111,5 @@ _harness/
 !CHANGELOG.md
 # API_CONVENTIONS.md, LOGGING.md and TESTING.md used to need explicit entries
 # here. They no longer do: they live in `docs/`, which line 7 re-includes.
-# The redirect stub at the OLD architecture path stays tracked by name: the
-# path is referenced upstream, and a 404 is worse than a one-click redirect.
-!documentation/ARCHITECTURE.md
+# `documentation/` no longer exists: ARCHITECTURE.md moved to `docs/` and the
+# user chose a clean rename over a redirect stub (LANE-62, 2026-09-01).

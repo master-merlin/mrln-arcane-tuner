@@ -27,7 +27,7 @@ import re
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 README = REPO / "README.md"
-ARCHITECTURE = REPO / "docs" / "ARCHITECTURE.md"  # moved from documentation/ 2026-09-01, LANE-62; a redirect stub holds the old path
+ARCHITECTURE = REPO / "docs" / "ARCHITECTURE.md"  # moved from documentation/ 2026-09-01, LANE-62; the old path is gone
 FAMILIES_DIR = REPO / "backend" / "app" / "engine" / "models" / "families"
 
 #: The heading the README's families intro links to.

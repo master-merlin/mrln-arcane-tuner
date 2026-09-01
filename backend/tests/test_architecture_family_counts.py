@@ -26,7 +26,7 @@ import re
 import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
-ARCHITECTURE = REPO / "docs" / "ARCHITECTURE.md"  # moved from documentation/ 2026-09-01, LANE-62; a redirect stub holds the old path
+ARCHITECTURE = REPO / "docs" / "ARCHITECTURE.md"  # moved from documentation/ 2026-09-01, LANE-62; the old path is gone
 FAMILIES_DIR = REPO / "backend" / "app" / "engine" / "models" / "families"
 
 

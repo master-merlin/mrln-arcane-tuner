@@ -207,7 +207,11 @@ position without scrolling the grid.
 ### Analyze
 
 Opened via the **Analyze** button (top bar) or a card's **Analyze dataset**
-action. Two tabs:
+action. Two top-level tabs, **Image** and **Caption**.
+
+#### Image tab
+
+Two sub-tabs:
 
 **Distributions** — resolution and aspect-ratio breakdowns, an HPS
 histogram, and near-duplicate clusters (adjustable similarity threshold,
@@ -243,6 +247,28 @@ Both dialogs say, in the same sentence, that the action **rewrites files on
 disk and cannot be undone** — read the message before confirming, since this
 is exactly the least-discoverable, most-destructive corner of the product the
 Analyze panel guards.
+
+#### Caption tab
+
+Everything the Files tab shows you about images, the Caption tab shows you
+about the words on them: a KPI strip (Images / Terms-or-Tags / Unique-or-
+Orphans / Conflicts), a Top terms frequency card, a second card that's
+**Unique terms** in prose mode or **Orphan tags** in tag mode, a
+Contradictions list when any exist, and a co-occurrence heatmap of which
+terms show up together.
+
+A chip at the top tells you which style it's reading: **Prose analysis**
+(free-text captions, split into words and phrases) or **Tag analysis**
+(comma-separated tags). If a model-aware caption definition is active, a
+second chip names it — the analytics are then run over that definition's own
+variant captions, not the general caption.
+
+![Analyze modal — Caption tab](images/analyze-modal-caption.png)
+
+Read this tab after a caption pass, before training: a tall Orphan-tags list
+usually means a typo or a one-off tag worth folding into an existing one, and
+a non-empty Contradictions list is the caption vocabulary disagreeing with
+itself (e.g. both `red_car` and `blue_car` on visually identical crops).
 
 ### Rescan
 

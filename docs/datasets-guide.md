@@ -21,8 +21,9 @@ that guard anything permanent.
   dataset.
 - Generate segmentation masks with SAM 3 (text-prompted) or remove backgrounds
   with RemBG, one image or the whole dataset.
-- Apply non-destructive color and crop adjustments to one image and copy the
-  same recipe onto many ("Mass edit").
+- Apply non-destructive color, tone and restoration adjustments to one image
+  (or crop it, destructively, to a target resolution) and copy that same
+  adjustment recipe onto many other images ("Mass edit").
 - Harmonize a dataset's filenames and file format into a canonical sequence,
   and batch-crop every image to a shared target resolution.
 - See where a dataset's quality, resolution and near-duplicates sit, per
@@ -179,10 +180,12 @@ A segmented control switches the workspace body between three modes:
   caption/mask editing and per-image trim controls. See
   [Details — one image, closely](#details--one-image-closely) below.
 - **Edit** — the per-image, non-destructive adjustment pipeline (loaded
-  lazily): stacked `.cube` LUTs, per-channel Bézier curves and per-range HSL
-  adjustments. Nothing here is written until you export or run Mass edit /
-  Harmonize / Crop all — edits are recipes, not in-place pixel writes, until
-  one of those explicit actions applies them.
+  lazily): ten stacked operations from white balance to AI upscaling, plus
+  the separate, destructive crop editor. See
+  [Edit — non-destructive adjustments](#edit--non-destructive-adjustments)
+  below. Nothing in the pipeline is written until you Save, Bake in, or run
+  Mass edit — edits are a recipe, not in-place pixel writes, until one of
+  those explicit actions applies them.
 
 ### Browse-mode toolbar
 
@@ -278,6 +281,58 @@ caption and any mask are removed from disk immediately, no confirm beyond
 the button itself — the modal's footer says so. Use it to thin out
 near-duplicate bursts (a burst-mode shoot, or the same subject re-captioned)
 without the mask/caption editing detour the grid would otherwise want.
+
+### Edit — non-destructive adjustments
+
+Once an image earns its keep in Details, Edit is where you correct it —
+switch the mode segment to **Edit**, or use Details' center-pane footer
+shortcut, and the workspace becomes a 3-pane editor: operation tabs on the
+left, the live-rendered canvas in the center, a histogram and the pipeline
+order on the right.
+
+The left panel groups ten operations under two headers:
+
+- **Adjust** (real-time, reversible) — White Balance, Curves, Color & Tone,
+  HSL, Sharpen, Vignette, Lens, CUBE LUT, Color Match.
+- **AI Models** (async, may change output) — Denoise, Face Restore, Upscale:
+  each runs a model rather than a formula, so a result can vary run to run.
+
+Every one of those ten writes into a single non-destructive **overlay
+recipe** — nothing on disk changes until you explicitly commit it. The right
+panel's **Pipeline order** list shows every operation, in the order it
+renders, each with a checkbox (on/off) and a drag handle to reorder it; Color
+Match is the one exception — it always applies first and is not reorderable,
+since everything else in the recipe renders against its output.
+
+**Crop** is not part of this pipeline. Cropping changes the image's
+aspect-ratio bucket, which the trainer depends on, so it gets its own
+destructive editor (from the Crop tab, from Details' footer, or from
+Analyze's Files tab): drag the crop window or a corner handle — resizing
+snaps to 32px, the training-friendly increment — pick a target aspect ratio
+from a preset list or Auto (the dataset's majority AR), or jump straight to
+one of nine quick origins. **Apply Crop** rewrites the source file
+immediately; nothing else in Edit mode does.
+
+![Edit mode — operation tabs, canvas and pipeline order, White Balance enabled](images/edit-mode-overview.png)
+
+Once a recipe looks right:
+
+- **Save** writes the overlay (a rendered PNG plus the recipe that produced
+  it) — reversible, since **Revert** deletes it and restores the original.
+- **Reset all** clears every panel back to its default without touching a
+  previously saved overlay until you Save again.
+- **Bake in** replaces the source file with the overlay's render and clears
+  the recipe — the one irreversible action here, behind its own confirm.
+- On Edit-kind (paired) datasets only, **Save → control** copies the
+  rendered overlay into one of the dataset's control slots instead of the
+  source file — a second, edited version of the pair, without touching the
+  original control image.
+- **Copy** puts the recipe as JSON on the clipboard, for comparing or
+  reproducing a look outside the app.
+
+The canvas footer's **OVR** toggle switches the image between its edited
+version and the original — the same before/after check the Browse grid and
+Details mode use, wherever an overlay exists.
 
 ## Modals reachable from the Workspace
 
@@ -441,12 +496,14 @@ thresholds), **Apply** (apply an already-generated mask set), and **Caption**
 
 ### Mass edit
 
-Opened via the workspace's **Mass edit** button, or from a single image's
-adjust editor. Lets you pick one image whose non-destructive adjustment
-recipe (LUT / curves / HSL) you want to clone, then apply that exact recipe
-to many target images in one batch. This is how a color-grade you tuned on
-one photo gets applied consistently across a dataset without re-tuning it
-per image.
+Opened via the workspace's **Mass edit** button. Lets you pick one image
+whose non-destructive adjustment recipe — any combination of Edit mode's ten
+operations, whichever are enabled on that image — you want to clone, then
+apply that exact recipe to many target images in one batch. This is how a
+color grade, a denoise pass or an upscale you tuned on one photo gets applied
+consistently across a dataset without re-tuning it per image. Only images
+with an existing overlay recipe appear as sources; targets already carrying
+an overlay are flagged (they will be overwritten) but not excluded.
 
 ## Recipes
 

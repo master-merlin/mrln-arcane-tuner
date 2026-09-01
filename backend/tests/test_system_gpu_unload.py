@@ -285,6 +285,7 @@ def test_a_pending_caption_idle_unload_is_cancelled_by_the_global_unload(
 # ── The GPU-only measurement ──────────────────────────────────────────────
 
 
+@pytest.mark.xdist_group("gpu")  # allocates on the real device (LANE-63: machine lock)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
 def test_unload_actually_returns_vram_to_the_allocator(client, monkeypatch):
     """Measure the thing the user asked for: allocated VRAM falling.

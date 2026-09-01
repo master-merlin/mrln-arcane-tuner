@@ -145,6 +145,7 @@ def test_forward_runs_without_autocast_when_amp_off():
     assert not any(o["autocast_cuda"] or o["autocast_cpu"] for o in obs)
 
 
+@pytest.mark.xdist_group("gpu")  # tensors on the real device (LANE-63: machine lock)
 @pytest.mark.skipif(
     not torch.cuda.is_available(),
     reason="ms_lens samples under torch.autocast(device_type='cuda'); the "

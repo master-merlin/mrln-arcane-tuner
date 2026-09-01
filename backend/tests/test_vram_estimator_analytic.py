@@ -9,6 +9,8 @@ is what makes changing an analytic term safe.
 
 from __future__ import annotations
 
+import pytest
+
 from app.engine.utils.vram_estimator import (
     VRAM_FORMULA_VERSION,
     VRAMEstimator,
@@ -138,6 +140,7 @@ class TestFitHonesty:
         assert report.to_dict()["fit_known"] is False
         assert any("Could not query GPU" in w for w in report.warnings)
 
+    @pytest.mark.xdist_group("gpu")  # real NVML read (LANE-63: machine lock)
     def test_fit_known_true_on_a_live_query(self):
         report = VRAMEstimator.estimate(_defn(depth=19), {})
         # This suite runs on a machine with a GPU; if that ever changes the

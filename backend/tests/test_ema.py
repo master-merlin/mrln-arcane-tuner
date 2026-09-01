@@ -2,6 +2,7 @@
 Tests for EMAHandler — covers init, step, store_and_swap, restore, state_dict.
 """
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -333,13 +334,13 @@ class TestStateDictRoundTrip:
         ema.load_state_dict(new_shadow)
         assert torch.allclose(ema.shadow["weight"], torch.zeros(2, 4))
 
+    @pytest.mark.xdist_group("gpu")  # tensors on the real device (LANE-63: machine lock)
     def test_load_state_dict_rebinds_to_param_device(self):
         # Regression: checkpoints are saved with map_location="cpu", so on
         # resume the loaded shadow tensors must be moved to each parameter's
         # current device. Without this, EMA.step() mixes CPU shadow with
         # CUDA params and raises a device-mismatch RuntimeError.
         if not torch.cuda.is_available():
-            import pytest
             pytest.skip("CUDA not available")
         model = _make_model().to("cuda")
         ema = EMAHandler(model, decay=0.99)

@@ -172,6 +172,7 @@ def test_probe_reports_supported_without_cuda():
     assert fused_backends_refuse_gqa(48, 12, 128, torch.bfloat16) is False
 
 
+@pytest.mark.xdist_group("gpu")  # asks the live GPU (LANE-63: machine lock)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="asks this GPU/build directly")
 def test_on_this_build_gqa_is_what_the_fused_kernels_refuse():
     """The empirical claim the whole workaround rests on, kept honest.

@@ -140,7 +140,7 @@ def client():
 
 
 @pytest.fixture
-def frozen_gpu_snapshot(monkeypatch):
+def frozen_gpu_snapshot(request, monkeypatch):
     """Hold the LIVE GPU reading fixed for the duration of one test.
 
     ``VRAMEstimator.estimate`` queries ``system_monitor.snapshot()`` on every
@@ -162,6 +162,17 @@ def frozen_gpu_snapshot(monkeypatch):
     ``gpus`` is empty, unchanged) — it is not a fabricated device.
     """
     from app.core import system_monitor as sm
+
+    # LANE-63: the one real read touches the machine's GPU, so the requesting
+    # test must sit in the "gpu" xdist group — that marker is what makes the
+    # root conftest take the cross-process lock. A user without the marker
+    # would read NVML beside another worker's CUDA allocation unguarded.
+    marker = request.node.get_closest_marker("xdist_group")
+    group = marker.args[0] if marker and marker.args else None
+    if group != "gpu":
+        pytest.fail(f"{request.node.nodeid} uses frozen_gpu_snapshot without "
+                    "@pytest.mark.xdist_group('gpu') (backend/conftest.py pairs "
+                    "that marker with the machine lock)", pytrace=False)
 
     snap = sm.system_monitor.snapshot()  # one real read …
     monkeypatch.setattr(sm.system_monitor, "snapshot", lambda: snap)  # … replayed

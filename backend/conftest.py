@@ -29,6 +29,13 @@ What it does, per process:
   is the serial one, so the per-worker suffix is the only thing xdist adds.
 * ``sys.path`` gets ``backend/`` so ``from tests.support…`` and ``from app…``
   resolve from every root (``--import-mode=importlib`` never adds it itself).
+* every test carrying ``@pytest.mark.xdist_group("<name>")`` holds the
+  cross-process lock ``_harness/.<name>.lock`` from before its fixtures run
+  until after they are torn down (``tests/support/machine_lock.py``). The
+  group marker serialises the group inside ONE run; the lock serialises it
+  against every other pytest on the box. Marking is the only thing a test
+  author does — the pairing lives here, in one place, for all three roots.
+  A wait that runs out is an ERROR naming the holder, never a skip.
 
 Everything here is anchored on ``__file__``, never the CWD.
 """
@@ -36,11 +43,56 @@ import os
 import sys
 from pathlib import Path
 
+import pytest
+
 _BACKEND = Path(__file__).resolve().parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+from tests.support.machine_lock import (  # noqa: E402
+    MachineLockTimeout,
+    acquire,
+    lock_path,
+    release,
+    resolve_timeout,
+)
 from tests.support.worker_paths import worker_suffixed  # noqa: E402
 
 SERVER_TEST_LOG = worker_suffixed(_BACKEND / "tests" / "server-test.log")
 os.environ["MRLN_SERVER_LOG_PATH"] = str(SERVER_TEST_LOG)
+
+_LOCK_ATTR = "_mrln_machine_lock_path"
+
+
+def _group_of(item) -> str | None:
+    marker = item.get_closest_marker("xdist_group")
+    if marker is None:
+        return None
+    name = marker.args[0] if marker.args else marker.kwargs.get("name")
+    return str(name) if name else None
+
+
+@pytest.hookimpl(tryfirst=True)
+def pytest_runtest_setup(item):
+    """Acquire BEFORE any fixture (tryfirst: ahead of the runner's setup)."""
+    group = _group_of(item)
+    if group is None:
+        return
+    path = lock_path(group)
+    try:
+        acquire(path, resolve_timeout(None))
+    except MachineLockTimeout as exc:
+        timeout_msg = str(exc)
+    else:
+        setattr(item, _LOCK_ATTR, path)
+        return
+    pytest.fail(f"xdist_group({group!r}) machine lock: {timeout_msg}", pytrace=False)
+
+
+@pytest.hookimpl(trylast=True)
+def pytest_runtest_teardown(item, nextitem):
+    """Release AFTER the fixtures are torn down (trylast), whatever the outcome."""
+    path = getattr(item, _LOCK_ATTR, None)
+    if path is not None:
+        delattr(item, _LOCK_ATTR)
+        release(path)

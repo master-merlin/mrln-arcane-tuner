@@ -129,23 +129,60 @@ class TestQuantizeAPI:
         with pytest.raises(ValueError, match="Unknown quantization backend"):
             QuantizationFactory.quantize(model, "int8", "fake")
 
+    # The factory picks its default device from `torch.cuda.is_available()`
+    # (quantization.py, `QuantizationFactory.quantize`). That is pinned here
+    # rather than read off the machine: the developer box has a GPU and the CI
+    # runner does not, and the un-pinned `device="cuda"` expectation failed
+    # there with `device="cpu"` (gate.yml run 33687356291). The dispatch tests
+    # assert the device the test controls; the two below prove the default is
+    # the CUDA probe and nothing else.
+    _CUDA = "app.engine.factories.quantization.torch.cuda.is_available"
+
+    @patch(_CUDA, return_value=True)
     @patch("app.engine.factories.quantizers.torchao.TorchAOBackend.quantize")
     @patch("app.engine.factories.quantizers.torchao.TorchAOBackend.is_available", return_value=True)
-    def test_quantize_torchao_dispatches(self, _avail, mock_quant):
+    def test_quantize_torchao_dispatches(self, _avail, mock_quant, _cuda):
         """FP8 scheme should call torchao backend."""
         model = _make_model()
         mock_quant.return_value = model
         QuantizationFactory.quantize(model, "fp8", "torchao")
         mock_quant.assert_called_once_with(model, "fp8", device="cuda")
 
+    @patch(_CUDA, return_value=True)
     @patch("app.engine.factories.quantizers.bitsandbytes.BitsAndBytesBackend.quantize")
     @patch("app.engine.factories.quantizers.bitsandbytes.BitsAndBytesBackend.is_available", return_value=True)
-    def test_quantize_nf4_dispatches(self, _avail, mock_nf4):
+    def test_quantize_nf4_dispatches(self, _avail, mock_nf4, _cuda):
         """NF4 scheme should call bitsandbytes backend."""
         model = _make_model()
         mock_nf4.return_value = model
         QuantizationFactory.quantize(model, "nf4", "bitsandbytes")
         mock_nf4.assert_called_once_with(model, "nf4", device="cuda")
+
+    @patch(_CUDA, return_value=False)
+    @patch("app.engine.factories.quantizers.torchao.TorchAOBackend.quantize")
+    @patch("app.engine.factories.quantizers.torchao.TorchAOBackend.is_available", return_value=True)
+    def test_default_device_is_cpu_without_cuda(self, _avail, mock_quant, _cuda):
+        """Negative control: no CUDA -> the backend is handed ``device="cpu"``.
+
+        This is the exact shape the runner produced; asserting it proves the
+        two dispatch tests above pass because the probe is pinned, not because
+        this machine happens to have a GPU.
+        """
+        model = _make_model()
+        mock_quant.return_value = model
+        QuantizationFactory.quantize(model, "fp8", "torchao")
+        mock_quant.assert_called_once_with(model, "fp8", device="cpu")
+
+    @patch(_CUDA, return_value=False)
+    @patch("app.engine.factories.quantizers.torchao.TorchAOBackend.quantize")
+    @patch("app.engine.factories.quantizers.torchao.TorchAOBackend.is_available", return_value=True)
+    def test_an_explicit_device_outranks_the_probe(self, _avail, mock_quant, _cuda):
+        """A caller-supplied device is forwarded verbatim; the probe is only the default."""
+        model = _make_model()
+        mock_quant.return_value = model
+        QuantizationFactory.quantize(model, "fp8", "torchao", device="cuda:1")
+        mock_quant.assert_called_once_with(model, "fp8", device="cuda:1")
+        _cuda.assert_not_called()
 
 
 # ── Config Schema ────────────────────────────────────────────────────────

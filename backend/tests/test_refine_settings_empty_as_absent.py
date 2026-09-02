@@ -18,9 +18,22 @@ from unittest.mock import AsyncMock, patch
 import pytest
 
 from app.core.llm import refine_settings
+from app.core.llm.refine_guard import RefineReadiness
 
 # The exact stored dict, copied from the machine that reproduced the defect.
 BROKEN_STORE = {"base_url": "http://localhost:11434", "provider": "ollama", "model": ""}
+
+
+async def _endpoint_is_ready(client, model=None) -> RefineReadiness:
+    """Stand-in for ``refine_guard.refine_readiness`` at the batch route.
+
+    The route gates on a live probe of the LLM endpoint (LANE-57) before it
+    resolves anything about the model. That probe is below the seam under test
+    here -- what is asserted is the ``model`` keyword the route computed -- and
+    on a CI runner with nothing on :11434 the real probe answers 409 before the
+    resolution ever runs (gate.yml run 33687356291).
+    """
+    return RefineReadiness(base_url=BROKEN_STORE["base_url"], available=True, installed=[])
 
 
 # --------------------------------------------------------------------------
@@ -104,6 +117,7 @@ def test_refine_batch_route_never_enqueues_an_empty_model(client, tmp_path, monk
         captured.update(kwargs)
 
     monkeypatch.setattr(caption_routes, "run_caption_refine_batch", fake_run)
+    monkeypatch.setattr(caption_routes, "refine_readiness", _endpoint_is_ready)
     monkeypatch.setattr(refine_settings, "raw_settings", lambda: BROKEN_STORE)
 
     class _Task:
@@ -131,6 +145,7 @@ def test_refine_batch_still_honours_an_explicit_model(client, monkeypatch) -> No
     captured: dict = {}
     monkeypatch.setattr(caption_routes, "run_caption_refine_batch",
                         lambda tid, **kw: captured.update(kw))
+    monkeypatch.setattr(caption_routes, "refine_readiness", _endpoint_is_ready)
     monkeypatch.setattr(refine_settings, "raw_settings", lambda: BROKEN_STORE)
 
     class _Task:

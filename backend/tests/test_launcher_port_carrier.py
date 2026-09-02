@@ -55,6 +55,26 @@ REPO_ROOT = BACKEND_DIR.parent
 
 LAUNCHERS = ("start_backend.sh", "start_backend.ps1", "start_backend.bat")
 
+# The PowerShell launcher is a Windows-only artifact BY CONSTRUCTION: it
+# hard-codes the Windows venv layout (`.\venv\Scripts\Activate.ps1`,
+# `.\venv\Scripts\python.exe`), which `python -m venv` never produces on POSIX
+# (`venv/bin/`). `pwsh` itself runs fine on the ubuntu runner, so without this
+# mark the parameter does not skip there -- it starts the script, which refuses
+# on the missing interpreter, and four tests fail (gate.yml run 33687356291).
+# The `.bat` case needs no mark: `_command` answers None without `cmd.exe` and
+# `_run` skips. The `.sh` case runs wherever `find_bash` finds a shell that can
+# open the sandbox, Git Bash included, so it stays unmarked on purpose.
+_WINDOWS_VENV_LAYOUT = pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="start_backend.ps1 hard-codes the Windows venv layout "
+           "(venv\\Scripts\\python.exe); a POSIX venv has venv/bin/ only",
+)
+LAUNCHER_PARAMS = tuple(
+    pytest.param(name, marks=_WINDOWS_VENV_LAYOUT, id=name)
+    if name.endswith(".ps1") else pytest.param(name, id=name)
+    for name in LAUNCHERS
+)
+
 
 def _sandbox_python(sb: Path) -> Path:
     for rel in ("Scripts/python.exe", "bin/python"):
@@ -175,7 +195,7 @@ def _uvicorn_argv(proc: subprocess.CompletedProcess) -> str | None:
     return None
 
 
-@pytest.mark.parametrize("launcher", LAUNCHERS)
+@pytest.mark.parametrize("launcher", LAUNCHER_PARAMS)
 class TestTheLauncherCarriesTheResolvedPort:
     def test_the_saved_port_reaches_uvicorn(self, tmp_path, launcher):
         """THE BUG, IN ONE ASSERTION.

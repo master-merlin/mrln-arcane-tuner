@@ -55,20 +55,23 @@ describe('LutPanelComponent.exportStack', () => {
         vi.spyOn(document, 'createElement').mockReturnValue({
             href: '', download: '', click: clickSpy,
         } as unknown as HTMLAnchorElement);
-        vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob://stub');
-        vi.spyOn(URL, 'revokeObjectURL');
+        // LANE-75: assert on the spy handles THIS test created, never on the
+        // global property — a mock another file left on `URL` would otherwise
+        // be reused by vi.spyOn and carry its call count into this assertion.
+        const createSpy = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob://stub');
+        const revokeSpy = vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
 
         component.exportStack();
 
         expect(datasetSvc.exportCube).toHaveBeenCalledTimes(1);
 
         expect(datasetSvc.exportCube).toHaveBeenCalledWith('My DS', state.curves().params);
-        expect(URL.createObjectURL).toHaveBeenCalledTimes(1);
-        expect(URL.createObjectURL).toHaveBeenCalledWith(blob);
+        expect(createSpy).toHaveBeenCalledTimes(1);
+        expect(createSpy).toHaveBeenCalledWith(blob);
         expect(clickSpy).toHaveBeenCalledTimes(1);
         expect(clickSpy).toHaveBeenCalledWith();
-        expect(URL.revokeObjectURL).toHaveBeenCalledTimes(1);
-        expect(URL.revokeObjectURL).toHaveBeenCalledWith('blob://stub');
+        expect(revokeSpy).toHaveBeenCalledTimes(1);
+        expect(revokeSpy).toHaveBeenCalledWith('blob://stub');
         expect(toast.success).toHaveBeenCalledTimes(1);
         expect(toast.success).toHaveBeenCalledWith('CUBE file exported');
         expect(toast.error).not.toHaveBeenCalled();

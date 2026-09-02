@@ -98,6 +98,20 @@ describe('JobLogViewerComponent theming', () => {
 });
 
 describe('JobLogViewerComponent copy + download', () => {
+    // LANE-75: `ng test` runs every spec file in ONE shared environment
+    // (`--isolate` defaults to false), so a global mutated here is the next
+    // file's problem. Spies go through vi.spyOn (restored by the test-setup
+    // afterEach); the one seam jsdom lacks (navigator.clipboard) is defined
+    // per test and put back explicitly.
+    const clipboardDescriptor = Object.getOwnPropertyDescriptor(navigator, 'clipboard');
+    afterEach(() => {
+        if (clipboardDescriptor) {
+            Object.defineProperty(navigator, 'clipboard', clipboardDescriptor);
+        } else {
+            delete (navigator as unknown as { clipboard?: unknown }).clipboard;
+        }
+    });
+
     it('copies the (filtered) lines to the clipboard', () => {
         const writeText = vi.fn().mockResolvedValue(undefined);
         Object.defineProperty(navigator, 'clipboard', { value: { writeText }, configurable: true });
@@ -109,10 +123,8 @@ describe('JobLogViewerComponent copy + download', () => {
     });
 
     it('download builds a blob and clicks an anchor', () => {
-        const createObjectURL = vi.fn(() => 'blob:x');
-        const revokeObjectURL = vi.fn();
-        (URL as unknown as { createObjectURL: unknown }).createObjectURL = createObjectURL;
-        (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = revokeObjectURL;
+        const createObjectURL = vi.spyOn(URL, 'createObjectURL').mockReturnValue('blob:x');
+        vi.spyOn(URL, 'revokeObjectURL').mockImplementation(() => undefined);
         const clickSpy = vi.spyOn(HTMLAnchorElement.prototype, 'click').mockImplementation(() => {});
         const { fixture, comp } = setup();
         fixture.componentRef.setInput('lines', lines('alpha', 'beta'));

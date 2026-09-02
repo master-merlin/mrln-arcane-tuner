@@ -24,12 +24,13 @@ function setup() {
 /** The three requests ngOnInit fires, flushed in one call. */
 function flushInit(
     http: HttpTestingController,
-    opts: { curated?: string[]; installed?: string[]; available?: boolean; model?: string } = {},
+    opts: { curated?: string[]; installed?: string[]; available?: boolean; model?: string; endpoint?: string } = {},
 ) {
     http.expectOne('/api/llm-refine/models').flush({
         curated: opts.curated ?? [],
         installed: opts.installed ?? [],
         available: opts.available ?? true,
+        ...(opts.endpoint ? { endpoint: opts.endpoint } : {}),
     });
     http.expectOne('/api/settings/llm_refine').flush(opts.model === undefined ? {} : { model: opts.model });
     http.expectOne('/api/caption-context/definitions').flush([]);
@@ -109,6 +110,20 @@ describe('DatasetRefineSettingsComponent', () => {
         http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['qwen2.5:7b-instruct'], available: true });
         fixture.detectChanges();
         expect(emitted[emitted.length - 1]).not.toBeNull();
+    });
+
+    // LANE-76: the tab header says "Refinement model", not whose — the caption
+    // names the endpoint the served listing came from (the SERVED one, so a
+    // hard-coded host goes red).
+    it('LANE-76: the model picker carries a caption naming the served refine endpoint', () => {
+        const { fixture, http } = setup();
+        fixture.detectChanges();
+        const caption = () => (fixture.nativeElement.querySelector('[data-testid="refine-endpoint-caption"]') as HTMLElement)
+            .textContent!.replace(/\s+/g, ' ').trim();
+        expect(caption()).toBe('Uses the LLM refine endpoint from Server settings');
+        flushInit(http, { installed: ['gemma3:12b'], endpoint: 'http://10.0.0.7:11434' });
+        fixture.detectChanges();
+        expect(caption()).toBe('Uses the LLM refine endpoint from Server settings — 10.0.0.7:11434');
     });
 
     it('pulls a curated model and selects it', () => {

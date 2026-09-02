@@ -140,3 +140,32 @@ def test_models_status_reason_is_null_when_reachable(client, monkeypatch, fake_o
     status = client.get("/api/llm-refine/models").json()
     assert status["available"] is True
     assert status["unavailable_reason"] is None
+
+
+def test_models_status_names_the_model_and_endpoint_a_modelless_refine_is_served_with(
+        client, monkeypatch, fake_ollama, closed_port) -> None:
+    """LANE-76: the sidebar's Refine button says what it refines WITH
+    (``Refine with <model>`` + the endpoint host). Both come from THIS probe —
+    the model it judged and the endpoint it probed — so the label can never
+    name a model the readiness never checked (RULE-21)."""
+    fake_ollama.models[:] = ["gemma3:12b"]
+    monkeypatch.setattr(refine_settings, "raw_settings",
+                        lambda: {"base_url": fake_ollama.url, "model": "gemma3:12b"})
+    status = client.get("/api/llm-refine/models").json()
+    assert status["model"] == "gemma3:12b"
+    assert status["endpoint"] == fake_ollama.url
+
+    # A PRESENT-but-empty stored model is absent (LANE-49): the fallback is
+    # what a model-less refine is served with, so it is what gets named.
+    monkeypatch.setattr(refine_settings, "raw_settings",
+                        lambda: {"base_url": fake_ollama.url, "model": ""})
+    assert client.get("/api/llm-refine/models").json()["model"] == refine_settings.DEFAULT_MODEL
+
+    # A dead endpoint still names what WOULD be used — the label reads
+    # "Refine with <model>" while the LANE-70 sentence explains the block.
+    dead = f"http://127.0.0.1:{closed_port}"
+    monkeypatch.setattr(refine_settings, "raw_settings", lambda: {"base_url": dead})
+    status = client.get("/api/llm-refine/models").json()
+    assert status["available"] is False
+    assert status["model"] == refine_settings.DEFAULT_MODEL
+    assert status["endpoint"] == dead

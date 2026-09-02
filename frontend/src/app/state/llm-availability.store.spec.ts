@@ -4,7 +4,7 @@ import { HttpTestingController, provideHttpClientTesting } from '@angular/common
 import { Subject } from 'rxjs';
 import { RuntimeConfigService } from '../services/runtime-config.service';
 import { WebSocketService } from '../services/websocket.service';
-import { LlmAvailabilityStore } from './llm-availability.store';
+import { LlmAvailabilityStore, refineEndpointHost } from './llm-availability.store';
 
 describe('LlmAvailabilityStore', () => {
     function setup() {
@@ -61,6 +61,29 @@ describe('LlmAvailabilityStore', () => {
         http.expectOne('/api/llm-refine/models').error(new ProgressEvent('fail'));
         expect(store.blocked()).toBe(true);
         expect(store.blockedReason()).toContain('unreachable');
+    });
+    // LANE-76: the served default model + endpoint are what the Refine button
+    // names; a failed probe leaves nothing to name (the label falls back).
+    it('carries the served model and endpoint, derives host:port, and clears both on error', () => {
+        const { store, http } = setup();
+        expect(store.model()).toBeNull();
+        expect(store.endpointHost()).toBeNull();
+        store.refresh();
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['gemma3:12b'], available: true, unavailable_reason: null, model: 'gemma3:12b', endpoint: 'http://10.0.0.7:11434' });
+        expect(store.model()).toBe('gemma3:12b');
+        expect(store.endpoint()).toBe('http://10.0.0.7:11434');
+        expect(store.endpointHost()).toBe('10.0.0.7:11434');
+        store.refresh();
+        http.expectOne('/api/llm-refine/models').error(new ProgressEvent('fail'));
+        expect(store.model()).toBeNull();
+        expect(store.endpointHost()).toBeNull();
+    });
+    it('refineEndpointHost: host:port of a URL, the raw value when it is not one, null for nothing', () => {
+        expect(refineEndpointHost('http://localhost:11434')).toBe('localhost:11434');
+        expect(refineEndpointHost('https://ollama.lan/v1')).toBe('ollama.lan');
+        expect(refineEndpointHost('not a url')).toBe('not a url');
+        expect(refineEndpointHost('')).toBeNull();
+        expect(refineEndpointHost(undefined)).toBeNull();
     });
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });

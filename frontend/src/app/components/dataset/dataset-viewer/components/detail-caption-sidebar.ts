@@ -1,5 +1,6 @@
 import { Component, input, output, model, inject, signal, computed, effect, viewChild, ElementRef, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
+import { RouterLink } from '@angular/router';
 import {
     DatasetCaptionSettingsComponent, CaptionSettingsState,
     apiBlockedReasonFor, captionStartBlocked, captionBlockedReasonFor,
@@ -35,7 +36,7 @@ export { apiBlockedReasonFor };
     // listener with the view, so the teardown is the framework's, not a flag of
     // ours that could quietly stop working.
     host: { class: 'w-full h-full flex flex-col', '(window:resize)': 'matchOverflowBackdropGutter()' },
-    imports: [FormsModule, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent, IdeogramCaptionEditorComponent, StructuredCaptionModalComponent],
+    imports: [FormsModule, RouterLink, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent, IdeogramCaptionEditorComponent, StructuredCaptionModalComponent],
     template: `
         <div class="w-full h-full border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
             <!-- Top section: save + header + textarea (single flex-1, like masking's mask preview) -->
@@ -242,18 +243,26 @@ export { apiBlockedReasonFor };
 
             <!-- Model-aware refined-variant review + refine trigger -->
             @if (modelContext.modelAware() && modelContext.activeDefinitionId(); as def) {
-                <div class="shrink-0 px-3 pb-3 pt-2 space-y-2 border-t border-surface-mid bg-surface-low/30">
+                <div class="shrink-0 px-3 pb-3 pt-2 space-y-2 border-t border-surface-mid bg-surface-low/30" data-testid="refine-group">
+                    <!-- LANE-76: its own labelled group. Placed under the
+                         AI Recaptioning card's Local/API tabs and provider
+                         picker, the button read as if it used that provider —
+                         it always uses the LLM refine endpoint from Server
+                         settings, so the eyebrow, the label and the caption
+                         name what it refines WITH, never the provider above. -->
+                    <span class="block text-[9px] font-bold uppercase tracking-widest text-text-subtle">Refine captions — local LLM</span>
                     <!-- LANE-70: DISABLED + the backend's sentence beside it, the
                          same contract as Generate above — a tooltip is not a gate. -->
                     <button (click)="refineVariant()" data-testid="refine-variant"
                             [disabled]="llm.blocked()"
                             [title]="llm.blocked() ? llm.blockedReason() : 'Refine this caption for ' + def"
-                            class="w-full py-2 rounded-theme-lg font-bold text-xs bg-brand hover:bg-brand/90 text-white transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed">
-                        Refine for {{ def }}
+                            class="w-full py-2 px-2 rounded-theme-lg font-bold text-xs bg-brand hover:bg-brand/90 text-white transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed truncate">
+                        {{ refineLabel() }}
                     </button>
                     @if (llm.blocked()) {
                         <p class="text-[10px] text-danger leading-snug" data-testid="refine-blocked-reason">{{ llm.blockedReason() }}</p>
                     }
+                    <p class="text-[10px] text-text-subtle leading-snug" data-testid="refine-endpoint-caption">For {{ def }} · uses the LLM refine endpoint from <a routerLink="/server" class="underline hover:text-brand">Server settings</a>@if (llm.endpointHost(); as host) { — {{ host }}}</p>
                     <app-caption-suggestion-review
                         [datasetName]="datasetName()"
                         [stem]="currentStem()"
@@ -292,6 +301,16 @@ export class DetailCaptionSidebarComponent {
     private captionContext = inject(CaptionContextService);
     private ws = inject(WebSocketService);
     protected tokenInfo = signal<TokenCountResult | null>(null);
+
+    /** LANE-76: the Refine button says what it refines WITH — the served
+     *  default model of the LLM refine endpoint (Server settings), never the
+     *  caption provider picked above it. Before the probe answers there is
+     *  no model to name. The definition lives in the caption below: a model
+     *  tag plus `for <definition>` does not fit the rail's width unwrapped. */
+    protected refineLabel = computed(() => {
+        const m = this.llm.model();
+        return m ? `Refine with ${m}` : 'Refine (local LLM)';
+    });
 
     /** Max tag chips shown before collapsing the rest into an overflow chip. */
     private static readonly TAG_CHIP_LIMIT = 6;

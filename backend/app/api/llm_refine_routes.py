@@ -76,6 +76,15 @@ class ModelsResponse(BaseModel):
     #: default model not installed there — the sidebar is blocked, the
     #: Refine tab with an installed model chosen is not.
     unavailable_reason: str | None = None
+    #: APPENDED (LANE-76): WHAT a model-less refine is served with — the
+    #: default model this probe judged and the endpoint it probed. The detail
+    #: sidebar's Refine button names them (``Refine with <model>`` + the
+    #: endpoint host in its caption) because, placed under the caption-provider
+    #: setup, it read as if it used the selected provider. Served by THIS
+    #: route so the label can never name a model the readiness did not judge
+    #: (RULE-21: one producer). Optional so an older client ignores them.
+    model: str | None = None
+    endpoint: str | None = None
 
 
 class PullRequest(BaseModel):
@@ -92,9 +101,11 @@ class RefinePreviewRequest(BaseModel):
 async def list_models() -> ModelsResponse:
     # One probe through the same predicate the refine boundary refuses on,
     # judging the model a model-less refine request is served with.
-    ready = await refine_readiness(_client_or_400(), _default_model())
+    model = _default_model()
+    ready = await refine_readiness(_client_or_400(), model)
     return ModelsResponse(curated=CURATED_MODELS, installed=ready.installed,
-                          available=ready.available, unavailable_reason=ready.reason)
+                          available=ready.available, unavailable_reason=ready.reason,
+                          model=model, endpoint=ready.base_url)
 
 
 @router.post("/pull")

@@ -282,124 +282,124 @@ Every field below is rendered straight from the same schema the training form re
 ### General Settings
 
 <!-- schema-explainers:BASE start -->
-- **Cache Latents** (`cache_latents`) — Cache latents to disk for speed Default `True`.
+- **Cache Latents** (`cache_latents`) — Pre-encode images through the VAE and cache to disk for speed. Placeholder: {cache_latents} *(schema: Cache latents to disk for speed)* Default `True`.
 - **Datasets** (`datasets`) — List of datasets to train on Default none.
-- **Global Triggerword** (`global_triggerword`) — Global triggerword (e.g. 'CarConcepts') Default `""` (empty).
-- **H Flip** (`h_flip`) — Random horizontal flip augmentation (50% chance per sample) Default `False`.
-- **Lora Name** (`lora_name`) — LoRA filename — supports {placeholder} syntax for dynamic naming Default `my_lora`.
-- **Lora Prefix** (`lora_prefix`) — Prefix for LoRA filename (auto-derived from dataset name) Default `""` (empty).
-- **Lora Suffix** (`lora_suffix`) — Suffix for LoRA filename (auto-derived from dataset name) Default `""` (empty).
-- **Mixed Precision** (`mixed_precision`) — Training precision Default `fp16` (choices: `no`, `fp16`, `bf16`).
-- **Output Dir** (`output_dir`) — Where to save results Default `./outputs`.
-- **Save Precision** (`save_precision`) — Precision of the saved LoRA (FP32 = 2x Size) Default `fp16` (choices: `fp16`, `bf16`, `fp32`).
-- **V Flip** (`v_flip`) — Random vertical flip augmentation (50% chance per sample) Default `False`.
+- **Global Triggerword** (`global_triggerword`) — A unique keyword prepended to every caption during training. Placeholder: {global_triggerword} *(schema: Global triggerword (e.g. 'CarConcepts'))* Default `""` (empty).
+- **H Flip** (`h_flip`) — Randomly flip images horizontally during training (50% chance per sample). Placeholder: {h_flip} *(schema: Random horizontal flip augmentation (50% chance per sample))* Default `False`.
+- **Lora Name** (`lora_name`) — Identifier used in filenames and checkpoint directories. Supports {placeholder} syntax. *(schema: LoRA filename — supports {placeholder} syntax for dynamic naming)* Default `my_lora`.
+- **Lora Prefix** (`lora_prefix`) — Prefix for LoRA filename. Placeholder: {lora_prefix} *(schema: Prefix for LoRA filename (auto-derived from dataset name))* Default `""` (empty).
+- **Lora Suffix** (`lora_suffix`) — Suffix for LoRA filename. Placeholder: {lora_suffix} *(schema: Suffix for LoRA filename (auto-derived from dataset name))* Default `""` (empty).
+- **Mixed Precision** (`mixed_precision`) — Precision used during training forward/backward passes. Placeholder: {mixed_precision} *(schema: Training precision)* Default `fp16` (choices: `no`, `fp16`, `bf16`).
+- **Output Dir** (`output_dir`) — Directory where checkpoints and final LoRA files are saved. Placeholder: {output_dir} *(schema: Where to save results)* Default `./outputs`.
+- **Save Precision** (`save_precision`) — Precision of the final saved LoRA weights. Placeholder: {save_precision} *(schema: Precision of the saved LoRA (FP32 = 2x Size))* Default `fp16` (choices: `fp16`, `bf16`, `fp32`).
+- **V Flip** (`v_flip`) — Randomly flip images vertically during training (50% chance per sample). Placeholder: {v_flip} *(schema: Random vertical flip augmentation (50% chance per sample))* Default `False`.
 <!-- schema-explainers:BASE end -->
 
 ### Training Dynamics
 
 <!-- schema-explainers:STRATEGY start -->
-- **Bucketing Mode** (`bucketing_mode`) — Kohya: single best resolution per image. Multi: image appears at every qualifying resolution (more latent diversity). Default `kohya` (choices: `kohya`, `multi`).
+- **Bucketing Mode** (`bucketing_mode`) — How images are assigned to resolution buckets. Placeholder: {bucketing_mode} *(schema: Kohya: single best resolution per image. Multi: image appears at every qualifying resolution (more latent diversity).)* Default `kohya` (choices: `kohya`, `multi`).
 - **Control Resolution** (`control_resolution`) — Base resolution for control images in paired edit training (0 = follow the target's bucket). Qwen-Edit recommends 1024. Default `0` (range 0–2048, step 64).
-- **Flux Shift Base** (`flux_shift_base`) — Base shift for low-res images Default `0.5` (range 0.0–2.0, step 0.1).
-- **Flux Shift Max** (`flux_shift_max`) — Max shift for high-res images Default `1.16` (range 0.5–3.0, step 0.1).
-- **Gradient Accumulation Steps** (`gradient_accumulation_steps`) — Steps before optimizer update Default `1` (range 1–128, step 1).
-- **Gradient Checkpointing** (`gradient_checkpointing`) — Trade speed for VRAM savings by recomputing activations (disable on 96GB+ for faster training) Default `True`.
+- **Flux Shift Base** (`flux_shift_base`) — Shift factor applied to low-resolution images. Placeholder: {flux_shift_base} *(schema: Base shift for low-res images)* Default `0.5` (range 0.0–2.0, step 0.1).
+- **Flux Shift Max** (`flux_shift_max`) — Shift factor applied to high-resolution images. Placeholder: {flux_shift_max} *(schema: Max shift for high-res images)* Default `1.16` (range 0.5–3.0, step 0.1).
+- **Gradient Accumulation Steps** (`gradient_accumulation_steps`) — Accumulate gradients over N steps before updating weights. Placeholder: {gradient_accumulation_steps} *(schema: Steps before optimizer update)* Default `1` (range 1–128, step 1).
+- **Gradient Checkpointing** (`gradient_checkpointing`) — Trade compute for VRAM by recomputing activations during backward pass. Placeholder: {gradient_checkpointing} *(schema: Trade speed for VRAM savings by recomputing activations (disable on 96GB+ for faster training))* Default `True`.
 - **Keep Last Checkpoints** (`keep_last_checkpoints`) — Keep only the last N checkpoints (0 = keep all) Default `0` (range 0–99, step 1).
-- **Logit Normal Mu** (`logit_normal_mu`) — Mean of the logit-normal distribution Default `0.0` (range -2.0–2.0, step 0.1).
-- **Logit Normal Sigma** (`logit_normal_sigma`) — Std of the logit-normal distribution Default `1.0` (range 0.1–3.0, step 0.1).
-- **Max Train Steps** (`max_train_steps`) — Maximum number of steps Default `1000` (min 1, step 100).
-- **Mode Scale** (`mode_scale`) — Scale for mode sampling (>1 = more mid-range emphasis) Default `1.5` (range 1.0–5.0, step 0.1).
+- **Logit Normal Mu** (`logit_normal_mu`) — Mean of the logit-normal distribution (0.0 = centered). Placeholder: {logit_normal_mu} Default `0.0` (range -2.0–2.0, step 0.1).
+- **Logit Normal Sigma** (`logit_normal_sigma`) — Width of the logit-normal distribution (1.0 = standard spread). Placeholder: {logit_normal_sigma} *(schema: Std of the logit-normal distribution)* Default `1.0` (range 0.1–3.0, step 0.1).
+- **Max Train Steps** (`max_train_steps`) — Total number of optimizer steps before training ends. Placeholder: {max_train_steps} *(schema: Maximum number of steps)* Default `1000` (min 1, step 100).
+- **Mode Scale** (`mode_scale`) — Higher values increase emphasis on mid-range timesteps. Placeholder: {mode_scale} *(schema: Scale for mode sampling (>1 = more mid-range emphasis))* Default `1.5` (range 1.0–5.0, step 0.1).
 - **Model Shift Std** (`model_shift_std`) — Std of the logit-normal draw for model_shift timestep sampling Default `1.0` (range 0.1–3.0, step 0.1).
-- **Persist Embeddings** (`persist_embeddings`) — Store embedding cache manifest in checkpoints for resume Default `True`.
-- **Persist Latents** (`persist_latents`) — Store latent cache manifest in checkpoints for resume Default `True`.
-- **Radc End** (`radc_end`) — Noise focus at training end (detail refinement) Default `0.2` (range 0.0–1.0, step 0.05).
-- **Radc Res Influence** (`radc_res_influence`) — Resolution cross-influence (0=off) Default `0.15` (range 0.0–0.5, step 0.05).
-- **Radc Start** (`radc_start`) — Noise focus at training start (1.0=high noise, 0.0=clean) Default `0.8` (range 0.0–1.0, step 0.05).
-- **Radc Width** (`radc_width`) — Curve width (0.1=focused, 1.0=broad) Default `0.5` (range 0.05–1.0, step 0.05).
-- **Resolutions** (`resolutions`) — Target resolutions for bucketing Default `[1024]`.
-- **Resume From Checkpoint** (`resume_from_checkpoint`) — Path to a checkpoint directory to resume from Default `""` (empty).
-- **Save Every N Steps** (`save_every_n_steps`) — Save a checkpoint every N steps (0 to disable) Default `0` (min 0, step 50).
-- **Timestep Sampling** (`timestep_sampling`) — Timestep sampling strategy for training Default `logit_normal` (choices: `logit_normal`, `uniform`, `sigmoid`, `cosmap`, `mode`, `flux_shift`, `radc`, `model_shift`).
+- **Persist Embeddings** (`persist_embeddings`) — Include the text embedding cache manifest in checkpoints for seamless resume. Placeholder: {persist_embeddings} *(schema: Store embedding cache manifest in checkpoints for resume)* Default `True`.
+- **Persist Latents** (`persist_latents`) — Include the latent cache manifest in checkpoints for seamless resume. Placeholder: {persist_latents} *(schema: Store latent cache manifest in checkpoints for resume)* Default `True`.
+- **Radc End** (`radc_end`) — Where the noise emphasis ends at the final training step. Placeholder: {radc_end} *(schema: Noise focus at training end (detail refinement))* Default `0.2` (range 0.0–1.0, step 0.05).
+- **Radc Res Influence** (`radc_res_influence`) — How much image resolution affects the noise focus at each training stage. Placeholder: {radc_res_influence} *(schema: Resolution cross-influence (0=off))* Default `0.15` (range 0.0–0.5, step 0.05).
+- **Radc Start** (`radc_start`) — Where the noise emphasis begins at the start of training. Placeholder: {radc_start} *(schema: Noise focus at training start (1.0=high noise, 0.0=clean))* Default `0.8` (range 0.0–1.0, step 0.05).
+- **Radc Width** (`radc_width`) — How broad or narrow the Gaussian sampling curve is. Placeholder: {radc_width} *(schema: Curve width (0.1=focused, 1.0=broad))* Default `0.5` (range 0.05–1.0, step 0.05).
+- **Resolutions** (`resolutions`) — Target pixel resolutions for aspect-ratio bucketing. Placeholder: {resolutions} *(schema: Target resolutions for bucketing)* Default `[1024]`.
+- **Resume From Checkpoint** (`resume_from_checkpoint`) — Path to a checkpoint directory to continue training from. Placeholder: {resume_from_checkpoint} *(schema: Path to a checkpoint directory to resume from)* Default `""` (empty).
+- **Save Every N Steps** (`save_every_n_steps`) — Save a full checkpoint every N optimizer steps (0 to disable). Placeholder: {save_every_n_steps} *(schema: Save a checkpoint every N steps (0 to disable))* Default `0` (min 0, step 50).
+- **Timestep Sampling** (`timestep_sampling`) — Distribution used to sample noise timesteps during training. Placeholder: {timestep_sampling} *(schema: Timestep sampling strategy for training)* Default `logit_normal` (choices: `logit_normal`, `uniform`, `sigmoid`, `cosmap`, `mode`, `flux_shift`, `radc`, `model_shift`).
 - **Timestep Uniform Prob** (`timestep_uniform_prob`) — Fraction of timesteps drawn uniformly (mixed into shifted modes) Default `0.1` (range 0.0–1.0, step 0.05).
-- **Train Batch Size** (`train_batch_size`) — Batch size Default `1` (range 1–32, step 1).
-- **Use Cached Embeddings** (`use_cached_embeddings`) — Re-use embedding cache from prior run (only encode new captions) Default `False`.
-- **Use Cached Latents** (`use_cached_latents`) — Re-use latent cache from prior run (only encode new/changed images) Default `False`.
+- **Train Batch Size** (`train_batch_size`) — Number of images processed per GPU in each forward pass. Placeholder: {train_batch_size} *(schema: Batch size)* Default `1` (range 1–32, step 1).
+- **Use Cached Embeddings** (`use_cached_embeddings`) — Re-use text embedding cache from the checkpoint instead of re-encoding all captions. Placeholder: {use_cached_embeddings} *(schema: Re-use embedding cache from prior run (only encode new captions))* Default `False`.
+- **Use Cached Latents** (`use_cached_latents`) — Re-use latent cache from the checkpoint instead of re-encoding all images. Placeholder: {use_cached_latents} *(schema: Re-use latent cache from prior run (only encode new/changed images))* Default `False`.
 <!-- schema-explainers:STRATEGY end -->
 
 ### LoRA Parameters
 
 <!-- schema-explainers:NETWORK start -->
-- **Network Alpha** (`network_alpha`) — Alpha scaling factor Default `8.0` (range 0.1–256, step 0.5).
-- **Network Rank** (`network_rank`) — Dimension of the LoRA network Default `16` (range 1–256, step 1).
-- **Train Text Encoder** (`train_text_encoder`) — Train text encoder along with UNet Default `False`.
+- **Network Alpha** (`network_alpha`) — Scaling factor that controls LoRA weight influence during training. Placeholder: {network_alpha} *(schema: Alpha scaling factor)* Default `8.0` (range 0.1–256, step 0.5).
+- **Network Rank** (`network_rank`) — Dimensionality of the LoRA adapter matrices (higher = more parameters). Placeholder: {network_rank} *(schema: Dimension of the LoRA network)* Default `16` (range 1–256, step 1).
+- **Train Text Encoder** (`train_text_encoder`) — Also apply LoRA to the text encoder for better prompt understanding. Placeholder: {train_text_encoder} *(schema: Train text encoder along with UNet)* Default `False`.
 <!-- schema-explainers:NETWORK end -->
 
 ### Optimizer Settings
 
 <!-- schema-explainers:OPTIMIZER start -->
-- **Beta1** (`beta1`) — Adam beta1 (momentum) Default `0.9` (range 0.0–1.0, step 0.01).
-- **Beta2** (`beta2`) — Adam beta2 (variance smoothing) Default `0.999` (range 0.0–1.0, step 0.001).
-- **D Coef** (`d_coef`) — Prodigy adaptive LR coefficient Default `0.8` (range 0.1–2.0, step 0.1).
-- **Decouple** (`decouple`) — Decoupled weight decay (AdamW-style) Default `True`.
-- **Growth Rate** (`growth_rate`) — Max growth factor for d-estimate per step (1.02 = safe warmup) Default `1.02` (range 1.0–2.0, step 0.01).
-- **Learning Rate** (`learning_rate`) — Learning rate (Prodigy/PPSF recommend 1.0) Default `0.0001` (range 0–10, step 1e-05).
-- **Lr Scale Mode** (`lr_scale_mode`) — Scale LR by effective batch size (batch×accum). 'batch'=linear, 'sqrt'=conservative Default `none` (choices: `none`, `batch`, `sqrt`).
-- **Lr Scheduler** (`lr_scheduler`) — Learning rate scheduler Default `constant` (choices: `constant`, `cosine`, `linear`).
-- **Lr Warmup Steps** (`lr_warmup_steps`) — Warmup steps for scheduler Default `0` (min 0, step 10).
-- **Optimizer Type** (`optimizer_type`) — Optimizer algorithm for weight updates Default `AdamW8bit` (choices: `AdamW`, `AdamW8bit`, `Prodigy`, `ProdigyPlusSF`, `SophiaH`, `SophiaG`, `Lion`, `Adafactor`, `StableAdamW`, `Shampoo`, `RAdam`, `AdEMAMix`).
-- **Ppsf D Coef** (`ppsf_d_coef`) — Prodigy d-estimate coefficient Default `1.0` (range 0.1–2.0, step 0.1).
-- **Ppsf Eps** (`ppsf_eps`) — Numerical stability term Default `1e-08` (range 1e-10–0.0001, step 1e-08).
-- **Ppsf Factored** (`ppsf_factored`) — Factored second moment — saves memory (Adafactor-like) Default `True`.
-- **Ppsf Prodigy Steps** (`ppsf_prodigy_steps`) — Steps to run Prodigy before switching to Adam (0 = always Prodigy) Default `0` (min 0, step 100).
-- **Ppsf Use Bias Correction** (`ppsf_use_bias_correction`) — RAdam-style automatic warmup Default `False`.
-- **Ppsf Use Stableadamw** (`ppsf_use_stableadamw`) — StableAdamW gradient scaling (RMS-based) Default `True`.
-- **Safeguard Warmup** (`safeguard_warmup`) — Prevent early training instability Default `True`.
-- **Use Bias Correction** (`use_bias_correction`) — Enable bias correction for better convergence Default `True`.
-- **Weight Decay** (`weight_decay`) — Weight decay for regularization Default `0.01` (range 0–1, step 0.001).
+- **Beta1** (`beta1`) — First moment (momentum) coefficient for Adam optimizer. Placeholder: {beta1} *(schema: Adam beta1 (momentum))* Default `0.9` (range 0.0–1.0, step 0.01).
+- **Beta2** (`beta2`) — Second moment (variance smoothing) coefficient for Adam. Placeholder: {beta2} *(schema: Adam beta2 (variance smoothing))* Default `0.999` (range 0.0–1.0, step 0.001).
+- **D Coef** (`d_coef`) — Prodigy's adaptive learning rate scaling coefficient. Placeholder: {d_coef} *(schema: Prodigy adaptive LR coefficient)* Default `0.8` (range 0.1–2.0, step 0.1).
+- **Decouple** (`decouple`) — Use AdamW-style decoupled weight decay in Prodigy. Placeholder: {decouple} *(schema: Decoupled weight decay (AdamW-style))* Default `True`.
+- **Growth Rate** (`growth_rate`) — Maximum allowed growth of Prodigy's learning rate per step. Placeholder: {growth_rate} *(schema: Max growth factor for d-estimate per step (1.02 = safe warmup))* Default `1.02` (range 1.0–2.0, step 0.01).
+- **Learning Rate** (`learning_rate`) — Controls how much weights change per optimization step. Placeholder: {learning_rate} *(schema: Learning rate (Prodigy/PPSF recommend 1.0))* Default `0.0001` (range 0–10, step 1e-05).
+- **Lr Scale Mode** (`lr_scale_mode`) — Automatically scales LR by effective batch size to maintain consistent training dynamics. Placeholder: {lr_scale_mode} *(schema: Scale LR by effective batch size (batch×accum). 'batch'=linear, 'sqrt'=conservative)* Default `none` (choices: `none`, `batch`, `sqrt`).
+- **Lr Scheduler** (`lr_scheduler`) — How the learning rate changes over the course of training. Placeholder: {lr_scheduler} *(schema: Learning rate scheduler)* Default `constant` (choices: `constant`, `cosine`, `linear`).
+- **Lr Warmup Steps** (`lr_warmup_steps`) — Gradually increase LR from 0 to target over N steps. Placeholder: {lr_warmup_steps} *(schema: Warmup steps for scheduler)* Default `0` (min 0, step 10).
+- **Optimizer Type** (`optimizer_type`) — Algorithm used to update model weights during training. Placeholder: {optimizer_type} *(schema: Optimizer algorithm for weight updates)* Default `AdamW8bit` (choices: `AdamW`, `AdamW8bit`, `Prodigy`, `ProdigyPlusSF`, `SophiaH`, `SophiaG`, `Lion`, `Adafactor`, `StableAdamW`, `Shampoo`, `RAdam`, `AdEMAMix`).
+- **Ppsf D Coef** (`ppsf_d_coef`) — Multiplier for the adaptive learning rate estimate (higher = more aggressive). Placeholder: {ppsf_d_coef} *(schema: Prodigy d-estimate coefficient)* Default `1.0` (range 0.1–2.0, step 0.1).
+- **Ppsf Eps** (`ppsf_eps`) — Numerical stability constant for the Adam denominator. Placeholder: {ppsf_eps} *(schema: Numerical stability term)* Default `1e-08` (range 1e-10–0.0001, step 1e-08).
+- **Ppsf Factored** (`ppsf_factored`) — Use low-rank approximations for the second moment to save memory. Placeholder: {ppsf_factored} *(schema: Factored second moment — saves memory (Adafactor-like))* Default `True`.
+- **Ppsf Prodigy Steps** (`ppsf_prodigy_steps`) — Freeze the adaptive step size after N steps (0 = never freeze). Placeholder: {ppsf_prodigy_steps} *(schema: Steps to run Prodigy before switching to Adam (0 = always Prodigy))* Default `0` (min 0, step 100).
+- **Ppsf Use Bias Correction** (`ppsf_use_bias_correction`) — Enable RAdam-style automatic warmup instead of manual LR warmup. Placeholder: {ppsf_use_bias_correction} Default `False`.
+- **Ppsf Use Stableadamw** (`ppsf_use_stableadamw`) — Scale updates using RMS normalization for built-in gradient control. Placeholder: {ppsf_use_stableadamw} *(schema: StableAdamW gradient scaling (RMS-based))* Default `True`.
+- **Safeguard Warmup** (`safeguard_warmup`) — Prevents Prodigy from over-estimating the learning rate early. Placeholder: {safeguard_warmup} *(schema: Prevent early training instability)* Default `True`.
+- **Use Bias Correction** (`use_bias_correction`) — Corrects initialization bias in Prodigy's moment estimates. Placeholder: {use_bias_correction} *(schema: Enable bias correction for better convergence)* Default `True`.
+- **Weight Decay** (`weight_decay`) — L2 regularization to prevent weights from growing too large. Placeholder: {weight_decay} *(schema: Weight decay for regularization)* Default `0.01` (range 0–1, step 0.001).
 <!-- schema-explainers:OPTIMIZER end -->
 
 ### Expert Features
 
 <!-- schema-explainers:OPTIMIZER_EXPERT start -->
-- **Adafactor Clip Threshold** (`adafactor_clip_threshold`) — Clip threshold for root mean square of updates Default `1.0` (range 0.1–10.0, step 0.1).
-- **Adafactor Decay Rate** (`adafactor_decay_rate`) — Coefficient to compute running averages of square Default `-0.8` (range -1.0–-0.1, step 0.1).
-- **Relative Step** (`adafactor_relative_step`) — Scale LR by parameter magnitude (set LR to 1.0 when enabled) Default `False`.
-- **Adafactor Warmup Init** (`adafactor_warmup_init`) — Use warmup initialization (only allowed if relative_step=True and LR=None) Default `False`.
-- **Ademamix Alpha** (`ademamix_alpha`) — AdEMAMix alpha (mix factor) Default `5.0` (range 1.0–10.0, step 0.5).
-- **Ademamix Beta3** (`ademamix_beta3`) — AdEMAMix beta3 (slow momentum) Default `0.9999` (range 0.9–1.0, step 0.0001).
-- **Ppsf Split Groups** (`ppsf_split_groups`) — Calculate d independently per parameter group Default `True`.
-- **Ppsf Use Adopt** (`ppsf_use_adopt`) — Partial ADOPT implementation (delayed moment update) Default `False`.
-- **Ppsf Use Cautious** (`ppsf_use_cautious`) — Cautious updates — isolate values aligning with gradient Default `False`.
-- **Ppsf Use Focus** (`ppsf_use_focus`) — Noise handling at large step sizes Default `False`.
-- **Ppsf Use Grams** (`ppsf_use_grams`) — Sign-based updates aligning with gradient Default `False`.
-- **Ppsf Use Orthograd** (`ppsf_use_orthograd`) — Use gradient component orthogonal to weights Default `False`.
-- **Ppsf Use Speed** (`ppsf_use_speed`) — Simplified momentum-based Prodigy estimate Default `False`.
-- **Radam N Sma Threshold** (`radam_n_sma_threshold`) — Length of SMA threshold (Rectified Adam) Default `5`.
-- **Shampoo Preconditioning Compute Steps** (`shampoo_preconditioning_compute_steps`) — Steps between preconditioning matrix updates Default `1`.
-- **Sophia Capturable** (`sophia_capturable`) — Enable CUDA graph capture (experimental, CUDA-only) Default `False`.
-- **Sophia Hessian Distribution** (`sophia_hessian_distribution`) — Distribution to initialize Hessian Default `gaussian` (choices: `gaussian`, `rademacher`).
-- **Sophia Maximize** (`sophia_maximize`) — Maximize objective instead of minimize Default `False`.
-- **Sophia Num Samples** (`sophia_num_samples`) — Times to sample z for Hessian trace Default `1` (range 1–10, step 1).
-- **Sophia P** (`sophia_p`) — Clip effective gradient (p) Default `0.01` (range 0.001–0.1, step 0.001).
-- **Sophia Rho** (`sophia_rho`) — Hessian clipping threshold (rho) Default `0.04` (range 0.001–0.5, step 0.01).
-- **Sophia Update Period** (`sophia_update_period`) — Hessian update period Default `10` (min 1, step 1).
-- **Stableadamw Kahan Sum** (`stableadamw_kahan_sum`) — Enable Kahan summation for high precision (StableAdamW) Default `False`.
+- **Adafactor Clip Threshold** (`adafactor_clip_threshold`) — Clip the RMS of parameter updates to prevent large jumps. Placeholder: {adafactor_clip_threshold} *(schema: Clip threshold for root mean square of updates)* Default `1.0` (range 0.1–10.0, step 0.1).
+- **Adafactor Decay Rate** (`adafactor_decay_rate`) — Exponential decay for Adafactor's running average of squared gradients. Placeholder: {adafactor_decay_rate} *(schema: Coefficient to compute running averages of square)* Default `-0.8` (range -1.0–-0.1, step 0.1).
+- **Relative Step** (`adafactor_relative_step`) — Scale the learning rate relative to parameter magnitude. Placeholder: {adafactor_relative_step} *(schema: Scale LR by parameter magnitude (set LR to 1.0 when enabled))* Default `False`.
+- **Adafactor Warmup Init** (`adafactor_warmup_init`) — Use Adafactor's built-in warmup schedule. Placeholder: {adafactor_warmup_init} *(schema: Use warmup initialization (only allowed if relative_step=True and LR=None))* Default `False`.
+- **Ademamix Alpha** (`ademamix_alpha`) — Mixing factor between fast and slow EMA in AdEMAMix. Placeholder: {ademamix_alpha} *(schema: AdEMAMix alpha (mix factor))* Default `5.0` (range 1.0–10.0, step 0.5).
+- **Ademamix Beta3** (`ademamix_beta3`) — Slow EMA momentum coefficient for AdEMAMix. Placeholder: {ademamix_beta3} *(schema: AdEMAMix beta3 (slow momentum))* Default `0.9999` (range 0.9–1.0, step 0.0001).
+- **Ppsf Split Groups** (`ppsf_split_groups`) — Adapt step size independently for each parameter group (e.g. UNet vs TE). Placeholder: {ppsf_split_groups} *(schema: Calculate d independently per parameter group)* Default `True`.
+- **Ppsf Use Adopt** (`ppsf_use_adopt`) — Delay second moment update for better convergence with any β2 value. Placeholder: {ppsf_use_adopt} *(schema: Partial ADOPT implementation (delayed moment update))* Default `False`.
+- **Ppsf Use Cautious** (`ppsf_use_cautious`) — Promote parameter updates aligned with the current gradient direction. Placeholder: {ppsf_use_cautious} *(schema: Cautious updates — isolate values aligning with gradient)* Default `False`.
+- **Ppsf Use Focus** (`ppsf_use_focus`) — Improve noise handling at large step sizes (incompatible with factored mode). Placeholder: {ppsf_use_focus} Default `False`.
+- **Ppsf Use Grams** (`ppsf_use_grams`) — Separate update direction from momentum for sign-based updates. Placeholder: {ppsf_use_grams} *(schema: Sign-based updates aligning with gradient)* Default `False`.
+- **Ppsf Use Orthograd** (`ppsf_use_orthograd`) — Update weights using only the gradient component orthogonal to current weights. Placeholder: {ppsf_use_orthograd} *(schema: Use gradient component orthogonal to weights)* Default `False`.
+- **Ppsf Use Speed** (`ppsf_use_speed`) — Replace Prodigy's ratio with a momentum-based directional progress estimate. Placeholder: {ppsf_use_speed} *(schema: Simplified momentum-based Prodigy estimate)* Default `False`.
+- **Radam N Sma Threshold** (`radam_n_sma_threshold`) — SMA length threshold for RAdam's automatic warmup. Placeholder: {radam_n_sma_threshold} *(schema: Length of SMA threshold (Rectified Adam))* Default `5`.
+- **Shampoo Preconditioning Compute Steps** (`shampoo_preconditioning_compute_steps`) — Steps between Kronecker factor updates for Shampoo. ⚠️ Shampoo stores large preconditioner matrices — may OOM on 9B+ models. Placeholder: {shampoo_preconditioning_compute_steps} *(schema: Steps between preconditioning matrix updates)* Default `1`.
+- **Sophia Capturable** (`sophia_capturable`) — Enable CUDA graph capture for SophiaG (experimental). Placeholder: {sophia_capturable} *(schema: Enable CUDA graph capture (experimental, CUDA-only))* Default `False`.
+- **Sophia Hessian Distribution** (`sophia_hessian_distribution`) — Distribution for Hutchinson trace sampling vectors. Placeholder: {sophia_hessian_distribution} *(schema: Distribution to initialize Hessian)* Default `gaussian` (choices: `gaussian`, `rademacher`).
+- **Sophia Maximize** (`sophia_maximize`) — Maximize the objective instead of minimizing (SophiaG). Placeholder: {sophia_maximize} *(schema: Maximize objective instead of minimize)* Default `False`.
+- **Sophia Num Samples** (`sophia_num_samples`) — Number of random vectors for Hutchinson trace estimation. Placeholder: {sophia_num_samples} *(schema: Times to sample z for Hessian trace)* Default `1` (range 1–10, step 1).
+- **Sophia P** (`sophia_p`) — Gradient clipping threshold for SophiaH. Placeholder: {sophia_p} *(schema: Clip effective gradient (p))* Default `0.01` (range 0.001–0.1, step 0.001).
+- **Sophia Rho** (`sophia_rho`) — Hessian clipping threshold — controls per-parameter LR adaptation. ⚠️ SophiaH needs extra VRAM for Hessian estimates — may OOM on 9B+ models. Placeholder: {sophia_rho} *(schema: Hessian clipping threshold (rho))* Default `0.04` (range 0.001–0.5, step 0.01).
+- **Sophia Update Period** (`sophia_update_period`) — Steps between Hessian diagonal re-estimations. Placeholder: {sophia_update_period} *(schema: Hessian update period)* Default `10` (min 1, step 1).
+- **Stableadamw Kahan Sum** (`stableadamw_kahan_sum`) — Use Kahan compensated summation for higher precision weight updates. Placeholder: {stableadamw_kahan_sum} *(schema: Enable Kahan summation for high precision (StableAdamW))* Default `False`.
 <!-- schema-explainers:OPTIMIZER_EXPERT end -->
 
 ### Advanced Engine
 
 <!-- schema-explainers:ENGINE start -->
-- **Adaptive Targeting** (`adaptive_targeting`) — LoRA adaptive layer targeting — periodically freeze LoRA modules that stopped learning, confining late updates to the ones still moving. A regularizer, not a speedup: frozen modules stay in the model, so step time is unchanged. Default `False`.
+- **Adaptive Targeting** (`adaptive_targeting`) — Periodically freeze LoRA layers that stopped learning, so late training concentrates on the hot ones. *(schema: LoRA adaptive layer targeting — periodically freeze LoRA modules that stopped learning, confining late updates to the ones still moving. A regularizer, not a speedup: frozen modules stay in the model, so step time is unchanged.)* Default `False`.
 - **Adaptive Targeting Config** (`adaptive_targeting_config`) — Adaptive targeting parameters (preset reference + knob values). Default none.
-- **Block Swap Config** (`block_swap_config`) — Per-block-group CPU offload percentage (0-100). Keys are block group names from model topology. Default none.
-- **Cache Text Embeddings** (`cache_text_embeddings`) — Cache text embeddings and offload text encoders to CPU (frees VRAM for training) Default `True`.
-- **Ema** (`ema`) — Enable Exponential Moving Average Default `False`.
-- **Ema Decay** (`ema_decay`) — EMA decay rate Default `0.999` (range 0.9–1.0, step 0.001).
-- **Low Vram** (`low_vram`) — Offload VAE to CPU after caching (disable to keep VAE on GPU for sampling speed) Default `True`.
-- **Min Snr Gamma** (`min_snr_gamma`) — Min-SNR Gamma weighting Default `5.0` (range 0.0–20.0, step 0.5).
-- **Noise Offset** (`noise_offset`) — Noise offset for dynamic range Default `0.0` (range 0.0–0.2, step 0.005).
-- **Offload To Cpu** (`offload_to_cpu`) — Offload model blocks to CPU to save VRAM Default `False`.
-- **Unload Text Encoder** (`unload_text_encoder`) — Delete text encoders after caching (max VRAM savings, disables live prompt encoding for sampling) Default `False`.
+- **Block Swap Config** (`block_swap_config`) — Offload specific transformer blocks to CPU to fine-tune VRAM usage. Placeholder: {block_swap_config} *(schema: Per-block-group CPU offload percentage (0-100). Keys are block group names from model topology.)* Default none.
+- **Cache Text Embeddings** (`cache_text_embeddings`) — Cache text encoder outputs in memory to avoid re-encoding. Placeholder: {cache_text_embeddings} *(schema: Cache text embeddings and offload text encoders to CPU (frees VRAM for training))* Default `True`.
+- **Ema** (`ema`) — Maintain a smoothed copy of weights for more stable outputs. Placeholder: {ema} *(schema: Enable Exponential Moving Average)* Default `False`.
+- **Ema Decay** (`ema_decay`) — How slowly the EMA shadow weights update (higher = slower). Placeholder: {ema_decay} *(schema: EMA decay rate)* Default `0.999` (range 0.9–1.0, step 0.001).
+- **Low Vram** (`low_vram`) — Offload the VAE to CPU after latent caching to free GPU memory. Placeholder: {low_vram} *(schema: Offload VAE to CPU after caching (disable to keep VAE on GPU for sampling speed))* Default `True`.
+- **Min Snr Gamma** (`min_snr_gamma`) — Reduces the contribution of 'easy' (low-noise) timesteps to the loss. Placeholder: {min_snr_gamma} *(schema: Min-SNR Gamma weighting)* Default `5.0` (range 0.0–20.0, step 0.5).
+- **Noise Offset** (`noise_offset`) — Adds a global brightness shift to training noise for better dynamic range. Placeholder: {noise_offset} *(schema: Noise offset for dynamic range)* Default `0.0` (range 0.0–0.2, step 0.005).
+- **Offload To Cpu** (`offload_to_cpu`) — Move inactive model components to CPU RAM to free GPU VRAM. Placeholder: {offload_to_cpu} *(schema: Offload model blocks to CPU to save VRAM)* Default `False`.
+- **Unload Text Encoder** (`unload_text_encoder`) — Remove the text encoder from GPU after embeddings are cached. Placeholder: {unload_text_encoder} *(schema: Delete text encoders after caching (max VRAM savings, disables live prompt encoding for sampling))* Default `False`.
 - **Vram Safe Bucket Order** (`vram_safe_bucket_order`) — Feed the largest aspect-ratio bucket first each epoch so the CUDA allocator reserves its peak segment up front; smaller buckets then reuse it. Eliminates the order-dependent fragmentation that makes reserved VRAM vary run-to-run and spill past the card. Order stays shuffled within each bucket. Disable for fully-random bucket order. Default `True`.
 <!-- schema-explainers:ENGINE end -->
 
@@ -427,9 +427,9 @@ Every field below is rendered straight from the same schema the training form re
 ### Sampling
 
 <!-- schema-explainers:SAMPLING start -->
-- **Sample Every N Steps** (`sample_every_n_steps`) — Generate samples every N steps (0 = disabled, independent from checkpoint save) Default `0` (min 0, step 50).
+- **Sample Every N Steps** (`sample_every_n_steps`) — Generate preview images at regular intervals to monitor training progress. Placeholder: {sample_every_n_steps} *(schema: Generate samples every N steps (0 = disabled, independent from checkpoint save))* Default `0` (min 0, step 50).
 - **Sample Prompts** (`sample_prompts`) — Prompts to generate at each sample interval. Supports [triggerword] and [captionprefix] wildcards. Default none.
-- **Sample Skip First N Steps** (`sample_skip_first_n_steps`) — Skip sampling for the first N steps Default `0` (min 0, step 50).
+- **Sample Skip First N Steps** (`sample_skip_first_n_steps`) — Skip generating samples during the initial N steps. Placeholder: {sample_skip_first_n_steps} *(schema: Skip sampling for the first N steps)* Default `0` (min 0, step 50).
 - **Sampling Min Free Vram Fraction** (`sampling_min_free_vram_fraction`) — Skip a training sample if free VRAM is below this fraction of total. Prevents the sampling spike from spilling into Windows shared system memory (a freeze). Training continues uninterrupted. 0 = never skip. Default `0.15` (range 0.0–0.9, step 0.05).
 <!-- schema-explainers:SAMPLING end -->
 

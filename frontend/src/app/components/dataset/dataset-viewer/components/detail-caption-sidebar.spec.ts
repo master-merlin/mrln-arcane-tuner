@@ -610,9 +610,13 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         const { fixture, http, store, llm } = mountVariant();
         store.setModelAware(true);
         store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
-        llm.available.set(false);
         fixture.detectChanges();
-        http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
+        // The probe must be ANSWERED (LANE-70: a probe still out reads
+        // "Checking…", never "unreachable"); the probe itself failing to
+        // answer is the served shape with no sentence.
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: [], available: false, unavailable_reason: null });
+        fixture.detectChanges();
+        expect(llm.checked()).toBe(true);
         const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]');
         expect(btn.disabled).toBe(true);
         expect(btn.getAttribute('title')).toContain('unreachable');
@@ -649,7 +653,9 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         // model-less refine would be served with is missing. Before LANE-70 this
         // exact payload left the button enabled.
         http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['gemma3:12b'], available: true, unavailable_reason: reason });
-        http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
+        // The children's GETs stay pending (afterEach drains them): a
+        // suggestions-shaped flush on the caption loads blanks captionText
+        // and the re-render below would throw on `.length`.
         fixture.detectChanges();
         expect(llm.available()).toBe(true);
         const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]') as HTMLButtonElement;
@@ -668,8 +674,8 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         store.setModelAware(true);
         store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
         fixture.detectChanges();
-        // Leave /api/llm-refine/models unanswered; drain only the children.
-        http.match(r => r.method === 'GET' && !r.url.includes('llm-refine')).forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
+        // Leave /api/llm-refine/models unanswered (the children's GETs stay
+        // pending too - afterEach drains them).
         fixture.detectChanges();
         const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]') as HTMLButtonElement;
         expect(btn.disabled).toBe(true);
@@ -683,7 +689,6 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
         fixture.detectChanges();
         http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['qwen2.5:7b-instruct'], available: true, unavailable_reason: null });
-        http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
         fixture.detectChanges();
         const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]') as HTMLButtonElement;
         expect(btn.disabled).toBe(false);
@@ -697,8 +702,12 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
         // The Refine button is gated on LLM availability; mark it reachable so
         // the click is not swallowed by the disabled attribute.
-        llm.available.set(true);
         fixture.detectChanges();
+        // The gate reads the SERVED all-clear (LANE-70): an answered probe
+        // with no reason; a pending one blocks the click.
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['qwen2.5:7b-instruct'], available: true, unavailable_reason: null });
+        expect(llm.blocked()).toBe(false);
+        fixture.detectChanges();   // the button was first painted disabled (probe pending)
         // drain the child review's GET
         http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
         const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]');

@@ -27,6 +27,7 @@ backend/restart.log
 backend/tests/tests.log
 backend/tests/tests-*.log
 backend/tests/server-test*.log
+backend/tests/import-time*.db*
 *.db
 *.db-shm
 *.db-wal

@@ -221,6 +221,12 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
     // signal — and therefore batchCrop — used 'center'. No interaction happens here on
     // purpose: the defect only exists until the control is touched.
     it('the anchor select shows the signal value on first paint and that value is the one cropped with', () => {
+        // The Files toolbar (and its anchor select) only paints once the analysis
+        // yields a strategy with images (`@else if (kpis(); as k)`) — the default
+        // all-null fixture never renders it.
+        api.analyzeDataset.mockReturnValue(of({
+            squared: { images: [{ path: 'a.png', width: 512, height: 512, target_width: 512, target_height: 512, aspect_ratio: 1 }] },
+        }));
         const { fixture: f, comp } = make();
         comp.activeTab.set('files');
         f.detectChanges();

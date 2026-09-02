@@ -653,6 +653,13 @@ describe('DatasetCaptionSettings — api-* readiness (LANE-65)', () => {
                 { provide: TemplateService, useValue: {
                     listCaptioningTemplates: vi.fn((modelId: string) => of([makeTemplate(modelId)])),
                     recordUse: vi.fn(),
+                    // `updateParam` on a readonly default writes through to a
+                    // 'Custom Settings' copy (created once, then updated) — the
+                    // provider-model edits below take exactly that path.
+                    createCaptioningTemplate: vi.fn().mockImplementation((data: Partial<Template>) =>
+                        of(tplOf({ ...data, id: 'custom-copy' }))),
+                    updateTemplate: vi.fn().mockImplementation((_d: string, id: string, data: Partial<Template>) =>
+                        of(tplOf({ ...data, id }))),
                 } },
                 { provide: ApiCaptionService, useValue: api },
                 { provide: OverlayStore, useValue: { openModal: vi.fn() } },
@@ -696,7 +703,9 @@ describe('DatasetCaptionSettings — api-* readiness (LANE-65)', () => {
     it('an available verdict makes apiReady=true with a null reason', () => {
         comp.switchMode('api');
         vi.runAllTimers();
-        expect(api.readiness).toHaveBeenCalledWith('openai', expect.anything());
+        // No provider model typed yet: the probe asks for the endpoint alone
+        // (`undefined`, never '' — the backend would treat '' as a model name).
+        expect(api.readiness).toHaveBeenCalledWith('openai', undefined);
         expect(last.apiReady).toBe(true);
         expect(last.apiUnavailableReason).toBeNull();
     });

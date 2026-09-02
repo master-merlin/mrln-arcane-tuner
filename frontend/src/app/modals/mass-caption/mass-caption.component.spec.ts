@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { provideHttpClient, withXhr } from '@angular/common/http';
-import { of, throwError } from 'rxjs';
+import { of, Subject, throwError } from 'rxjs';
 import { MassCaptionModalComponent } from './mass-caption.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
@@ -734,7 +734,10 @@ describe('MassCaptionComponent — Generate readiness gate (LANE-65)', () => {
                 provideHttpClient(withXhr()),
                 OverlayStore, MediaItemStore, CaptionCacheStore,
                 { provide: DatasetService, useValue: api },
-                { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                // `reconnected$`: the rendered settings child injects the REAL
+                // ProjectService, whose constructor subscribes to it — a mock
+                // without it throws before the first assertion runs.
+                { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0), reconnected$: new Subject<void>() } },
                 { provide: ToastService, useValue: toast },
                 { provide: TaskStore, useValue: { byId: () => signal(undefined), active: signal([]), cancel: vi.fn() } },
                 { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },

@@ -132,8 +132,10 @@ describe('MassMaskModalComponent — launcher contract', () => {
 
     it('Caption: start() is blocked and CTA stays disabled while the API provider is unconfigured', () => {
         const { comp } = make();
+        // `modelId` is a required field of CaptionSettingsState — the blocked
+        // reason names the provider off it (LANE-46), so the state must carry it.
         comp.captionSettings.set({
-            resolvedModelId: 'api-openai', params: {}, resolvedSystemPrompt: '',
+            modelId: 'api-openai', resolvedModelId: 'api-openai', params: {}, resolvedSystemPrompt: '',
             apiConfigured: false,
         });
         comp.tab.set('caption');
@@ -144,6 +146,8 @@ describe('MassMaskModalComponent — launcher contract', () => {
         comp.start();
         expect(api.batchCaption).not.toHaveBeenCalled();
         expect(comp.running()).toBe(false);
+        const toast = TestBed.inject(ToastService) as unknown as { error: Mock };
+        expect(toast.error).toHaveBeenCalledWith(expect.stringContaining('No API key for openai'));
     });
 
     // LANE-65, fourth surface: the caption tab reads the SAME readiness verdict

@@ -18,6 +18,10 @@ MRLN Arcane Tuner started as a personal experiment to fix that. The goal was sim
 
 The training engine, job management, and LoRA tools grew organically around that core — because once your data is good, training should be straightforward.
 
+What you are looking at is one person's interpretation of that workflow, distilled from the hundreds of LoRAs I have trained. The tool exists to remove the parts that only cost time and let me concentrate on the quality of the data, without jumping between five other tools to get there. It is developed at the pace I can afford — it is neither my only project nor my main one — so feedback, suggestions and contributions are very welcome.
+
+What it is not: a replacement for [ai-toolkit](https://github.com/ostris/ai-toolkit) — kudos to Ostris, a legend — and by no means feature-complete. Where a feature is missing or a family is unsupported, that is the honest state of the project, not a promise.
+
 ---
 
 ## Acknowledgments
@@ -359,7 +363,7 @@ For the full component and API route inventory, see [`docs/ARCHITECTURE.md`](doc
 
 ### 🎯 Dataset Management — The Heart of the Tool
 
-The dataset pipeline is designed to get your images from raw collection to training-ready with maximum control. See [`docs/datasets-guide.md`](docs/datasets-guide.md) for the full storyline: Library, Browse, Details, Analyze, and the mass caption/mask/edit modals.
+The dataset pipeline is designed to get your images from raw collection to training-ready with maximum control.
 
 #### Multi-Dataset Scanning
 Automatic directory scanning with image–caption pairing. Supports `.png`, `.jpg`, `.webp` images with paired `.txt` caption files. Incremental and full rescan modes.
@@ -368,7 +372,7 @@ Automatic directory scanning with image–caption pairing. Supports `.png`, `.jp
 The library card and workspace details footer both need one representative image, and by default that's just whatever the scanner enumerates first. A pin control (left of *Adjust image* in a grid tile's top-right cluster, left of *Adjust* in the details footer) lets you choose it instead — it's a toggle, so unpinning re-elects the automatic choice immediately. The pin is persisted (`datasets.preview_pinned`, `PUT /datasets/{name}/preview`) and **survives a rescan** — every scan used to overwrite the cover with the next enumerated file, which is what made pinning worth having in the first place. If the pinned file is later deleted, the next scan clears the pin and falls back rather than showing a hole. Library and workspace-grid covers are served from a sized thumbnail rendition, not the full training source.
 
 #### Image Manipulation
-A non-destructive adjustment pipeline, twelve operations deep, that renders into
+A non-destructive adjustment pipeline, ten operations deep, that renders into
 a saved overlay rather than touching the source file until you explicitly
 Save, Bake in, or apply it to other images ("Mass edit"):
 
@@ -401,8 +405,7 @@ Resolution-aware aspect-ratio bucketing with visual crop preview. Images are aut
 - **Multi**: Each image appears in every qualifying bucket for maximum latent diversity
 
 #### Dataset Analysis
-- **Harmonize files** — canonical JPG conversion + `<slug>_00001` renaming, with
-  captions/masks/controls following along; pixels are untouched
+- **Harmonization analysis** — evaluate color and exposure consistency across the dataset
 - **Duplicate detection** — perceptual hash similarity scoring to find near-duplicate images
 - **Per-image enable/disable** — toggle individual images in or out of training without deleting them
 
@@ -420,7 +423,7 @@ Group the datasets, templates and job history for one LoRA effort so you stop re
 ---
 
 ### 🧩 Templates
-A saved configuration you reuse instead of re-deciding it every time — a caption system prompt, masking parameters, a training config per model definition, or a set of adaptive-targeting knobs. Created where you tune it (the Datasets tab's caption/masking settings, the Training screen's Template Selection and Adaptive Layer Targeting cards) and listed together on one `/templates` screen, Global or scoped to a project, with per-row edit / edit-JSON / branch / delete plus export and import (single template or a filtered bundle, with an import plan that flags name clashes and missing model definitions first). See [`docs/templates-guide.md`](docs/templates-guide.md).
+A saved configuration you reuse instead of re-deciding it every time — a caption system prompt, masking parameters, a training config per model family, or a set of adaptive-targeting knobs. Created where you tune it (the Datasets tab's caption/masking settings, the Training screen's Template Selection and Adaptive Layer Targeting cards) and listed together on one `/templates` screen, Global or scoped to a project, with per-row edit / edit-JSON / branch / delete plus export and import (single template or a filtered bundle, with an import plan that flags name clashes and missing model definitions first). See [`docs/templates-guide.md`](docs/templates-guide.md).
 
 ---
 
@@ -582,7 +585,7 @@ Conservative / Balanced / Aggressive presets are fully editable and save as your
 - **Text embedding caching**: Cache TE outputs for all captions, unload TE from VRAM
 
 #### Template System
-Save, load, and manage training configurations as templates per model definition. Auto-save on job creation.
+Save, load, and manage training configurations as templates per model family. Auto-save on job creation.
 
 #### Checkpointing & Resume
 Full checkpoint support including LoRA weights, optimizer state, scheduler, GradScaler, EMA shadow weights, and latent/embedding cache manifests. Resume training with selective cache re-use.
@@ -608,6 +611,7 @@ a finished LoRA, and the cross-run Training Statistics modal.
 - **Elapsed & started-at** — the job header reads `<elapsed> elapsed · started <time>`. Elapsed comes from the trainer, not wall-clock-minus-start: it's real run time (paused time excluded, and the offset from earlier sessions of a resumed run carried forward), so a pause doesn't inflate it and a backend restart doesn't lose it
 - **Sample images** — periodic generation previews at configurable intervals
 - **Structured logs** — real-time WebSocket streaming of JSON-formatted training events
+- **Live terminal** — xterm.js terminal for raw log output
 
 #### Job History
 SQLite-backed persistent tracking of all training runs:
@@ -655,22 +659,12 @@ card.
 - **Backend & frontend port configuration** — set in Server Settings; the backend reads the saved port on its next start (the platform's own port outranks it inside a container)
 - **Log level control** — adjust structured logging verbosity at runtime
 - **Frontend auto-start** — optionally launch the Angular dev server and open a browser on backend startup
-- **System restart** — restart the backend from the UI. Started by `start_backend.bat` or the container entrypoint, the server exits and that same terminal (or container) starts it again, with the SPA reconnecting on its own. Started by hand with `uvicorn`, a launcher restarts it instead, reports progress in that terminal and keeps the full record in `backend/restart.log`. After updating the code, stop a server started by `start_backend.bat` and start the bat afresh once: `cmd` reads a batch file from disk as it runs, so a changed bat must not be restarted from under a running one.
+- **System restart** — restart the backend from the UI
 - **GPU monitoring** — real-time GPU utilization and VRAM usage display
 
 ---
 
 ## Documentation
-
-Per-domain guides, each walking one screen end to end:
-
-- [**datasets-guide.md**](docs/datasets-guide.md) — Library, Browse, Details, Analyze, mass caption/mask/edit
-- [**projects-guide.md**](docs/projects-guide.md) — grouping datasets/templates/jobs, Quick Train, export/import
-- [**templates-guide.md**](docs/templates-guide.md) — the four template domains and the `/templates` screen
-- [**training-guide.md**](docs/training-guide.md) — model selection, the dynamic form, Adaptive Layer Targeting
-- [**jobs-guide.md**](docs/jobs-guide.md) — the queue, running-job detail, Training Statistics, job history
-- [**tools-guide.md**](docs/tools-guide.md) — Inspect and Resize
-- [**server-guide.md**](docs/server-guide.md) — health, restart/update, Connection/Models, Server Logs
 
 Detailed architecture documentation, including full API route inventory and component listing:
 

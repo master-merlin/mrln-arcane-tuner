@@ -590,6 +590,10 @@ Full checkpoint support including LoRA weights, optimizer state, scheduler, Grad
 
 ### 📊 Job Queue & Monitoring
 
+See [`docs/jobs-guide.md`](docs/jobs-guide.md) for the full storyline: reading a
+running job's live metrics and samples, the two-mode Resume dialog, downloading
+a finished LoRA, and the cross-run Training Statistics modal.
+
 #### Multi-Job Queue
 - Create, start, stop, pause, resume, and soft-stop training jobs
 - Soft-stop: finish the current step, save checkpoint, then stop cleanly
@@ -616,6 +620,11 @@ SQLite-backed persistent tracking of all training runs:
 
 ### 🔍 LoRA Tools
 
+See [`docs/tools-guide.md`](docs/tools-guide.md) for the full storyline:
+Inspect's Speed Training Suggestion and per-layer norm graphs, copying a
+targeted layer list, and Resize's SVD rank change with the path roots both
+tools are restricted to.
+
 #### Inspect
 Analyze any `.safetensors` LoRA file without loading a model:
 
@@ -637,6 +646,11 @@ Combine **Inspect** results with **Targeted Layer Training** — inspect a refer
 ---
 
 ### 🖥️ Server Settings
+
+See [`docs/server-guide.md`](docs/server-guide.md) for the full storyline:
+the health KPI rail, restart and in-app updates, Connection/Models settings,
+the LLM Refine Endpoint's Save & Test, and the live, filterable Server Logs
+card.
 
 - **Backend & frontend port configuration** — set in Server Settings; the backend reads the saved port on its next start (the platform's own port outranks it inside a container)
 - **Log level control** — adjust structured logging verbosity at runtime

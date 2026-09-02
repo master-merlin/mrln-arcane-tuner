@@ -192,8 +192,9 @@ learning-rate schedule is known — a one-line LR schedule readout.
 
 **Start Training Session**, in the sticky bar at the bottom of the form, is
 disabled until every section is valid. Queuing a job hands the whole
-configuration to the Jobs screen, where you watch it run, pause or soft-stop
-it, and download the finished LoRA once it completes.
+configuration to the [Jobs screen](jobs-guide.md), where you watch it run,
+pause, resume or soft-stop it, and download the finished LoRA once it
+completes.
 
 ## Recipes
 

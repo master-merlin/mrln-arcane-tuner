@@ -574,6 +574,98 @@ describe('DetailCaptionSidebar — model-aware variant load', () => {
     });
 });
 
+describe('DetailCaptionSidebar — the caption editor keeps its height, the card scrolls, Refine is a footer (LANE-76 layout fix)', () => {
+    // The user (2026-09-02, UAT screenshots): with the API tab open and
+    // model-aware on, the AI Recaptioning card reached its 80% cap, the refine
+    // group sat below it, and the caption editor — the only flexible child —
+    // was squeezed to one clipped line (measured 24px on :4200). Scrolling the
+    // whole column fixed the editor but put Refine below the fold ("the
+    // 'unseen' button to refine can easily be overlooked"). The shape now:
+    // [Save + editor, fixed, with a floor] [card — the one child that shrinks,
+    // its settings scroll inside] [Refine — a fixed footer outside every scroll
+    // container]. jsdom does not lay out, so each part is pinned by the class
+    // and the DOM position the browser was measured with.
+    function mountLayout(modelAware = false) {
+        const fixture = mount();
+        if (modelAware) {
+            const store = TestBed.inject(ModelContextStore);
+            store.setModelAware(true);
+            store.setDefinition({ id: 'krea2-turbo', family: 'krea2', name: 'Krea-2 Turbo' });
+        }
+        fixture.detectChanges();
+        const http = TestBed.inject(HttpTestingController);
+        http.match(() => true).forEach(r => { if (!r.cancelled) r.flush(r.request.method === 'GET' ? { definition_id: 'krea2-turbo', items: [] } : {}); });
+        const el = fixture.nativeElement as HTMLElement;
+        const q = (id: string) => el.querySelector(`[data-testid="${id}"]`) as HTMLElement | null;
+        return {
+            el,
+            column: q('sidebar-column')!,
+            section: q('caption-section')!,
+            frame: q('caption-editor-frame')!,
+            card: q('recaption-card')!,
+            scroll: q('sidebar-scroll'),
+            refine: q('refine-group'),
+        };
+    }
+
+    it('the caption editor frame carries a usable minimum height (min-h-[9rem] ≈ six lines) and wraps the textarea', () => {
+        const { frame } = mountLayout();
+        expect(frame).toBeTruthy();
+        expect(frame.classList.contains('min-h-[9rem]')).toBe(true);
+        expect(frame.classList.contains('min-h-0')).toBe(false);
+        expect(frame.querySelector('textarea')).toBeTruthy();
+    });
+
+    it('nothing between the column and the editor frame clips or pins a smaller minimum — the floor must hold', () => {
+        const { column, frame } = mountLayout();
+        const between: HTMLElement[] = [];
+        for (let node = frame.parentElement; node && node !== column; node = node.parentElement) between.push(node);
+        expect(between.length).toBeGreaterThan(0);
+        for (const node of between) {
+            const classes = [...node.classList];
+            expect(classes.filter(c => c.startsWith('overflow-'))).toEqual([]);
+            expect(classes.filter(c => c.startsWith('min-h-'))).toEqual([]);
+        }
+    });
+
+    it('the AI Recaptioning card is the one child that gives way (flex-initial + min-h-0) and the scroll container lives INSIDE it', () => {
+        const { column, section, card, scroll, frame } = mountLayout();
+        expect(card.parentElement).toBe(column);
+        expect(card.classList.contains('flex-initial')).toBe(true);
+        expect(card.classList.contains('min-h-0')).toBe(true);
+        expect(card.classList.contains('shrink-0')).toBe(false);
+        expect([...card.classList].some(c => c.startsWith('max-h-'))).toBe(false);
+        expect(scroll).toBeTruthy();
+        expect(scroll!.classList.contains('overflow-y-auto')).toBe(true);
+        expect(card.contains(scroll!)).toBe(true);
+        expect(scroll!.contains(frame)).toBe(false);
+        // the caption section grows (flex-auto) — free space goes to the editor, not to the card
+        expect(section.classList.contains('flex-auto')).toBe(true);
+    });
+
+    it('the Refine group is a fixed footer: a shrink-0 direct child of the column AFTER the card, never inside the scroll container', () => {
+        const { column, card, scroll, refine } = mountLayout(true);
+        expect(refine).toBeTruthy();
+        expect(refine!.parentElement).toBe(column);
+        expect(refine!.classList.contains('shrink-0')).toBe(true);
+        expect(scroll!.contains(refine!)).toBe(false);
+        expect(card.contains(refine!)).toBe(false);
+        // after the card in document order, and nothing of the column follows it
+        expect(card.compareDocumentPosition(refine!) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+        expect(column.lastElementChild).toBe(refine);
+        // no ancestor of the footer is a scroll container other than the column's own last resort
+        for (let node = refine!.parentElement; node && node !== column; node = node.parentElement) {
+            expect(node.classList.contains('overflow-y-auto')).toBe(false);
+        }
+    });
+
+    it('prove the negative: with model-aware off there is no footer, and the column still ends with the card', () => {
+        const { column, card, refine } = mountLayout(false);
+        expect(refine).toBeNull();
+        expect(column.lastElementChild).toBe(card);
+    });
+});
+
 describe('DetailCaptionSidebar — variant suggestion + refine', () => {
     function mountVariant() {
         localStorage.clear();

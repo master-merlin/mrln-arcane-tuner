@@ -38,9 +38,29 @@ export { apiBlockedReasonFor };
     host: { class: 'w-full h-full flex flex-col', '(window:resize)': 'matchOverflowBackdropGutter()' },
     imports: [FormsModule, RouterLink, DatasetCaptionSettingsComponent, CaptionSuggestionReviewComponent, IdeogramCaptionEditorComponent, StructuredCaptionModalComponent],
     template: `
-        <div class="w-full h-full border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-hidden">
-            <!-- Top section: save + header + textarea (single flex-1, like masking's mask preview) -->
-            <div class="flex-1 min-h-[60px] flex flex-col overflow-hidden">
+        <!-- LANE-76 layout. The column's shape, top to bottom:
+               [Save + caption editor — fixed, the editor keeps its floor and
+                takes every free pixel]
+               [AI Recaptioning card — the ONLY child that shrinks; its settings
+                scroll inside it, its header and Generate button stay put]
+               [Refine group — a fixed footer, outside every scroll container]
+             With the API tab open the card used to reach an 80% cap and, with
+             the refine group under it, the editor (the only flexible child) was
+             squeezed to one clipped line; scrolling the whole column instead
+             put the Refine button below the fold (the user: "the 'unseen' button
+             to refine can easily be overlooked"). overflow-y-auto on the column
+             is the last resort for a viewport shorter than the fixed parts —
+             at every measured size nothing here scrolls but the card. -->
+        <div class="w-full h-full min-h-0 border-l border-surface-mid bg-surface-mid flex flex-col z-20 overflow-y-auto overflow-x-hidden scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent"
+             data-testid="sidebar-column">
+            <!-- Top section: save + header + textarea (single flex-1, like masking's
+                 mask preview). flex-auto (grow, basis auto) and deliberately NO
+                 overflow class and NO explicit min-height: a scroll container's
+                 automatic minimum is 0, which is exactly how the editor's
+                 min-height failed to hold — as a plain flex item this section
+                 cannot shrink below its content, so the editor's floor holds and
+                 the card below is what gives way. -->
+            <div class="flex-auto flex flex-col" data-testid="caption-section">
                 <!-- Save Button -->
                 <div class="shrink-0 p-4 border-b border-surface-mid bg-surface-low/50 flex items-center justify-between">
                     <button (click)="saveRequested.emit()" [disabled]="!isDirty()" 
@@ -72,8 +92,10 @@ export { apiBlockedReasonFor };
                     </div>
                 </div>
 
-                <!-- Textarea or structured editor (with truncation overlay backdrop) -->
-                <div class="relative flex-1 min-h-0 overflow-y-auto">
+                <!-- Textarea or structured editor (with truncation overlay backdrop).
+                     min-h-[9rem] ≈ six lines of the mono caption text — the floor no
+                     card below may steal from (LANE-76 layout fix). -->
+                <div class="relative flex-1 min-h-[9rem] overflow-y-auto" data-testid="caption-editor-frame">
                     @if (useStructuredEditor()) {
                         <app-ideogram-caption-editor
                             data-testid="structured-editor"
@@ -186,8 +208,12 @@ export { apiBlockedReasonFor };
                 </div>
             </div>
 
-            <!-- AI Captioning Panel — identical pattern to masking sidebar -->
-            <div class="shrink-0 max-h-[80%] flex flex-col border-t border-surface-mid bg-surface-low/50 overflow-hidden">
+            <!-- AI Captioning Panel — same inner pattern as the masking sidebar
+                 (header fixed, settings scroll, Generate fixed). flex-initial
+                 (no grow, shrink 1, basis auto) + min-h-0: the card is the one
+                 child that gives way, down to its header + Generate button, so
+                 the editor above and the Refine footer below never move. -->
+            <div class="flex-initial min-h-0 flex flex-col border-t border-surface-mid bg-surface-low/50 overflow-hidden" data-testid="recaption-card">
                 <div class="shrink-0 px-3 py-2">
                     <h4 class="text-xs font-bold text-text-subtle uppercase tracking-widest flex items-center justify-between cursor-pointer hover:text-brand transition-colors" (click)="toggleCaptionPanel()">
                         <span class="flex items-center gap-2">
@@ -199,7 +225,7 @@ export { apiBlockedReasonFor };
                 </div>
                 
                 @if (internalShowCaptionPanel()) {
-                    <div class="flex-1 min-h-0 overflow-y-auto px-3 scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent">
+                    <div class="flex-1 min-h-0 overflow-y-auto px-3 scrollbar-thin scrollbar-thumb-surface-high scrollbar-track-transparent" data-testid="sidebar-scroll">
                         <app-dataset-caption-settings [isVideo]="isCurrentMediaVideo()" (settingsChanged)="onSettingsChange($event)"></app-dataset-caption-settings>
                     </div>
 
@@ -243,7 +269,11 @@ export { apiBlockedReasonFor };
 
             <!-- Model-aware refined-variant review + refine trigger -->
             @if (modelContext.modelAware() && modelContext.activeDefinitionId(); as def) {
-                <div class="shrink-0 px-3 pb-3 pt-2 space-y-2 border-t border-surface-mid bg-surface-low/30" data-testid="refine-group">
+                <!-- A FOOTER: shrink-0, a direct child of the column after the
+                     card, never inside a scroll container — the border and the
+                     upward shadow say "pinned", and the pin in the spec says
+                     "outside the scroll region" (LANE-76 layout). -->
+                <div class="shrink-0 px-3 pb-3 pt-2 space-y-2 border-t border-surface-mid bg-surface-low shadow-[0_-6px_12px_-4px_rgba(0,0,0,0.35)] relative" data-testid="refine-group">
                     <!-- LANE-76: its own labelled group. Placed under the
                          AI Recaptioning card's Local/API tabs and provider
                          picker, the button read as if it used that provider —

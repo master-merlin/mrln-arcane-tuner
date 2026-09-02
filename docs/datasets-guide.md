@@ -164,14 +164,19 @@ scroll position), not a separate route.
 
 ![Workspace — Browse mode, filter chips, filmstrip](images/workspace-browse-overview.png)
 
-The top bar shows the dataset's name, version (click the version tag to bump
-the MAJOR version; the pencil opens a manual version editor), and a
-"ready for training" count when the active model definition can tell you one.
-To its right: the project-membership pill, the active project/model-context
-switcher, and — always available regardless of mode — **Analyze**, **Cache**
-(disabled with "No cache data" until the dataset has been cached once) and
-**Rescan**. Edit-kind (paired) datasets also get a **Pairs** button (control/
-target pairing health and manual re-match).
+Above the grid (not pictured — the frame starts below it): a top bar with the
+dataset's name, version (click the version tag to bump the MAJOR version; the
+pencil opens a manual version editor), a "ready for training" count when the
+active model definition can tell you one, the project-membership pill, the
+active project/model-context switcher, and — always available regardless of
+mode — **Analyze**, **Cache** (disabled with "No cache data" until the
+dataset has been cached once) and **Rescan**. Edit-kind (paired) datasets
+also get a **Pairs** button (control/target pairing health and manual
+re-match).
+
+The bar the frame does show is the Browse-mode toolbar — mass-action
+buttons, filter chips, the Masked/Overlay toggles and Density — covered
+next.
 
 ### Browse / Details / Edit modes
 
@@ -446,12 +451,8 @@ both queued as a background task you can watch progress on:
   ![Harmonize confirm dialog](images/harmonize-confirm.png)
 
 - **Crop all** — crops every image the analysis pass flagged as needing it to
-  its target resolution, from a chosen anchor. The underlying default is
-  center, but the anchor dropdown itself opens showing **top-left** — a
-  display bug (the select renders before its options on first paint), not
-  what actually gets used unless you touch the dropdown. Pick the anchor
-  explicitly rather than trusting what's shown. This is the one action that
-  resizes pixels; Harmonize deliberately does not.
+  its target resolution, from a chosen anchor (default: center). This is the
+  one action that resizes pixels; Harmonize deliberately does not.
 
 Both dialogs say, in the same sentence, that the action **rewrites files on
 disk and cannot be undone** — read the message before confirming, since this
@@ -519,7 +520,7 @@ captioner over the whole set as a background task. It opens with two tabs,
 
 #### Generate
 
-![Mass caption modal — Generate tab, Local neural architecture (the default)](images/mass-caption-modal.png)
+![Mass caption modal — Generate tab, Local neural architecture](images/mass-caption-modal.png)
 
 **Caption strategy** picks the candidates: **Incremental** (only images that
 don't have the caption this run would write yet — with model-aware captions
@@ -532,10 +533,9 @@ active, it writes the per-definition variant (`captions/<definition_id>/`)
 instead, so switching models never touches another model's captions.
 
 **Neural architecture** — the engine that does the captioning — opens on
-**Local** for a fresh project; after that, the tab and model you last used
-*in this project* are remembered and win (the preference is saved per
-project, so a project that last captioned via an API provider reopens on
-API). Local is a model that runs on your own GPU, chosen from Youtu-VL,
+**Local** for a fresh project; after that, the tab and model you last
+selected in this scope (Global included) are remembered and win. Local is a
+model that runs on your own GPU, chosen from Youtu-VL,
 Florence-2, Qwen3 VL (with an instruct/thinking size picker, 4B–32B) or
 JoyCaption, each with its own parameter schema (temperature, top-p, max
 tokens, task/caption type, and — JoyCaption only — two dozen fine-grained

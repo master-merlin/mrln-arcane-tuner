@@ -37,10 +37,9 @@ to.
 
 Three columns: a left **table of contents** that jumps to each schema-driven
 group and tracks which one you're scrolled to (Template Selection is a fixed
-card above the groups and is not itself a TOC entry; a group like Concepts
-& Triggerwords or Expert Features only appears in the TOC when the current
-model definition actually declares fields for it — a model with no concept
-fields, for instance, simply has no such entry); a center **form** built
+card above the groups, not a TOC entry itself; a group like Expert Features
+or Video Settings appears in the TOC only when the current model definition
+declares fields for it); a center **form** built
 from the model definition's own schema — every model family declares the
 same base schema plus family-specific fields, so the form is identical in
 structure across families and only its options and defaults change; and a
@@ -88,25 +87,22 @@ characteristics than a diffusion model) and, when the model's weights come
 from a local path instead of the Hub, a **LOCAL**/**SAFETENSORS**/**OFFLINE**
 chip.
 
-### Concepts & Triggerwords
-
-Attach the datasets this run trains on. Each row is one dataset (scoped to
-the current project when you're inside one) with its own **caption prefix**,
-**caption dropout rate** (the chance a caption is dropped entirely, which
-enables classifier-free guidance at inference), a **repeat count**, caption
-toggles (use captions at all, and whether to prefer the model-aware caption
-variant), and masking toggles (include masked variants, optionally
-regenerating them with a chosen opacity and a minimum probability of keeping
-the original). Multiple datasets can be attached to the same run, each
-weighted independently. This is the same picker documented from the dataset
-side in the Datasets guide's "Move on" section.
-
 ## Tune what this run needs
 
 Below Model Selection and the VRAM Budget card, the rest of the form is
 generated from the schema in the same grouping the form shows:
 
-- **General Settings** — LoRA filename (**LoRA Prefix** / **Suffix** /
+- **General Settings** — the dataset rows this run trains on (one per
+  attached dataset, scoped to the current project when you're inside one):
+  a **caption prefix**, **caption dropout rate** (the chance a caption is
+  dropped entirely, which enables classifier-free guidance at inference), a
+  **repeat count**, caption toggles (use captions at all, and whether to
+  prefer the model-aware caption variant), and masking toggles (include
+  masked variants, optionally regenerating them with a chosen opacity and a
+  minimum probability of keeping the original) — multiple datasets can be
+  attached to the same run, each weighted independently; this is the same
+  picker documented from the dataset side in the Datasets guide's "Move on"
+  section. Also on this card: LoRA filename (**LoRA Prefix** / **Suffix** /
   **Name**, the name field supporting `{placeholder}` substitution), a
   global trigger word, output directory, and data toggles (latent caching,
   horizontal/vertical flip augmentation).
@@ -206,13 +202,13 @@ completes.
 ## Recipes
 
 **First run for a new model on a project.** Model Selection → pick the
-family and definition → Concepts & Triggerwords → attach the project's
+family and definition → General Settings → attach the project's
 dataset → check the VRAM estimate → Start. Once it's tuned the way you like,
 Template Selection → **Clone as New Template** so the next dataset for this
 client and model starts from it instead of a blank form.
 
 **Reuse a client's setup.** Template Selection → pick their template for this
-model → Concepts & Triggerwords → swap in the new dataset → Start. Nothing
+model → General Settings → swap in the new dataset → Start. Nothing
 else needs re-deciding — that's the same "a new dataset arrives" arc the
 Projects guide ends on.
 

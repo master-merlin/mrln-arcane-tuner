@@ -33,7 +33,7 @@ import.
 ## The four domains
 
 Every template belongs to exactly one domain, and belongs either to no project
-(**Global** — the `scopeLabel` "Global") or to one project:
+(**Global** — the scope chip reads "Global") or to one project:
 
 - **Caption** — a system prompt, a wildcard substitution value and a captioning
   model choice, for one of the caption backends (Florence-2, JoyCaption,
@@ -41,8 +41,9 @@ Every template belongs to exactly one domain, and belongs either to no project
 - **Mask** — SAM 3 or RemBG masking parameters.
 - **Training** — a full training config for one model definition
   (`definition_id`), scoped by both project **and** definition: a project can
-  hold a separate training template per model family it trains, which is what
-  lets one project "know how to train two different models" for one client.
+  hold a separate training template per model definition it trains, which is
+  what lets one project "know how to train two different models" for one
+  client (a family with two definitions needs two templates).
 - **Adaptive** — the Adaptive Layer Targeting knob dict (warm-up share, energy
   kept, floor, heat smoothing, measurement interval, freeze-vs-rebuild action).
   There are three read-only factory presets (**Conservative**, **Balanced**,
@@ -140,13 +141,13 @@ until you confirm the plan.
 **Set up a client's way of working, once.** Tune the caption system prompt and
 wildcard the way this client likes it, clone it as a template named for the
 client. Do the same for masking if they need it, and pick or branch an
-adaptive-targeting preset. Set up a training template per model family you
+adaptive-targeting preset. Set up a training template per model definition you
 train for them. All of it lives on the project from now on.
 
 **Reuse on the next dataset.** A new dataset from the same client lands in the
 same project. The caption template, masking template, training templates (one
-per model) and adaptive preset are already there — nothing to re-configure, you
-just start captioning and training.
+per model definition) and adaptive preset are already there — nothing to
+re-configure, you just start captioning and training.
 
 **Move a template to another machine.** Export it (or "Export all" filtered to
 one project) from `/templates`, carry the `.template.zip`, and import it on the

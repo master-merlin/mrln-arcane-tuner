@@ -420,7 +420,7 @@ Group the datasets, templates and job history for one LoRA effort so you stop re
 ---
 
 ### 🧩 Templates
-A saved configuration you reuse instead of re-deciding it every time — a caption system prompt, masking parameters, a training config per model family, or a set of adaptive-targeting knobs. Created where you tune it (the Datasets tab's caption/masking settings, the Training screen's Template Selection and Adaptive Layer Targeting cards) and listed together on one `/templates` screen, Global or scoped to a project, with per-row edit / edit-JSON / branch / delete plus export and import (single template or a filtered bundle, with an import plan that flags name clashes and missing model definitions first). See [`docs/templates-guide.md`](docs/templates-guide.md).
+A saved configuration you reuse instead of re-deciding it every time — a caption system prompt, masking parameters, a training config per model definition, or a set of adaptive-targeting knobs. Created where you tune it (the Datasets tab's caption/masking settings, the Training screen's Template Selection and Adaptive Layer Targeting cards) and listed together on one `/templates` screen, Global or scoped to a project, with per-row edit / edit-JSON / branch / delete plus export and import (single template or a filtered bundle, with an import plan that flags name clashes and missing model definitions first). See [`docs/templates-guide.md`](docs/templates-guide.md).
 
 ---
 
@@ -582,7 +582,7 @@ Conservative / Balanced / Aggressive presets are fully editable and save as your
 - **Text embedding caching**: Cache TE outputs for all captions, unload TE from VRAM
 
 #### Template System
-Save, load, and manage training configurations as templates per model family. Auto-save on job creation.
+Save, load, and manage training configurations as templates per model definition. Auto-save on job creation.
 
 #### Checkpointing & Resume
 Full checkpoint support including LoRA weights, optimizer state, scheduler, GradScaler, EMA shadow weights, and latent/embedding cache manifests. Resume training with selective cache re-use.

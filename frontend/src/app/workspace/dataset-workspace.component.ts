@@ -399,7 +399,15 @@ export class DatasetWorkspaceComponent {
             const w = this.ws();
             const d = this.dataset();
             if (!w || !d) return;
-            void this.ensurePairsLoaded(d.name);
+            // Fire-and-forget, but never silent: `ensurePairsLoaded` releases
+            // its pending state in `finally` and re-throws, so a failed first
+            // fetch must be caught HERE or it surfaces as an unhandled
+            // rejection (the frontend gate exited 1 on exactly that, LANE-58
+            // merge gate 2026-09-02). The sync service swallows its own HTTP
+            // errors in production; this guards the seam, not the service.
+            this.ensurePairsLoaded(d.name).catch(err => {
+                console.warn('[workspace] first pairs load failed', d.name, err);
+            });
         });
 
         // Patch-bump trigger: any bytes-changing op (crop, mask apply,

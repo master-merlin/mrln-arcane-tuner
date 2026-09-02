@@ -590,6 +590,10 @@ Full checkpoint support including LoRA weights, optimizer state, scheduler, Grad
 
 ### 📊 Job Queue & Monitoring
 
+See [`docs/jobs-guide.md`](docs/jobs-guide.md) for the full storyline: reading a
+running job's live metrics and samples, the two-mode Resume dialog, downloading
+a finished LoRA, and the cross-run Training Statistics modal.
+
 #### Multi-Job Queue
 - Create, start, stop, pause, resume, and soft-stop training jobs
 - Soft-stop: finish the current step, save checkpoint, then stop cleanly

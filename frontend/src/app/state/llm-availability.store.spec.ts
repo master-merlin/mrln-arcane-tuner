@@ -78,14 +78,24 @@ describe('LlmAvailabilityStore', () => {
         expect(store.model()).toBeNull();
         expect(store.endpointHost()).toBeNull();
     });
-    it('refineEndpointHost: host:port of a URL, the raw value when it is not one, null for nothing', () => {
+    afterEach(() => TestBed.inject(HttpTestingController).verify());
+});
+
+// A pure function: NO TestBed. Under the describe above, its `afterEach`
+// injected `HttpTestingController` from a TestBed nobody had configured —
+// NG0201 here, and the injector it instantiated on the way poisoned the next
+// `configureTestingModule` ("already instantiated") in this file AND the
+// first test of the next file in the worker (template.service.spec, gate
+// d00a1e43). A test that needs no injector never shares a block with one
+// whose teardown injects.
+describe('refineEndpointHost', () => {
+    it('host:port of a URL, the raw value when it is not one, null for nothing', () => {
         expect(refineEndpointHost('http://localhost:11434')).toBe('localhost:11434');
         expect(refineEndpointHost('https://ollama.lan/v1')).toBe('ollama.lan');
         expect(refineEndpointHost('not a url')).toBe('not a url');
         expect(refineEndpointHost('')).toBeNull();
         expect(refineEndpointHost(undefined)).toBeNull();
     });
-    afterEach(() => TestBed.inject(HttpTestingController).verify());
 });
 
 /**

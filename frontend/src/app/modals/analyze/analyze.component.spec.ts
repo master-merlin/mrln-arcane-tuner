@@ -215,6 +215,28 @@ describe('AnalyzeModalComponent — crop-all launcher contract', () => {
         expect(comp.cropAllRunning()).toBe(true);
     });
 
+    // LANE-66 pin: the anchor the user SEES on first paint is the anchor the crop APPLIES.
+    // Before the fix the <select> bound [value] on itself, which ran before the @for had
+    // rendered a single <option>, so the DOM showed ORIGINS[0] ('top-left') while the
+    // signal — and therefore batchCrop — used 'center'. No interaction happens here on
+    // purpose: the defect only exists until the control is touched.
+    it('the anchor select shows the signal value on first paint and that value is the one cropped with', () => {
+        const { fixture: f, comp } = make();
+        comp.activeTab.set('files');
+        f.detectChanges();
+        const select = (f.nativeElement as HTMLElement)
+            .querySelector('[data-testid="crop-all-anchor"]') as HTMLSelectElement;
+        expect(select).not.toBeNull();
+        expect(select.options.length).toBe(comp.ORIGINS.length);
+        expect(comp.cropAllOrigin()).toBe('center');
+        expect(select.value).toBe('center');
+        expect(select.selectedOptions[0]?.value).toBe('center');
+
+        confirmAction(() => comp.startCropAll());
+        const [, , origin] = vi.mocked(api.batchCrop).mock.lastCall!;
+        expect(origin).toBe(select.value);
+    });
+
     it('cancelCropAll delegates to TaskStore.cancel and clears running', () => {
         const { comp } = make();
         confirmAction(() => comp.startCropAll());

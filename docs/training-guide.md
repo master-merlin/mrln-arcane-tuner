@@ -152,6 +152,8 @@ a granularity finer than the model-level quantization above.
 
 ### Adaptive Layer Targeting
 
+![Adaptive Layer Targeting card, expanded — preset, warm-up, energy kept, floor, heat smoothing and action knobs on a Balanced (custom) preset](images/training-adaptive-targeting-card.png)
+
 A full-width card inside Advanced Engine (collapsed by default — expand the
 group to reach it), enabled by its own toggle. Periodically measures which
 LoRA modules are still moving (an EMA-smoothed norm of each module's

@@ -31,6 +31,10 @@ import {
     jobAutoResume,
     jobSamplesEmpty,
     jobCheckpointsEmpty,
+    gpuLoadedIdle,
+    legacyThumbnailsNone,
+    jobReplayNone,
+    jobAdaptiveNone,
 } from './api-data';
 
 /**
@@ -84,11 +88,25 @@ export const bootApiRoutes: ApiRoute[] = [
         test: (p) => p.endsWith('/api/system/version'),
         handler: (route) => json(route, version),
     },
+    // Topbar app-init probe (every page, GpuResidencyStore.start() → refresh()):
+    // which GPU-plugin services hold a model. Idle → the unload button hides.
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/system/gpu/loaded'),
+        handler: (route) => json(route, gpuLoadedIdle),
+    },
     // datasets sub-resources (specific → general)
     {
         method: 'GET',
         test: (p) => p.endsWith('/api/datasets/cache/stats'),
         handler: (route) => json(route, cacheStats),
+    },
+    // Datasets screen (LANE-40): the legacy-thumbnail survey behind the migrate
+    // banner. Nothing to migrate → the banner never renders.
+    {
+        method: 'GET',
+        test: (p) => p.endsWith('/api/datasets/thumbnails/legacy'),
+        handler: (route) => json(route, legacyThumbnailsNone),
     },
     // Dataset workspace + mass-* modals (Flow C): the per-dataset `/pairs`
     // list. The workspace's refreshDataset and each mass-* modal's ngOnInit
@@ -173,6 +191,18 @@ export const bootApiRoutes: ApiRoute[] = [
         method: 'GET',
         test: (p) => /\/api\/jobs\/[^/]+\/checkpoints$/.test(p),
         handler: (route) => json(route, jobCheckpointsEmpty),
+    },
+    // Detail pane of the selected run: loss replay + adaptive-targeting
+    // timeline (both fetched on selection; idle shapes, nothing to draw).
+    {
+        method: 'GET',
+        test: (p) => /\/api\/jobs\/history\/[^/]+\/replay$/.test(p),
+        handler: (route) => json(route, jobReplayNone),
+    },
+    {
+        method: 'GET',
+        test: (p) => /\/api\/jobs\/history\/[^/]+\/adaptive$/.test(p),
+        handler: (route) => json(route, jobAdaptiveNone),
     },
     // Topbar app-init probe (every page, TopbarComponent ctor → LlmAvailabilityStore.refresh()).
     {

@@ -664,3 +664,56 @@ export const jobSamplesEmpty: unknown[] = [];
 
 /** GET /api/jobs/{id}/checkpoints — no checkpoints for either seeded job. */
 export const jobCheckpointsEmpty: unknown[] = [];
+
+/**
+ * GET /api/system/gpu/loaded — nothing resident (app-init probe on every page:
+ * GpuResidencyStore.refresh()). Shape mirrors `GpuLoadedResponse` in
+ * `backend/app/api/system_routes.py`: the three GPU-plugin services in the
+ * backend's `_GPU_SERVICES` order, all idle, `any_loaded` precomputed false.
+ */
+export const gpuLoadedIdle = {
+    any_loaded: false,
+    services: [
+        { service: 'caption', label: 'Captioning', loaded: false, model: null },
+        { service: 'masking', label: 'Masking', loaded: false, model: null },
+        { service: 'scoring', label: 'Scoring', loaded: false, model: null },
+    ],
+};
+
+/**
+ * GET /api/datasets/thumbnails/legacy — no dataset still holds flat-layout
+ * thumbnails (datasets screen, LANE-40 banner). Shape mirrors
+ * `ThumbnailLegacySurveyResponse` in `backend/app/api/dataset/thumbnail_routes.py`;
+ * `total_files === 0` is the one fact the banner's positive-only `@if` gates on.
+ */
+export const legacyThumbnailsNone = {
+    datasets: [] as unknown[],
+    dataset_count: 0,
+    total_files: 0,
+    total_bytes: 0,
+};
+
+/**
+ * GET /api/jobs/history/{id}/replay — the jobs screen's detail pane replays the
+ * selected run's loss curve. Shape mirrors `JobReplayResponse` in
+ * `backend/app/api/training/history_routes.py`; `source:'none'` + empty loss
+ * is what the backend returns for a run with neither a disk log nor metrics.
+ */
+export const jobReplayNone = {
+    available: false,
+    source: 'none',
+    output_dir: null,
+    loss: [] as unknown[],
+};
+
+/**
+ * GET /api/jobs/history/{id}/adaptive — the durable adaptive-targeting
+ * timeline. Always 200: a run that never used the feature returns the EMPTY
+ * shape (`JobAdaptiveHistoryResponse`, same file), and the UI keys the section
+ * on `events.length`.
+ */
+export const jobAdaptiveNone = {
+    events: [] as unknown[],
+    modules: [] as string[],
+    heat: {} as Record<string, number | null>,
+};

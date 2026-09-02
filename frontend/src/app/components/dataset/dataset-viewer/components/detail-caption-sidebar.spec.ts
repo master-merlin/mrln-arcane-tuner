@@ -3,6 +3,7 @@ import { TestBed } from '@angular/core/testing';
 import { of } from 'rxjs';
 import { provideHttpClient, withFetch } from '@angular/common/http';
 import { provideHttpClientTesting, HttpTestingController } from '@angular/common/http/testing';
+import { provideRouter } from '@angular/router';
 import { DetailCaptionSidebarComponent } from './detail-caption-sidebar';
 import { RuntimeConfigService } from '../../../../services/runtime-config.service';
 import { DatasetService } from '../../../../services/dataset';
@@ -19,6 +20,7 @@ function mount() {
         providers: [
             provideHttpClient(withFetch()),
             provideHttpClientTesting(),
+            provideRouter([]),   // LANE-76: the Refine caption carries a routerLink to /server
             { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
         ],
     });
@@ -155,6 +157,7 @@ describe('DetailCaptionSidebar — token counter', () => {
             providers: [
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
+            provideRouter([]),   // LANE-76: the Refine caption carries a routerLink to /server
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
             ],
         });
@@ -400,6 +403,7 @@ describe('DetailCaptionSidebar — the gutter is re-measured on resize, and not 
             providers: [
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
+            provideRouter([]),   // LANE-76: the Refine caption carries a routerLink to /server
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
             ],
         });
@@ -466,6 +470,7 @@ describe('DetailCaptionSidebar — model-aware variant load', () => {
             providers: [
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
+            provideRouter([]),   // LANE-76: the Refine caption carries a routerLink to /server
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
             ],
         });
@@ -577,6 +582,7 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
             providers: [
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
+            provideRouter([]),   // LANE-76: the Refine caption carries a routerLink to /server
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
             ],
         });
@@ -696,6 +702,58 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         expect(fixture.nativeElement.querySelector('[data-testid="refine-blocked-reason"]')).toBeNull();
     });
 
+    // LANE-76 (UAT-8.1, the user: "REFINE is ALWAYS ollama if configured in
+    // the backend - then maybe the UI feels misleading as it feels that Refine
+    // belongs to the same model setup"): the button names what it refines
+    // WITH — the SERVED default model of the LLM refine endpoint — and its
+    // caption names the endpoint with a link to the Server screen. Both are
+    // read off the served payload through the store: a hard-coded label or
+    // host goes red because neither value below is a default anywhere.
+    it('LANE-76: the Refine button names the served model; the caption names the endpoint and links to Server settings', () => {
+        const { fixture, http, store } = mountVariant();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'krea2-turbo', family: 'krea2', name: 'Krea 2 Turbo' });
+        fixture.detectChanges();
+        const btn = () => fixture.nativeElement.querySelector('[data-testid="refine-variant"]') as HTMLButtonElement;
+        const caption = () => fixture.nativeElement.querySelector('[data-testid="refine-endpoint-caption"]') as HTMLElement;
+        const text = (el: HTMLElement) => el.textContent!.replace(/\s+/g, ' ').trim();
+        // Probe still out: nothing to name yet.
+        expect(text(btn())).toBe('Refine (local LLM)');
+        expect(text(caption())).toBe('For krea2-turbo · uses the LLM refine endpoint from Server settings');
+        http.expectOne('/api/llm-refine/models').flush({
+            curated: [], installed: ['gemma3:12b'], available: true, unavailable_reason: null,
+            model: 'gemma3:12b', endpoint: 'http://10.0.0.7:11434',
+        });
+        fixture.detectChanges();
+        expect(text(btn())).toBe('Refine with gemma3:12b');
+        expect(btn().disabled).toBe(false);
+        expect(text(caption())).toBe('For krea2-turbo · uses the LLM refine endpoint from Server settings — 10.0.0.7:11434');
+        const link = caption().querySelector('a') as HTMLAnchorElement;
+        expect(link.textContent!.trim()).toBe('Server settings');
+        expect(link.getAttribute('href')).toBe('/server');
+        // The group is its own labelled section, visibly not the provider setup above.
+        const group = fixture.nativeElement.querySelector('[data-testid="refine-group"]') as HTMLElement;
+        expect(text(group)).toContain('Refine captions — local LLM');
+    });
+
+    it('LANE-76: a blocked Refine still names its model, keeps the LANE-70 sentence, and keeps the endpoint caption', () => {
+        const { fixture, http, store } = mountVariant();
+        const reason = 'Model \'gemma3:12b\' is not installed on http://10.0.0.7:11434 - pull it on the Server screen or pick an installed model.';
+        store.setModelAware(true);
+        store.setDefinition({ id: 'krea2-turbo', family: 'krea2', name: 'Krea 2 Turbo' });
+        fixture.detectChanges();
+        http.expectOne('/api/llm-refine/models').flush({
+            curated: [], installed: ['qwen2.5:7b-instruct'], available: true, unavailable_reason: reason,
+            model: 'gemma3:12b', endpoint: 'http://10.0.0.7:11434',
+        });
+        fixture.detectChanges();
+        const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(true);
+        expect(btn.textContent!.trim()).toBe('Refine with gemma3:12b');
+        expect((fixture.nativeElement.querySelector('[data-testid="refine-blocked-reason"]') as HTMLElement).textContent!.trim()).toBe(reason);
+        expect((fixture.nativeElement.querySelector('[data-testid="refine-endpoint-caption"]') as HTMLElement).textContent).toContain('10.0.0.7:11434');
+    });
+
     it('refine button enqueues a refine batch for the current image', () => {
         const { fixture, http, store, llm } = mountVariant();
         store.setModelAware(true);
@@ -756,6 +814,7 @@ describe('DetailCaptionSidebar — structured editor swap', () => {
             providers: [
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
+            provideRouter([]),   // LANE-76: the Refine caption carries a routerLink to /server
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
             ],
         });
@@ -844,6 +903,7 @@ describe('DetailCaptionSidebar — expand-to-modal', () => {
             providers: [
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
+            provideRouter([]),   // LANE-76: the Refine caption carries a routerLink to /server
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
             ],
         });
@@ -993,6 +1053,7 @@ describe('DetailCaptionSidebar — Lyrics editor (audio files, C0)', () => {
             providers: [
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
+            provideRouter([]),   // LANE-76: the Refine caption carries a routerLink to /server
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
             ],
         });
@@ -1042,6 +1103,7 @@ describe('DetailCaptionSidebar — Lyrics editor (audio files, C0)', () => {
             providers: [
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
+            provideRouter([]),   // LANE-76: the Refine caption carries a routerLink to /server
                 { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
             ],
         });

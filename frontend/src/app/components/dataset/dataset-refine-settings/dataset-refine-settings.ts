@@ -4,6 +4,7 @@ import { DatasetService } from '../../../services/dataset';
 import { LlmSettingsService } from '../../../services/llm-settings.service';
 import { CaptionContextService } from '../../../services/caption-context.service';
 import { ModelContextStore, DefinitionRef } from '../../../state/model-context.store';
+import { refineEndpointHost } from '../../../state/llm-availability.store';
 import { ToastService } from '../../../services/toast';
 
 /** Caption-style template for refinement. "auto" derives from the model's text
@@ -74,6 +75,10 @@ const PRESETS = ['standardize', 'synonym_merge'];
                 }
                 <input class="w-full mt-1 p-2 rounded-theme-md bg-surface-high font-mono text-[10px]"
                        placeholder="or type a model tag…" [ngModel]="model()" (ngModelChange)="model.set($event)">
+                <!-- LANE-76: the tab header says "Refinement model", not WHOSE
+                     models — the same caption the detail sidebar carries. No
+                     link: this lives in a modal. -->
+                <p class="mt-1 text-[10px] text-text-subtle" data-testid="refine-endpoint-caption">Uses the LLM refine endpoint from Server settings@if (endpointHost(); as host) { — {{ host }}}</p>
             </div>
 
             <!-- Refinement template (caption style) -->
@@ -114,6 +119,9 @@ export class DatasetRefineSettingsComponent implements OnInit {
     protected unavailableReason = signal<string | null>(null);
     protected installed = signal<string[]>([]);
     protected curated = signal<string[]>([]);
+    /** LANE-76: `host:port` of the endpoint the models above were listed
+     *  from, as the readiness probe served it. */
+    protected endpointHost = signal<string | null>(null);
     /** `llm_refine.model` — the Server-screen default, '' when unset. */
     protected defaultModel = signal<string>('');
     /** The settings request has answered (successfully or not). Gates seeding. */
@@ -162,6 +170,7 @@ export class DatasetRefineSettingsComponent implements OnInit {
                 this.unavailableReason.set(r.unavailable_reason ?? null);
                 this.installed.set(r.installed ?? []);
                 this.curated.set(r.curated ?? []);
+                this.endpointHost.set(refineEndpointHost(r.endpoint));
                 this.seedModel();
             },
             error: () => { this.available.set(false); },

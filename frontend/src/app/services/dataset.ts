@@ -42,6 +42,10 @@ export interface RefineModelsStatus {
   installed: string[];
   available: boolean;
   unavailable_reason?: string | null;
+  /** LANE-76: the default model a model-less refine is served with and the
+   *  endpoint it is served from — what the Refine button names. */
+  model?: string | null;
+  endpoint?: string | null;
 }
 
 export interface Dataset {

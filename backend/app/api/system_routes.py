@@ -101,7 +101,8 @@ def report_pending_restart_failure() -> dict | None:
 
     A restart that fails leaves nobody running to tell anyone: the console this
     process was watching is gone with the process, and ``server.log`` is
-    unlinked by ``setup_logging`` on the next startup. So the launcher's record
+    rotated to ``server.prev.log`` by ``setup_logging`` on the next startup
+    (and out of existence by the one after). So the launcher's record
     outlives it in ``restart.log``, and the first server to start afterwards —
     which is the user's recovery, ``start_backend.bat`` — says it out loud in
     the log the Server screen already shows.

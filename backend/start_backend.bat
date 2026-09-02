@@ -67,6 +67,6 @@ if "%MRLN_EXIT%"=="75" (
     goto launch
 )
 if "%MRLN_EXIT%"=="3" if "%MRLN_RESTART%"=="1" (
-    echo start_backend: the relaunched server could not bind - a child of the old server may still hold the port; check restart.log and the task list
+    echo start_backend: the relaunched server could not bind - a child of the old server may still hold the port; see the output above, backend\server.log and the task list
 )
 exit /b %MRLN_EXIT%

@@ -87,10 +87,20 @@ class _Harness:
         self.backend = tmp_path / "backend"
         self.backend.mkdir(parents=True)
         self.bat = self.backend / "start_backend.bat"
+        # newline="\n": the shipped bat is LF (.gitattributes eol=lf) and cmd
+        # re-reads a batch file by byte offset, so the copy under test must be
+        # the LF bytes cmd actually executes, not a CRLF twin write_text makes.
         self.bat.write_text(bat_text if bat_text is not None
-                            else BAT.read_text(encoding="utf-8"), encoding="utf-8")
+                            else BAT.read_text(encoding="utf-8"),
+                            encoding="utf-8", newline="\n")
+        assert b"\r" not in self.bat.read_bytes(), "bat copy must be LF like the shipped file"
         # with_pip=False keeps this under a second; the stubs need no packages.
-        venv.EnvBuilder(with_pip=False).create(self.backend / "venv")
+        # A host that cannot build a venv (embedded Python, AV blocking the
+        # python.exe copy) skips by name rather than failing on setup.
+        try:
+            venv.EnvBuilder(with_pip=False).create(self.backend / "venv")
+        except (OSError, subprocess.CalledProcessError) as exc:
+            pytest.skip(f"cannot build a throwaway venv here: {exc}")
         assert (self.backend / "venv" / "Scripts" / "python.exe").exists()
         assert (self.backend / "venv" / "Scripts" / "activate.bat").exists()
         (self.backend / "port_resolver.py").write_text(_STUB_RESOLVER, encoding="utf-8")
@@ -174,7 +184,10 @@ class TestTheBatRelaunches:
         assert len(h.runs()) == 2, h.runs()
         assert proc.returncode == 3, (proc.returncode, proc.stdout, proc.stderr)
         assert "could not bind" in proc.stdout
-        assert "restart.log" in proc.stdout
+        # The supervised path bypasses the launcher, so nothing writes
+        # restart.log here: the evidence is the console and server.log.
+        assert "server.log" in proc.stdout
+        assert "restart.log" not in proc.stdout
 
     def test_the_supervisor_flag_does_not_leak_into_the_operators_shell(self, tmp_path):
         """``setlocal`` proved by its EFFECT: after the bat returns, the parent

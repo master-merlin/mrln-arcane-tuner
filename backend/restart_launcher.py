@@ -60,9 +60,9 @@ if _THIS_DIR not in sys.path:
 import port_resolver  # noqa: E402 - requires the sys.path line above
 
 #: Where the replacement's console output and this module's records go.
-#: NOT ``server.log``: ``setup_logging`` unlinks that file on every startup, so
-#: a failed restart's evidence would be destroyed by the very next successful
-#: start — which is the user's recovery action.
+#: NOT ``server.log``: ``setup_logging`` rotates that file to ``server.prev.log``
+#: on every startup, so a failed restart's evidence would be pushed out by the
+#: second successful start after it — and the first one is the user's recovery.
 RESTART_LOG_PATH = os.path.join(_THIS_DIR, "restart.log")
 
 #: Bound on the restart log. It accumulates one boot's console output per

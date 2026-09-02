@@ -43,17 +43,35 @@ def _child(code: str, lock_dir_: Path, *, timeout: float = 60.0) -> subprocess.P
 
 _HOLD = """
 import json, os, time
+from pathlib import Path
 from tests.support.machine_lock import machine_lock
+release = Path(r'{report}').with_suffix('.release')
 with machine_lock("{name}", timeout_s={timeout}) as p:
     t0 = time.time()
+    # Hold at least {hold}s, then until the parent drops the release file
+    # (bounded: a parent that died stops us after 300s).
     time.sleep({hold})
+    deadline = time.time() + 300
+    while {wait_release} and not release.exists() and time.time() < deadline:
+        time.sleep(0.05)
     t1 = time.time()
 open(r'{report}', "w").write(json.dumps({{"pid": os.getpid(), "acquired": t0, "released": t1}}))
 """
 
 
-def _hold_code(report: Path, hold: float, timeout: float = 30.0, name: str = "probe") -> str:
-    return _HOLD.format(hold=hold, report=str(report), timeout=timeout, name=name)
+def _hold_code(report: Path, hold: float, timeout: float = 30.0, name: str = "probe",
+               wait_release: bool = False) -> str:
+    """A holder that sleeps *hold* seconds; with *wait_release* it then keeps
+    the lock until ``<report>.release`` exists — a fixed sleep is not a hold
+    a test can rely on when the contender is a child pytest that needs tens
+    of seconds to boot on a loaded box (measured: the 6 s holder was gone
+    before the child asked, under `-n 8` with two other gates running)."""
+    return _HOLD.format(hold=hold, report=str(report), timeout=timeout, name=name,
+                        wait_release=wait_release)
+
+
+def _release(report: Path) -> None:
+    report.with_suffix(".release").write_text("go")
 
 
 # ── path ─────────────────────────────────────────────────────────────────
@@ -142,7 +160,7 @@ def test_an_unreadable_lock_is_a_writer_in_flight_until_the_grace_runs_out(tmp_p
 
 def test_a_live_holder_past_the_bound_fails_naming_the_holder(tmp_path):
     report = tmp_path / "a.json"
-    a = _child(_hold_code(report, hold=4.0), tmp_path)
+    a = _child(_hold_code(report, hold=0.5, wait_release=True), tmp_path)
     try:
         deadline = time.time() + 20
         while read_holder(tmp_path / ".probe.lock") is None:
@@ -162,6 +180,7 @@ def test_a_live_holder_past_the_bound_fails_naming_the_holder(tmp_path):
         assert (tmp_path / ".probe.lock").exists(), "the live holder's lock was broken"
         assert read_holder(tmp_path / ".probe.lock").pid == holder_pid
     finally:
+        _release(report)
         a.kill()
         a.communicate()
         (tmp_path / ".probe.lock").unlink(missing_ok=True)
@@ -238,7 +257,7 @@ def test_without_the_root_conftest_no_lock_is_taken(tmp_path):
 def test_a_grouped_test_errors_naming_the_holder_when_the_bound_runs_out(tmp_path):
     p = tmp_path / ".lockprobe.lock"
     report = tmp_path / "a.json"
-    a = _child(_hold_code(report, hold=6.0, name="lockprobe"), tmp_path)
+    a = _child(_hold_code(report, hold=0.5, name="lockprobe", wait_release=True), tmp_path)
     try:
         deadline = time.time() + 20
         while read_holder(p) is None:
@@ -252,7 +271,10 @@ def test_a_grouped_test_errors_naming_the_holder_when_the_bound_runs_out(tmp_pat
         assert "1 error" in proc.stdout or "1 failed" in proc.stdout, proc.stdout[-1500:]
         assert f"pid {holder_pid}" in proc.stdout, proc.stdout[-1500:]
         assert "skipped" not in proc.stdout.splitlines()[-1], "a timeout must never skip"
+        assert read_holder(p) is not None and read_holder(p).pid == holder_pid, (
+            "the holder was gone before the child asked — the test proved nothing")
     finally:
+        _release(report)
         a.kill()
         a.communicate()
         p.unlink(missing_ok=True)

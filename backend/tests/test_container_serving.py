@@ -6,7 +6,31 @@ the module to exercise both dev mode and container (SPA) mode.
 import importlib
 import os
 
+import pytest
 from fastapi.testclient import TestClient
+
+# ``importlib.reload(app.main)`` rebinds the process-global ``app`` object that
+# every later ``from app.main import app`` sees. Two consequences (LANE-63):
+# the module stays on ONE xdist worker, in file order (load distribution had
+# split it, so the token reload landed on a worker whose "cleanup" test lived
+# elsewhere — 80 route tests answered 401), and every test here restores the
+# dev app itself, in a fixture, instead of trusting a last-in-file test.
+pytestmark = pytest.mark.xdist_group("app_reload")
+
+
+@pytest.fixture(autouse=True)
+def _dev_app_after_each_test():
+    """Reload ``app.main`` under the RESTORED environment after the test.
+
+    Deliberately takes no ``monkeypatch``: an autouse fixture without that
+    dependency is set up before the test's own ``monkeypatch`` and therefore
+    torn down AFTER it has undone the env, so the reload sees the real
+    environment — no token, no dist override — and rebuilds the dev app.
+    """
+    yield
+    import app.main as main
+
+    importlib.reload(main)
 
 
 def _reload_app(monkeypatch, *, dist_dir=None, token=""):
@@ -63,6 +87,22 @@ def test_container_mode_blocks_api_without_token(monkeypatch, tmp_path):
     assert client.get("/api/system/gpu").status_code == 401
 
 
-def test_cleanup_reload_back_to_dev(monkeypatch):
-    # Leave the module in dev state for the rest of the suite.
-    _reload_app(monkeypatch, dist_dir=None)
+def test_a_token_reload_does_not_outlive_its_test(monkeypatch):
+    """Pins the fixture above: reload with a token, undo the env the way
+    pytest will, run the fixture's restore, and the app answers the API
+    without a token again. RED with the old last-in-file "cleanup test",
+    which only worked when every test of this file ran on one worker in
+    file order."""
+    main = _reload_app(monkeypatch, dist_dir=None, token="topsecret")
+    assert TestClient(main.app).get("/api/system/gpu").status_code == 401
+    monkeypatch.undo()
+    importlib.reload(main)
+    assert TestClient(main.app).get("/api/system/gpu").status_code != 401
+
+
+def test_the_app_is_open_when_this_module_is_done():
+    # Runs last in file order: whatever the tests above did, the process-global
+    # app must be the dev app now — the property the rest of the suite needs.
+    import app.main as main
+
+    assert TestClient(main.app).get("/api/system/gpu").status_code != 401

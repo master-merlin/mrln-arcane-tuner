@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 from collections import Counter
 from pathlib import Path
@@ -27,6 +28,15 @@ from pathlib import Path
 ENV = "MRLN_OUTCOME_VECTOR"
 
 _OUTCOMES: dict[str, str] = {}
+
+# `--dist loadgroup` reports a grouped test as `<nodeid>@<group>`
+# (xdist/scheduler/loadgroup.py); the serial run reports the bare id. A
+# parametrised id ends in `]`, so the suffix can only follow a name char.
+_GROUP_SUFFIX = re.compile(r"(?<=[\w\]])@[\w.-]+$")
+
+
+def canonical_id(nodeid: str) -> str:
+    return _GROUP_SUFFIX.sub("", nodeid) if not nodeid.endswith("]") else nodeid
 
 
 def _classify(report) -> str | None:
@@ -51,10 +61,11 @@ def pytest_runtest_logreport(report):
     kind = _classify(report)
     if kind is None:
         return
+    nodeid = canonical_id(report.nodeid)
     # A teardown error overrides the call outcome; nothing overrides an error.
-    if _OUTCOMES.get(report.nodeid) == "error":
+    if _OUTCOMES.get(nodeid) == "error":
         return
-    _OUTCOMES[report.nodeid] = kind
+    _OUTCOMES[nodeid] = kind
 
 
 def pytest_sessionfinish(session, exitstatus):

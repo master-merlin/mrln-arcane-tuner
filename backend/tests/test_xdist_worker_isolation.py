@@ -33,8 +33,13 @@ LIVE_SERVER_LOG = BACKEND / "server.log"
 # ── the rule ──────────────────────────────────────────────────────────────
 
 
-def test_serial_name_is_unchanged_and_worker_name_carries_the_id():
-    assert worker_suffixed(Path("x/tests.log"), None) == Path("x/tests.log")
+def test_serial_name_is_unchanged_and_worker_name_carries_the_id(monkeypatch):
+    # `worker=None` means "this process's worker", so the serial case is the
+    # env var ABSENT — not a None argument (under xdist that is the worker id).
+    monkeypatch.delenv(WORKER_ENV, raising=False)
+    assert worker_suffixed(Path("x/tests.log")) == Path("x/tests.log")
+    monkeypatch.setenv(WORKER_ENV, "gw7")
+    assert worker_suffixed(Path("x/tests.log")) == Path("x/tests-gw7.log")
     assert worker_suffixed(Path("x/tests.log"), "gw3") == Path("x/tests-gw3.log")
     assert worker_suffixed(Path("x/server-test.log"), "gw12") == Path("x/server-test-gw12.log")
 
@@ -63,6 +68,36 @@ def test_this_process_logs_to_its_own_tests_log():
     assert files == [expected.resolve()], f"root logger file handlers: {files}"
 
 
+def test_this_process_never_initialised_the_live_database_at_import():
+    """``app.main`` builds the DatabaseEngine at import; the file it opened
+    must be this process's own import-time DB, never ``app/arcane_tuner.db``
+    (the -n 16 stall, LANE-63). Observed on the env seam AND on the engine:
+    the session fixture swaps the singleton later, so the import-time path is
+    read back from the environment the engine consulted."""
+    import time
+
+    from app.core.db.engine import DatabaseEngine
+
+    engine_started = time.time()
+    expected = worker_suffixed(TESTS / "import-time.db", current_worker()).resolve()
+    assert Path(os.environ["MRLN_DB_PATH"]).resolve() == expected
+    live = (BACKEND / "app" / "arcane_tuner.db").resolve()
+    assert Path(DatabaseEngine.get_instance().db_path).resolve() != live
+    # A fresh engine with no explicit path consults the seam exactly as the
+    # import-time construction does; initialising it must open the diverted
+    # file (not merely name it). Done here rather than asserted on the
+    # import-time engine's file, which exists only once some module has
+    # imported app.main — order the selection, not the test, decides.
+    engine = DatabaseEngine(db_path=None)
+    assert Path(engine.db_path).resolve() == expected
+    engine.initialize()
+    try:
+        assert expected.exists(), "the engine did not open the diverted file"
+        assert not live.exists() or live.stat().st_mtime < engine_started, "the live DB was touched"
+    finally:
+        engine.close()
+
+
 # ── a child pytest under an invented worker id ────────────────────────────
 
 
@@ -79,7 +114,8 @@ def _child(worker: str, *extra: str, env_extra: dict | None = None) -> subproces
 
 
 def _cleanup(worker: str) -> None:
-    for name in (f"tests-{worker}.log", f"server-test-{worker}.log"):
+    for name in (f"tests-{worker}.log", f"server-test-{worker}.log", f"import-time-{worker}.db",
+                 f"import-time-{worker}.db-wal", f"import-time-{worker}.db-shm"):
         (TESTS / name).unlink(missing_ok=True)
 
 

@@ -61,6 +61,20 @@ from tests.support.worker_paths import worker_suffixed  # noqa: E402
 SERVER_TEST_LOG = worker_suffixed(_BACKEND / "tests" / "server-test.log")
 os.environ["MRLN_SERVER_LOG_PATH"] = str(SERVER_TEST_LOG)
 
+# The SQLite database has the same import-time problem: importing ``app.main``
+# constructs the ``DatabaseEngine`` singleton and initialises the file
+# (``app/core/db/engine.py`` ``database_initialized``) during COLLECTION,
+# before ``tests/conftest.py::_isolate_test_db`` swaps in its tmp engine. With
+# no seam set that file is ``backend/app/arcane_tuner.db`` — the live one in
+# the main tree — and under xdist N workers initialise ONE WAL database at
+# once: measured 2026-09-02, ``-n 16`` never got past it (16 workers, each
+# holding the db/-wal/-shm, 9 s CPU apiece, no progress in 25 minutes; ``-n 8``
+# squeezed through). ``MRLN_DB_PATH`` is the engine's released env seam, so
+# the import-time engine goes to a per-process file next to the logs; the
+# session fixture still replaces it with a tmp_path engine for the tests.
+IMPORT_TIME_DB = worker_suffixed(_BACKEND / "tests" / "import-time.db")
+os.environ["MRLN_DB_PATH"] = str(IMPORT_TIME_DB)
+
 _LOCK_ATTR = "_mrln_machine_lock_path"
 
 

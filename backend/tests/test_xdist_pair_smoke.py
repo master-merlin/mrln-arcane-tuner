@@ -20,6 +20,7 @@ always saying "parallel".
 The suite lives under ``tmp_path`` with its own ``pytest.ini`` so rootdir and
 confcutdir stay there and none of the backend conftests load.
 """
+import os
 import subprocess
 import sys
 import textwrap
@@ -62,9 +63,13 @@ def _run_suite(tmp_path: Path, *pytest_args: str) -> tuple[subprocess.CompletedP
     out.mkdir()
     (tmp_path / "pytest.ini").write_text("[pytest]\naddopts = -p no:cacheprovider\n", encoding="utf-8")
     (tmp_path / "test_smoke.py").write_text(textwrap.dedent(_SUITE.format(out=out)), encoding="utf-8")
+    # The child must not inherit THIS process's worker id: under the parallel
+    # gate this test itself runs inside a worker, and the serial-control child
+    # would then stamp "gw5" instead of "serial" (seen under -n 8).
+    env = {k: v for k, v in os.environ.items() if k != "PYTEST_XDIST_WORKER"}
     proc = subprocess.run(
         [sys.executable, "-m", "pytest", str(tmp_path), "-q", *pytest_args],
-        cwd=str(tmp_path), capture_output=True, text=True, timeout=300,
+        cwd=str(tmp_path), env=env, capture_output=True, text=True, timeout=300,
     )
     stamps = {p.stem: p.read_text(encoding="utf-8") for p in out.glob("*.txt")}
     return proc, stamps

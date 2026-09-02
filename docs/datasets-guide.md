@@ -496,35 +496,71 @@ next time you train or analyze, just not for free.
 
 ### Mass caption
 
-Opened via the workspace's **Mass caption** button.
+Once a dataset is curated, captioning it one tile at a time in the grid
+doesn't scale — **Mass caption**, in the workspace toolbar, runs an AI
+captioner over the whole set as a background task. It opens with two tabs,
+**Generate** and **Refine**.
+
+#### Generate
 
 ![Mass caption modal — Generate tab, Local neural architecture (the default)](images/mass-caption-modal.png)
 
-Two tabs:
+**Caption strategy** picks the candidates: **Incremental** (only images that
+don't have the caption this run would write yet — with model-aware captions
+on, "have" means "have this definition's variant"; otherwise it means the
+general `<stem>.txt`) or **Destructive** (recaption every candidate,
+overwriting what's there). Whichever definition is active in the header's
+Model-aware toggle decides *where* the run writes: with it off, every caption
+lands in the general `<stem>.txt`; with a structured-caption definition
+active, it writes the per-definition variant (`captions/<definition_id>/`)
+instead, so switching models never touches another model's captions.
 
-- **Generate** — captioning strategy (**Incremental**, only images without a
-  caption yet, vs **Destructive**, recaption everything), then a neural
-  architecture toggle between **Local** and **API**:
-  - **Local** is the default — pick a local vision model (Florence-2, Qwen3
-    VL, Youtu-VL, JoyCaption; each with its own variant sizes and parameter
-    schema — temperature, top-p, max tokens, etc.), an optional wildcard
-    value, system prompt and custom instructions.
-  - **API** swaps the model picker for a provider (OpenAI, Anthropic, Gemini,
-    OpenRouter, or any OpenAI-compatible server) plus its endpoint/key
-    fields, since captioning then runs against that provider instead of your
-    GPU.
+**Neural architecture** — the engine that does the captioning — defaults to
+**Local**: a model that runs on your own GPU, chosen from Youtu-VL,
+Florence-2, Qwen3 VL (with an instruct/thinking size picker, 4B–32B) or
+JoyCaption, each with its own parameter schema (temperature, top-p, max
+tokens, task/caption type, and — JoyCaption only — two dozen fine-grained
+content toggles). Switch to **API** to send images to a hosted vision model
+instead — OpenAI, Anthropic, Gemini, OpenRouter, or any OpenAI-compatible
+server (Ollama, LM Studio, vLLM) via "Local / Custom" — which needs a
+reachable endpoint and, for the hosted providers, a saved key; an
+unconfigured provider disables Start until you fix it. Either mode shares the
+same **Settings Template** picker below it (clone, rename or delete a
+template of wildcard + system prompt + parameters per model) and, with a
+structured-caption definition active, an extra "Additional instructions"
+field scoped to just this run.
 
-  ![Mass caption modal — Generate tab, API neural architecture](images/mass-caption-modal-api.png)
+The Start button's label carries the count and the reason: *"Caption N
+images"* when there's work to do, *"No images to caption"* once Incremental
+finds nothing left, or *"Checking existing captions…"* while it's still
+confirming which images already have this definition's variant (model-aware
+Incremental waits for that answer rather than guess and risk overwriting).
+Once started, it runs as a background task with live per-image progress in
+the Task Center; captions land back in the grid as they're written, so the
+inline caption box on each tile (Browse-mode toolbar, above) is how you
+re-read and spot-check the results afterward.
 
-  Either way, running captions over the dataset (or just the images still
-  missing one, per the strategy above) is a background task with live
-  per-image status.
-- **Refine** — rewrite *existing* captions with a local LLM via Ollama.
-  Presets: `standardize` and `synonym_merge`; style is auto (derived from the
-  active model's text encoder — CLIP/SDXL-style models get tag-style
-  captions, T5/large-context models get natural language) or an explicit
-  override (natural language / tags). Requires Ollama reachable — the modal
-  says so plainly when it isn't.
+#### Refine
+
+![Mass caption modal — Refine tab](images/mass-caption-modal-refine.png)
+
+Refine doesn't generate new captions — it rewrites *existing* ones with a
+local LLM via Ollama. **Refine target** (Original vs. the masked-variant
+captions), **Refine strategy** (Skip pending — only captions without an
+unreviewed suggestion already — vs. Re-refine all) and **Output** (stage each
+result as a suggestion to accept/reject, or Auto-accept straight to the
+variant) come first; **Refinement model** picks the target definition (which
+caption vocabulary to refine), the installed Ollama model (with **Pull**
+buttons for curated tags not yet installed), a style override (Auto matches
+the definition's family — tags for CLIP/SDXL, natural language otherwise) and
+the operation preset (`standardize` or `synonym_merge`).
+
+Refine needs a live endpoint with the chosen model installed on it — Start
+stays disabled until a target definition and a model are picked, and if the
+endpoint is down or the model missing, the same sentence the backend would
+refuse the run with appears (in the panel while picking, or as a toast if a
+request still slips through): which one is missing and where to fix it
+(start Ollama, or configure/pull it on the Server screen).
 
 ### Structured caption editor
 

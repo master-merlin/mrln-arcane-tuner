@@ -73,11 +73,16 @@ jobs:
       # torchaudio is pinned at 2.11.0 and declares torch==2.11.0; it is in
       # maintenance mode with no 2.12 wheel, so it installs --no-deps exactly as
       # the local install does, or pip would downgrade torch underneath it.
+      # It must come from the SAME CPU index as torch: PyPI's torchaudio wheel
+      # is the CUDA build, and its native library cannot load beside a CPU
+      # torch ("Could not load this library: _torchaudio.abi3.so" — CI's
+      # first-ever pytest run, 138 collection errors, 2026-09-03).
       - name: Install torch (CPU wheels)
         run: |
           python -m pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.12.1 torchvision==0.27.1
-          python -m pip install --no-deps torchaudio==2.11.0
+          python -m pip install --no-deps --index-url https://download.pytorch.org/whl/cpu \
+            torchaudio==2.11.0
 
       # Reuse the canonical installer rather than inventing a third install
       # path. It is already shared by the Docker build and the runtime

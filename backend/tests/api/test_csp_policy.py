@@ -45,6 +45,7 @@ from app.api._security_headers import (
     INLINE_BOOTSTRAP_SHA256,
     build_csp,
 )
+from tests.support.source_fallback import SourceFallbackWarning
 
 REPO_ROOT = Path(__file__).resolve().parents[3]
 SRC_REL = Path("frontend") / "src" / "index.html"
@@ -65,15 +66,10 @@ SOURCE_FALLBACK_MESSAGE = (
 )
 
 
-class SourceFallbackWarning(UserWarning):
-    """Raised when the CSP checks run against source instead of the built page.
-
-    A distinct category rather than a bare ``UserWarning`` so a caller that
-    wants the strict behaviour can ask for it by name —
-    ``-W error::...SourceFallbackWarning`` in CI, once CI builds the frontend
-    before the backend gate. It is deliberately NOT escalated here: see the
-    module docstring.
-    """
+# ``SourceFallbackWarning`` is imported from ``tests.support.source_fallback``,
+# not defined here: a warning class defined in a test module cannot be
+# re-imported by the pytest-xdist controller and takes the whole gate down
+# (LANE-63; pinned by test_xdist_warning_classes.py).
 
 
 #: Files whose content the built index.html is derived from. If the build is

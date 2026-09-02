@@ -117,8 +117,15 @@ jobs:
       # `pytest backend` from the repo root and a bare `pytest` from backend/
       # collect identically (verified: 5350 each). Naming the path here keeps
       # the command identical to the one the project documents locally.
+      #
+      # Parallel (LANE-63): pytest-xdist is pinned in requirements.txt; the
+      # worker count lives HERE, not in pytest.ini, so a one-file run or a
+      # bisect stays serial. `--dist loadgroup` keeps every xdist_group (the
+      # live-GPU and port-binding tests) on one worker, and backend/conftest.py
+      # holds a cross-process lock per group (a clone without _harness/ puts it
+      # in the runner's temp dir). Per-worker logs come from the same conftest.
       - name: pytest
-        run: python -m pytest backend -q
+        run: python -m pytest backend -q -n auto --dist loadgroup
 
       # Runs HERE, not in the licence job, because the dependency graph is
       # already installed at this point. pip-licenses can only report on

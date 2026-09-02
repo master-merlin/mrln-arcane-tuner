@@ -40,7 +40,11 @@ jobs:
   backend:
     name: backend (ruff + pytest)
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    # The serial suite takes ~19 min on the maintainer's 32-core box and ~75 min
+    # on a 2-vCPU runner: the first full CI run (2026-09-03) was canceled at 45
+    # min with the suite at 59 % and zero failures. 100 is the honest bound for
+    # a serial run; the parallel gate (pytest-xdist, `-n 4`) is the real fix.
+    timeout-minutes: 100
     steps:
       - uses: actions/checkout@v4
 

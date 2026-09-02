@@ -620,6 +620,11 @@ SQLite-backed persistent tracking of all training runs:
 
 ### 🔍 LoRA Tools
 
+See [`docs/tools-guide.md`](docs/tools-guide.md) for the full storyline:
+Inspect's Speed Training Suggestion and per-layer norm graphs, copying a
+targeted layer list, and Resize's SVD rank change with the path roots both
+tools are restricted to.
+
 #### Inspect
 Analyze any `.safetensors` LoRA file without loading a model:
 

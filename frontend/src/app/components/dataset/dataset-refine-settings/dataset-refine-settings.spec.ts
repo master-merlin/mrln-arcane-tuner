@@ -77,6 +77,40 @@ describe('DatasetRefineSettingsComponent', () => {
         expect(emitted[emitted.length - 1]).toBeNull();
     });
 
+    // LANE-57 / RULE-21: the banner shows the backend's own sentence — the one
+    // POST /captions/refine-batch refuses with — not a hardcoded guess.
+    it('shows the backend\'s unavailable_reason in the banner', () => {
+        const { fixture, http } = setup();
+        const reason = 'LLM endpoint http://127.0.0.1:1 is unreachable - start it, or configure and test it on the Server screen (LLM Refine Endpoint).';
+        fixture.detectChanges();
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: [], available: false, unavailable_reason: reason });
+        http.expectOne('/api/settings/llm_refine').flush({});
+        http.expectOne('/api/caption-context/definitions').flush([]);
+        fixture.detectChanges();
+        const banner = fixture.nativeElement.querySelector('[data-testid="refine-unavailable-reason"]');
+        expect(banner.textContent.trim()).toBe(reason);
+    });
+
+    // LANE-57: until the probe has answered, Start stays off — a state emitted
+    // on a null availability enabled the CTA before anyone had seen the
+    // endpoint work.
+    it('emits null while the availability probe has not answered', () => {
+        const { fixture, http } = setup();
+        const emitted: (RefineSettingsState | null)[] = [];
+        fixture.componentInstance.settingsChanged.subscribe(s => emitted.push(s));
+        fixture.detectChanges();
+        // Settings + definitions answer first (the model is seeded from the
+        // configured default); the models probe is still in flight.
+        http.expectOne('/api/settings/llm_refine').flush({ model: 'qwen2.5:7b-instruct' });
+        http.expectOne('/api/caption-context/definitions').flush([]);
+        fixture.componentInstance.model.set('qwen2.5:7b-instruct');
+        fixture.detectChanges();
+        expect(emitted[emitted.length - 1]).toBeNull();
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['qwen2.5:7b-instruct'], available: true });
+        fixture.detectChanges();
+        expect(emitted[emitted.length - 1]).not.toBeNull();
+    });
+
     it('pulls a curated model and selects it', () => {
         const { fixture, http } = setup();
         fixture.detectChanges();

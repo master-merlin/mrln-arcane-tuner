@@ -29,8 +29,9 @@ const PRESETS = ['standardize', 'synonym_merge'];
         <div class="flex flex-col gap-3 text-xs">
             <!-- Ollama availability -->
             @if (available() === false) {
-                <div class="p-2 rounded-theme-md bg-danger/10 border border-danger/30 text-danger">
-                    Ollama unavailable — start it or configure the endpoint in settings.
+                <div class="p-2 rounded-theme-md bg-danger/10 border border-danger/30 text-danger"
+                     data-testid="refine-unavailable-reason">
+                    {{ unavailableReason() ?? 'Ollama unavailable — start it or configure the endpoint in settings.' }}
                 </div>
             }
 
@@ -108,6 +109,9 @@ export class DatasetRefineSettingsComponent implements OnInit {
 
     protected readonly presets = PRESETS;
     protected available = signal<boolean | null>(null);
+    /** The backend's sentence for why a refine cannot start — the same one
+     *  `POST /captions/refine-batch` refuses with (LANE-57, RULE-21). */
+    protected unavailableReason = signal<string | null>(null);
     protected installed = signal<string[]>([]);
     protected curated = signal<string[]>([]);
     /** `llm_refine.model` — the Server-screen default, '' when unset. */
@@ -139,7 +143,11 @@ export class DatasetRefineSettingsComponent implements OnInit {
             const preset = this.preset();
             const style = this.style();
             const available = this.available();
-            if (available === false || !defId || !model) {
+            // `null` = the probe has not answered yet. Emitting a state then
+            // enabled Start before anyone had seen the endpoint work — one of
+            // the ways a refine started against an unconfigured endpoint
+            // (LANE-57). A flag is not verified until you have seen its effect.
+            if (available !== true || !defId || !model) {
                 this.settingsChanged.emit(null);
                 return;
             }
@@ -151,6 +159,7 @@ export class DatasetRefineSettingsComponent implements OnInit {
         this.api.listRefineModels().subscribe({
             next: r => {
                 this.available.set(r.available);
+                this.unavailableReason.set(r.unavailable_reason ?? null);
                 this.installed.set(r.installed ?? []);
                 this.curated.set(r.curated ?? []);
                 this.seedModel();

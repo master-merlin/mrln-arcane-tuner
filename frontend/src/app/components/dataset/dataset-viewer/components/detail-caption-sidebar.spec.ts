@@ -543,6 +543,22 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         expect(btn.getAttribute('title')).toContain('unreachable');
     });
 
+    // LANE-57 / RULE-21: the tooltip is the backend's own reason (the sentence
+    // POST /captions/refine-batch refuses with), read off the shared status.
+    it('the disabled refine button carries the backend\'s reason verbatim', () => {
+        const { fixture, http, store, llm } = mountVariant();
+        const reason = 'LLM endpoint http://127.0.0.1:1 is unreachable - start it, or configure and test it on the Server screen (LLM Refine Endpoint).';
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        llm.available.set(false);
+        llm.reason.set(reason);
+        fixture.detectChanges();
+        http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
+        const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]');
+        expect(btn.disabled).toBe(true);
+        expect(btn.getAttribute('title')).toBe(reason);
+    });
+
     it('refine button enqueues a refine batch for the current image', () => {
         const { fixture, http, store, llm } = mountVariant();
         store.setModelAware(true);

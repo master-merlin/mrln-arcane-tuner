@@ -705,7 +705,9 @@ export class MassCaptionModalComponent implements OnInit {
         this.running.set(true);
         obs.subscribe({
             next: ({ task_id }) => { this._taskView = this.tasks.byId(task_id); this.taskId.set(task_id); },
-            error: () => { this.running.set(false); this.toast.error(errMsg); },
+            // The backend refuses a refine it cannot serve with a 409 that names
+            // what is missing (LANE-57) — show that sentence, not only ours.
+            error: (e) => { this.running.set(false); this.toast.error(e?.error?.detail ? `${errMsg} ${e.error.detail}` : errMsg); },
         });
     }
 

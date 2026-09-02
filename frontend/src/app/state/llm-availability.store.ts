@@ -10,6 +10,10 @@ export class LlmAvailabilityStore {
     readonly available = signal<boolean>(false);
     readonly installed = signal<string[]>([]);
     readonly checked = signal<boolean>(false);
+    /** The backend's own sentence for why a refine cannot start (the same
+     *  text `POST /captions/refine-batch` refuses with — LANE-57); null when
+     *  it may, or when the probe itself failed to answer. */
+    readonly reason = signal<string | null>(null);
 
     constructor() {
         // The Ollama sidecar restarts with the backend (the container launches
@@ -23,8 +27,8 @@ export class LlmAvailabilityStore {
     /** Re-probe the endpoint. Safe to call on app init and after settings save. */
     refresh(): void {
         this.api.listRefineModels().subscribe({
-            next: r => { this.available.set(!!r.available); this.installed.set(r.installed ?? []); this.checked.set(true); },
-            error: () => { this.available.set(false); this.installed.set([]); this.checked.set(true); },
+            next: r => { this.available.set(!!r.available); this.installed.set(r.installed ?? []); this.reason.set(r.unavailable_reason ?? null); this.checked.set(true); },
+            error: () => { this.available.set(false); this.installed.set([]); this.reason.set(null); this.checked.set(true); },
         });
     }
 }

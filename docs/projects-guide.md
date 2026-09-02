@@ -166,8 +166,8 @@ guards), linked or missing dataset references, and a name-conflict choice
 (**Rename** or **Overwrite**) for the project itself and, separately, for any
 dataset name collision.
 
-**Delete project** — reachable from the Projects grid card menu, the project
-detail header, or the edit dialog — always opens the same confirm dialog,
+**Delete project** — reachable from the project detail header or the edit
+dialog's footer — always opens the same confirm dialog,
 and its wording is exact about what happens: *"Datasets and images are kept;
 project-specific settings are removed."* Deleting a project never touches
 dataset files; it removes the project record and its branched templates. If

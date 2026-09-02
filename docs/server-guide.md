@@ -117,8 +117,9 @@ A live-tailed, filterable view of the backend's own structured log stream:
 - **Follow** — keep the view pinned to the newest line as more arrive.
 - **Wrap** — wrap long lines instead of horizontal-scrolling them.
 - **Download** — save everything currently loaded as a text file.
-- **Clear** — asks for confirmation, then clears the loaded entries (a fresh
-  view, not a destructive action on the log file itself).
+- **Clear** — asks for confirmation, then truncates the backend log file on
+  disk; the viewer empties because the file did. Download first if you want
+  to keep it.
 
 ## Recipes
 

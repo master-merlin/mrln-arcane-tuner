@@ -35,13 +35,18 @@ to.
 
 ## The shape of the screen
 
-Three columns: a left **table of contents** that jumps to each section and
-tracks which one you're scrolled to; a center **form** built from the model
-definition's own schema — every model family declares the same base schema
-plus family-specific fields, so the form is identical in structure across
-families and only its options and defaults change; and a right **Estimate
-rail** with the live VRAM report. A sticky bar at the bottom of the form
-carries a compact echo of wall time and peak VRAM plus the **Start Training
+Three columns: a left **table of contents** that jumps to each schema-driven
+group and tracks which one you're scrolled to (Template Selection is a fixed
+card above the groups and is not itself a TOC entry; a group like Concepts
+& Triggerwords or Expert Features only appears in the TOC when the current
+model definition actually declares fields for it — a model with no concept
+fields, for instance, simply has no such entry); a center **form** built
+from the model definition's own schema — every model family declares the
+same base schema plus family-specific fields, so the form is identical in
+structure across families and only its options and defaults change; and a
+right **Estimate rail** with the live VRAM report. The launch bar sits above
+the form and stays pinned to the bottom edge of the viewport as you scroll,
+carrying a compact echo of wall time and peak VRAM plus the **Start Training
 Session** button — reachable without scrolling back up — and, if any section
 has an invalid field, a count with a jump-to-first-invalid shortcut.
 
@@ -67,11 +72,13 @@ as a `.template.zip` without leaving the form. See
 ### Model Selection
 
 Choose the **family** and, once a family is picked, the **definition** — the
-concrete checkpoint from that family's YAML (definitions unsupported by the
-family's current capabilities are hidden from the list). A family is an
-architecture with its own loader, driver, trainer, sampler and saver; a
-definition is one shipped checkpoint of it. The app ships **29 families, 54
-definitions** across image, video and audio. Also on this card: the
+concrete checkpoint from that family's YAML. A family is an architecture with
+its own loader, driver, trainer, sampler and saver; a definition is one
+shipped checkpoint of it. The app ships **29 families, 54 definitions**
+across image, video and audio, but the dropdown only enumerates the
+definitions that have cleared their availability gate — today that's **28
+families, 51 definitions**; the three gated ones (currently the MiniMax H3
+definitions) stay hidden until they clear. Also on this card: the
 **quantization backend** and **quantization** level for the base model, and
 the same pair for the text encoder — quantizing either trades some quality
 for VRAM, and the base-model quantization can also mean training

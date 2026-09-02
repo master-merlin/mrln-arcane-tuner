@@ -34,12 +34,14 @@ ever trained.
 Three panes. A **Job Queue** on the left lists every job in three groups —
 Running, Pending, Archive (completed/failed/stopped) — with per-row controls
 that don't require opening the job. The **center pane** is the selected
-job's detail: header, live phase, KPI row, then collapsible cards for
-Training Curves, Sample Previews, Checkpoints, Run Config and Log. A
-**System Monitor** on the right shows live GPU/VRAM readouts, shared with
-the rest of the app.
+job's detail: header, live phase and KPI row for a running job (the KPI row
+only renders once live metrics exist — a completed job's header instead
+shows its terminal state and elapsed/started time with no KPI row), then
+collapsible cards for Training Curves, Sample Previews, Checkpoints, Run
+Config and Log. A **System Monitor** on the right shows live GPU/VRAM
+readouts, shared with the rest of the app.
 
-![Jobs screen — queue, running job detail with KPI row and Training Curves](images/jobs-screen-overview.png)
+![Jobs screen — queue and a completed job's detail (no KPI row for a finished run) with Training Curves and Sample Previews](images/jobs-screen-overview.png)
 
 ## The queue, left to right
 
@@ -185,8 +187,8 @@ Opened from the Archive header's chart icon. A cross-job view, global by
 default and narrowable to one project, with three tabs:
 
 - **Activity** — jobs per week as a stacked chart (completed / failed /
-  stopped), plus KPI tiles for total jobs, success rate, total steps and LoRAs
-  produced.
+  stopped), plus five KPI tiles: total jobs, success rate, total steps, GPU
+  time and LoRAs produced.
 - **Quality & Families** — a loss-distribution histogram, average
   loss/step-time/runtime, and a per-family table (jobs, success rate, average
   step time, best loss) that expands into a per-run table on click. A run row
@@ -239,5 +241,7 @@ targeting record are written by the trainer as the run goes and read back by
 `job_manager.py` and the jobs routes; the queue itself (running/pending
 ordering, auto-resume/auto-queue) is in-memory on the backend and rebuilt
 from the database on restart. A finished LoRA's `.safetensors` lands under
-`outputs/<lora_name>_<model_part>`, downloadable from the Checkpoints card
-on this screen.
+`outputs/<lora_name>_<model_part>` — `model_part` is the trained
+**definition id**, not the family (e.g. `krea2-raw`), so one folder exists
+per definition even when several definitions share a family — downloadable
+from the Checkpoints card on this screen.

@@ -359,7 +359,7 @@ For the full component and API route inventory, see [`docs/ARCHITECTURE.md`](doc
 
 ### 🎯 Dataset Management — The Heart of the Tool
 
-The dataset pipeline is designed to get your images from raw collection to training-ready with maximum control.
+The dataset pipeline is designed to get your images from raw collection to training-ready with maximum control. See [`docs/datasets-guide.md`](docs/datasets-guide.md) for the full storyline: Library, Browse, Details, Analyze, and the mass caption/mask/edit modals.
 
 #### Multi-Dataset Scanning
 Automatic directory scanning with image–caption pairing. Supports `.png`, `.jpg`, `.webp` images with paired `.txt` caption files. Incremental and full rescan modes.
@@ -368,7 +368,7 @@ Automatic directory scanning with image–caption pairing. Supports `.png`, `.jp
 The library card and workspace details footer both need one representative image, and by default that's just whatever the scanner enumerates first. A pin control (left of *Adjust image* in a grid tile's top-right cluster, left of *Adjust* in the details footer) lets you choose it instead — it's a toggle, so unpinning re-elects the automatic choice immediately. The pin is persisted (`datasets.preview_pinned`, `PUT /datasets/{name}/preview`) and **survives a rescan** — every scan used to overwrite the cover with the next enumerated file, which is what made pinning worth having in the first place. If the pinned file is later deleted, the next scan clears the pin and falls back rather than showing a hole. Library and workspace-grid covers are served from a sized thumbnail rendition, not the full training source.
 
 #### Image Manipulation
-A non-destructive adjustment pipeline, ten operations deep, that renders into
+A non-destructive adjustment pipeline, twelve operations deep, that renders into
 a saved overlay rather than touching the source file until you explicitly
 Save, Bake in, or apply it to other images ("Mass edit"):
 
@@ -401,7 +401,8 @@ Resolution-aware aspect-ratio bucketing with visual crop preview. Images are aut
 - **Multi**: Each image appears in every qualifying bucket for maximum latent diversity
 
 #### Dataset Analysis
-- **Harmonization analysis** — evaluate color and exposure consistency across the dataset
+- **Harmonize files** — canonical JPG conversion + `<slug>_00001` renaming, with
+  captions/masks/controls following along; pixels are untouched
 - **Duplicate detection** — perceptual hash similarity scoring to find near-duplicate images
 - **Per-image enable/disable** — toggle individual images in or out of training without deleting them
 
@@ -607,7 +608,6 @@ a finished LoRA, and the cross-run Training Statistics modal.
 - **Elapsed & started-at** — the job header reads `<elapsed> elapsed · started <time>`. Elapsed comes from the trainer, not wall-clock-minus-start: it's real run time (paused time excluded, and the offset from earlier sessions of a resumed run carried forward), so a pause doesn't inflate it and a backend restart doesn't lose it
 - **Sample images** — periodic generation previews at configurable intervals
 - **Structured logs** — real-time WebSocket streaming of JSON-formatted training events
-- **Live terminal** — xterm.js terminal for raw log output
 
 #### Job History
 SQLite-backed persistent tracking of all training runs:
@@ -661,6 +661,16 @@ card.
 ---
 
 ## Documentation
+
+Per-domain guides, each walking one screen end to end:
+
+- [**datasets-guide.md**](docs/datasets-guide.md) — Library, Browse, Details, Analyze, mass caption/mask/edit
+- [**projects-guide.md**](docs/projects-guide.md) — grouping datasets/templates/jobs, Quick Train, export/import
+- [**templates-guide.md**](docs/templates-guide.md) — the four template domains and the `/templates` screen
+- [**training-guide.md**](docs/training-guide.md) — model selection, the dynamic form, Adaptive Layer Targeting
+- [**jobs-guide.md**](docs/jobs-guide.md) — the queue, running-job detail, Training Statistics, job history
+- [**tools-guide.md**](docs/tools-guide.md) — Inspect and Resize
+- [**server-guide.md**](docs/server-guide.md) — health, restart/update, Connection/Models, Server Logs
 
 Detailed architecture documentation, including full API route inventory and component listing:
 

@@ -45,9 +45,10 @@ Every template belongs to exactly one domain, and belongs either to no project
   lets one project "know how to train two different models" for one client.
 - **Adaptive** — the Adaptive Layer Targeting knob dict (warm-up share, energy
   kept, floor, heat smoothing, measurement interval, freeze-vs-rebuild action).
-  Every project starts with the same three read-only factory presets
-  (**Conservative**, **Balanced**, **Aggressive**) that apply to any model —
-  editing one branches it into your own copy first.
+  There are three read-only factory presets (**Conservative**, **Balanced**,
+  **Aggressive**), seeded once as Global rows that apply to any model — a
+  project has none of its own until you branch one; editing a preset branches
+  it into your own copy first.
 
 Every template also carries a `readonly` flag (a factory default you cannot
 delete, only branch or copy from) and an `is_default` flag (the one applied
@@ -88,9 +89,11 @@ search across name, definition and model. Each row's actions:
 - **Delete** — disabled on read-only templates; everything else asks you to
   confirm first ("This cannot be undone").
 
-The header's **Export all** downloads every template that currently matches
-your filters as one bundle; **Import** opens the same import wizard the
-Datasets and Projects screens use.
+The header's **Refresh** button re-pulls the list (picks up templates or
+projects created elsewhere since the screen loaded); **Export all** — its
+label carries the live count, e.g. "Export all (42)" — downloads every
+template that currently matches your filters as one bundle; **Import** opens
+the same import wizard the Datasets and Projects screens use.
 
 ## Creating and editing templates where you use them
 

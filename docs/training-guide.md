@@ -111,7 +111,8 @@ generated from the schema in the same grouping the form shows:
   keep, resume-from-checkpoint with cache re-use toggles, target
   **resolutions** for bucketing, and **bucketing mode** (`kohya`: one bucket
   per image; `multi`: an image appears in every qualifying bucket for more
-  latent diversity). Adaptive Layer Targeting's own card (below) is anchored
+  latent diversity), and **timestep sampling strategy** — including `radc`
+  (see below). Adaptive Layer Targeting's own card (below) is anchored
   inside this group.
 - **LoRA Parameters** — **network rank** (adapter capacity), **network
   alpha** (scaling factor), whether to train the text encoder alongside the
@@ -152,16 +153,26 @@ a granularity finer than the model-level quantization above.
 ### Adaptive Layer Targeting
 
 A full-width card inside Training Dynamics, enabled by its own toggle.
-Periodically measures which LoRA modules are still moving (an EMA-smoothed,
-per-projection-group norm of each module's effective weight change) and
-either **freezes** the cold ones in place or **rebuilds** the adapter —
-checkpointing and relaunching the same job with the optimizer rebuilt over
-only the parameters still active, which reclaims optimizer-state VRAM you can
-spend on batch size or resolution instead. This is a regularizer, not a
-speedup on its own: the forward pass still runs every module (a frozen
-module's learned delta stays part of the model), so freeze mode's savings are
-about training capacity, not wall time — rebuild mode is the one that
-actually frees VRAM.
+Periodically measures which LoRA modules are still moving (an EMA-smoothed
+norm of each module's effective weight change) and either **freezes** the
+cold ones in place or **rebuilds** the adapter — checkpointing and
+relaunching the same job with the optimizer rebuilt over only the parameters
+still active, which reclaims optimizer-state VRAM you can spend on batch
+size or resolution instead. This is a regularizer, not a speedup on its own:
+the forward pass still runs every module (a frozen module's learned delta
+stays part of the model), so freeze mode's savings are about training
+capacity, not wall time — rebuild mode is the one that actually frees VRAM.
+
+The ranking runs **per projection group**, not globally
+(`backend/app/engine/core/optimization/adaptive_heat.py:117`, `select_active`):
+every block's `to_v` is ranked only against other `to_v` projections, never
+against `ff.gate` or another shape entirely. A raw weight-change norm is not
+comparable across matrix shapes — under grouped-query attention a `to_v`
+delta has an order of magnitude fewer elements than a feed-forward delta, so
+one global ranking would retire an entire pathway (e.g. all attention
+value/output projections) on shape alone rather than on whether it actually
+stopped learning. Each group also keeps its own share of the floor below, so
+no pathway can be frozen out entirely.
 
 Pick a **preset** (the same Conservative / Balanced / Aggressive factory
 presets, or any of your own) to seed **Warm-up** (share of training left
@@ -177,6 +188,46 @@ copy automatically. Presets only seed values at selection time — the job
 stores the knobs themselves, so editing a preset afterward never changes a
 run that already queued. See the Templates guide's "Adaptive" domain for how
 these presets live in the template system.
+
+### Timestep sampling — Resolution-Aware Dynamic Curriculum (RADC)
+
+**What.** `timestep_sampling` (in Training Dynamics) picks which noise levels
+the run trains on and how their probability is shaped: `logit_normal`
+(default), `uniform`, `sigmoid`, `cosmap`, `mode`, `flux_shift`, `model_shift`,
+or `radc`. Every mode but `radc` samples from a **fixed** distribution for the
+whole run. `radc` — Resolution-Aware Dynamic Curriculum — is the one mode that
+**moves**: it shifts a Gaussian sampling window across the noise range as the
+run progresses (`backend/app/engine/strategies/timestep_sampling.py:93-129`).
+
+**Why.** Early in training, the model has nothing yet — there is no detail to
+refine, only structure and composition to learn, which lives in the
+high-noise steps. Late in training structure is settled and what is left to
+improve is texture and fine detail, which lives in the low-noise steps. A
+fixed distribution spends the same attention on both phases throughout;
+RADC spends it where the run actually needs it at that point in training.
+
+**How.** Four knobs, all in Training Dynamics once `timestep_sampling` is set
+to `radc` (`backend/app/engine/models/base.py:514-557`):
+- **Noise focus at training start** (`radc_start`, default `0.8`) — where the
+  sampling window centers at step 0 (`1.0` = pure high-noise/structure,
+  `0.0` = pure low-noise/detail).
+- **Noise focus at training end** (`radc_end`, default `0.2`) — where it
+  centers by the final step; the run interpolates linearly between the two.
+- **Curve width** (`radc_width`, default `0.5`) — how broad the sampling
+  window is around that center (`0.1` = tightly focused, `1.0` = broad).
+- **Resolution cross-influence** (`radc_res_influence`, default `0.15`) — for
+  multi-resolution datasets, nudges the center further toward detail for
+  high-resolution images late in the run and keeps low-resolution images on
+  structure longer, since a small image has less detail to refine in the
+  first place (`0` disables the effect).
+
+**What to expect.** The sampling center moves smoothly from `radc_start`
+toward `radc_end` over the whole run — there is no discrete phase switch to
+watch for, no log line that says "curriculum stage 2 begins now". If a
+multi-resolution dataset is attached, higher-resolution images will
+increasingly draw their training timesteps from the low-noise end as the run
+progresses; this is a training-time internal, not something the sample
+previews will visibly show you step to step.
 
 ## Read the estimate before you start
 

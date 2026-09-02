@@ -145,12 +145,23 @@ class TestRegistryOperations:
 class TestModelPathResolver:
     """Tests for the path resolution logic."""
 
-    def test_local_absolute_path_returned_as_is(self):
-        """Absolute local paths are returned unchanged."""
+    def test_local_absolute_path_returned_as_is(self, tmp_path):
+        """Absolute local paths are returned unchanged.
+
+        Built from ``tmp_path`` so the path is absolute on THIS platform: a
+        literal ``D:\\...`` is not absolute on Linux (``os.path.isabs`` is
+        False there), so the resolver anchored it under the repo root and CI
+        read ``/home/runner/.../D:\\Models\\...`` (gate.yml run 33687356291).
+        The claim is "an absolute path is returned as-is", not "a Windows
+        drive path". The file need not exist: the resolver returns it anyway
+        so the caller can fail with a clear message.
+        """
         from app.engine.utils.model_utils import ModelPathResolver
 
-        result = ModelPathResolver.resolve("D:\\Models\\sdxl\\model.safetensors")
-        assert result == "D:\\Models\\sdxl\\model.safetensors"
+        path = str(tmp_path / "Models" / "sdxl" / "model.safetensors")
+        assert os.path.isabs(path)
+        result = ModelPathResolver.resolve(path)
+        assert result == path
 
     def test_hf_uri_detected(self):
         """huggingface: URI prefix triggers HF download logic."""
@@ -172,17 +183,23 @@ class TestModelPathResolver:
             mock_hf.assert_called_once_with("huggingface:org/repo:model.safetensors", local_files_only=False)
             assert result == "/tmp/cached/file.safetensors"
 
-    def test_find_component_explicit_definition(self):
-        """find_component prefers explicit definition over root discovery."""
+    def test_find_component_explicit_definition(self, tmp_path):
+        """find_component prefers explicit definition over root discovery.
+
+        The explicit path is platform-native absolute (from ``tmp_path``), for
+        the same reason as ``test_local_absolute_path_returned_as_is``.
+        """
         from app.engine.utils.model_utils import ModelPathResolver
 
+        explicit = str(tmp_path / "explicit" / "path")
+        assert os.path.isabs(explicit)
         mock_def = MagicMock()
         mock_comp = MagicMock()
-        mock_comp.path = "D:\\explicit\\path"
+        mock_comp.path = explicit
         mock_def.components.get.return_value = mock_comp
 
         result = ModelPathResolver.find_component(mock_def, "vae", "/root/path", ["ae.safetensors"])
-        assert result == "D:\\explicit\\path"
+        assert result == explicit
 
     def test_find_component_discovers_in_root(self, tmp_path):
         """find_component discovers files in root path when not explicitly defined."""

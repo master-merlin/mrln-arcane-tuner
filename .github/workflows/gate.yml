@@ -81,12 +81,20 @@ jobs:
       # is the CUDA build, and its native library cannot load beside a CPU
       # torch ("Could not load this library: _torchaudio.abi3.so" — CI's
       # first-ever pytest run, 138 collection errors, 2026-09-03).
+      #
+      # triton is part of the stack install-deps.sh refuses to touch, so it
+      # must be installed HERE too: requirements.txt pins it for linux, the
+      # boot-contract test asserts every applicable pin is installed, sam3's
+      # GPU NMS path imports it, and the boogu vendor probes it — five tests
+      # went red on run 7 (2026-09-03) with no triton on the runner. The PyPI
+      # wheel imports fine without a GPU; only its kernels need one.
       - name: Install torch (CPU wheels)
         run: |
           python -m pip install --index-url https://download.pytorch.org/whl/cpu \
             torch==2.12.1 torchvision==0.27.1
           python -m pip install --no-deps --index-url https://download.pytorch.org/whl/cpu \
             torchaudio==2.11.0
+          python -m pip install triton==3.7.1
 
       # Reuse the canonical installer rather than inventing a third install
       # path. It is already shared by the Docker build and the runtime

@@ -27,9 +27,10 @@ user who genuinely runs a provider next to their container can opt back in.
 What this does and does not protect against
 -------------------------------------------
 It resolves the hostname and rejects the request if **any** returned address is
-private, loopback, link-local, reserved, multicast or unspecified. Checking
-every address matters: a name that resolves to one public and one internal
-address would otherwise pass on the public one.
+not global (loopback, link-local, private, reserved, multicast, unspecified,
+CGNAT shared address space -- the decision is ``not is_global``, the names are
+for the log line). Checking every address matters: a name that resolves to one
+public and one internal address would otherwise pass on the public one.
 
 It does **not** close DNS rebinding. Between this check and the socket
 connecting, a hostile name server can return a different address, and the only
@@ -86,7 +87,21 @@ def hosted_mode() -> bool:
 
 
 def _describe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
-    """Return why *ip* is disallowed, or None if it is fine to reach."""
+    """Return why *ip* is disallowed, or None if it is fine to reach.
+
+    The deciding predicate is ``not ip.is_global`` (the last check): an address
+    is reachable only if the stdlib calls it global. The named checks in front
+    of it exist for the sentence they produce, not for the decision -- a list of
+    "bad" classes is the wrong shape for a guard, because a class nobody listed
+    passes. CGNAT ``100.64.0.0/10`` (RFC 6598, where Alibaba and Tencent serve
+    instance metadata at ``100.100.100.200``) is exactly such a class: on Python
+    3.12 it answers False to every predicate below AND to ``is_global``
+    (release audit B6, LANE-69).
+
+    ``is_multicast`` is the one named check that is also load-bearing:
+    ``224.0.0.1`` answers ``is_global=True`` on the same interpreter, so the
+    catch-all alone would let it through.
+    """
     if ip.is_loopback:
         return "loopback"
     # Checked before is_private: 169.254.169.254 is link-local AND private, and
@@ -101,6 +116,8 @@ def _describe(ip: ipaddress.IPv4Address | ipaddress.IPv6Address) -> str | None:
         return "multicast"
     if ip.is_unspecified:
         return "unspecified"
+    if not ip.is_global:
+        return "non-global (e.g. CGNAT shared address space)"
     return None
 
 

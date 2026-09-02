@@ -517,11 +517,15 @@ const THUMB_FALLBACK_DATA_URI =
                                 </select>
                             </div>
                             <div class="an-cropall">
-                                <select class="input mono an-sort-select" [value]="cropAllOrigin()"
+                                <!-- LANE-66: the anchor is bound per OPTION via [selected], never as [value] on the
+                                     <select> — the select's [value] runs before the @for has rendered any option,
+                                     so the browser silently kept the first option (top-left) while the signal
+                                     held 'center'. Same pattern as jobs-screen's cadence select. -->
+                                <select class="input mono an-sort-select" data-testid="crop-all-anchor"
                                         (change)="cropAllOrigin.set($any($event.target).value)"
                                         [disabled]="cropAllRunning()"
                                         title="Crop anchor for batch crop">
-                                    @for (o of ORIGINS; track o) { <option [value]="o">{{ o }}</option> }
+                                    @for (o of ORIGINS; track o) { <option [value]="o" [selected]="o === cropAllOrigin()">{{ o }}</option> }
                                 </select>
                                 <button class="btn sm" type="button"
                                         (click)="startCropAll()"

@@ -16,7 +16,7 @@ from app.core.captioning.caption_refine_batch import run_caption_refine_batch
 from app.core.captioning.caption_service import CaptionService
 from app.core.llm import provider_settings
 from app.core.llm.ollama_client import OllamaClient
-from app.core.llm.refine_guard import refine_readiness
+from app.core.llm.refine_guard import caption_provider_readiness, refine_readiness
 from app.core.logger import get_logger
 from app.core.tasks.task_manager import task_manager
 
@@ -237,6 +237,23 @@ async def batch_caption_api(request: BatchCaptionRequest):
         provider_settings.validate_caption_model(request.model_id, request.params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # LANE-65 (the LANE-57 class on the Generate tab): an api-* provider that
+    # is configured but cannot serve — dead endpoint, model it does not list —
+    # is refused HERE with the sentence the CTA disables off (``refine_guard``,
+    # RULE-21), and nothing is created or enqueued. Local captioning never
+    # reaches this branch: it has no endpoint to probe.
+    provider = provider_settings.provider_from_model_id(request.model_id)
+    if provider is not None:
+        provider_model = str(request.params.get("model") or "").strip() or None
+        try:
+            ready = await caption_provider_readiness(provider, provider_model)
+        except ValueError as e:  # OutboundUrlRejected: the URL itself is refused
+            raise HTTPException(status_code=400, detail=str(e)) from e
+        if ready.reason:
+            logger.warning("caption_batch_refused", provider=provider,
+                           model=provider_model, reason=ready.reason)
+            raise HTTPException(status_code=409, detail=ready.reason)
 
     if (
         request.include_control

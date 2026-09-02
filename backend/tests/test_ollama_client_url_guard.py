@@ -99,3 +99,40 @@ def test_hosted_opt_in_allows_a_private_provider(hosted, monkeypatch):
     """The documented escape hatch stays the ONLY way back in."""
     monkeypatch.setenv(ALLOW_PRIVATE_ENV, "1")
     assert OllamaClient(base_url=LOOPBACK_URL)._base == LOOPBACK_URL
+
+
+# --- LANE-69: the guard refuses everything that is not global (release audit B6) ---
+#
+# Measured on the venv's Python 3.12.10 (``ipaddress``): every address in the
+# CGNAT range 100.64.0.0/10 (RFC 6598 shared address space, where Alibaba and
+# Tencent serve instance metadata at 100.100.100.200) answers False to
+# is_loopback, is_link_local, is_private, is_reserved, is_multicast AND
+# is_unspecified -- and False to is_global. A guard built as a list of named
+# "bad" classes lets it through; the closing predicate must be ``not is_global``.
+# Multicast is the reason the named list cannot simply be REPLACED by
+# ``is_global``: 224.0.0.1 answers is_global=True on the same interpreter.
+@pytest.mark.parametrize(
+    "addr",
+    [
+        "100.64.0.1",  # first address of the /10
+        "100.100.100.200",  # Alibaba / Tencent instance metadata
+        "100.127.255.254",  # last address of the /10
+        "224.0.0.1",  # multicast: is_global=True, only the named check catches it
+    ],
+)
+def test_hosted_rejects_non_global_addresses(hosted, addr):
+    with pytest.raises(OutboundUrlRejected) as exc:
+        OllamaClient(base_url=f"http://{addr}")
+    assert addr in str(exc.value)
+
+
+@pytest.mark.parametrize(
+    "addr",
+    [
+        "93.184.216.34",  # a real public address (example.com) still passes hosted mode
+        "100.128.0.1",  # first address AFTER the /10: the boundary is the /10, not 100/8
+    ],
+)
+def test_hosted_still_reaches_a_global_address(hosted, addr):
+    """Positive control: containment must not become a lockout."""
+    assert OllamaClient(base_url=f"http://{addr}/")._base == f"http://{addr}"

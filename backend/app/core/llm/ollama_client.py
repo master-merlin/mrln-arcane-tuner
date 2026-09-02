@@ -57,6 +57,12 @@ class OllamaClient:
         self._base = validate_base_url(to_server_root(base_url))
         self._injected = client
 
+    @property
+    def base_url(self) -> str:
+        """The validated ``SERVER_ROOT`` this client talks to — the value a
+        user-facing refusal names (``core/llm/refine_guard.py``)."""
+        return self._base
+
     def _acquire(self) -> tuple[httpx.AsyncClient, bool]:
         if self._injected is not None:
             return self._injected, False

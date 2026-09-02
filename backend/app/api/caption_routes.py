@@ -15,6 +15,8 @@ from app.core.captioning.caption_batch import run_caption_batch
 from app.core.captioning.caption_refine_batch import run_caption_refine_batch
 from app.core.captioning.caption_service import CaptionService
 from app.core.llm import provider_settings
+from app.core.llm.ollama_client import OllamaClient
+from app.core.llm.refine_guard import refine_readiness
 from app.core.logger import get_logger
 from app.core.tasks.task_manager import task_manager
 
@@ -308,6 +310,19 @@ async def refine_batch_api(request: RefineBatchRequest):
     settings = refine_settings.raw_settings()
     base_url = refine_settings.base_url_of(settings)
     model = (request.model or "").strip() or refine_settings.model_of(settings)
+    # LANE-57: refuse at the boundary what the worker could only fail on. One
+    # probe of the endpoint the batch will use, judged by the same predicate
+    # that feeds the UI's Start control (``refine_guard`` — RULE-21); nothing
+    # is created or enqueued on refusal. 409: the request is well-formed, the
+    # server's configured state is what cannot serve it.
+    try:
+        ready = await refine_readiness(OllamaClient(base_url=base_url), model)
+    except ValueError as e:  # OutboundUrlRejected: the URL itself is refused
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if ready.reason:
+        logger.warning("caption_refine_refused", base_url=base_url, model=model,
+                       reason=ready.reason)
+        raise HTTPException(status_code=409, detail=ready.reason)
     task = task_manager.create(
         type="caption_refine_batch",
         title=f"Refine captions ({request.definition_id})",

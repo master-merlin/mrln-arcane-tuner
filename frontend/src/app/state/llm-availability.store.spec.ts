@@ -27,6 +27,20 @@ describe('LlmAvailabilityStore', () => {
         http.expectOne('/api/llm-refine/models').error(new ProgressEvent('fail'));
         expect(store.available()).toBe(false);
     });
+    // LANE-57 / RULE-21: the reason a refine cannot start is the backend's
+    // sentence (the same one POST /captions/refine-batch refuses with), carried
+    // verbatim — never re-derived here.
+    it('carries the backend\'s unavailable_reason verbatim, and clears it when reachable', () => {
+        const { store, http } = setup();
+        const reason = 'LLM endpoint http://127.0.0.1:1 is unreachable - start it, or configure and test it on the Server screen (LLM Refine Endpoint).';
+        store.refresh();
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: [], available: false, unavailable_reason: reason });
+        expect(store.available()).toBe(false);
+        expect(store.reason()).toBe(reason);
+        store.refresh();
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['x'], available: true, unavailable_reason: null });
+        expect(store.reason()).toBeNull();
+    });
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });
 

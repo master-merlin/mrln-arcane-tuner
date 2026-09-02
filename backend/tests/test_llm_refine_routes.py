@@ -1,6 +1,8 @@
 # backend/tests/test_llm_refine_routes.py
 from unittest.mock import AsyncMock, patch
 
+import httpx
+
 from app.core.url_guard import ALLOW_PRIVATE_ENV
 
 _MOD = "app.api.llm_refine_routes"
@@ -22,11 +24,15 @@ def test_list_models(mock_make, client):
 @patch(f"{_MOD}._make_client")
 def test_list_models_when_unavailable(mock_make, client):
     fake = mock_make.return_value
-    fake.available = AsyncMock(return_value=False)
-    fake.list_models = AsyncMock(return_value=[])
+    # Unreachable == the listing raises (``OllamaClient.available`` is exactly
+    # ``list_models`` without the exception) — the guard probes once.
+    fake.list_models = AsyncMock(side_effect=httpx.ConnectError("refused"))
+    fake.base_url = "http://127.0.0.1:1"
     resp = client.get("/api/llm-refine/models")
     assert resp.status_code == 200
-    assert resp.json()["available"] is False
+    body = resp.json()
+    assert body["available"] is False
+    assert body["unavailable_reason"] and "http://127.0.0.1:1" in body["unavailable_reason"]
 
 
 @patch(f"{_MOD}._make_client")

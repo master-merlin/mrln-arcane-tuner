@@ -9,8 +9,8 @@ from pydantic import BaseModel
 from app.core.llm import refine_settings
 from app.core.llm.caption_refine import refine_caption
 from app.core.llm.ollama_client import OllamaClient
+from app.core.llm.refine_guard import refine_readiness
 from app.core.logger import get_logger
-from app.core.settings_manager import SettingsManager
 from app.core.url_guard import OutboundUrlRejected
 
 router = APIRouter(prefix="/api/llm-refine", tags=["llm-refine"])
@@ -22,7 +22,10 @@ CURATED_MODELS = refine_settings.CURATED_MODELS
 
 
 def _settings() -> dict:
-    return SettingsManager.get_instance().get_module_settings("llm_refine") or {}
+    # Through the accessor the refine-batch boundary reads (RULE-21): a second
+    # reader of the store here is how this status probed one endpoint while
+    # the refusal in ``caption_routes`` judged another (LANE-57).
+    return refine_settings.raw_settings()
 
 
 def _make_client() -> OllamaClient:
@@ -61,6 +64,10 @@ class ModelsResponse(BaseModel):
     curated: list[str]
     installed: list[str]
     available: bool
+    #: APPENDED (LANE-57): the sentence ``POST /captions/refine-batch`` refuses
+    #: with when the endpoint is down — the UI disables Start with THIS text,
+    #: never a re-derived one (RULE-21). ``None`` when a refine may start.
+    unavailable_reason: str | None = None
 
 
 class PullRequest(BaseModel):
@@ -75,10 +82,10 @@ class RefinePreviewRequest(BaseModel):
 
 @router.get("/models", response_model=ModelsResponse)
 async def list_models() -> ModelsResponse:
-    client = _client_or_400()
-    available = await client.available()
-    installed = await client.list_models() if available else []
-    return ModelsResponse(curated=CURATED_MODELS, installed=installed, available=available)
+    # One probe through the same predicate the refine boundary refuses on.
+    ready = await refine_readiness(_client_or_400())
+    return ModelsResponse(curated=CURATED_MODELS, installed=ready.installed,
+                          available=ready.available, unavailable_reason=ready.reason)
 
 
 @router.post("/pull")

@@ -1,7 +1,7 @@
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { provideHttpClient, withXhr } from '@angular/common/http';
-import { of } from 'rxjs';
+import { of, throwError } from 'rxjs';
 import { MassCaptionModalComponent } from './mass-caption.component';
 import { OverlayStore } from '../../state/overlay.store';
 import { MediaItemStore } from '../../state/media-item.store';
@@ -286,6 +286,23 @@ describe('MassCaptionComponent — Refine tab', () => {
         vi.spyOn(window, 'confirm').mockReturnValue(true);
         comp.startRefine();
         expect(api.refineCaptions).toHaveBeenCalledWith('ds1', ['a.png'], 'flux1-schnell', 'standardize', 'qwen2.5:7b-instruct', 'original', 'auto', false);
+    });
+
+    // LANE-57: the boundary refuses a refine it cannot serve with a 409 that
+    // names what is missing; the toast shows that sentence, not only ours.
+    it('startRefine surfaces the backend refusal detail in the error toast', () => {
+        const detail = "Model 'gemma3:12b' is not installed on http://127.0.0.1:11434 - pull it on the Server screen or pick an installed model.";
+        api.refineCaptions.mockReturnValue(throwError(() => ({ status: 409, error: { detail } })));
+        const toast = TestBed.inject(ToastService) as any;
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.pairs.set([{ media_file: 'a.png', caption_content: 'cap a' }]);
+        comp.refineSettings.set({ definitionId: 'flux1-schnell', preset: 'standardize', model: 'gemma3:12b', style: 'auto' });
+        comp.refineTarget.set('original');
+        comp.refineStrategy.set('all');
+        comp.startRefine();
+        expect(toast.error).toHaveBeenCalledWith(`Could not start refinement. ${detail}`);
+        expect(comp.running()).toBe(false);
     });
 
     it('startRefine forwards the auto-accept flag', () => {

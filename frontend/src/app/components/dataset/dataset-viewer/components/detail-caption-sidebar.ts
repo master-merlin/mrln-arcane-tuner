@@ -252,7 +252,7 @@ export function apiBlockedReasonFor(modelId: string): string {
                 <div class="shrink-0 px-3 pb-3 pt-2 space-y-2 border-t border-surface-mid bg-surface-low/30">
                     <button (click)="refineVariant()" data-testid="refine-variant"
                             [disabled]="!llm.available()"
-                            [title]="llm.available() ? 'Refine this caption for ' + def : 'LLM endpoint unreachable — configure it in Server settings'"
+                            [title]="llm.available() ? 'Refine this caption for ' + def : (llm.reason() ?? 'LLM endpoint unreachable — configure it in Server settings')"
                             class="w-full py-2 rounded-theme-lg font-bold text-xs bg-brand hover:bg-brand/90 text-white transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed">
                         Refine for {{ def }}
                     </button>
@@ -661,7 +661,8 @@ export class DetailCaptionSidebarComponent {
         if (!def) return;
         this.datasetService.refineCaptions(this.datasetName(), [this.currentPair().media_file], def, 'standardize').subscribe({
             next: () => this.toast.success('Refine queued — suggestion will appear when ready.'),
-            error: () => this.toast.error('Failed to queue refine.'),
+            // A 409 names exactly what is missing (endpoint or model) — LANE-57.
+            error: (e) => this.toast.error('Failed to queue refine: ' + (e?.error?.detail || e?.message || 'unknown error')),
         });
     }
 

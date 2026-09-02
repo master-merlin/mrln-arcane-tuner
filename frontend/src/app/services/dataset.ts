@@ -34,6 +34,16 @@ export interface ThumbnailMigrationStarted {
   bytes: number;
 }
 
+/** `GET /api/llm-refine/models` — the ONE status every refine Start control
+ *  reads. `unavailable_reason` is the sentence `POST /captions/refine-batch`
+ *  refuses with (LANE-57, RULE-21): show it, never re-derive it. */
+export interface RefineModelsStatus {
+  curated: string[];
+  installed: string[];
+  available: boolean;
+  unavailable_reason?: string | null;
+}
+
 export interface Dataset {
   id: string;
   name: string;
@@ -968,8 +978,8 @@ export class DatasetService {
     return this.http.post<{ task_id: string }>(`${this.rtc.apiUrl}/captions/refine-batch`, body);
   }
 
-  listRefineModels(): Observable<{ curated: string[]; installed: string[]; available: boolean }> {
-    return this.http.get<{ curated: string[]; installed: string[]; available: boolean }>(`${this.rtc.apiUrl}/llm-refine/models`);
+  listRefineModels(): Observable<RefineModelsStatus> {
+    return this.http.get<RefineModelsStatus>(`${this.rtc.apiUrl}/llm-refine/models`);
   }
 
   pullRefineModel(tag: string): Observable<{ ok: boolean }> {

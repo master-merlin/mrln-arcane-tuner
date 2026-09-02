@@ -35,13 +35,17 @@ to.
 
 ## The shape of the screen
 
-Three columns: a left **table of contents** that jumps to each section and
-tracks which one you're scrolled to; a center **form** built from the model
-definition's own schema — every model family declares the same base schema
-plus family-specific fields, so the form is identical in structure across
-families and only its options and defaults change; and a right **Estimate
-rail** with the live VRAM report. A sticky bar at the bottom of the form
-carries a compact echo of wall time and peak VRAM plus the **Start Training
+Three columns: a left **table of contents** that jumps to each schema-driven
+group and tracks which one you're scrolled to (Template Selection is a fixed
+card above the groups, not a TOC entry itself; a group like Expert Features
+or Video Settings appears in the TOC only when the current model definition
+declares fields for it); a center **form** built
+from the model definition's own schema — every model family declares the
+same base schema plus family-specific fields, so the form is identical in
+structure across families and only its options and defaults change; and a
+right **Estimate rail** with the live VRAM report. The launch bar sits above
+the form and stays pinned to the bottom edge of the viewport as you scroll,
+carrying a compact echo of wall time and peak VRAM plus the **Start Training
 Session** button — reachable without scrolling back up — and, if any section
 has an invalid field, a count with a jump-to-first-invalid shortcut.
 
@@ -67,11 +71,13 @@ as a `.template.zip` without leaving the form. See
 ### Model Selection
 
 Choose the **family** and, once a family is picked, the **definition** — the
-concrete checkpoint from that family's YAML (definitions unsupported by the
-family's current capabilities are hidden from the list). A family is an
-architecture with its own loader, driver, trainer, sampler and saver; a
-definition is one shipped checkpoint of it. The app ships **29 families, 54
-definitions** across image, video and audio. Also on this card: the
+concrete checkpoint from that family's YAML. A family is an architecture with
+its own loader, driver, trainer, sampler and saver; a definition is one
+shipped checkpoint of it. The app ships **29 families, 54 definitions**
+across image, video and audio, but the dropdown only enumerates the
+definitions that have cleared their availability gate — today that's **28
+families, 51 definitions**; the three gated ones (currently the MiniMax H3
+definitions) stay hidden until they clear. Also on this card: the
 **quantization backend** and **quantization** level for the base model, and
 the same pair for the text encoder — quantizing either trades some quality
 for VRAM, and the base-model quantization can also mean training
@@ -81,25 +87,22 @@ characteristics than a diffusion model) and, when the model's weights come
 from a local path instead of the Hub, a **LOCAL**/**SAFETENSORS**/**OFFLINE**
 chip.
 
-### Concepts & Triggerwords
-
-Attach the datasets this run trains on. Each row is one dataset (scoped to
-the current project when you're inside one) with its own **caption prefix**,
-**caption dropout rate** (the chance a caption is dropped entirely, which
-enables classifier-free guidance at inference), a **repeat count**, caption
-toggles (use captions at all, and whether to prefer the model-aware caption
-variant), and masking toggles (include masked variants, optionally
-regenerating them with a chosen opacity and a minimum probability of keeping
-the original). Multiple datasets can be attached to the same run, each
-weighted independently. This is the same picker documented from the dataset
-side in the Datasets guide's "Move on" section.
-
 ## Tune what this run needs
 
 Below Model Selection and the VRAM Budget card, the rest of the form is
 generated from the schema in the same grouping the form shows:
 
-- **General Settings** — LoRA filename (**LoRA Prefix** / **Suffix** /
+- **General Settings** — the dataset rows this run trains on (one per
+  attached dataset, scoped to the current project when you're inside one):
+  a **caption prefix**, **caption dropout rate** (the chance a caption is
+  dropped entirely, which enables classifier-free guidance at inference), a
+  **repeat count**, caption toggles (use captions at all, and whether to
+  prefer the model-aware caption variant), and masking toggles (include
+  masked variants, optionally regenerating them with a chosen opacity and a
+  minimum probability of keeping the original) — multiple datasets can be
+  attached to the same run, each weighted independently; this is the same
+  picker documented from the dataset side in the Datasets guide's "Move on"
+  section. Also on this card: LoRA filename (**LoRA Prefix** / **Suffix** /
   **Name**, the name field supporting `{placeholder}` substitution), a
   global trigger word, output directory, and data toggles (latent caching,
   horizontal/vertical flip augmentation).
@@ -199,13 +202,13 @@ completes.
 ## Recipes
 
 **First run for a new model on a project.** Model Selection → pick the
-family and definition → Concepts & Triggerwords → attach the project's
+family and definition → General Settings → attach the project's
 dataset → check the VRAM estimate → Start. Once it's tuned the way you like,
 Template Selection → **Clone as New Template** so the next dataset for this
 client and model starts from it instead of a blank form.
 
 **Reuse a client's setup.** Template Selection → pick their template for this
-model → Concepts & Triggerwords → swap in the new dataset → Start. Nothing
+model → General Settings → swap in the new dataset → Start. Nothing
 else needs re-deciding — that's the same "a new dataset arrives" arc the
 Projects guide ends on.
 

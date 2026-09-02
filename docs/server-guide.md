@@ -9,8 +9,8 @@ dataset or a job — it's the one screen that's about the app, not your data.
 
 - **Read live health** — status (from the WebSocket connection itself, so it
   can't show a stale "Healthy" while the backend is actually down), process
-  uptime, how many model definitions are loaded, and how many jobs are
-  currently running or paused.
+  uptime, how many model definitions are registered (gated ones included),
+  and how many jobs are currently running or paused.
 - **Restart the backend** from a confirm dialog, with a global lock overlay
   while it comes back up.
 - **Check for and apply an in-app update** — pulls the latest code, rebuilds
@@ -51,16 +51,15 @@ lines):
   connection.
 - **Uptime** — this backend process's own uptime, ticking forward locally
   between fetches.
-- **Models** — how many model definitions the backend has loaded.
+- **Models** — every registered model definition, gated ones included — so
+  54 today, three more than the Training screen's dropdown lists.
 - **Active Jobs** — running plus paused jobs, across every project.
 
 ## Restart, updates
 
 **Restart server** asks for confirmation, then restarts the backend process
 and shows a global lock overlay until it's back — it stays locked even if
-you navigate away from this tab while it's restarting. (The exact restart
-mechanics are being reworked separately; this guide only covers what the
-button does from your side.)
+you navigate away from this tab while it's restarting.
 
 When the app detects it's behind the repo, **Check for updates** / **Update &
 restart** appear in the header, and a banner tracks the update through
@@ -117,8 +116,9 @@ A live-tailed, filterable view of the backend's own structured log stream:
 - **Follow** — keep the view pinned to the newest line as more arrive.
 - **Wrap** — wrap long lines instead of horizontal-scrolling them.
 - **Download** — save everything currently loaded as a text file.
-- **Clear** — asks for confirmation, then clears the loaded entries (a fresh
-  view, not a destructive action on the log file itself).
+- **Clear** — asks for confirmation, then truncates the backend log file on
+  disk; the viewer empties because the file did. Download first if you want
+  to keep it.
 
 ## Recipes
 

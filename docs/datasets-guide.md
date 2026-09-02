@@ -36,7 +36,8 @@ that guard anything permanent.
 ![Dataset Library — KPI rail, search/filter bar and the dataset grid](images/datasets-library-overview.png)
 
 Opens at `/datasets` (the app's default route). The header shows **Dataset
-Library**, the dataset count and image count for the active scope, **Rescan**
+Library** in Global scope, or **Project — Datasets** inside a project scope,
+plus the dataset count and image count for the active scope, **Rescan**
 / **Import Dataset** / **New Dataset** buttons and, when the library needs it,
 a **Repair cache** banner (see "Thumbnail cache repair" below). There is no
 density control here — density only applies to the Workspace Browse grid
@@ -66,11 +67,13 @@ search + filters all narrow this, so the tiles change as you filter):
 The search box matches name, category, description, trigger word, notes and
 tags — whatever you type is checked against all of those, not just the name.
 
-Three smart filter chips appear only when they would match something in the
+Four smart filter chips appear only when they would match something in the
 current scope: **Needs captioning** (at least one uncaptioned image),
 **Needs masking** (at least one unmasked image), **Low HPS** (median score
-below 0.27). The **+ Filter** picker adds category or tag chips on top of
-those. Sort is Name / Created / Images / HPS, ascending or descending.
+below 0.27), and **Missing** (the dataset's folder or files are gone from
+disk — cards in this state also carry a `MISSING` badge). The **+ Filter**
+picker adds category or tag chips on top of those. Sort is Name / Created /
+Images / HPS, ascending or descending.
 
 ### Per-dataset card
 
@@ -104,7 +107,8 @@ Selecting one or more cards (the checkbox in the top-left corner) replaces
 the per-card actions with a bulk bar: **Select all**, **Clear**, **Add to
 project**, **Rescan** (each selected dataset gets an incremental/"safe"
 rescan — bulk always uses the safe mode; a full rescan is a per-dataset
-action only), and **Delete**.
+action only), and **Delete** in Global scope (**Remove from project** inside
+a project scope).
 
 ### Delete — global scope vs. project scope
 
@@ -160,14 +164,19 @@ scroll position), not a separate route.
 
 ![Workspace — Browse mode, filter chips, filmstrip](images/workspace-browse-overview.png)
 
-The top bar shows the dataset's name, version (click the version tag to bump
-the MAJOR version; the pencil opens a manual version editor), and a
-"ready for training" count when the active model definition can tell you one.
-To its right: the project-membership pill, the active project/model-context
-switcher, and — always available regardless of mode — **Analyze**, **Cache**
-(disabled with "No cache data" until the dataset has been cached once) and
-**Rescan**. Edit-kind (paired) datasets also get a **Pairs** button (control/
-target pairing health and manual re-match).
+Above the grid (not pictured — the frame starts below it): a top bar with the
+dataset's name, version (click the version tag to bump the MAJOR version; the
+pencil opens a manual version editor), a "ready for training" count when the
+active model definition can tell you one, the project-membership pill, the
+active project/model-context switcher, and — always available regardless of
+mode — **Analyze**, **Cache** (disabled with "No cache data" until the
+dataset has been cached once) and **Rescan**. Edit-kind (paired) datasets
+also get a **Pairs** button (control/target pairing health and manual
+re-match).
+
+The bar the frame does show is the Browse-mode toolbar — mass-action
+buttons, filter chips, the Masked/Overlay toggles and Density — covered
+next.
 
 ### Browse / Details / Edit modes
 
@@ -180,7 +189,7 @@ A segmented control switches the workspace body between three modes:
   caption/mask editing and per-image trim controls. See
   [Details — one image, closely](#details--one-image-closely) below.
 - **Edit** — the per-image, non-destructive adjustment pipeline (loaded
-  lazily): ten stacked operations from white balance to AI upscaling, plus
+  lazily): twelve stacked operations from white balance to AI upscaling, plus
   the separate, destructive crop editor. See
   [Edit — non-destructive adjustments](#edit--non-destructive-adjustments)
   below. Nothing in the pipeline is written until you Save, Bake in, or run
@@ -242,9 +251,13 @@ editor (switches to Edit mode on this image), open Crop, exclude from
 training, or delete the entry outright. Excluding is reversible from the
 Browse toolbar's "Enable all"; delete is not.
 
-**The caption pane** is the same inline caption editor as the Browse grid's
-tile, just with more room — useful when a caption needs real edits rather
-than a quick generate-and-move-on.
+**The caption pane** is a fuller surface than the Browse grid's inline
+editor, not the same one just resized: a Save Changes button, Copy / Revert
+/ Dedupe / Tidy actions, a character count, and a collapsible **AI
+Recaptioning** panel (Local/API model choice, settings template, wildcard,
+system prompt, a **Generate Caption** button) that captions this one image
+without opening Mass caption — useful when a caption needs real edits, or a
+one-off AI regenerate, rather than a quick generate-and-move-on.
 
 **Judging whether an image is worth keeping** is what this mode is for: with
 the mask, the full-size image and the caption all in view at once, you can
@@ -273,7 +286,9 @@ that the mask itself (not a composite) is what you expect.
 ### Similar images
 
 Reachable from the Analyze modal's Files tab, per-row "view near-duplicates"
-action (see [Analyze](#analyze) below) — opens a cluster of the original
+action, or from the Distributions tab's duplicate clusters ("View this
+cluster" / "Review all") (see [Analyze](#analyze) below) — opens a cluster of
+the original
 image plus every near-duplicate the similarity search found, each tagged
 with its similarity percentage and a higher-res / lower-res / same-res badge
 against the original. **Delete** on a card is permanent: the image, its
@@ -290,14 +305,14 @@ shortcut, and the workspace becomes a 3-pane editor: operation tabs on the
 left, the live-rendered canvas in the center, a histogram and the pipeline
 order on the right.
 
-The left panel groups ten operations under two headers:
+The left panel groups twelve operations under two headers:
 
 - **Adjust** (real-time, reversible) — White Balance, Curves, Color & Tone,
-  HSL, Sharpen, Vignette, Lens, CUBE LUT, Color Match.
+  HSL, Sharpen, Vignette, Lens, CUBE LUT, Color Match — nine operations.
 - **AI Models** (async, may change output) — Denoise, Face Restore, Upscale:
   each runs a model rather than a formula, so a result can vary run to run.
 
-Every one of those ten writes into a single non-destructive **overlay
+Every one of those twelve writes into a single non-destructive **overlay
 recipe** — nothing on disk changes until you explicitly commit it. The right
 panel's **Pipeline order** list shows every operation, in the order it
 renders, each with a checkbox (on/off) and a drag handle to reorder it; Color
@@ -419,7 +434,8 @@ Kohya-bucket vs. multi-resolution mode) drive which crop targets the
 preview, flags, with its own filter chips (All / Low HPS / Uncaptioned /
 Masked / Needs Crop / Duplicates), search-by-filename and sort. Per-row
 actions: view near-duplicates, open the per-image adjust editor, open detail,
-delete, or open the crop-preview modal for that one image.
+delete, open the crop-preview modal for that one image, or toggle it excluded
+from training (the same exclude flag Details' footer sets).
 
 ![Analyze modal — Files tab](images/analyze-modal-files.png)
 
@@ -428,7 +444,8 @@ both queued as a background task you can watch progress on:
 
 - **Harmonize files** — converts every image to JPG and renames the whole
   dataset (plus captions, masks, masked copies and control images) to a
-  canonical `<dataset>_00001.jpg` sequence. **It does not resize or crop
+  canonical `<slugified-dataset-name>_00001.jpg` sequence (e.g. "Porsche 918
+  Spyder" → `porsche_918_spyder_00001.jpg`). **It does not resize or crop
   pixels** — that is what Crop all is for. Audio pairs are left untouched.
 
   ![Harmonize confirm dialog](images/harmonize-confirm.png)
@@ -496,35 +513,73 @@ next time you train or analyze, just not for free.
 
 ### Mass caption
 
-Opened via the workspace's **Mass caption** button.
+Once a dataset is curated, captioning it one tile at a time in the grid
+doesn't scale — **Mass caption**, in the workspace toolbar, runs an AI
+captioner over the whole set as a background task. It opens with two tabs,
+**Generate** and **Refine**.
 
-![Mass caption modal — Generate tab, Local neural architecture (the default)](images/mass-caption-modal.png)
+#### Generate
 
-Two tabs:
+![Mass caption modal — Generate tab, Local neural architecture](images/mass-caption-modal.png)
 
-- **Generate** — captioning strategy (**Incremental**, only images without a
-  caption yet, vs **Destructive**, recaption everything), then a neural
-  architecture toggle between **Local** and **API**:
-  - **Local** is the default — pick a local vision model (Florence-2, Qwen3
-    VL, Youtu-VL, JoyCaption; each with its own variant sizes and parameter
-    schema — temperature, top-p, max tokens, etc.), an optional wildcard
-    value, system prompt and custom instructions.
-  - **API** swaps the model picker for a provider (OpenAI, Anthropic, Gemini,
-    OpenRouter, or any OpenAI-compatible server) plus its endpoint/key
-    fields, since captioning then runs against that provider instead of your
-    GPU.
+**Caption strategy** picks the candidates: **Incremental** (only images that
+don't have the caption this run would write yet — with model-aware captions
+on, "have" means "have this definition's variant"; otherwise it means the
+general `<stem>.txt`) or **Destructive** (recaption every candidate,
+overwriting what's there). Whichever definition is active in the header's
+Model-aware toggle decides *where* the run writes: with it off, every caption
+lands in the general `<stem>.txt`; with a structured-caption definition
+active, it writes the per-definition variant (`captions/<definition_id>/`)
+instead, so switching models never touches another model's captions.
 
-  ![Mass caption modal — Generate tab, API neural architecture](images/mass-caption-modal-api.png)
+**Neural architecture** — the engine that does the captioning — opens on
+**Local** for a fresh project; after that, the tab and model you last
+selected in this scope (Global included) are remembered and win. Local is a
+model that runs on your own GPU, chosen from Youtu-VL,
+Florence-2, Qwen3 VL (with an instruct/thinking size picker, 4B–32B) or
+JoyCaption, each with its own parameter schema (temperature, top-p, max
+tokens, task/caption type, and — JoyCaption only — two dozen fine-grained
+content toggles). Switch to **API** to send images to a hosted vision model
+instead — OpenAI, Anthropic, Gemini, OpenRouter, or any OpenAI-compatible
+server (Ollama, LM Studio, vLLM) via "Local / Custom" — which needs a
+reachable endpoint and, for the hosted providers, a saved key; an
+unconfigured provider disables Start until you fix it. Either mode shares the
+same **Settings Template** picker below it (clone, rename or delete a
+template of wildcard + system prompt + parameters per model) and, with a
+structured-caption definition active, an extra "Additional instructions"
+field scoped to just this run.
 
-  Either way, running captions over the dataset (or just the images still
-  missing one, per the strategy above) is a background task with live
-  per-image status.
-- **Refine** — rewrite *existing* captions with a local LLM via Ollama.
-  Presets: `standardize` and `synonym_merge`; style is auto (derived from the
-  active model's text encoder — CLIP/SDXL-style models get tag-style
-  captions, T5/large-context models get natural language) or an explicit
-  override (natural language / tags). Requires Ollama reachable — the modal
-  says so plainly when it isn't.
+The Start button's label carries the count and the reason: *"Caption N
+images"* when there's work to do, *"No images to caption"* once Incremental
+finds nothing left, or *"Checking existing captions…"* while it's still
+confirming which images already have this definition's variant (model-aware
+Incremental waits for that answer rather than guess and risk overwriting).
+Once started, it runs as a background task with live per-image progress in
+the Task Center; captions land back in the grid as they're written, so the
+inline caption box on each tile (Browse-mode toolbar, above) is how you
+re-read and spot-check the results afterward.
+
+#### Refine
+
+![Mass caption modal — Refine tab](images/mass-caption-modal-refine.png)
+
+Refine doesn't generate new captions — it rewrites *existing* ones with a
+local LLM via Ollama. **Refine target** (Original vs. the masked-variant
+captions), **Refine strategy** (Skip pending — only captions without an
+unreviewed suggestion already — vs. Re-refine all) and **Output** (stage each
+result as a suggestion to accept/reject, or Auto-accept straight to the
+variant) come first; **Refinement model** picks the target definition (which
+caption vocabulary to refine), the installed Ollama model (with **Pull**
+buttons for curated tags not yet installed), a **Refinement template**
+(Auto matches the definition's family — tags for CLIP/SDXL, natural language
+otherwise) and the operation preset (`standardize` or `synonym_merge`).
+
+Refine needs a live endpoint with the chosen model installed on it — Start
+stays disabled until a target definition and a model are picked, and if the
+endpoint is down or the model missing, the same sentence the backend would
+refuse the run with appears (in the panel while picking, or as a toast if a
+request still slips through): which one is missing and where to fix it
+(start Ollama, or configure/pull it on the Server screen).
 
 ### Structured caption editor
 
@@ -553,14 +608,14 @@ Opened via the workspace's **Mass mask** button. Three tabs: **Generate**
 noise-removal area thresholds; or RemBG — model variant from a fixed list,
 post-process smoothing, optional alpha matting with foreground/background
 thresholds), **Apply** (apply an already-generated mask set), and **Caption**
-(caption the *masked* images specifically — writes to a separate
-`masked_captions/` target so it never overwrites the original captions).
+(caption the *masked* images specifically — writes to `masked/<stem>.txt`,
+alongside the mask files, so it never overwrites the original captions).
 
 ### Mass edit
 
 Opened via the workspace's **Mass edit** button. Lets you pick one image
-whose non-destructive adjustment recipe — any combination of Edit mode's ten
-operations, whichever are enabled on that image — you want to clone, then
+whose non-destructive adjustment recipe — any combination of Edit mode's
+twelve operations, whichever are enabled on that image — you want to clone, then
 apply that exact recipe to many target images in one batch. This is how a
 color grade, a denoise pass or an upscale you tuned on one photo gets applied
 consistently across a dataset without re-tuning it per image. Only images
@@ -606,10 +661,11 @@ exclude) has to be finished before the run starts, not after.
 
 ### Where a finished LoRA lands
 
-A training run writes its checkpoints to
-`outputs/<lora name>_<model family>/`, named from the job's own LoRA name
-and the model family it trained against — not the dataset's name, since one
-dataset can feed runs against several families. The Jobs screen is where you
+A training run writes its checkpoints to `outputs/<lora name>_<definition
+id>/`, named from the job's own LoRA name and the model **definition** it
+trained against (e.g. `mylora_krea2-raw`) — one folder per definition, not
+per family, and not the dataset's name, since one dataset can feed runs
+against several definitions. The Jobs screen is where you
 get the file back out: each checkpoint row carries a **Download LoRA
 .safetensors** action, so you don't need to go find the output folder on
 disk to use what you trained.
@@ -645,7 +701,8 @@ regenerate; it never drops captions or masks.
 Each dataset is a folder under the app's `datasets/` directory, named after
 its sanitized dataset name. Captions live beside their images as `.txt`
 files (or under a `captions/<definition>/` folder when a caption is tied to a
-specific model-family variant rather than the general one). Masks, masked
-captions, control images (for Edit-kind datasets) and the training cache each
-have their own subfolder inside the dataset directory — nothing here reaches
-outside the dataset's own folder.
+specific model-family variant rather than the general one). Masks and their
+matching masked-variant captions share one `masked/` subfolder
+(`masked/<stem>.png` and `masked/<stem>.txt`); control images (for Edit-kind
+datasets) and the training cache each have their own subfolder inside the
+dataset directory — nothing here reaches outside the dataset's own folder.

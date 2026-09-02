@@ -176,7 +176,15 @@ jobs:
                  "silently fall back to source, which is what it exists to avoid."
             exit 1
           }
-          python -m pip install --quiet fastapi 'starlette' httpx pytest
+          # Importing app.api._security_headers runs backend/app/__init__.py,
+          # which imports app.core.compat, which imports structlog at module
+          # level — so this hand-picked set must cover the whole import chain,
+          # not just what the test file names. backend/tests/test_gate_csp_step_deps.py
+          # walks that chain and fails when a new module-level third-party
+          # import appears that this line does not provide (2026-09-03, run 4:
+          # collection died on `No module named 'structlog'` while the local
+          # venv, which has everything, stayed green).
+          python -m pip install --quiet fastapi 'starlette' httpx pytest structlog
           python -m pytest backend/tests/api/test_csp_policy.py -q \
             -k "ExternalOrigins or InlineEventHandlers or InlineScriptHash"
 

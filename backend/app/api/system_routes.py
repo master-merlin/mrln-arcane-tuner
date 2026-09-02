@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from app.core.logger import SERVER_LOG_PATH, get_logger
+from app.core.restart_contract import RESTART_EXIT_CODE, is_supervised
 from app.core.self_update import self_update_service
 
 # ``restart_launcher`` sits at backend/ rather than inside ``app`` because it
@@ -141,8 +142,34 @@ async def _restart_server_logic() -> None:
     the port afresh (settings may have moved it since this process launched),
     starts the replacement with the restart log as its stdout/stderr, and
     watches it until it serves or dies. See that module's docstring.
+
+    Unless a SUPERVISOR started us (LANE-56, ``app/core/restart_contract.py``):
+    then this process exits with the sentinel code and spawns NOTHING — the
+    relaunch belongs to the owner of the console (``start_backend.bat``,
+    ``entrypoint.sh``), which is the only thing that can bring the replacement
+    back in the terminal the user is watching. A replacement spawned by the
+    process that is dying is an orphan by construction, and every fix since
+    July made that orphan observable without curing it.
+
+    Both callers come through here: the route below and the self-updater's
+    restart step (``self_update.py`` ``_do_restart``), so the branch lives at
+    the top of this one function and nowhere else.
     """
     await asyncio.sleep(2.0)  # Let the HTTP response flush
+
+    if is_supervised():
+        logger.info(
+            "restart_handoff",
+            mode="supervisor",
+            exit_code=RESTART_EXIT_CODE,
+            message=(f"exiting with code {RESTART_EXIT_CODE} so the supervisor that "
+                     "started this server relaunches it — the story continues in the "
+                     "terminal it was started from"),
+        )
+        # The same bounded, off-loop window as the launcher path (below), so the
+        # line above reaches the queued WebSocket log mirror before the exit.
+        restart_launcher.schedule_exit(0.25, code=RESTART_EXIT_CODE)
+        return
 
     orig_args = getattr(sys, "orig_argv", [sys.executable] + sys.argv)
     replacement = [sys.executable] + list(orig_args[1:])
@@ -197,6 +224,7 @@ async def _restart_server_logic() -> None:
     # of minutes is one he ends).
     logger.info(
         "restart_handoff",
+        mode="launcher",
         restart_log=str(restart_launcher.RESTART_LOG_PATH),
         message=("handing over to the restart launcher — it reports progress on this "
                  "terminal until the replacement is serving, and the full output of "

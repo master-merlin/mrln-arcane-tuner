@@ -602,6 +602,27 @@ def test_the_outgoing_server_leaves_the_port_even_when_its_loop_is_blocked():
     assert elapsed < 10, f"the exit waited on the blocked loop: {elapsed:.1f}s"
 
 
+def test_schedule_exit_leaves_with_the_code_it_was_given():
+    """LANE-56: under a supervisor the outgoing server exits with the sentinel
+    (``restart_contract.RESTART_EXIT_CODE``) and the supervisor relaunches it.
+    The code is the whole message, so it must survive the timer thread: asserted
+    on the child's returncode — the observable — never on the Timer's args.
+    Mutation: a ``schedule_exit`` that ignores its code exits 0 and turns this
+    red. The default stays 0 for the launcher path (``schedule_exit(0.25)``)."""
+    from app.core.restart_contract import RESTART_EXIT_CODE
+
+    script = (
+        "import sys, time, restart_launcher\n"
+        f"restart_launcher.schedule_exit(0.05, code={RESTART_EXIT_CODE})\n"
+        "time.sleep(30)\n"
+        "sys.exit(9)\n"
+    )
+    proc = subprocess.run([sys.executable, "-c", script], cwd=str(BACKEND),
+                          env=_base_env(), capture_output=True, text=True,
+                          timeout=45)
+    assert proc.returncode == RESTART_EXIT_CODE, (proc.returncode, proc.stderr)
+
+
 def test_last_child_output_never_returns_our_own_records(tmp_path):
     """Our records and the child's output share one file. If the tail could
     return a launcher record, every failure would 'last have managed' to say

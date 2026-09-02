@@ -77,17 +77,24 @@ class TestRestartEndpoint:
         assert fake_exit.call_count == 1, "the outgoing server must still leave"
         assert fake_exit.call_args.args[0] > 0, "the flush window must be bounded"
 
-    def test_restart_hands_off_to_the_launcher_with_a_command_it_accepts(self):
+    def test_restart_hands_off_to_the_launcher_with_a_command_it_accepts(self, monkeypatch,
+                                                                         caplog):
         """The route and the launcher must agree on the command line. Pinned by
         parsing the real argv with the real parser — a wiring mistake here would
-        otherwise only show up as a restart that silently never happened."""
+        otherwise only show up as a restart that silently never happened.
+
+        Explicitly UNsupervised (LANE-56): a bare ``uvicorn`` launch keeps this
+        path byte for byte, and its handoff record says which mode it took."""
+        import json
         from app.api import system_routes
         from pathlib import Path as _Path
 
+        monkeypatch.delenv("MRLN_SUPERVISED", raising=False)
         with (
             patch("app.api.system_routes.subprocess.Popen") as popen,
-            patch("app.api.system_routes.os._exit"),
+            patch.object(system_routes.restart_launcher, "schedule_exit"),
             patch("app.api.system_routes.asyncio.sleep", new=AsyncMock()),
+            caplog.at_level("INFO"),
         ):
             asyncio.run(system_routes._restart_server_logic())
 
@@ -97,6 +104,73 @@ class TestRestartEndpoint:
         opts, child = system_routes.restart_launcher._parse_args(cmd[2:])
         assert opts["old_pid"] == str(os.getpid())
         assert child[0] == sys.executable
+        last = json.loads(caplog.records[-1].getMessage())
+        assert last["event"] == "restart_handoff"
+        assert last["mode"] == "launcher"
+
+    def test_under_a_supervisor_the_restart_exits_and_spawns_nothing(self, monkeypatch,
+                                                                     caplog):
+        """LANE-56, the actual cure: when ``start_backend.bat`` / ``entrypoint.sh``
+        started us, the relaunch belongs to THEM — the owner of the console.
+        This process exits with the sentinel and spawns NOTHING; a spawn here is
+        an orphan by construction, which is the defect every fix since July
+        made observable without curing. Mutation: a version that still spawns
+        under a supervisor turns the not-called assertion red."""
+        import json
+        from app.api import system_routes
+        from app.core.restart_contract import RESTART_EXIT_CODE
+
+        monkeypatch.setenv("MRLN_SUPERVISED", "1")
+        with (
+            patch("app.api.system_routes.subprocess.Popen") as popen,
+            patch.object(system_routes.restart_launcher, "schedule_exit") as fake_exit,
+            patch("app.api.system_routes.asyncio.sleep", new=AsyncMock()) as sleep,
+            caplog.at_level("INFO"),
+        ):
+            asyncio.run(system_routes._restart_server_logic())
+
+        popen.assert_not_called()
+        assert fake_exit.call_count == 1
+        assert fake_exit.call_args.kwargs.get("code") == RESTART_EXIT_CODE
+        assert fake_exit.call_args.args[0] > 0, "the flush window must be bounded"
+        # The HTTP response still gets its window before the process leaves.
+        assert any(call.args and call.args[0] >= 2.0 for call in sleep.call_args_list)
+        last = json.loads(caplog.records[-1].getMessage())
+        assert last["event"] == "restart_handoff"
+        assert last["mode"] == "supervisor"
+        assert "terminal" in last["message"]
+
+    def test_the_self_updater_restarts_through_the_same_contract(self, monkeypatch, caplog):
+        """The self-updater's restart step (``self_update.py`` ``_do_restart``)
+        enters the SAME function, so under a supervisor it too exits with the
+        sentinel and spawns nothing. Entered through the updater's own apply
+        path with ONLY the git/build/drain steps patched — the restart is real."""
+        import json
+        from app.api import system_routes
+        from app.core import self_update
+        from app.core.restart_contract import RESTART_EXIT_CODE
+
+        svc = self_update.SelfUpdateService(app_dir=".", branch="main", remote="")
+        monkeypatch.setenv("MRLN_SUPERVISED", "1")
+        with (
+            patch.object(svc, "_pull", return_value=True),
+            patch.object(svc, "_req_blob", return_value="same"),
+            patch.object(svc, "_build_frontend", new=AsyncMock()),
+            patch.object(svc, "_wait_for_idle", new=AsyncMock(return_value=True)),
+            patch.object(svc, "_broadcast"),
+            patch("app.api.system_routes.subprocess.Popen") as popen,
+            patch.object(system_routes.restart_launcher, "schedule_exit") as fake_exit,
+            patch("app.api.system_routes.asyncio.sleep", new=AsyncMock()),
+            caplog.at_level("INFO"),
+        ):
+            asyncio.run(svc._apply_impl())
+
+        assert svc.state is self_update.UpdateState.RESTARTING, (svc.state, svc.error)
+        popen.assert_not_called()
+        assert fake_exit.call_args.kwargs.get("code") == RESTART_EXIT_CODE
+        last = json.loads(caplog.records[-1].getMessage())
+        assert last["event"] == "restart_handoff"
+        assert last["mode"] == "supervisor"
 
     def test_a_previous_restart_failure_is_reported_once(self, tmp_path, caplog):
         """Nobody is alive to report a failed restart when it happens — the next

@@ -153,8 +153,14 @@ def open_log(path: str | None = None):
     return handle
 
 
-def schedule_exit(delay: float = 0.25) -> None:
+def schedule_exit(delay: float = 0.25, *, code: int = 0) -> None:
     """Leave the port, on a thread the outgoing server's loop cannot starve.
+
+    ``code`` is the process exit code. It is ``0`` on the launcher path and
+    ``restart_contract.RESTART_EXIT_CODE`` (75) under a supervisor, where the
+    code IS the message — the supervisor relaunches on exactly that value and
+    treats anything else as the server's own exit (LANE-56). ``delay`` stays
+    the first positional: the launcher path calls ``schedule_exit(0.25)``.
 
     The outgoing server needs a moment between its last log line and its exit,
     so that line can reach the queued WebSocket mirror. It used to take that
@@ -169,7 +175,7 @@ def schedule_exit(delay: float = 0.25) -> None:
     busy loop cannot stretch it, and ``os._exit`` from any thread ends the
     process — the same abrupt exit as before, at the time it was asked for.
     """
-    threading.Timer(delay, os._exit, args=(0,)).start()
+    threading.Timer(delay, os._exit, args=(code,)).start()
 
 
 def open_console():

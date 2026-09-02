@@ -131,6 +131,8 @@ never mutates the global original).
 
 ### Quick Train
 
+![Quick Train — pick a dataset, pick a project training template, name and launch](images/projects-quick-train.png)
+
 A three-step guided flow for firing off a run without the full Training
 screen: **① pick a dataset** linked to this project (via the same
 schema-driven datasets form the Training screen uses), **② pick a project
@@ -151,6 +153,8 @@ Jobs screen). **Open in Jobs ›** jumps to the full Jobs queue.
 
 ## Export, import and delete
 
+![Export project modal — per-domain template checklist and the per-dataset embed/reference/exclude choice](images/projects-export-modal.png)
+
 **Export project** opens a check/uncheck modal: every project template,
 grouped by domain, and every linked dataset with a per-dataset choice of
 **embed** (bundle the actual files), **reference** (record the name only —
@@ -165,6 +169,8 @@ per-entry "skip if a definition it needs isn't installed" and similar
 guards), linked or missing dataset references, and a name-conflict choice
 (**Rename** or **Overwrite**) for the project itself and, separately, for any
 dataset name collision.
+
+![Delete project confirm dialog — the exact wording about what is kept and what is removed](images/projects-delete-confirm.png)
 
 **Delete project** — reachable from the project detail header or the edit
 dialog's footer — always opens the same confirm dialog,

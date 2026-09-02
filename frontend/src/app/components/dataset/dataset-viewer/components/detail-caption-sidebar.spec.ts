@@ -634,6 +634,63 @@ describe('DetailCaptionSidebar — variant suggestion + refine', () => {
         expect(btn.getAttribute('title')).toBe(reason);
     });
 
+    // LANE-70 (UAT-7.4, the user: "Refine is available the whole time (not
+    // guarded properly)"): a tooltip is not a gate. The contract on every
+    // surface is DISABLED + the backend's sentence beside it, and the action
+    // refuses with the same sentence — read off the SERVED status, through
+    // the store, so the wiring from payload to DOM is what is asserted.
+    it('LANE-70: the served unavailable_reason disables Refine, renders beside it, and refuses a programmatic call with the same sentence', () => {
+        const { fixture, http, store, llm } = mountVariant();
+        const reason = 'Model \'qwen2.5:7b-instruct\' is not installed on http://127.0.0.1:11434 - pull it on the Server screen or pick an installed model.';
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        // The endpoint is UP (available: true, models listed) — only the model a
+        // model-less refine would be served with is missing. Before LANE-70 this
+        // exact payload left the button enabled.
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['gemma3:12b'], available: true, unavailable_reason: reason });
+        http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
+        fixture.detectChanges();
+        expect(llm.available()).toBe(true);
+        const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(true);
+        expect(btn.getAttribute('title')).toBe(reason);
+        const inline = fixture.nativeElement.querySelector('[data-testid="refine-blocked-reason"]') as HTMLElement;
+        expect(inline.textContent!.trim()).toBe(reason);
+        const toast = vi.spyOn(TestBed.inject(ToastService), 'error');
+        (fixture.componentInstance as any).refineVariant();
+        expect(toast).toHaveBeenCalledWith(reason);
+        http.expectNone('/api/captions/refine-batch');
+    });
+
+    it('LANE-70: a probe still out blocks Refine with a checking note — a pending check never passes the gate', () => {
+        const { fixture, http, store } = mountVariant();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        // Leave /api/llm-refine/models unanswered; drain only the children.
+        http.match(r => r.method === 'GET' && !r.url.includes('llm-refine')).forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
+        fixture.detectChanges();
+        const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(true);
+        const inline = fixture.nativeElement.querySelector('[data-testid="refine-blocked-reason"]') as HTMLElement;
+        expect(inline.textContent).toContain('Checking');
+    });
+
+    it('LANE-70: a served all-clear enables Refine and renders no reason', () => {
+        const { fixture, http, store } = mountVariant();
+        store.setModelAware(true);
+        store.setDefinition({ id: 'flux1-schnell', family: 'flux1', name: 'Schnell' });
+        fixture.detectChanges();
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['qwen2.5:7b-instruct'], available: true, unavailable_reason: null });
+        http.match(r => r.method === 'GET').forEach(r => r.flush({ definition_id: 'flux1-schnell', items: [] }));
+        fixture.detectChanges();
+        const btn = fixture.nativeElement.querySelector('[data-testid="refine-variant"]') as HTMLButtonElement;
+        expect(btn.disabled).toBe(false);
+        expect(btn.getAttribute('title')).toBe('Refine this caption for flux1-schnell');
+        expect(fixture.nativeElement.querySelector('[data-testid="refine-blocked-reason"]')).toBeNull();
+    });
+
     it('refine button enqueues a refine batch for the current image', () => {
         const { fixture, http, store, llm } = mountVariant();
         store.setModelAware(true);

@@ -1,0 +1,50 @@
+# Dependabot — version updates for the three ecosystems this repository pins.
+#
+# The torch stack (torch / torchvision / torchaudio / triton) is a SPLIT STACK
+# managed by hand: the Docker image bakes one build, the local venv installs
+# another, CI installs CPU wheels, and backend/install-deps.sh refuses to touch
+# any of them. Dependabot must not propose those, nor the two libraries whose
+# upgrades are release decisions with their own validation runs (diffusers,
+# transformers) — see backend/requirements.txt for the reasons on each pin.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /backend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      python-minor-and-patch:
+        update-types: [minor, patch]
+    ignore:
+      - dependency-name: torch
+      - dependency-name: torchvision
+      - dependency-name: torchaudio
+      - dependency-name: torchao
+      - dependency-name: triton
+      - dependency-name: triton-windows
+      - dependency-name: diffusers
+      - dependency-name: transformers
+    labels: [dependencies, backend]
+
+  - package-ecosystem: npm
+    directory: /frontend
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      angular:
+        patterns: ["@angular/*", "@angular-devkit/*", "angular-eslint", "typescript"]
+        update-types: [minor, patch]
+      npm-minor-and-patch:
+        update-types: [minor, patch]
+    labels: [dependencies, frontend]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    labels: [dependencies, ci]

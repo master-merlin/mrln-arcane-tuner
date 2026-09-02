@@ -232,8 +232,12 @@ jobs:
       # This is a BLOCKING check. A secret reaching the public history cannot be
       # undone by a follow-up commit, so unlike the audit jobs below there is no
       # version of this finding that is safe to merge past.
+      # Pinned to a commit, not a branch: on a public repository a workflow that
+      # pulls `@main` of a third-party action runs whatever that branch holds on
+      # the day, with the repository's own token. The comment names the release
+      # the SHA resolves to; Dependabot (github-actions ecosystem) proposes bumps.
       - name: TruffleHog
-        uses: trufflesecurity/trufflehog@main
+        uses: trufflesecurity/trufflehog@cc1fe982afc515d2991365ce8d4d0dd07170fcad # v3.97.2
         with:
           extra_args: --results=verified,unknown
 

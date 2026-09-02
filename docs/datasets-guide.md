@@ -14,8 +14,12 @@ that guard anything permanent.
 
 ## What you can actually do with it
 
-- Scan a folder of images (or a `.zip`) into a dataset, matching each image to
-  its `.txt` caption automatically.
+- Bring a dataset in and take it out again whole: scan a folder of images into
+  a dataset (each image matched to its `.txt` caption automatically), import a
+  `.zip` — a plain archive of images, or a portable archive another install
+  exported — and export any dataset as that same portable archive. Import is
+  described under [New Dataset / Import](#new-dataset--import); export and what the
+  archive carries under [Move on — export](#move-on--export-train-and-where-the-lora-lands).
 - Generate captions with a local vision model, an OpenAI-compatible API, or
   refine existing captions with a local LLM (Ollama) — one image or the whole
   dataset.
@@ -112,7 +116,9 @@ a project scope).
 
 ### Delete — global scope vs. project scope
 
-What "Delete" does depends on where you are. Inside a project scope it only
+Scopes are explained in the [Projects guide](projects-guide.md) — in short, the
+Library shows either every dataset (Global) or the datasets attached to one
+project. What "Delete" does depends on where you are. Inside a project scope it only
 **removes the dataset from that project** — the dataset and its files are
 untouched, and the confirm dialog says so.
 

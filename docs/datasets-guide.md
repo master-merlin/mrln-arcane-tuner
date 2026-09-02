@@ -611,6 +611,25 @@ thresholds), **Apply** (apply an already-generated mask set), and **Caption**
 (caption the *masked* images specifically — writes to `masked/<stem>.txt`,
 alongside the mask files, so it never overwrites the original captions).
 
+![Mass masking modal, Generate tab — SAM 3 selected as the segmentation model, Incremental strategy, concept prompt and multi-mask output/fill-holes/remove-noise controls](images/mass-mask-modal-generate.png)
+
+Each tab also carries an **Incremental vs. Destructive** (or, on Apply,
+**Incremental vs. Regenerate**) strategy choice, same shape as Mass caption's:
+skip what's already done, or redo everything and replace it.
+
+![Mass masking modal, Apply tab — Incremental/Regenerate strategy and a background-opacity slider for the composited preview](images/mass-mask-modal-apply.png)
+
+Apply takes the mask set Generate produced and writes it out as a new masked
+image per source (background opacity controls how much of the original
+background shows through — 0% is subject-only, 100% is fully visible); it
+never touches the originals.
+
+![Mass masking modal, Caption tab — Local neural architecture, Florence-2 selected, Incremental strategy](images/mass-mask-modal-caption.png)
+
+Caption shares the same Local/API neural-architecture picker as Mass
+caption's Generate tab (models, settings template, system prompt), just
+scoped to the masked variants instead of the originals.
+
 ### Mass edit
 
 Opened via the workspace's **Mass edit** button. Lets you pick one image
@@ -621,6 +640,14 @@ color grade, a denoise pass or an upscale you tuned on one photo gets applied
 consistently across a dataset without re-tuning it per image. Only images
 with an existing overlay recipe appear as sources; targets already carrying
 an overlay are flagged (they will be overwritten) but not excluded.
+
+![Mass pipeline edit modal — source-pipeline picker and the target-image grid before a source is chosen](images/mass-edit-modal.png)
+
+Picking a source image reveals its **Recipe summary**: the exact list of
+enabled operations and their parameters that will be cloned onto every target
+you select.
+
+![Mass pipeline edit modal with a source image picked — Recipe summary showing one enabled operation (white_balance, temperature 5600 / tint -6)](images/mass-edit-modal-recipe.png)
 
 ## Move on — export, train, and where the LoRA lands
 

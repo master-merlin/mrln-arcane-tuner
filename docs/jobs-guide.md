@@ -85,6 +85,8 @@ there, and a Task Center job never shows up here.
 
 ### Header
 
+![Job detail header — status, title, PID/elapsed/started, Logs and Resume](images/jobs-detail-header.png)
+
 Status dot, uppercase status and a short job id; the model definition and
 LoRA name; a `PID` when the process is live; **elapsed** and **started**
 times; the owning project if the job is project-scoped. Elapsed is real run
@@ -102,6 +104,10 @@ confirmed, since it deletes files).
 
 ### Live phase, failures and diagnostics
 
+*(No frame here — this strip only exists on a live or failed run; the
+reference job used throughout this guide is a completed one, so the strip
+doesn't render.)*
+
 While the backend reports a phase before or between training steps (loading
 the model, caching latents, running a sampling pass), a **phase strip**
 shows it with a progress bar when the backend gives a percentage. A failed
@@ -113,6 +119,10 @@ persisted metrics still show.
 
 ### KPI row
 
+*(No frame here — the row only renders for a run that's still reporting live
+metrics; the reference completed job carries none, per `metrics()`
+returning empty for a finished run.)*
+
 **Step** (with a progress bar and `n/total` sub-label), **Loss** (with a
 convergence chip — success/warning/danger — and a sparkline), **Best Loss**,
 **Step Time**, **Resolution** (when the run reports one, with megapixels)
@@ -120,6 +130,8 @@ and **ETA** (with a projected finish time once one is known). Each tile's
 sparkline reflects the same windowed data as Training Curves below it.
 
 ### Training Curves
+
+![Training Curves card — loss/LR chart, smoothing/EMA/TIP/window controls](images/jobs-detail-training-curves.png)
 
 The full loss/LR chart, with per-curve controls: a **smoothing** slider,
 **EMA/SMA** toggle (SMA-only if the run didn't enable EMA), a **TIP** toggle
@@ -134,6 +146,8 @@ this run, an `Adaptive: n/m layers` chip sits next to the `live` indicator.
 
 ### Sample Previews
 
+![Sample Previews card — per-step preview grid, one strip per prompt](images/jobs-detail-sample-previews.png)
+
 Preview images (or video/audio previews for those model families) appear as
 the run hits its sampling cadence. When a run samples more than one prompt,
 a group-by-prompt toggle appears and each prompt gets its own strip labeled
@@ -145,6 +159,8 @@ prompt (and lyrics, for audio families that use them) shows underneath.
 
 ### Checkpoints
 
+![Checkpoints card — per-checkpoint step/size/time with .safetensors and .zip downloads](images/jobs-detail-checkpoints.png)
+
 Every saved checkpoint for the run: step (or `Final`), file size, save time,
 a **`.safetensors`** download (the LoRA weights) and, for a resumable
 checkpoint, a **`.zip`** download of the full training state (optimizer,
@@ -152,6 +168,8 @@ scheduler, EMA, cache manifests) you can move to another machine to
 continue training there.
 
 ### Run Config
+
+![Run Config card, Info view — key/value grid plus Reload into Training and Save as Template](images/jobs-detail-run-config.png)
 
 Toggle between a **key/value grid** and **raw JSON**. A pending job's config
 is editable in place (invalid JSON blocks Save); a running or paused job's
@@ -163,12 +181,16 @@ flight. Two actions work from any job's config: **Reload into Training**
 
 ### Log
 
+![Log card, expanded — filter box, Follow/Copy/Download, adaptive-targeting INFO lines](images/jobs-detail-log.png)
+
 The full structured log, collapsed by default. A filter box narrows it live;
 **Follow** sticks to the bottom until you scroll up, then re-engages once
 you scroll back down; **Copy** and **Download** work on whatever the filter
 currently shows.
 
 ## Resume, plainly
+
+![Resume dialog — Continue from checkpoint (checkpoint picker) vs. Restart from 0](images/jobs-resume-dialog.png)
 
 Resume only appears where a resumable checkpoint exists (a checkpoint saved
 with its full training state, not just the LoRA weights). It offers two
@@ -189,6 +211,9 @@ default and narrowable to one project, with three tabs:
 - **Activity** — jobs per week as a stacked chart (completed / failed /
   stopped), plus five KPI tiles: total jobs, success rate, total steps, GPU
   time and LoRAs produced.
+
+  ![Training Statistics modal — Activity tab with the jobs-per-week chart and KPI row](images/training-stats-activity.png)
+
 - **Quality & Families** — a loss-distribution histogram, average
   loss/step-time/runtime, and a per-family table (jobs, success rate, average
   step time, best loss) that expands into a per-run table on click. A run row
@@ -196,6 +221,9 @@ default and narrowable to one project, with three tabs:
   layer targeting — the durable per-run event history (step, kind,
   active/total layers, active %, earliest active block) plus a small chart,
   absent entirely (not just hidden) for a run that never used the feature.
+
+  ![Training Statistics modal — Quality & Families tab, loss histogram and per-family table](images/jobs-stats-quality-families.png)
+
 - **Config & Data** — hyperparameter spread (optimizer, network rank, LR
   scheduler, timestep sampling, quantization, mixed precision, EMA, batch
   size) as segmented bars, the datasets trained on most, and records (longest
@@ -203,7 +231,7 @@ default and narrowable to one project, with three tabs:
   LoRA file counts and sizes for older runs recorded before that data was
   tracked live.
 
-![Training Statistics modal — Activity tab with the jobs-per-week chart and KPI row](images/training-stats-activity.png)
+  ![Training Statistics modal — Config & Data tab, hyperparameter spread (Datasets & Records panel cropped out — it lists every dataset trained on, not just the reference one)](images/jobs-stats-config-data.png)
 
 ## Recipes
 

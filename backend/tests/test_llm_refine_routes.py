@@ -13,12 +13,17 @@ def test_list_models(mock_make, client):
     fake = mock_make.return_value
     fake.available = AsyncMock(return_value=True)
     fake.list_models = AsyncMock(return_value=["qwen2.5:7b-instruct"])
+    # LANE-76: the route serves the endpoint it probed, read off the client;
+    # a bare MagicMock's ``base_url`` is a mock, not a str, and the response
+    # model refuses it — the fake carries what a real client carries.
+    fake.base_url = "http://127.0.0.1:11434"
     resp = client.get("/api/llm-refine/models")
     assert resp.status_code == 200
     body = resp.json()
     assert body["available"] is True
     assert "qwen2.5:7b-instruct" in body["installed"]
     assert "qwen2.5:7b-instruct" in body["curated"]
+    assert body["endpoint"] == "http://127.0.0.1:11434"
 
 
 @patch(f"{_MOD}._make_client")

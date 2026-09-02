@@ -66,6 +66,64 @@ requires_bash = pytest.mark.skipif(
     reason=bash_skip_reason(ENTRYPOINT) or "",
 )
 
+# The external commands entrypoint.sh calls BEFORE the privilege drop that the
+# shims below do not replace. `id`, `getent`, `chown`, `setpriv` are shimmed
+# because their ANSWER is what is under test; these come from the OS. Keep in
+# step with entrypoint.sh: a command added there and missing here surfaces as
+# "command not found" from the script rather than as a named skip.
+_ENTRYPOINT_NEEDS = ("mkdir",)
+
+
+def _bash_tool_dirs(bash: str) -> list[str]:
+    """Directories holding the coreutils that ship NEXT TO this bash.
+
+    A non-login ``bash <script>`` never sources ``/etc/profile``, and that is
+    what puts MSYS ``/usr/bin`` on PATH — so Git's ``bash.exe`` inherits the
+    Windows PATH as-is, and whether ``mkdir`` resolves depends on the operator
+    having ``C:\\Program Files\\Git\\usr\\bin`` exported. LANE-44 measured the
+    consequence: the same commit was red from one shell and green from another.
+    The coreutils live in a known place relative to the shell itself, so the
+    test hands them over instead of hoping the operator did.
+    """
+    here = Path(bash).resolve().parent
+    dirs: list[str] = []
+    for candidate in (here, here.parent / "usr" / "bin"):
+        if any((candidate / f"mkdir{suffix}").is_file() for suffix in (".exe", "")):
+            if str(candidate) not in dirs:
+                dirs.append(str(candidate))
+    return dirs
+
+
+def _missing_commands(bash: str, env: dict[str, str]) -> list[str]:
+    """Which of ``_ENTRYPOINT_NEEDS`` this bash cannot resolve under ``env``.
+
+    Asked of the shell that will run the script, with the PATH it will be
+    given — the only environment whose answer counts.
+    """
+    proc = subprocess.run(
+        [
+            bash,
+            "-c",
+            'for c in "$@"; do command -v "$c" >/dev/null 2>&1 || echo "$c"; done',
+            "_",
+            *_ENTRYPOINT_NEEDS,
+        ],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=30,
+        cwd=str(REPO_ROOT),
+    )
+    return proc.stdout.split()
+
+
+def _entrypoint_env(bash: str, shim: Path, data: Path) -> dict[str, str]:
+    env = dict(os.environ)
+    path_entries = [str(shim), *_bash_tool_dirs(bash), env.get("PATH", "")]
+    env["PATH"] = os.pathsep.join(path_entries)
+    env["MRLN_DATA_DIR"] = str(data)
+    return env
+
 
 def _run_entrypoint_as_fake_root(tmp: Path, *, uid_exists: bool = True) -> str:
     """Run entrypoint.sh with ``id``, ``setpriv``, ``getent``, ``chown`` shimmed.
@@ -92,12 +150,21 @@ def _run_entrypoint_as_fake_root(tmp: Path, *, uid_exists: bool = True) -> str:
     data = tmp / "data"
     data.mkdir()
 
-    env = dict(os.environ)
-    env["PATH"] = f"{shim}{os.pathsep}{env.get('PATH', '')}"
-    env["MRLN_DATA_DIR"] = str(data)
+    bash = _bash()
+    assert bash is not None  # requires_bash guards every caller
+    env = _entrypoint_env(bash, shim, data)
+    missing = _missing_commands(bash, env)
+    if missing:
+        # A test that cannot run must never look like a test that ran and
+        # failed (LANE-44). Name what is missing and where it was looked for.
+        pytest.skip(
+            f"entrypoint.sh needs {', '.join(missing)} and {bash} cannot resolve "
+            f"them — looked next to the shell in {_bash_tool_dirs(bash) or '(nothing)'} "
+            "and on PATH"
+        )
 
     proc = subprocess.run(
-        [_bash(), str(ENTRYPOINT)],
+        [bash, str(ENTRYPOINT)],
         capture_output=True,
         text=True,
         env=env,
@@ -114,6 +181,40 @@ def _run_entrypoint_as_fake_root(tmp: Path, *, uid_exists: bool = True) -> str:
         cwd=str(REPO_ROOT),
     )
     return proc.stdout + proc.stderr
+
+
+class TestEntrypointShellProbe:
+    """The probe that decides "run" vs "skip with a reason" must itself be true.
+
+    LANE-44: three tests were red from one shell and green from another on the
+    same commit because ``mkdir`` resolved through the OPERATOR's PATH. Both
+    halves of the fix are asserted: the coreutils are found next to the shell
+    without help from PATH, and a PATH that lacks them is reported by name
+    rather than surfacing as a failing test.
+    """
+
+    @requires_bash
+    def test_coreutils_are_found_next_to_the_shell_without_the_operators_path(self, tmp_path: Path):
+        bash = _bash()
+        assert bash is not None
+        shim = tmp_path / "shim"
+        shim.mkdir()
+        env = _entrypoint_env(bash, shim, tmp_path)
+        # Strip the inherited PATH entirely: what remains is the shim plus the
+        # directories derived from the shell's own location.
+        env["PATH"] = os.pathsep.join([str(shim), *_bash_tool_dirs(bash)])
+        assert _missing_commands(bash, env) == [], (
+            f"{bash} could not resolve {_ENTRYPOINT_NEEDS} from its own tool "
+            f"dirs {_bash_tool_dirs(bash)} — the fix depends on the operator's PATH again"
+        )
+
+    @requires_bash
+    def test_a_bare_path_is_reported_by_command_name(self, tmp_path: Path):
+        bash = _bash()
+        assert bash is not None
+        env = dict(os.environ)
+        env["PATH"] = str(tmp_path)  # a directory with no coreutils at all
+        assert _missing_commands(bash, env) == list(_ENTRYPOINT_NEEDS)
 
 
 class TestEntrypointDropsPrivileges:

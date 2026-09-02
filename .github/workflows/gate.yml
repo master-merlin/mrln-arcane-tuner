@@ -54,7 +54,10 @@ jobs:
       # run first: it needs none of the ML stack, so a formatting error reports
       # in seconds instead of after a ten-minute dependency install.
       - name: Install ruff
-        run: python -m pip install --upgrade pip ruff
+        # Pinned to the venv's ruff (backend/requirements.txt) so CI and the local
+        # gate judge by the same rule set — an unpinned ruff drifts with pip and
+        # CI's first-ever run went red on a rule the local version had not seen.
+        run: python -m pip install --upgrade pip "ruff==0.16.0"
 
       - name: ruff check
         run: python -m ruff check .

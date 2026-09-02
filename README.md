@@ -368,17 +368,28 @@ Automatic directory scanning with image–caption pairing. Supports `.png`, `.jp
 The library card and workspace details footer both need one representative image, and by default that's just whatever the scanner enumerates first. A pin control (left of *Adjust image* in a grid tile's top-right cluster, left of *Adjust* in the details footer) lets you choose it instead — it's a toggle, so unpinning re-elects the automatic choice immediately. The pin is persisted (`datasets.preview_pinned`, `PUT /datasets/{name}/preview`) and **survives a rescan** — every scan used to overwrite the cover with the next enumerated file, which is what made pinning worth having in the first place. If the pinned file is later deleted, the next scan clears the pin and falls back rather than showing a hole. Library and workspace-grid covers are served from a sized thumbnail rendition, not the full training source.
 
 #### Image Manipulation
-A 9-stage non-destructive adjustment pipeline that processes images before training:
+A non-destructive adjustment pipeline, ten operations deep, that renders into
+a saved overlay rather than touching the source file until you explicitly
+Save, Bake in, or apply it to other images ("Mass edit"):
 
-| Stage                              | Controls                                                                  |
-| ---------------------------------- | ------------------------------------------------------------------------- |
-| Brightness, Contrast, Saturation   | Standard exposure adjustments                                             |
-| Hue                                | Global color rotation                                                     |
-| Curves                             | Per-channel Bézier curves (RGB + individual R/G/B) with dropdown presets  |
-| Stacked LUT                        | Apply `.cube` LUT files with adjustable strength blending                 |
-| HSL                                | Selective hue/saturation/lightness control per color range                |
-| Sharpness                          | Detail enhancement                                                        |
-| Noise                              | Grain control                                                             |
+| Stage                | Controls                                                                  |
+| -------------------- | -------------------------------------------------------------------------- |
+| White Balance         | Temperature / tint                                                        |
+| Curves                | Per-channel Bézier curves (master + individual R/G/B)                     |
+| Color & Tone          | Hue rotation, saturation, contrast                                        |
+| HSL                   | Selective hue/saturation/lightness control per color range                |
+| Sharpen               | Unsharp mask / kernel / high-pass, with radius, amount and threshold      |
+| Vignette              | Amount, midpoint, feather, circular or rectangular shape                  |
+| Lens                  | Barrel distortion and vertical/horizontal keystone correction, auto-crop  |
+| Stacked LUT           | Apply `.cube` LUT files, tetrahedral interpolation, adjustable strength   |
+| Color Match           | Match tone/color to a reference image (CDF or wavelet method); always applies first, not reorderable |
+
+Three further stages run a model rather than a formula, so results can vary
+run to run — Denoise, Face Restore and Upscale (restoration/upscale models
+you supply, tile-based). Every enabled operation is individually toggleable
+and drag-reorderable (except Color Match). Cropping is a **separate,
+destructive** editor — it changes the image's aspect-ratio bucket, so it is
+not part of this pipeline.
 
 All adjustments include a real-time canvas preview with live histogram visualization.
 
@@ -399,6 +410,16 @@ Dataset version bumping invalidates latent and text embedding caches, ensuring t
 
 #### Neural Upscaling
 Tiled neural upscaling using ESRGAN and SwinIR models for images that need higher resolution before training.
+
+---
+
+### 📁 Projects
+Group the datasets, templates and job history for one LoRA effort so you stop re-picking the same dataset and re-configuring the same training settings for every run. A project scopes its own branched caption/mask/training/adaptive-targeting templates (independent copies of the global ones), links existing datasets without moving files, and exposes a three-step Quick Train flow for launching a run without leaving the page. Export bundles a project's templates and datasets (embed / reference / exclude, chosen per dataset) into one portable zip; the same import wizard detects whether a zip is a dataset, a template bundle or a full project. See [`docs/projects-guide.md`](docs/projects-guide.md).
+
+---
+
+### 🧩 Templates
+A saved configuration you reuse instead of re-deciding it every time — a caption system prompt, masking parameters, a training config per model family, or a set of adaptive-targeting knobs. Created where you tune it (the Datasets tab's caption/masking settings, the Training screen's Template Selection and Adaptive Layer Targeting cards) and listed together on one `/templates` screen, Global or scoped to a project, with per-row edit / edit-JSON / branch / delete plus export and import (single template or a filtered bundle, with an import plan that flags name clashes and missing model definitions first). See [`docs/templates-guide.md`](docs/templates-guide.md).
 
 ---
 
@@ -428,7 +449,7 @@ Supports batch mass-apply across entire datasets.
 
 ### ⚙️ Training Configuration
 
-Training is configured through a **dynamic JSON Schema-driven UI** — the form auto-generates from model-family definitions, so new fields appear automatically without frontend code changes.
+Training is configured through a **dynamic JSON Schema-driven UI** — the form auto-generates from model-family definitions, so new fields appear automatically without frontend code changes. See [`docs/training-guide.md`](docs/training-guide.md) for the full storyline: picking a model, attaching datasets, reading the VRAM estimate, Adaptive Layer Targeting, and every field on the form grouped as the screen groups them.
 
 #### Supported Model Families
 

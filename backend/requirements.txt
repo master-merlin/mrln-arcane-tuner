@@ -70,7 +70,7 @@ pillow-avif-plugin==1.5.2
 platformdirs==4.5.1
 pluggy==1.6.0
 pooch==1.9.0
-portalocker==3.2.0
+portalocker==4.3.0
 primp==0.15.0
 prodigy-plus-schedule-free==2.0.1
 prodigyopt==1.1.2

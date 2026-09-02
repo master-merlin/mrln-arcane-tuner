@@ -21,6 +21,8 @@ import { ModelContextStore } from '../../state/model-context.store';
 import {
     DatasetCaptionSettingsComponent,
     CaptionSettingsState,
+    captionStartBlocked,
+    captionBlockedReasonFor,
 } from '../../components/dataset/dataset-caption-settings/dataset-caption-settings';
 import {
     DatasetRefineSettingsComponent,
@@ -631,10 +633,9 @@ export class MassCaptionModalComponent implements OnInit {
     protected onSettingsChange(state: CaptionSettingsState): void {
         this.currentSettings = state;
         this.settingsReady.set(true);
-        const blocked = state.apiConfigured === false || state.apiReady === false;
-        this.apiBlocked.set(blocked);
-        this.apiBlockedReason.set(!blocked ? ''
-            : (state.apiUnavailableReason ?? 'Checking the captioning provider…'));
+        // ONE gate + ONE sentence for every Generate host (LANE-65, RULE-21).
+        this.apiBlocked.set(captionStartBlocked(state));
+        this.apiBlockedReason.set(captionBlockedReasonFor(state));
         this.multiImageModel.set(state.supportsMultiImage ?? false);
     }
 
@@ -646,7 +647,7 @@ export class MassCaptionModalComponent implements OnInit {
     private startGenerate(): void {
         const name = this.data.datasetName;
         if (!name || !this.currentSettings) return;
-        if (this.apiBlocked() || this.currentSettings.apiConfigured === false) {
+        if (this.apiBlocked() || captionStartBlocked(this.currentSettings)) {
             // The CTA is disabled off this; a keyboard/programmatic start says why.
             if (this.apiBlockedReason()) this.toast.error(this.apiBlockedReason());
             return;

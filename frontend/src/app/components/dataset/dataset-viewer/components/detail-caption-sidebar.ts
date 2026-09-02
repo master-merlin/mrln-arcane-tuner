@@ -1,6 +1,9 @@
 import { Component, input, output, model, inject, signal, computed, effect, viewChild, ElementRef, ChangeDetectionStrategy } from '@angular/core';
 import { FormsModule } from '@angular/forms';
-import { DatasetCaptionSettingsComponent, CaptionSettingsState } from '../../dataset-caption-settings/dataset-caption-settings';
+import {
+    DatasetCaptionSettingsComponent, CaptionSettingsState,
+    apiBlockedReasonFor, captionStartBlocked, captionBlockedReasonFor,
+} from '../../dataset-caption-settings/dataset-caption-settings';
 import { CaptionSuggestionReviewComponent } from './caption-suggestion-review';
 import { DatasetService, type DatasetPair } from '../../../../services/dataset';
 import { DatasetStore } from '../../../../state/dataset.store';
@@ -16,19 +19,9 @@ import { detect } from './caption/ideogram-format';
 import { IdeogramCaptionEditorComponent } from './caption/ideogram-caption-editor';
 import { StructuredCaptionModalComponent } from '../../../../modals/structured-caption/structured-caption-modal';
 
-/** Sentence for a disabled Generate button — names the value that is actually
- *  missing for the provider that is actually selected. Local / Custom is gated
- *  on a Base URL (an OpenAI-compatible server needs no key); every hosted
- *  provider is gated on a key. Getting this wrong sent users hunting for an API
- *  key their Ollama server does not have (LANE-46). */
-export function apiBlockedReasonFor(modelId: string): string {
-    if (modelId === 'api-custom') {
-        return 'No Base URL for Local / Custom — set it in Connection above, '
-            + 'or configure the LLM endpoint on the Server screen.';
-    }
-    const provider = modelId.replace(/^api-/, '');
-    return `No API key for ${provider} — paste it in Connection above and press Save.`;
-}
+/** The blocked-Generate sentence lives beside `CaptionSettingsState` so every
+ *  host reads the one helper (LANE-65); re-exported here for its LANE-46 home. */
+export { apiBlockedReasonFor };
 
 @Component({
     selector: 'app-detail-caption-sidebar',
@@ -359,11 +352,15 @@ export class DetailCaptionSidebarComponent {
     internalShowCaptionPanel = signal<boolean>(true);
     isGeneratingCaption = signal<boolean>(false);
     suggestedCaption = signal<string | null>(null);
-    /** Mirrors `currentSettings.apiConfigured === false` as a signal so the
-     *  Generate button disables reactively when the selected api-* provider
-     *  has no usable key (same gate as the mass-caption modal). */
+    /** True when the selected api-* provider cannot caption right now — no
+     *  usable key (`apiConfigured === false`) OR the backend's readiness
+     *  verdict is not in / negative (`apiReady === false`: endpoint dead, model
+     *  not listed, probe still out). LANE-65 third surface: Generate disables
+     *  off the SAME verdict `POST /captions/generate` refuses with. */
     protected apiBlocked = signal<boolean>(false);
-    /** Why Generate is disabled, named for the provider actually selected. A
+    /** Why Generate is disabled, named for the provider actually selected —
+     *  the backend's own sentence once the probe answered (LANE-65), the
+     *  LANE-46 missing-value sentence while no key / Base URL exists. A
      *  disabled control with no stated reason is the silent-failure form
      *  (ARCHITECTURE D10) — the toast behind this button can never fire,
      *  because the button that would fire it is disabled. */
@@ -580,18 +577,19 @@ export class DetailCaptionSidebarComponent {
         }
         this.lastModelId = state.resolvedModelId;
         this.currentSettings = state;
-        this.apiBlocked.set(state.apiConfigured === false);
-        this.apiBlockedReason.set(
-            state.apiConfigured === false ? apiBlockedReasonFor(state.modelId) : '');
+        this.apiBlocked.set(captionStartBlocked(state));
+        this.apiBlockedReason.set(captionBlockedReasonFor(state));
     }
 
     generateCaption() {
         const pair = this.currentPair();
         if (!pair || !this.currentSettings) return;
-        if (this.currentSettings.apiConfigured === false) {
+        if (captionStartBlocked(this.currentSettings)) {
             // Same sentence as the button's tooltip: for Local / Custom the
-            // missing value is a Base URL, not a key.
-            this.toast.error(apiBlockedReasonFor(this.currentSettings.modelId));
+            // missing value is a Base URL, not a key; once configured it is
+            // the backend's readiness verdict. A keyboard/programmatic call
+            // past the disabled button says why instead of dialing out.
+            this.toast.error(captionBlockedReasonFor(this.currentSettings));
             return;
         }
 

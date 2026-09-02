@@ -86,6 +86,43 @@ export interface CaptionSettingsState {
     captionInstructions: string;
 }
 
+/** Sentence for a Generate button disabled on a MISSING VALUE — names the value
+ *  that is actually missing for the provider that is actually selected. Local /
+ *  Custom is gated on a Base URL (an OpenAI-compatible server needs no key);
+ *  every hosted provider is gated on a key. Getting this wrong sent users hunting
+ *  for an API key their Ollama server does not have (LANE-46). */
+export function apiBlockedReasonFor(modelId: string): string {
+    if (modelId === 'api-custom') {
+        return 'No Base URL for Local / Custom — set it in Connection above, '
+            + 'or configure the LLM endpoint on the Server screen.';
+    }
+    const provider = modelId.replace(/^api-/, '');
+    return `No API key for ${provider} — paste it in Connection above and press Save.`;
+}
+
+/** True when the selected api-* provider cannot caption right now — no usable
+ *  key / Base URL (`apiConfigured === false`) OR the backend's readiness verdict
+ *  is not in / negative (`apiReady === false`: endpoint dead, model not listed,
+ *  probe still out). Local mode (both undefined) is never blocked. LANE-65: the
+ *  ONE gate every host's Generate disables off — the detail sidebar, the
+ *  mass-caption modal, the mass-mask caption tab (RULE-21). */
+export function captionStartBlocked(state: CaptionSettingsState): boolean {
+    return state.apiConfigured === false || state.apiReady === false;
+}
+
+/** The one sentence a blocked Generate shows (tooltip, inline, toast): the
+ *  missing configuration value first (LANE-46), else the backend's readiness
+ *  verdict verbatim (LANE-65 — the string `POST /captions/generate` and
+ *  `/captions/batch` refuse with), else a "checking" note while the probe is
+ *  still out. Empty when nothing blocks. */
+export function captionBlockedReasonFor(state: CaptionSettingsState): string {
+    if (state.apiConfigured === false) return apiBlockedReasonFor(state.modelId);
+    if (state.apiReady === false) {
+        return state.apiUnavailableReason ?? 'Checking the captioning provider…';
+    }
+    return '';
+}
+
 @Component({
     selector: 'app-dataset-caption-settings',
     standalone: true,

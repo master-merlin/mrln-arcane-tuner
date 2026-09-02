@@ -173,3 +173,120 @@ def test_readiness_status_reports_a_key_less_hosted_provider_as_unconfigured(
     assert status["available"] is False
     assert "No API key configured for provider 'openai'" in status["unavailable_reason"]
     assert fake_ollama.hits == []
+
+
+# ─── The single-image Generate (detail sidebar) — the same class, third surface ──
+#
+# ``POST /api/captions/generate`` is what the detail sidebar's "Generate Caption"
+# button fires. It gated on ``apiConfigured`` (a key exists) only; an api-*
+# provider at a dead port or without the model went all the way to the captioner
+# and failed inside it. Same seam, same sentence, refused BEFORE the dataset is
+# even looked up.
+
+
+@pytest.fixture
+def dataset_stub(monkeypatch, tmp_path):
+    """A real image under a stub dataset; ``get_dataset`` records its calls so a
+    test can prove the refusal happened before any dataset work."""
+    from app.core import dataset_manager as dm_mod
+
+    (tmp_path / "a.png").write_bytes(b"\x89PNG\r\n")
+    ds = type("D", (), {"path": str(tmp_path), "media_metadata": {}})()
+    calls: list[str] = []
+
+    def _get(name):
+        calls.append(name)
+        return ds
+
+    monkeypatch.setattr(dm_mod.dataset_manager, "get_dataset", _get)
+    return calls
+
+
+@pytest.fixture
+def captioner(monkeypatch):
+    """Replace the captioner (downstream of the seam) with a recorder."""
+    from app.core.captioning.caption_service import CaptionService
+
+    calls: list[dict] = []
+
+    def _gen(self, **kw):
+        calls.append(kw)
+        return "a caption"
+
+    monkeypatch.setattr(CaptionService, "generate_caption", _gen)
+    return calls
+
+
+def _single(model_id: str, model: str | None = "llava:13b") -> dict:
+    return {
+        "dataset_name": "ds",
+        "image_rel_path": "a.png",
+        "model_id": model_id,
+        "params": {"model": model} if model is not None else {},
+    }
+
+
+def test_single_generate_refuses_an_unreachable_provider_before_any_work(
+        client, dataset_stub, captioner, custom_provider, closed_port) -> None:
+    dead = f"http://127.0.0.1:{closed_port}"
+    custom_provider(dead)
+
+    resp = client.post("/api/captions/generate", json=_single("api-custom"))
+
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert dead in detail and "unreachable" in detail, detail
+    assert "captioning API settings" in detail, detail
+    assert captioner == [], "a refused single caption must never reach the captioner"
+    assert dataset_stub == [], "refused before the dataset is looked up"
+
+
+def test_single_generate_refuses_a_model_the_provider_does_not_list(
+        client, dataset_stub, captioner, custom_provider, fake_ollama) -> None:
+    fake_ollama.models[:] = ["llama3.2-vision:11b"]
+    custom_provider(fake_ollama.url)
+
+    resp = client.post("/api/captions/generate", json=_single("api-custom", "llava:13b"))
+
+    assert resp.status_code == 409, resp.text
+    detail = resp.json()["detail"]
+    assert "llava:13b" in detail and "not installed" in detail, detail
+    assert captioner == []
+
+
+def test_single_generate_positive_control_reachable_with_the_model_captions(
+        client, dataset_stub, captioner, custom_provider, fake_ollama) -> None:
+    fake_ollama.models[:] = ["llava:13b"]
+    custom_provider(fake_ollama.url)
+
+    resp = client.post("/api/captions/generate", json=_single("api-custom", "llava:13b"))
+
+    assert resp.status_code == 200, resp.text
+    assert resp.json() == {"caption": "a caption"}
+    assert len(captioner) == 1 and captioner[0]["model_id"] == "api-custom"
+    assert "/v1/models" in fake_ollama.hits, fake_ollama.hits
+
+
+def test_single_generate_local_makes_no_probe_and_still_captions(
+        client, dataset_stub, captioner, custom_provider, fake_ollama) -> None:
+    custom_provider(fake_ollama.url)          # reachable, but lists nothing
+
+    resp = client.post("/api/captions/generate", json=_single("florence-2", "llava:13b"))
+
+    assert resp.status_code == 200, resp.text
+    assert len(captioner) == 1
+    assert fake_ollama.hits == [], "local captioning must not dial the api-* provider"
+
+
+def test_single_generate_refusal_is_the_readiness_sentence(
+        client, dataset_stub, captioner, custom_provider, closed_port) -> None:
+    """RULE-21: the sidebar's Generate disables off the readiness route — the
+    409 the forced click meets carries the very same string."""
+    custom_provider(f"http://127.0.0.1:{closed_port}")
+
+    status = client.get("/api/captions/api-providers/custom/readiness",
+                        params={"model": "llava:13b"}).json()
+    refusal = client.post("/api/captions/generate", json=_single("api-custom", "llava:13b"))
+
+    assert refusal.status_code == 409
+    assert status["unavailable_reason"] == refusal.json()["detail"]

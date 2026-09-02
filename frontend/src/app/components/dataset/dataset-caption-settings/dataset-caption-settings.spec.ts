@@ -54,6 +54,7 @@ describe('DatasetCaptionSettingsComponent Local/API tabs', () => {
                     listProviders: vi.fn().mockReturnValue(of([])),
                     updateProvider: vi.fn().mockReturnValue(of({})),
                     listModels: vi.fn().mockReturnValue(of([])),
+                    readiness: vi.fn().mockReturnValue(of({ provider: 'openai', base_url: '', available: true, unavailable_reason: null })),
                 } },
                 { provide: OverlayStore, useValue: { openModal: vi.fn() } },
             ],
@@ -247,6 +248,7 @@ describe('DatasetCaptionSettings — Additional instructions (structured caption
                     listProviders: vi.fn().mockReturnValue(of([])),
                     updateProvider: vi.fn().mockReturnValue(of({})),
                     listModels: vi.fn().mockReturnValue(of([])),
+                    readiness: vi.fn().mockReturnValue(of({ provider: 'openai', base_url: '', available: true, unavailable_reason: null })),
                 } },
                 { provide: ModelContextStore, useValue: mockModelContext },
                 { provide: OverlayStore, useValue: { openModal: vi.fn() } },
@@ -332,7 +334,7 @@ describe('DatasetCaptionSettings — copy-on-edit of default templates', () => {
                     },
                 },
                 { provide: TemplateService, useValue: svc },
-                { provide: ApiCaptionService, useValue: { listProviders: () => of([]) } },
+                { provide: ApiCaptionService, useValue: { listProviders: () => of([]), readiness: () => of({ available: true, unavailable_reason: null }) } },
                 { provide: OverlayStore, useValue: { openModal: vi.fn() } },
             ],
         });
@@ -476,7 +478,7 @@ describe('DatasetCaptionSettings — delete template via confirm modal', () => {
                     },
                 },
                 { provide: TemplateService, useValue: svc },
-                { provide: ApiCaptionService, useValue: { listProviders: () => of([]) } },
+                { provide: ApiCaptionService, useValue: { listProviders: () => of([]), readiness: () => of({ available: true, unavailable_reason: null }) } },
                 { provide: OverlayStore, useValue: overlay },
             ],
         });
@@ -559,6 +561,7 @@ describe('DatasetCaptionSettingsComponent — inherited endpoint (LANE-46)', () 
                     listProviders: vi.fn().mockReturnValue(of([status])),
                     updateProvider: vi.fn().mockReturnValue(of(status)),
                     listModels: vi.fn().mockReturnValue(of([])),
+                    readiness: vi.fn().mockReturnValue(of({ provider: 'openai', base_url: '', available: true, unavailable_reason: null })),
                 } },
                 { provide: OverlayStore, useValue: { openModal: vi.fn() } },
             ],
@@ -617,5 +620,106 @@ describe('DatasetCaptionSettingsComponent — inherited endpoint (LANE-46)', () 
         const input = fixture.nativeElement.querySelector('[data-testid="api-base-url"]') as HTMLInputElement;
         expect(input.value).toBe('');
         expect(fixture.nativeElement.querySelector('[data-testid="api-base-url-inherited"]')).toBeNull();
+    });
+});
+
+// LANE-65: the Generate CTA gates on the backend's readiness verdict for the
+// selected api-* provider + model, carried in settingsChanged. The lesson of
+// LANE-57 applies: a probe still out must NOT pass the gate.
+describe('DatasetCaptionSettings — api-* readiness (LANE-65)', () => {
+    let api: any;
+    let comp: any;
+    let last: any;
+
+    beforeEach(() => {
+        vi.useFakeTimers({ toFake: ['setTimeout', 'clearTimeout', 'setInterval', 'clearInterval', 'Date'] });
+        api = {
+            listProviders: vi.fn().mockReturnValue(of([
+                { provider: 'openai', configured: true, key_masked: 'sk-…1234', base_url: 'https://api.openai.com/v1', base_url_source: 'builtin' },
+                { provider: 'custom', configured: true, key_masked: '', base_url: 'http://127.0.0.1:1/v1', base_url_source: 'provider' },
+            ])),
+            updateProvider: vi.fn().mockReturnValue(of({})),
+            listModels: vi.fn().mockReturnValue(of([])),
+            readiness: vi.fn().mockReturnValue(of({ provider: 'openai', base_url: '', available: true, unavailable_reason: null })),
+        };
+        TestBed.configureTestingModule({
+            providers: [
+                { provide: DatasetService, useValue: { unloadModels: vi.fn().mockReturnValue(of({})) } },
+                { provide: ProjectService, useValue: {
+                    activeDatasetProject: () => null,
+                    getPreferences: vi.fn(() => of({ selected_caption_model: 'florence-2', qwen3_variant: '4B-Instruct', active_caption_template: null })),
+                    updatePreferences: vi.fn().mockReturnValue(of({})),
+                } },
+                { provide: TemplateService, useValue: {
+                    listCaptioningTemplates: vi.fn((modelId: string) => of([makeTemplate(modelId)])),
+                    recordUse: vi.fn(),
+                } },
+                { provide: ApiCaptionService, useValue: api },
+                { provide: OverlayStore, useValue: { openModal: vi.fn() } },
+            ],
+        });
+        const fixture = TestBed.createComponent(DatasetCaptionSettingsComponent);
+        fixture.detectChanges();
+        comp = fixture.componentInstance;
+        comp.settingsChanged.subscribe((s: any) => (last = s));
+    });
+    afterEach(() => { vi.useRealTimers(); });
+
+    it('local mode never probes and leaves apiReady / apiUnavailableReason undefined', () => {
+        comp.onModelChange('joycaption');
+        vi.runAllTimers();
+        expect(api.readiness).not.toHaveBeenCalled();
+        expect(last.apiReady).toBeUndefined();
+        expect(last.apiUnavailableReason).toBeUndefined();
+    });
+
+    it('a probe still out is apiReady=false with no reason — a pending check never passes the gate', () => {
+        comp.switchMode('api');
+        expect(last.modelId).toBe('api-openai');
+        expect(last.apiReady).toBe(false);
+        expect(last.apiUnavailableReason).toBeNull();
+        expect(api.readiness).not.toHaveBeenCalled();   // debounced: not yet dialled
+    });
+
+    it('carries the backend sentence verbatim as apiUnavailableReason and apiReady=false', () => {
+        const reason = 'LLM endpoint http://127.0.0.1:1/v1 is unreachable - start it, or configure and test it on the captioning API settings (Connection).';
+        api.readiness.mockReturnValue(of({ provider: 'custom', base_url: 'http://127.0.0.1:1/v1', available: false, unavailable_reason: reason }));
+        comp.switchMode('api');
+        comp.onModelChange('api-custom');
+        comp.updateParam('model', 'llava:13b');
+        vi.runAllTimers();
+        expect(api.readiness).toHaveBeenLastCalledWith('custom', 'llava:13b');
+        expect(last.apiReady).toBe(false);
+        expect(last.apiUnavailableReason).toBe(reason);
+    });
+
+    it('an available verdict makes apiReady=true with a null reason', () => {
+        comp.switchMode('api');
+        vi.runAllTimers();
+        expect(api.readiness).toHaveBeenCalledWith('openai', expect.anything());
+        expect(last.apiReady).toBe(true);
+        expect(last.apiUnavailableReason).toBeNull();
+    });
+
+    it('changing the provider model re-probes, and the old answer does not gate the new selection', () => {
+        comp.switchMode('api');
+        vi.runAllTimers();
+        expect(last.apiReady).toBe(true);
+        api.readiness.mockReturnValue(of({ provider: 'openai', base_url: '', available: false,
+            unavailable_reason: 'Model gpt-9 is not installed on https://api.openai.com/v1 - pick one the provider lists (Fetch models in the captioning API settings).' }));
+        comp.updateParam('model', 'gpt-9');
+        expect(last.apiReady).toBe(false);          // stale answer keyed to the old model: not trusted
+        expect(last.apiUnavailableReason).toBeNull();
+        vi.runAllTimers();
+        expect(api.readiness).toHaveBeenLastCalledWith('openai', 'gpt-9');
+        expect(last.apiUnavailableReason).toContain('gpt-9');
+    });
+
+    it('a probe that fails to answer is apiReady=false with a "could not check" reason, never ready', () => {
+        api.readiness.mockReturnValue(throwError(() => new Error('502')));
+        comp.switchMode('api');
+        vi.runAllTimers();
+        expect(last.apiReady).toBe(false);
+        expect(last.apiUnavailableReason).toContain('Could not check');
     });
 });

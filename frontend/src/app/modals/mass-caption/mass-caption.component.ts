@@ -244,9 +244,13 @@ type Tab = 'generate' | 'refine';
 
         @if (data.datasetName && !running()) {
             <div class="modal-foot mc-foot">
+                @if (tab() === 'generate' && apiBlocked()) {
+                    <p class="mc-blocked" data-testid="generate-blocked-reason">{{ apiBlockedReason() }}</p>
+                }
                 <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
                 <button class="btn cta" type="button"
                         [disabled]="!canStart()"
+                        [title]="tab() === 'generate' && apiBlocked() ? apiBlockedReason() : ''"
                         (click)="start()">
                     <app-ico name="Play" [size]="12"/>
                     {{ ctaLabel() }}
@@ -336,7 +340,8 @@ type Tab = 'generate' | 'refine';
 
         .mc-stop { width: 100%; justify-content: center; }
 
-        .mc-foot { display: flex; justify-content: flex-end; gap: 8px; }
+        .mc-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+        .mc-blocked { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 11px; color: var(--color-danger, #e5484d); }
         .btn.cta {
             display: inline-flex; align-items: center; gap: 8px;
             background: var(--color-brand);
@@ -503,9 +508,15 @@ export class MassCaptionModalComponent implements OnInit {
     /** Mirrors `currentSettings` as a signal so `canStart` (a computed) reacts
      *  when the embedded caption-settings child emits its first state. */
     protected settingsReady = signal<boolean>(false);
-    /** Mirrors `currentSettings.apiConfigured === false` as a signal — when the
-     *  selected api-* provider has no usable key, the CTA stays disabled. */
+    /** True when the selected api-* provider cannot serve a batch right now —
+     *  no usable key (`apiConfigured === false`) OR the backend's readiness
+     *  verdict is not in / negative (`apiReady === false`: endpoint dead, model
+     *  not listed, probe still out). LANE-65: the Generate CTA disables off
+     *  the SAME verdict `POST /captions/batch` refuses with, like Refine does. */
     protected apiBlocked = signal<boolean>(false);
+    /** The sentence behind {@link apiBlocked} — the backend's own words,
+     *  shown beside the CTA and as its tooltip. */
+    protected apiBlockedReason = signal<string>('');
     protected canStart = computed(() => this.ctaCount() > 0 && (this.tab() === 'refine'
         ? !!this.refineSettings()
         : (this.settingsReady() && !this.apiBlocked())));
@@ -620,7 +631,10 @@ export class MassCaptionModalComponent implements OnInit {
     protected onSettingsChange(state: CaptionSettingsState): void {
         this.currentSettings = state;
         this.settingsReady.set(true);
-        this.apiBlocked.set(state.apiConfigured === false);
+        const blocked = state.apiConfigured === false || state.apiReady === false;
+        this.apiBlocked.set(blocked);
+        this.apiBlockedReason.set(!blocked ? ''
+            : (state.apiUnavailableReason ?? 'Checking the captioning provider…'));
         this.multiImageModel.set(state.supportsMultiImage ?? false);
     }
 
@@ -631,7 +645,12 @@ export class MassCaptionModalComponent implements OnInit {
 
     private startGenerate(): void {
         const name = this.data.datasetName;
-        if (!name || !this.currentSettings || this.currentSettings.apiConfigured === false) return;
+        if (!name || !this.currentSettings) return;
+        if (this.apiBlocked() || this.currentSettings.apiConfigured === false) {
+            // The CTA is disabled off this; a keyboard/programmatic start says why.
+            if (this.apiBlockedReason()) this.toast.error(this.apiBlockedReason());
+            return;
+        }
         const target = this.target();
 
         const defId = this.modelContext.activeDefinitionId();

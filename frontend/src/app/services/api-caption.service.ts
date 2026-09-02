@@ -14,6 +14,16 @@ export interface ApiProviderStatus {
     base_url_source: 'provider' | 'server_settings' | 'builtin' | 'none';
 }
 
+/** Can a caption batch through this provider start right now? `unavailable_reason`
+ *  is the very sentence `POST /captions/batch` refuses with (409) — one producer
+ *  on the backend (LANE-65, RULE-21); null when a batch may start. */
+export interface ApiProviderReadiness {
+    provider: string;
+    base_url: string;
+    available: boolean;
+    unavailable_reason: string | null;
+}
+
 @Injectable({ providedIn: 'root' })
 export class ApiCaptionService {
     private http = inject(HttpClient);
@@ -39,5 +49,13 @@ export class ApiCaptionService {
         return this.http
             .get<{ models: string[] }>(`${this.apiUrl}/${encodeURIComponent(provider)}/models`)
             .pipe(map(r => r.models));
+    }
+
+    /** One probe of the provider the Generate tab will caption through, judged
+     *  by the same predicate the batch boundary refuses on. */
+    readiness(provider: string, model?: string): Observable<ApiProviderReadiness> {
+        const params: Record<string, string> = model ? { model } : {};
+        return this.http.get<ApiProviderReadiness>(
+            `${this.apiUrl}/${encodeURIComponent(provider)}/readiness`, { params });
     }
 }

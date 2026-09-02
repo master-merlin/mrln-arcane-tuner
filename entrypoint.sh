@@ -66,7 +66,11 @@ if [ "$(id -u)" = "0" ]; then
     fi
 fi
 
-BACKEND_DIR="/app/backend"
+# The checkout is MRLN_APP_DIR (the same variable the self-updater reads,
+# backend/app/core/self_update.py) — which is also what lets the supervisor
+# loop below be exercised by a test outside a container.
+export MRLN_APP_DIR="${MRLN_APP_DIR:-/app}"
+BACKEND_DIR="$MRLN_APP_DIR/backend"
 
 # ── Symlink the app's working dirs onto the persistent volume ────────────
 link_dir() {
@@ -96,12 +100,22 @@ export MRLN_FRONTEND_DIST="${MRLN_FRONTEND_DIST:-/app/frontend/browser}"
 # server on a port the settings screen denies, which is the silent disagreement
 # this replaced. MRLN_SETTINGS_PATH is exported above, so the resolver reads the
 # volume's settings file rather than the ephemeral checkout's.
-if ! PORT="$(python "$BACKEND_DIR/port_resolver.py")"; then
-    echo "[entrypoint] refusing to start: the backend port could not be determined." >&2
-    echo "[entrypoint] the reason is above; the settings file is $MRLN_SETTINGS_PATH" >&2
-    exit 1
-fi
-export PORT
+#
+# Resolved before EVERY launch, not once: a restart must pick up a port the
+# user moved on the settings screen while the old server ran (the restart
+# contract, backend/app/core/restart_contract.py). The operator's own PORT is
+# remembered and handed to the resolver each time, so re-resolving never turns
+# the previous answer into an override of the settings file.
+OPERATOR_PORT="${PORT:-}"
+resolve_port() {
+    if ! PORT="$(PORT="$OPERATOR_PORT" python "$BACKEND_DIR/port_resolver.py")"; then
+        echo "[entrypoint] refusing to start: the backend port could not be determined." >&2
+        echo "[entrypoint] the reason is above; the settings file is $MRLN_SETTINGS_PATH" >&2
+        exit 1
+    fi
+    export PORT
+}
+resolve_port
 
 # Hugging Face cache → persistent volume so downloaded base models / encoders
 # survive pod restarts and download only once. HF_HOME is the umbrella var that
@@ -137,7 +151,7 @@ echo "[entrypoint] data_dir=$DATA_DIR port=$PORT auth=$AUTH_STATE hf_token_env=$
 # Launched only when the binary is present (the image installs it best-effort).
 # A missing or failing Ollama must NEVER prevent the FastAPI app from starting,
 # so the whole block is guarded and backgrounded — no failure mode propagates
-# to the `exec uvicorn` below. Models live under the data volume so pulls
+# to the uvicorn launch below. Models live under the data volume so pulls
 # survive pod restarts.
 if command -v ollama >/dev/null 2>&1; then
     export OLLAMA_MODELS="${DATA_DIR}/models/ollama"
@@ -166,4 +180,48 @@ if [ -z "${MRLN_AUTH_TOKEN:-}" ]; then
     echo "[entrypoint] the app will refuse to start. Set MRLN_AUTH_TOKEN in the pod"
     echo "[entrypoint] template, or set MRLN_BIND_HOST=127.0.0.1 for a private run."
 fi
-exec python -m uvicorn app.main:app --host "$MRLN_BIND_HOST" --port "$PORT"
+
+# ── Supervise: relaunch in this container on the restart sentinel ────────
+# This script is the server's SUPERVISOR (the restart contract lives in
+# backend/app/core/restart_contract.py, the one producer of the exit code):
+# the server is told it is supervised, and when it exits with code 75 —
+# "relaunch me", what a restart from the UI or the self-updater asks for — it
+# is started again here, in this container, with MRLN_RESTART=1 and the port
+# resolved afresh. Any other exit code is the container's exit code too: a
+# crash must not loop.
+#
+# Not `exec`: with uvicorn as PID 1 its exit tore the namespace down, so a
+# restart from the UI simply ended the container (README's "restarts itself"
+# was true only from this change on). The shell stays PID 1 and forwards
+# TERM/INT to the server, so `docker stop` still reaches uvicorn and the
+# container exits with the server's code within the grace period, not 143.
+#
+# Written FOR `set -euo pipefail`, and every line of it matters:
+#   * `wait` on the LEFT of `||` is exempt from errexit, and `$?` on the right
+#     is wait's status — a bare `wait "$pid"` returning 75 would abort the
+#     script at that line before any comparison;
+#   * a TERM delivered during the first wait returns 128+15 BEFORE the child
+#     has exited (bash runs the trap first); only the second wait, in the same
+#     guarded form, yields the child's real code;
+#   * the trap is installed before the first launch and reads `${pid:-}`,
+#     because under `set -u` a bare `$pid` in a trap that fires early aborts.
+export MRLN_SUPERVISED=1
+pid=""
+forward_signal() {
+    if [ -n "${pid:-}" ] && kill -0 "$pid" 2>/dev/null; then
+        kill -TERM "$pid" 2>/dev/null || true
+    fi
+}
+trap forward_signal TERM INT
+while :; do
+    python -m uvicorn app.main:app --host "$MRLN_BIND_HOST" --port "$PORT" &
+    pid=$!
+    code=0; wait "$pid" || code=$?
+    code=0; wait "$pid" || code=$?
+    if [ "$code" -ne 75 ]; then
+        exit "$code"
+    fi
+    echo "[entrypoint] restart requested - starting again in this container"
+    export MRLN_RESTART=1
+    resolve_port
+done

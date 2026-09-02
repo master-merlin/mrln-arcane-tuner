@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import os
 import sys
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -13,6 +14,17 @@ import structlog
 # of the process CWD (whether the backend was launched via start_backend.bat,
 # uvicorn from the repo root, an IDE run config, or a restart subprocess).
 SERVER_LOG_PATH = Path(__file__).resolve().parents[2] / "server.log"
+
+# The PREVIOUS session's log. `setup_logging` MOVES `server.log` here instead of
+# deleting it, and that difference is the whole point (LANE-56, measured
+# 2026-09-01): the boot whose log everyone needs is the one that FAILED, and the
+# next boot is the user's recovery — so the old code had the recovery destroy
+# the evidence of the failure it was recovering from, every single time. One
+# generation is kept, not more: the property `server.log` must keep is "this
+# session only" (`/api/system/logs` and the Server screen read it and would
+# otherwise show a foreign boot's lines as if they were this one's), and a
+# bounded history keeps that while making the previous boot answerable.
+PREVIOUS_SERVER_LOG_PATH = Path(__file__).resolve().parents[2] / "server.prev.log"
 
 
 _log_loop = None
@@ -154,14 +166,27 @@ def _add_service(_logger, _name, event_dict):
 def setup_logging(log_level: str = "INFO", include_file_handler: bool = True):
     """
     Configures structlog for JSON output and standard logging integration.
-    Resets server.log on startup to ensure a clean log for each session.
+    Starts a fresh server.log for each session, keeping the previous one.
     """
-    # Reset server.log on startup for clean analysis
+    # ROTATE, never delete (LANE-56). The property this has to keep is "one
+    # session per server.log" — the file handler below opens in append mode, so
+    # without this step every boot would pile onto the last and the Server
+    # screen would show a foreign session's lines. The property it must STOP
+    # breaking is that the deleted session is always the interesting one: a
+    # replacement server that failed to start logs here, and the very next
+    # start is the user's recovery, which used to unlink it.
     if include_file_handler:
         try:
-            SERVER_LOG_PATH.unlink(missing_ok=True)
+            if SERVER_LOG_PATH.exists():
+                os.replace(SERVER_LOG_PATH, PREVIOUS_SERVER_LOG_PATH)
         except OSError:
-            pass  # File may be locked by previous process
+            # Windows: a previous process that has not fully exited still holds
+            # the handle, and then unlink cannot succeed either. Best effort,
+            # both ways — a start may never fail because of its own logging.
+            try:
+                SERVER_LOG_PATH.unlink(missing_ok=True)
+            except OSError:
+                pass
 
 
     # Shared processors

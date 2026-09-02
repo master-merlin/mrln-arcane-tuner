@@ -12,6 +12,7 @@ from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 
 from app.core.logger import SERVER_LOG_PATH, get_logger
+from app.core.restart_contract import RESTART_EXIT_CODE, is_supervised
 from app.core.self_update import self_update_service
 
 # ``restart_launcher`` sits at backend/ rather than inside ``app`` because it
@@ -100,7 +101,8 @@ def report_pending_restart_failure() -> dict | None:
 
     A restart that fails leaves nobody running to tell anyone: the console this
     process was watching is gone with the process, and ``server.log`` is
-    unlinked by ``setup_logging`` on the next startup. So the launcher's record
+    rotated to ``server.prev.log`` by ``setup_logging`` on the next startup
+    (and out of existence by the one after). So the launcher's record
     outlives it in ``restart.log``, and the first server to start afterwards —
     which is the user's recovery, ``start_backend.bat`` — says it out loud in
     the log the Server screen already shows.
@@ -141,8 +143,34 @@ async def _restart_server_logic() -> None:
     the port afresh (settings may have moved it since this process launched),
     starts the replacement with the restart log as its stdout/stderr, and
     watches it until it serves or dies. See that module's docstring.
+
+    Unless a SUPERVISOR started us (LANE-56, ``app/core/restart_contract.py``):
+    then this process exits with the sentinel code and spawns NOTHING — the
+    relaunch belongs to the owner of the console (``start_backend.bat``,
+    ``entrypoint.sh``), which is the only thing that can bring the replacement
+    back in the terminal the user is watching. A replacement spawned by the
+    process that is dying is an orphan by construction, and every fix since
+    July made that orphan observable without curing it.
+
+    Both callers come through here: the route below and the self-updater's
+    restart step (``self_update.py`` ``_do_restart``), so the branch lives at
+    the top of this one function and nowhere else.
     """
     await asyncio.sleep(2.0)  # Let the HTTP response flush
+
+    if is_supervised():
+        logger.info(
+            "restart_handoff",
+            mode="supervisor",
+            exit_code=RESTART_EXIT_CODE,
+            message=(f"exiting with code {RESTART_EXIT_CODE} so the supervisor that "
+                     "started this server relaunches it — the story continues in the "
+                     "terminal it was started from"),
+        )
+        # The same bounded, off-loop window as the launcher path (below), so the
+        # line above reaches the queued WebSocket log mirror before the exit.
+        restart_launcher.schedule_exit(0.25, code=RESTART_EXIT_CODE)
+        return
 
     orig_args = getattr(sys, "orig_argv", [sys.executable] + sys.argv)
     replacement = [sys.executable] + list(orig_args[1:])
@@ -190,19 +218,27 @@ async def _restart_server_logic() -> None:
         # The child holds its own duplicate of the handle.
         log_handle.close()
 
-    # The last thing this console ever shows: where the rest of the story is.
-    # Silence with no explanation was the user-visible half of LANE-51.
+    # The last thing THIS process says. The console does not go quiet after it:
+    # the launcher narrates the restart to the same terminal until the
+    # replacement serves (LANE-56 — telling the user the console was about to go
+    # quiet was accurate and was still the wrong answer, because a silent wait
+    # of minutes is one he ends).
     logger.info(
         "restart_handoff",
+        mode="launcher",
         restart_log=str(restart_launcher.RESTART_LOG_PATH),
-        message=("this console goes quiet now — the replacement server's output and "
-                 "the outcome of its start are written to restart.log"),
+        message=("handing over to the restart launcher — it reports progress on this "
+                 "terminal until the replacement is serving, and the full output of "
+                 "its start is written to restart.log"),
     )
 
     # Not a port handoff (the launcher waits for the port itself) — only a
     # window for that last line to reach the queued WebSocket log mirror.
-    await asyncio.sleep(0.25)
-    os._exit(0)
+    # OFF the event loop, and that is the point (LANE-56): taken as
+    # `await asyncio.sleep(0.25)` this window was MEASURED at 26 s, because the
+    # loop had other work and did not come back — 26 s of a port this process
+    # no longer wants, with the launcher and the user both waiting on it.
+    restart_launcher.schedule_exit(0.25)
 
 
 @router.post("/restart", response_model=MessageResponse)

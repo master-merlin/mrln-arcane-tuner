@@ -22,6 +22,7 @@ backend/models/
 backend/.*
 backend/settings.json
 backend/server.log
+backend/server.prev.log
 backend/restart.log
 backend/tests/tests.log
 *.db

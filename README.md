@@ -655,7 +655,7 @@ card.
 - **Backend & frontend port configuration** — set in Server Settings; the backend reads the saved port on its next start (the platform's own port outranks it inside a container)
 - **Log level control** — adjust structured logging verbosity at runtime
 - **Frontend auto-start** — optionally launch the Angular dev server and open a browser on backend startup
-- **System restart** — restart the backend from the UI
+- **System restart** — restart the backend from the UI. Started by `start_backend.bat` or the container entrypoint, the server exits and that same terminal (or container) starts it again, with the SPA reconnecting on its own. Started by hand with `uvicorn`, a launcher restarts it instead, reports progress in that terminal and keeps the full record in `backend/restart.log`. After updating the code, stop a server started by `start_backend.bat` and start the bat afresh once: `cmd` reads a batch file from disk as it runs, so a changed bat must not be restarted from under a running one.
 - **GPU monitoring** — real-time GPU utilization and VRAM usage display
 
 ---

@@ -57,6 +57,8 @@ lines):
 
 ## Restart, updates
 
+![Restart backend confirm dialog — warns that active jobs keep running but the connection drops for a few seconds](images/server-restart-confirm.png)
+
 **Restart server** asks for confirmation, then restarts the backend process
 and shows a global lock overlay until it's back — it stays locked even if
 you navigate away from this tab while it's restarting.

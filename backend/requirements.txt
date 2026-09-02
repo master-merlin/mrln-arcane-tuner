@@ -60,7 +60,7 @@ numba==0.63.1
 numpy==2.3.5
 nvidia-ml-py==13.590.48; sys_platform != 'darwin'
 onnxruntime-gpu==1.23.2; sys_platform != 'darwin'
-opencv-python-headless==4.13.0.90
+opencv-python-headless==5.0.0.93
 optimum-quanto==0.2.7
 packaging==26.0
 pandas==3.0.1

@@ -4,6 +4,7 @@ caption coverage, harmonization, and the Dataset Pydantic model.
 """
 
 import os
+import threading
 
 import pytest
 from unittest.mock import patch, MagicMock
@@ -789,3 +790,77 @@ def test_discover_and_list_registers_new_folders(manager):
     names = manager.discover_and_list_dataset_names()
     assert "freshds" in names
     assert "freshds" in manager.datasets
+
+
+# ── LANE-58: /pairs reads its sidecars concurrently ───────────────────────
+
+
+def test_get_dataset_pairs_reads_sidecars_concurrently(manager):
+    """The first ``/pairs`` of a session is the workspace's first paint, and
+    it used to read every caption sidecar one after another — MEASURED at
+    ~50 ms per cold open on the user's box, 2.16 s for 38 captions, all of it
+    a black grid. The reads must overlap: hold each read open until ALL of
+    them have arrived and prove the call still returns with every caption
+    intact. Under serial reads the barrier never fills and the call hangs —
+    the test then fails on the barrier timeout, not by luck of timing.
+    """
+    ds = manager.create_dataset("sidecars")
+    n = 6
+    for i in range(n):
+        _create_image(os.path.join(ds.path, f"img{i}.png"))
+        _create_caption(os.path.join(ds.path, f"img{i}.txt"), f"caption {i}")
+
+    barrier = threading.Barrier(n, timeout=5)
+    real_read = manager.read_caption
+
+    def gated_read(name, filename):
+        # Every caption read must be in flight at once for the barrier to
+        # release; a serial loop would block here forever on the first one.
+        barrier.wait()
+        return real_read(name, filename)
+
+    with patch.object(manager, "read_caption", side_effect=gated_read):
+        pairs = manager.get_dataset_pairs("sidecars")
+
+    assert [p["caption_content"] for p in pairs] == [f"caption {i}" for i in range(n)]
+    assert barrier.broken is False
+
+
+def test_get_dataset_pairs_sidecar_pool_is_bounded(manager, monkeypatch):
+    """More pairs than the worker bound must not mean more threads: the pool
+    is capped at ``_SIDECAR_READ_WORKERS`` and sized down to the pair count
+    when that is smaller (D10: every pool bounded)."""
+    from app.core import dataset_manager as dm
+
+    ds = manager.create_dataset("bounded")
+    for i in range(5):
+        _create_image(os.path.join(ds.path, f"img{i}.png"))
+        _create_caption(os.path.join(ds.path, f"img{i}.txt"), f"c{i}")
+
+    seen: list[int] = []
+    real_pool = dm.ThreadPoolExecutor
+
+    class RecordingPool(real_pool):
+        def __init__(self, max_workers=None, **kw):
+            seen.append(max_workers)
+            super().__init__(max_workers=max_workers, **kw)
+
+    monkeypatch.setattr(dm, "ThreadPoolExecutor", RecordingPool)
+    monkeypatch.setattr(dm, "_SIDECAR_READ_WORKERS", 3)
+
+    pairs = manager.get_dataset_pairs("bounded")
+
+    assert len(pairs) == 5
+    assert seen == [3]                       # 5 pairs, bound 3 -> 3 workers
+    assert [p["caption_content"] for p in pairs] == [f"c{i}" for i in range(5)]
+
+    seen.clear()
+    ds2 = manager.create_dataset("bounded2")
+    _create_image(os.path.join(ds2.path, "one.png"))
+    manager.get_dataset_pairs("bounded2")
+    assert seen == [1]                       # 1 pair -> 1 worker, not 3
+
+    seen.clear()
+    manager.create_dataset("empty")
+    assert manager.get_dataset_pairs("empty") == []
+    assert seen == []                        # nothing to read -> no pool

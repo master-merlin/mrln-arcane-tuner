@@ -27,6 +27,7 @@ import { ProjectMembershipPillComponent } from './project-membership-pill/projec
 import { IcoComponent } from '../icons/ico.component';
 import { FilmstripScrubberComponent } from './filmstrip-scrubber/filmstrip-scrubber.component';
 import { BrowseMode } from './modes/browse-mode';
+import { GridSkeletonComponent } from './grid-skeleton.component';
 import { DetailsMode } from './modes/details-mode';
 import { EditMode } from './modes/edit-mode';
 
@@ -57,6 +58,10 @@ import { EditMode } from './modes/edit-mode';
  *   Mutation handlers below are the SOLE entry points; child
  *   components (browse-mode, details-mode) only emit intent events.
  */
+/** Rows of placeholder tiles the LANE-58 skeleton draws at most — a tile is
+ *  480px tall, so four rows already overflow any viewport in use. */
+const SKELETON_MAX_ROWS = 4;
+
 @Component({
     selector: 'app-dataset-workspace',
     standalone: true,
@@ -71,6 +76,7 @@ import { EditMode } from './modes/edit-mode';
         BrowseMode,
         DetailsMode,
         EditMode,
+        GridSkeletonComponent,
     ],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './dataset-workspace.component.html',
@@ -92,8 +98,35 @@ export class DatasetWorkspaceComponent {
     /** Datasets whose `/pairs` we've fetched at least once (acts as the
      *  load-state marker; the actual rows now live in MediaItemStore). */
     private loadedDatasets = signal<Set<string>>(new Set());
+    /** Datasets whose `/pairs` fetch is in flight RIGHT NOW (LANE-58). Distinct
+     *  from `loadedDatasets`, which flips before the await and stays set. */
+    private pairsInFlight = signal<Set<string>>(new Set());
     /** Resolved-on-demand dataset rows (for ids not in the store yet). */
     private extraDatasets = signal<Record<string, Dataset>>({});
+
+    /**
+     * True only while the FIRST `/pairs` of this dataset is in flight and
+     * nothing is in the store yet — the moment the browse body would
+     * otherwise paint `var(--color-base)` with no children (LANE-58: the
+     * "black screen, then the images"). A refresh of a dataset that already
+     * has rows must NOT trip this: every mutation funnels through
+     * `refreshDataset`, and blanking a populated grid on each would be a
+     * regression far worse than the one being fixed.
+     */
+    protected pairsPending = computed<boolean>(() => {
+        const d = this.dataset();
+        if (!d) return false;
+        return this.pairsInFlight().has(d.name) && this.pairs().length === 0;
+    });
+
+    /** Placeholder tiles for the skeleton: the row's media count, capped to
+     *  what could be on screen. Unknown count → one row at the density. */
+    protected skeletonSlots = computed<number>(() => {
+        const count = this.dataset()?.multimedia_count;
+        const cols = this.density();
+        if (!Number.isFinite(count) || (count as number) <= 0) return cols;
+        return Math.min(count as number, cols * SKELETON_MAX_ROWS);
+    });
 
     protected ws = computed(() => this.overlay.workspace());
 
@@ -415,10 +448,21 @@ export class DatasetWorkspaceComponent {
         if (this.loadedDatasets().has(name)) return;
         // Mark loaded BEFORE the await so re-entries don't double-fetch.
         this.loadedDatasets.update(s => new Set(s).add(name));
-        // Reconcile (replace + evict ghosts) through the shared sync service so
-        // first-open and refresh share one codepath. refreshDataset swallows
-        // its own errors and coalesces concurrent calls.
-        await this.sync.refreshDataset(name);
+        this.pairsInFlight.update(s => new Set(s).add(name));
+        try {
+            // Reconcile (replace + evict ghosts) through the shared sync service so
+            // first-open and refresh share one codepath. refreshDataset swallows
+            // its own errors and coalesces concurrent calls.
+            await this.sync.refreshDataset(name);
+        } finally {
+            // Released on every path — a fetch that failed must not leave the
+            // skeleton up for ever (D10: failure never silent, resource released).
+            this.pairsInFlight.update(s => {
+                const next = new Set(s);
+                next.delete(name);
+                return next;
+            });
+        }
     }
 
     /** Pretty-prints an HTTP error payload's `detail` (or falls back to message). */

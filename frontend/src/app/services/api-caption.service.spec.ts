@@ -45,4 +45,22 @@ describe('ApiCaptionService', () => {
         req.flush({ models: ['gpt-4o', 'gpt-4o-mini'] });
         expect(models).toEqual(['gpt-4o', 'gpt-4o-mini']);
     });
+
+    // LANE-65: the Generate CTA disables off this route's sentence.
+    it('GETs readiness for a provider with the model as a query param', () => {
+        let result: any;
+        svc.readiness('custom', 'llava:13b').subscribe(r => (result = r));
+        const req = http.expectOne(r => r.url === 'http://test/api/captions/api-providers/custom/readiness');
+        expect(req.request.method).toBe('GET');
+        expect(req.request.params.get('model')).toBe('llava:13b');
+        req.flush({ provider: 'custom', base_url: 'http://x/v1', available: false, unavailable_reason: 'nope' });
+        expect(result.unavailable_reason).toBe('nope');
+    });
+
+    it('omits the model param when none is selected', () => {
+        svc.readiness('openai').subscribe();
+        const req = http.expectOne('http://test/api/captions/api-providers/openai/readiness');
+        expect(req.request.params.has('model')).toBe(false);
+        req.flush({ provider: 'openai', base_url: '', available: true, unavailable_reason: null });
+    });
 });

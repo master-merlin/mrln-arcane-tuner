@@ -146,6 +146,85 @@ describe('MassMaskModalComponent — launcher contract', () => {
         expect(comp.running()).toBe(false);
     });
 
+    // LANE-65, fourth surface: the caption tab reads the SAME readiness verdict
+    // the settings child carries for mass-caption and the detail sidebar.
+    describe('Caption: readiness gate (LANE-65)', () => {
+        const reason = 'LLM endpoint http://127.0.0.1:1/v1 is unreachable - start it, or configure and test it on the captioning API settings (Connection).';
+        const base = { modelId: 'api-custom', resolvedModelId: 'api-custom', params: { model: 'llava:13b' }, resolvedSystemPrompt: '' };
+
+        function onCaptionTab(state: Record<string, unknown>) {
+            const made = make();
+            made.comp.tab.set('caption');
+            made.comp.captionStrategy.set('overwrite');
+            made.comp.pairs.set([makePair('a.png', { has_mask: true })]);
+            made.comp.onCaptionSettingsChange({ ...base, ...state });
+            made.fixture.detectChanges();
+            const el: HTMLElement = made.fixture.nativeElement;
+            return {
+                ...made,
+                cta: el.querySelector('button.btn.cta') as HTMLButtonElement,
+                inline: el.querySelector('[data-testid="generate-blocked-reason"]') as HTMLElement | null,
+                toast: TestBed.inject(ToastService) as unknown as { error: Mock },
+            };
+        }
+
+        it('apiReady=false: CTA disabled, the backend sentence inline and as tooltip, start() refuses with it', () => {
+            const { comp, cta, inline, toast } = onCaptionTab({ apiConfigured: true, apiReady: false, apiUnavailableReason: reason });
+            expect(comp.canStart()).toBe(false);
+            expect(cta.disabled).toBe(true);
+            expect(cta.title).toBe(reason);
+            expect(inline?.textContent?.trim()).toBe(reason);
+            comp.start();
+            expect(api.batchCaption).not.toHaveBeenCalled();
+            expect(comp.running()).toBe(false);
+            expect(toast.error).toHaveBeenCalledWith(reason);
+        });
+
+        it('a probe still out (apiReady=false, reason null) is blocked with a "checking" note', () => {
+            const { comp, cta, inline } = onCaptionTab({ apiConfigured: true, apiReady: false, apiUnavailableReason: null });
+            expect(cta.disabled).toBe(true);
+            expect(inline?.textContent).toContain('Checking');
+            comp.start();
+            expect(api.batchCaption).not.toHaveBeenCalled();
+        });
+
+        it('apiReady=true (positive control): CTA enabled, nothing inline, start() posts target=masked', () => {
+            const { comp, cta, inline } = onCaptionTab({ apiConfigured: true, apiReady: true, apiUnavailableReason: null });
+            expect(comp.canStart()).toBe(true);
+            expect(cta.disabled).toBe(false);
+            expect(cta.title).toBe('');
+            expect(inline).toBeNull();
+            comp.start();
+            expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({ model_id: 'api-custom', target: 'masked' }));
+        });
+
+        it('a later verdict re-enables what an earlier one blocked — without a tab switch', () => {
+            const { fixture, comp, cta } = onCaptionTab({ apiConfigured: true, apiReady: false, apiUnavailableReason: reason });
+            expect(cta.disabled).toBe(true);
+            comp.onCaptionSettingsChange({ ...base, apiConfigured: true, apiReady: true, apiUnavailableReason: null });
+            fixture.detectChanges();
+            expect(comp.canStart()).toBe(true);
+            expect(cta.disabled).toBe(false);
+            expect(fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]')).toBeNull();
+        });
+
+        it('the gate is tab-scoped: the same blocked settings do not disable the Generate (mask) tab', () => {
+            const { comp } = onCaptionTab({ apiConfigured: true, apiReady: false, apiUnavailableReason: reason });
+            comp.onMaskingSettingsChange({ modelId: 'rembg', params: {} });
+            comp.pairs.set([makePair('a.png')]);
+            comp.tab.set('generate');
+            expect(comp.canStart()).toBe(true);
+        });
+
+        it('local captioning (apiReady undefined) stays startable', () => {
+            const { comp, cta, inline } = onCaptionTab({ modelId: 'florence-2', resolvedModelId: 'florence-2', params: {}, apiConfigured: undefined, apiReady: undefined, apiUnavailableReason: undefined });
+            expect(cta.disabled).toBe(false);
+            expect(inline).toBeNull();
+            comp.start();
+            expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({ model_id: 'florence-2' }));
+        });
+    });
+
     it('cancel() delegates to TaskStore.cancel and clears running', () => {
         const { comp } = make();
         comp.maskingSettings.set({ modelId: 'rembg', params: {} });

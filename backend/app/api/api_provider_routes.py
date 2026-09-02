@@ -23,6 +23,7 @@ from app.core.llm.provider_settings import (
     resolve_provider,
     set_provider,
 )
+from app.core.llm.refine_guard import caption_provider_readiness
 from app.core.logger import get_logger
 
 router = APIRouter()
@@ -53,6 +54,20 @@ class ProviderUpdateRequest(BaseModel):
 
 class ProviderModelsResponse(BaseModel):
     models: list[str]
+
+
+class ProviderReadiness(BaseModel):
+    """Can a caption batch through this provider start right now? (LANE-65)
+
+    ``unavailable_reason`` is the very sentence ``POST /captions/batch`` refuses
+    with (409) — one producer, ``refine_guard.caption_provider_readiness``
+    (RULE-21) — so the Generate CTA and the refusal cannot disagree. ``None``
+    when a batch may start."""
+
+    provider: str
+    base_url: str
+    available: bool
+    unavailable_reason: str | None = None
 
 
 def _status(provider: str) -> ProviderStatus:
@@ -112,3 +127,21 @@ async def list_provider_models(provider: str):
             status_code=502,
             detail=f"Could not fetch models from '{provider}': {e}")
     return ProviderModelsResponse(models=models)
+
+
+@router.get("/api-providers/{provider}/readiness", response_model=ProviderReadiness)
+async def provider_readiness(provider: str, model: str | None = None):
+    """One probe of the provider the Generate tab will caption through, judged
+    by the same predicate the batch boundary refuses on. Configuration faults
+    (no key, no Base URL) are reported as the reason, never dialled."""
+    if provider not in PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider '{provider}'")
+    try:
+        ready = await caption_provider_readiness(provider, (model or "").strip() or None)
+    except ValueError as e:  # OutboundUrlRejected: the URL itself is refused
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    # ``available`` here means "a batch may start", i.e. no reason — NOT the
+    # probe's endpoint-reachable bit, which stays True when only the model is
+    # missing. The CTA has one field to key on and it must not lie.
+    return ProviderReadiness(provider=provider, base_url=ready.base_url,
+                             available=ready.reason is None, unavailable_reason=ready.reason)

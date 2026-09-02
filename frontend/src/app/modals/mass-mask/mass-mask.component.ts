@@ -24,6 +24,8 @@ import {
 import {
     DatasetCaptionSettingsComponent,
     CaptionSettingsState,
+    captionStartBlocked,
+    captionBlockedReasonFor,
 } from '../../components/dataset/dataset-caption-settings/dataset-caption-settings';
 
 interface MassMaskModalData {
@@ -235,9 +237,13 @@ function tabForTask(t: Task): Tab | null {
 
             @if (!running()) {
                 <div class="modal-foot mm-foot">
+                    @if (tab() === 'caption' && captionBlocked()) {
+                        <p class="mm-blocked" data-testid="generate-blocked-reason">{{ captionBlockedReason() }}</p>
+                    }
                     <button class="btn ghost" type="button" (click)="overlay.closeModal()">Cancel</button>
                     <button class="btn cta success" type="button"
                             [disabled]="!canStart()"
+                            [title]="tab() === 'caption' && captionBlocked() ? captionBlockedReason() : ''"
                             (click)="start()">
                         <app-ico name="Play" [size]="12"/> {{ ctaLabel() }}
                     </button>
@@ -339,7 +345,8 @@ function tabForTask(t: Task): Tab | null {
 
         .mm-stop { width: 100%; justify-content: center; }
 
-        .mm-foot { display: flex; justify-content: flex-end; gap: 8px; }
+        .mm-foot { display: flex; justify-content: flex-end; align-items: center; gap: 8px; }
+        .mm-blocked { flex: 1 1 auto; min-width: 0; margin: 0; font-size: 11px; color: var(--color-danger, #e5484d); }
         .btn.cta.success {
             display: inline-flex; align-items: center; gap: 8px;
             background: var(--color-success);
@@ -455,12 +462,28 @@ export class MassMaskModalComponent implements OnInit {
         switch (this.tab()) {
             case 'generate': return !!this.maskingSettings() && this.generateCount() > 0;
             case 'apply':    return this.maskedCount() > 0;
-            // apiConfigured === false → the selected api-* provider has no
-            // usable key; keep the CTA disabled (same gate as mass-caption).
+            // The selected api-* provider has no usable key OR cannot serve
+            // (endpoint dead, model not listed, probe out): keep the CTA
+            // disabled off the backend's readiness verdict — the same gate as
+            // mass-caption and the detail sidebar (LANE-65, fourth surface).
             case 'caption':  return !!this.captionSettings()
-                && this.captionSettings()!.apiConfigured !== false
+                && !this.captionBlocked()
                 && this.captionCount() > 0;
         }
+    });
+
+    /** True when the caption tab's api-* provider cannot serve right now —
+     *  the ONE gate every Generate host shares (`captionStartBlocked`). */
+    protected captionBlocked = computed<boolean>(() => {
+        const s = this.captionSettings();
+        return !!s && captionStartBlocked(s);
+    });
+    /** The sentence behind {@link captionBlocked} — the backend's own words
+     *  (`POST /captions/batch` refuses with it), shown beside the CTA and as
+     *  its tooltip. */
+    protected captionBlockedReason = computed<string>(() => {
+        const s = this.captionSettings();
+        return s ? captionBlockedReasonFor(s) : '';
     });
 
     /** Guard: the completion handler fires at most once per launch. */
@@ -581,7 +604,13 @@ export class MassMaskModalComponent implements OnInit {
     private startCaption(): void {
         const name = this.data.datasetName;
         const settings = this.captionSettings();
-        if (!name || !settings || settings.apiConfigured === false) return;
+        if (!name || !settings) return;
+        if (captionStartBlocked(settings)) {
+            // The CTA is disabled off this; a keyboard/programmatic start says why.
+            const reason = captionBlockedReasonFor(settings);
+            if (reason) this.toast.error(reason);
+            return;
+        }
         // Candidate count is reactive (`captionCount`) and gates the CTA —
         // clicking an enabled button starts directly, no confirm().
         const candidates = this.captionCandidates();

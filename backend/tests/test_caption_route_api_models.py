@@ -25,6 +25,15 @@ def test_batch_rejects_unconfigured_api_provider(monkeypatch):
 def test_batch_enqueues_api_model_on_background_lane(monkeypatch):
     monkeypatch.setattr(provider_settings, "validate_caption_model",
                         lambda mid, params=None: None)
+    # A lane-wiring test: configuration AND readiness (LANE-65) are stubbed as
+    # "fine" at their seams; the readiness seam itself is exercised unstubbed,
+    # against real sockets, in test_caption_generate_boundary_guard.py.
+    from app.core.llm.refine_guard import RefineReadiness
+
+    async def _ready(provider, model=None):
+        return RefineReadiness(base_url="https://api.openai.com/v1", available=True)
+
+    monkeypatch.setattr(caption_routes, "caption_provider_readiness", _ready)
     enq = {}
 
     class FakeTask:

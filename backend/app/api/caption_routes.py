@@ -16,7 +16,7 @@ from app.core.captioning.caption_refine_batch import run_caption_refine_batch
 from app.core.captioning.caption_service import CaptionService
 from app.core.llm import provider_settings
 from app.core.llm.ollama_client import OllamaClient
-from app.core.llm.refine_guard import refine_readiness
+from app.core.llm.refine_guard import caption_provider_readiness, refine_readiness
 from app.core.logger import get_logger
 from app.core.tasks.task_manager import task_manager
 
@@ -55,6 +55,26 @@ class GenerateCaptionRequest(BaseModel):
     definition_id: str | None = None
 
 
+async def _refuse_unready_provider(model_id: str, params: dict, event: str) -> None:
+    """Refuse (409) an api-* caption request whose provider cannot serve it —
+    dead endpoint, model it does not list — with the SAME sentence
+    ``GET /api-providers/{provider}/readiness`` hands the CTA (RULE-21, one
+    producer: ``refine_guard.caption_provider_readiness``). Local model ids
+    return at once: they have no endpoint to probe. 400 when the endpoint URL
+    itself is refused (``OutboundUrlRejected``)."""
+    provider = provider_settings.provider_from_model_id(model_id)
+    if provider is None:
+        return
+    provider_model = str(params.get("model") or "").strip() or None
+    try:
+        ready = await caption_provider_readiness(provider, provider_model)
+    except ValueError as e:  # OutboundUrlRejected: the URL itself is refused
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    if ready.reason:
+        logger.warning(event, provider=provider, model=provider_model, reason=ready.reason)
+        raise HTTPException(status_code=409, detail=ready.reason)
+
+
 @router.post("/generate", response_model=GenerateCaptionResponse)
 async def generate_caption_api(request: GenerateCaptionRequest):
     """Generate a caption for a single image using the specified model."""
@@ -69,6 +89,13 @@ async def generate_caption_api(request: GenerateCaptionRequest):
         provider_settings.validate_caption_model(request.model_id, request.params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # LANE-65, third surface (the detail sidebar's single Generate): an api-*
+    # provider that cannot serve — dead endpoint, model it does not list — is
+    # refused HERE with the readiness sentence the button disables off
+    # (``refine_guard``, RULE-21), before the dataset is even looked up. Local
+    # captioning never reaches this branch: it has no endpoint to probe.
+    await _refuse_unready_provider(request.model_id, request.params, "caption_generate_refused")
 
     service = CaptionService.get_instance()
 
@@ -237,6 +264,13 @@ async def batch_caption_api(request: BatchCaptionRequest):
         provider_settings.validate_caption_model(request.model_id, request.params)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+    # LANE-65 (the LANE-57 class on the Generate tab): an api-* provider that
+    # is configured but cannot serve — dead endpoint, model it does not list —
+    # is refused HERE with the sentence the CTA disables off (``refine_guard``,
+    # RULE-21), and nothing is created or enqueued. Local captioning never
+    # reaches this branch: it has no endpoint to probe.
+    await _refuse_unready_provider(request.model_id, request.params, "caption_batch_refused")
 
     if (
         request.include_control

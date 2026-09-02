@@ -8,8 +8,9 @@ import { ToastService } from '../../../services/toast';
 import { ApiCaptionService, ApiProviderStatus } from '../../../services/api-caption.service';
 import { ModelContextStore } from '../../../state/model-context.store';
 import { OverlayStore } from '../../../state/overlay.store';
-import { Subject } from 'rxjs';
-import { debounceTime, switchMap } from 'rxjs/operators';
+import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
+import { Subject, of } from 'rxjs';
+import { catchError, debounceTime, map, switchMap } from 'rxjs/operators';
 
 /** A single tunable parameter on a caption model (see {@link DatasetCaptionSettingsComponent.captionModels}). */
 export interface CaptionParam {
@@ -67,12 +68,59 @@ export interface CaptionSettingsState {
     /** API mode only: whether the selected provider has usable credentials.
      *  Undefined in local mode. Hosts should disable generation when false. */
     apiConfigured?: boolean;
+    /** API mode only: whether a batch through the selected provider + model can
+     *  start RIGHT NOW — the backend's readiness verdict (endpoint reachable,
+     *  model listed), not just "a key exists". `false` while the probe is still
+     *  out (a pending check never passes the gate — LANE-57's lesson).
+     *  Undefined in local mode. Hosts disable Generate when false (LANE-65). */
+    apiReady?: boolean;
+    /** API mode only: the backend's own sentence for why `apiReady` is false —
+     *  the SAME text `POST /captions/batch` refuses with. `null` while probing
+     *  or when ready; undefined in local mode. */
+    apiUnavailableReason?: string | null;
     /** Whether the selected model can caption from control + target together
      *  (edit-instruction captions). Hosts gate the "include control" toggle. */
     supportsMultiImage?: boolean;
     /** Additional instructions for structured-caption (model-aware) generation.
      *  Empty string when plain format or no instructions entered. */
     captionInstructions: string;
+}
+
+/** Sentence for a Generate button disabled on a MISSING VALUE — names the value
+ *  that is actually missing for the provider that is actually selected. Local /
+ *  Custom is gated on a Base URL (an OpenAI-compatible server needs no key);
+ *  every hosted provider is gated on a key. Getting this wrong sent users hunting
+ *  for an API key their Ollama server does not have (LANE-46). */
+export function apiBlockedReasonFor(modelId: string): string {
+    if (modelId === 'api-custom') {
+        return 'No Base URL for Local / Custom — set it in Connection above, '
+            + 'or configure the LLM endpoint on the Server screen.';
+    }
+    const provider = modelId.replace(/^api-/, '');
+    return `No API key for ${provider} — paste it in Connection above and press Save.`;
+}
+
+/** True when the selected api-* provider cannot caption right now — no usable
+ *  key / Base URL (`apiConfigured === false`) OR the backend's readiness verdict
+ *  is not in / negative (`apiReady === false`: endpoint dead, model not listed,
+ *  probe still out). Local mode (both undefined) is never blocked. LANE-65: the
+ *  ONE gate every host's Generate disables off — the detail sidebar, the
+ *  mass-caption modal, the mass-mask caption tab (RULE-21). */
+export function captionStartBlocked(state: CaptionSettingsState): boolean {
+    return state.apiConfigured === false || state.apiReady === false;
+}
+
+/** The one sentence a blocked Generate shows (tooltip, inline, toast): the
+ *  missing configuration value first (LANE-46), else the backend's readiness
+ *  verdict verbatim (LANE-65 — the string `POST /captions/generate` and
+ *  `/captions/batch` refuse with), else a "checking" note while the probe is
+ *  still out. Empty when nothing blocks. */
+export function captionBlockedReasonFor(state: CaptionSettingsState): string {
+    if (state.apiConfigured === false) return apiBlockedReasonFor(state.modelId);
+    if (state.apiReady === false) {
+        return state.apiUnavailableReason ?? 'Checking the captioning provider…';
+    }
+    return '';
 }
 
 @Component({
@@ -566,6 +614,28 @@ export class DatasetCaptionSettingsComponent implements OnInit {
      *  the status badge so hosts' disabled CTAs aren't left unexplained. */
     providerStatusError = signal('');
 
+    /** The last answered readiness probe, tagged with the (model, provider
+     *  model, endpoint, key) it was asked about so a stale answer never gates
+     *  a newer selection. Null until the first answer. */
+    apiReadiness = signal<{ key: string; available: boolean; reason: string | null } | null>(null);
+    private lastProbeKey = '';
+    private readinessProbe$ = new Subject<{ provider: string; model: string; key: string }>();
+    /** Subscribed at construction, not ngOnInit: `emitChanges` runs from the
+     *  preferences load, which can land before init — a Subject with no
+     *  subscriber would drop that first probe and the CTA would wait forever.
+     *  Debounced because the provider-model field is typed into and every
+     *  keystroke would otherwise dial the provider's listing. */
+    private readinessSub = this.readinessProbe$.pipe(
+        debounceTime(300),
+        switchMap(req => this.apiCaptionService.readiness(req.provider, req.model || undefined).pipe(
+            map(r => ({ key: req.key, available: !!r.available, reason: r.unavailable_reason ?? null })),
+            // Not the backend's verdict — the probe itself failed to answer.
+            catchError(() => of({ key: req.key, available: false,
+                reason: 'Could not check the captioning provider — is the backend reachable?' })),
+        )),
+        takeUntilDestroyed(),
+    ).subscribe(r => { this.apiReadiness.set(r); this.emitChanges(); });
+
     /** Status entry for the currently selected api-* provider. */
     activeProviderStatus = computed(() => {
         const id = this.selectedCaptionModel();
@@ -1024,6 +1094,26 @@ export class DatasetCaptionSettingsComponent implements OnInit {
 
         const rawPrompt = this.captionSystemPrompt();
         const modelConfig = this.allModelConfigs.find(m => m.id === modelId);
+
+        // LANE-65: in API mode the host gates Generate on the backend's readiness
+        // verdict for THIS provider + model + credentials. The key names every
+        // input the verdict depends on, so a change to any of them re-probes and
+        // an answer to an older question never passes as the current one.
+        let apiReady: boolean | undefined;
+        let apiUnavailableReason: string | null | undefined;
+        if (modelId.startsWith('api-')) {
+            const status = this.activeProviderStatus();
+            const providerModel = String(this.captionModelParams()['model'] ?? '').trim();
+            const key = [modelId, providerModel, status?.base_url ?? '', status?.key_masked ?? ''].join('|');
+            if (key !== this.lastProbeKey) {
+                this.lastProbeKey = key;
+                this.readinessProbe$.next({ provider: modelId.replace(/^api-/, ''), model: providerModel, key });
+            }
+            const answer = this.apiReadiness();
+            const answered = answer?.key === key;
+            apiReady = answered ? answer!.available : false;
+            apiUnavailableReason = answered ? answer!.reason : null;
+        }
         this.settingsChanged.emit({
             modelId: modelId,
             resolvedModelId: resolvedModelId,
@@ -1035,6 +1125,8 @@ export class DatasetCaptionSettingsComponent implements OnInit {
             apiConfigured: modelId.startsWith('api-')
                 ? (this.activeProviderStatus()?.configured ?? false)
                 : undefined,
+            apiReady,
+            apiUnavailableReason,
             supportsMultiImage: modelConfig?.supportsMultiImage ?? false,
             captionInstructions: this.captionInstructions(),
         });

@@ -8,6 +8,7 @@ import { RuntimeConfigService } from '../../../../services/runtime-config.servic
 import { DatasetService } from '../../../../services/dataset';
 import { ModelContextStore } from '../../../../state/model-context.store';
 import { LlmAvailabilityStore } from '../../../../state/llm-availability.store';
+import { ToastService } from '../../../../services/toast';
 import { serialize, normalize } from './caption/ideogram-format';
 import { StructuredCaptionModalComponent } from '../../../../modals/structured-caption/structured-caption-modal';
 
@@ -69,6 +70,80 @@ describe('DetailCaptionSidebar — API gating', () => {
         cmp.generateCaption();
         expect(spy).not.toHaveBeenCalled();
         expect(cmp.isGeneratingCaption()).toBe(false);
+    });
+});
+
+describe('DetailCaptionSidebar — Generate readiness gate (LANE-65, third surface)', () => {
+    const reason = 'LLM endpoint http://127.0.0.1:1/v1 is unreachable - start it, or configure and test it on the captioning API settings (Connection).';
+    const base = {
+        modelId: 'api-custom', resolvedModelId: 'api-custom', systemPrompt: '', resolvedSystemPrompt: '',
+        wildcard: '', params: { model: 'llava:13b' }, captionInstructions: '',
+    };
+
+    function mountWith(state: Record<string, unknown>) {
+        const fixture = mount();
+        const cmp = fixture.componentInstance;
+        fixture.detectChanges();
+        cmp.onSettingsChange({ ...base, ...state } as any);
+        fixture.detectChanges();
+        const ds = TestBed.inject(DatasetService);
+        const gen = vi.spyOn(ds, 'generateCaption').mockReturnValue(of({ caption: 'x' }));
+        const toast = vi.spyOn(TestBed.inject(ToastService), 'error');
+        const button = fixture.nativeElement.querySelector('[data-testid="generate-caption"]') as HTMLButtonElement;
+        const inline = fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]') as HTMLElement | null;
+        return { fixture, cmp, gen, toast, button, inline };
+    }
+
+    it('apiReady=false: the button is disabled, the backend sentence is its tooltip and inline, and generateCaption() refuses with that sentence', () => {
+        const { cmp, gen, toast, button, inline } = mountWith({ apiConfigured: true, apiReady: false, apiUnavailableReason: reason });
+        expect(button.disabled).toBe(true);
+        expect(button.title).toBe(reason);
+        expect(inline?.textContent?.trim()).toBe(reason);
+        cmp.generateCaption();
+        expect(gen).not.toHaveBeenCalled();
+        expect(cmp.isGeneratingCaption()).toBe(false);
+        expect(toast).toHaveBeenCalledWith(reason);
+    });
+
+    it('a probe still out (apiReady=false, reason null) is blocked with a "checking" note — never startable', () => {
+        const { cmp, gen, button, inline } = mountWith({ apiConfigured: true, apiReady: false, apiUnavailableReason: null });
+        expect(button.disabled).toBe(true);
+        expect(inline?.textContent).toContain('Checking');
+        cmp.generateCaption();
+        expect(gen).not.toHaveBeenCalled();
+    });
+
+    it('apiReady=true (positive control): the button is enabled, nothing is rendered inline, and generateCaption() posts', () => {
+        const { cmp, gen, button, inline } = mountWith({ apiConfigured: true, apiReady: true, apiUnavailableReason: null });
+        expect(button.disabled).toBe(false);
+        expect(button.title).toBe('Generate a caption for this image');
+        expect(inline).toBeNull();
+        cmp.generateCaption();
+        expect(gen).toHaveBeenCalledTimes(1);
+        expect(gen.mock.calls[0][2]).toBe('api-custom');
+    });
+
+    it('no key (apiConfigured=false) still names the missing value, not the readiness verdict (LANE-46 kept)', () => {
+        const { button, inline } = mountWith({ modelId: 'api-openai', resolvedModelId: 'api-openai', apiConfigured: false, apiReady: false, apiUnavailableReason: reason });
+        expect(button.disabled).toBe(true);
+        expect(inline?.textContent).toContain('No API key for openai');
+    });
+
+    it('a later verdict re-enables what an earlier one blocked', () => {
+        const { fixture, cmp, button } = mountWith({ apiConfigured: true, apiReady: false, apiUnavailableReason: reason });
+        expect(button.disabled).toBe(true);
+        cmp.onSettingsChange({ ...base, apiConfigured: true, apiReady: true, apiUnavailableReason: null } as any);
+        fixture.detectChanges();
+        expect(button.disabled).toBe(false);
+        expect(fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]')).toBeNull();
+    });
+
+    it('local captioning (apiReady undefined) stays startable — not touched', () => {
+        const { cmp, gen, button, inline } = mountWith({ modelId: 'florence-2', resolvedModelId: 'florence-2', params: {}, apiConfigured: undefined, apiReady: undefined, apiUnavailableReason: undefined });
+        expect(button.disabled).toBe(false);
+        expect(inline).toBeNull();
+        cmp.generateCaption();
+        expect(gen).toHaveBeenCalledTimes(1);
     });
 });
 

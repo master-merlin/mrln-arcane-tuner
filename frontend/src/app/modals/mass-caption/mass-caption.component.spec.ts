@@ -712,3 +712,93 @@ describe('MassCaptionComponent — count-on-CTA (M4)', () => {
         expect(api.refineCaptions).toHaveBeenCalled();
     });
 });
+
+// LANE-65 (UAT-6.3 "Refine is properly gated, Generate still clickable"): the
+// Generate CTA disables off the backend's readiness sentence carried in the
+// settings state, shows that SAME sentence, and refuses to start. Local
+// captioning (the default tab) is untouched.
+describe('MassCaptionComponent — Generate readiness gate (LANE-65)', () => {
+    let api: any;
+    let toast: any;
+    const reason = 'LLM endpoint http://127.0.0.1:1/v1 is unreachable - start it, or configure and test it on the captioning API settings (Connection).';
+
+    beforeEach(() => {
+        api = {
+            getDatasetPairs: vi.fn().mockReturnValue(of([])),
+            batchCaption: vi.fn().mockReturnValue(of({ task_id: 't1' })),
+            getCaptionVariantMap: vi.fn().mockReturnValue(of({ variants: {} })),
+        };
+        toast = { success: vi.fn(), error: vi.fn(), info: vi.fn(), warning: vi.fn() };
+        TestBed.configureTestingModule({
+            providers: [
+                provideHttpClient(withXhr()),
+                OverlayStore, MediaItemStore, CaptionCacheStore,
+                { provide: DatasetService, useValue: api },
+                { provide: WebSocketService, useValue: { entityChanged: signal(null), reconnected: signal(0) } },
+                { provide: ToastService, useValue: toast },
+                { provide: TaskStore, useValue: { byId: () => signal(undefined), active: signal([]), cancel: vi.fn() } },
+                { provide: DatasetSyncService, useValue: { refreshDataset: vi.fn().mockReturnValue(Promise.resolve()) } },
+            ],
+        });
+        TestBed.inject(OverlayStore).openModal('mass-caption', { datasetName: 'ds1' });
+        const modelContext = TestBed.inject(ModelContextStore);
+        modelContext.setModelAware(false);
+        modelContext.setDefinition(null);
+    });
+
+    function mount(state: Record<string, unknown>) {
+        const fixture = TestBed.createComponent(MassCaptionModalComponent);
+        const comp = fixture.componentInstance as any;
+        comp.target.set('original');
+        comp.pairs.set([makePair('a.png')]);
+        comp.onSettingsChange({
+            modelId: 'api-custom', resolvedModelId: 'api-custom', systemPrompt: '', resolvedSystemPrompt: '',
+            wildcard: '', params: { model: 'llava:13b' }, captionInstructions: '', ...state,
+        });
+        fixture.detectChanges();
+        return { fixture, comp };
+    }
+
+    it('apiReady=false: the CTA is disabled, the backend sentence is shown beside it and as its tooltip, and start() refuses with the same sentence', () => {
+        const { fixture, comp } = mount({ apiConfigured: true, apiReady: false, apiUnavailableReason: reason });
+        expect(comp.canStart()).toBe(false);
+        const el: HTMLElement = fixture.nativeElement;
+        const cta = el.querySelector('button.btn.cta') as HTMLButtonElement;
+        expect(cta.disabled).toBe(true);
+        expect(cta.title).toBe(reason);
+        expect(el.querySelector('[data-testid="generate-blocked-reason"]')?.textContent?.trim()).toBe(reason);
+        comp.start();
+        expect(api.batchCaption).not.toHaveBeenCalled();
+        expect(toast.error).toHaveBeenCalledWith(reason);
+    });
+
+    it('a probe still out (apiReady=false, reason null) is blocked with a "checking" note — never startable', () => {
+        const { fixture, comp } = mount({ apiConfigured: true, apiReady: false, apiUnavailableReason: null });
+        expect(comp.canStart()).toBe(false);
+        expect(fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]')?.textContent).toContain('Checking');
+    });
+
+    it('apiReady=true: the CTA is enabled, no reason is rendered, and start() posts the batch', () => {
+        const { fixture, comp } = mount({ apiConfigured: true, apiReady: true, apiUnavailableReason: null });
+        expect(comp.canStart()).toBe(true);
+        expect(fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]')).toBeNull();
+        comp.start();
+        expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({ model_id: 'api-custom' }));
+    });
+
+    it('a readiness verdict arriving later re-enables what an earlier one blocked', () => {
+        const { comp } = mount({ apiConfigured: true, apiReady: false, apiUnavailableReason: reason });
+        expect(comp.canStart()).toBe(false);
+        comp.onSettingsChange({ modelId: 'api-custom', resolvedModelId: 'api-custom', systemPrompt: '', resolvedSystemPrompt: '', wildcard: '', params: {}, captionInstructions: '', apiConfigured: true, apiReady: true, apiUnavailableReason: null });
+        expect(comp.canStart()).toBe(true);
+        expect(comp.apiBlockedReason()).toBe('');
+    });
+
+    it('local captioning (apiReady undefined) stays startable — the default tab is not touched', () => {
+        const { fixture, comp } = mount({ modelId: 'florence-2', resolvedModelId: 'florence-2', params: {}, apiConfigured: undefined, apiReady: undefined, apiUnavailableReason: undefined });
+        expect(comp.canStart()).toBe(true);
+        expect(fixture.nativeElement.querySelector('[data-testid="generate-blocked-reason"]')).toBeNull();
+        comp.start();
+        expect(api.batchCaption).toHaveBeenCalledWith(expect.objectContaining({ model_id: 'florence-2' }));
+    });
+});

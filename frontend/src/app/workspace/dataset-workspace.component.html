@@ -246,6 +246,11 @@
         <section class="ws-body">
             @switch (w.mode) {
                 @case ('browse') {
+                    @if (pairsPending()) {
+                        <!-- LANE-58: the first /pairs is in flight and the store is
+                             empty — draw the tile boxes now, not a blank body. -->
+                        <app-grid-skeleton [slots]="skeletonSlots()" [columns]="density()"/>
+                    } @else {
                     <app-workspace-browse
                         [datasetId]="w.datasetId"
                         [pairs]="pairs()"
@@ -264,6 +269,7 @@
                         (toggleExclusion)="onToggleExclusion($event)"
                         (coverPinRequested)="onPinCover($event)"
                         (deletePair)="onDeletePairRequested($event)"/>
+                    }
                 }
                 @case ('details') {
                     @defer {

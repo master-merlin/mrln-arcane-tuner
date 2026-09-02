@@ -4,6 +4,7 @@ import re
 import threading
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any, Callable
 from pydantic import BaseModel, Field, computed_field, field_validator
@@ -37,6 +38,12 @@ from app.core.db import DatabaseEngine
 from app.core.db.repositories.dataset_repo import DatasetRepository
 from app.core.db.repositories.media_item_repo import MediaItemRepository
 import asyncio
+
+#: Upper bound on threads reading caption sidecars for one ``/pairs`` call.
+#: The cost being hidden is per-file first-open latency (I/O wait, not CPU),
+#: so the reads overlap freely; the bound keeps one large dataset from
+#: fanning out into hundreds of handles at once (D10: every pool bounded).
+_SIDECAR_READ_WORKERS = 16
 
 logger = structlog.get_logger(__name__)
 
@@ -1571,43 +1578,36 @@ class DatasetManager:
         )
         control_maps = list_control_stem_maps(dataset.path)
 
-        # Hydrate with content and metadata
-        for p in result:
-            p["caption_content"] = ""
-            p["masked_caption_content"] = None
-            p["lyrics_content"] = ""
+        # Hydrate the sidecar text (caption / lyrics / masked caption) for
+        # every pair CONCURRENTLY, then the metadata below serially.
+        #
+        # The first `/pairs` of a session is what the workspace paints its
+        # grid from, and it painted NOTHING until this returned (LANE-58).
+        # MEASURED on the user's library: a cold sidecar open costs ~50 ms
+        # each on this Windows box (Defender's first-open scan; 0.1 ms once
+        # warm), so reading N captions one after another put N x 50 ms of
+        # pure I/O wait on the request path — 2.16 s for 38 captions, 2.2 s
+        # TTFB on a 33-item dataset, all of it a black workspace body. The
+        # same 71 cold captions read through a 16-thread pool took 451 ms.
+        # Everything else in this function (scandir, stat, resolve, isfile)
+        # totalled under 10 ms cold.
+        #
+        # Bounded (D10): at most `_SIDECAR_READ_WORKERS` threads, released by
+        # the `with`. Runs inside the caller's `asyncio.to_thread`, so the
+        # event loop is never the one waiting.
+        if result:
+            workers = min(_SIDECAR_READ_WORKERS, len(result))
+            with ThreadPoolExecutor(max_workers=workers, thread_name_prefix="pairs-sidecar") as pool:
+                sidecars = list(pool.map(
+                    lambda p: self._read_pair_sidecars(name, dataset.path, p), result,
+                ))
+        else:
+            sidecars = []
+
+        for p, fields in zip(result, sidecars):
+            p.update(fields)
             p["metadata"] = None
 
-            if p["caption_file"]:
-                try:
-                    p["caption_content"] = self.read_caption(name, p["caption_file"])
-                except Exception:
-                    p["caption_content"] = ""
-
-            # Hydrate lyrics sidecar (audio only — `<stem>.lyrics.txt`).
-            if p["media_type"] == "audio":
-                lyrics_stem = os.path.splitext(os.path.basename(p["media_file"]))[0]
-                lyrics_rel = f"{lyrics_stem}.lyrics.txt"
-                lyrics_path = os.path.join(dataset.path, lyrics_rel)
-                if os.path.isfile(lyrics_path):
-                    p["lyrics_file"] = lyrics_rel
-                    try:
-                        p["lyrics_content"] = self.read_caption(name, lyrics_rel)
-                    except Exception:
-                        p["lyrics_content"] = ""
-                else:
-                    p["lyrics_file"] = None
-
-            # Hydrate masked caption if it exists in masked/
-            stem = os.path.splitext(os.path.basename(p["media_file"]))[0]
-            masked_cap_path = os.path.join(dataset.path, "masked", f"{stem}.txt")
-            if os.path.isfile(masked_cap_path):
-                try:
-                    with open(masked_cap_path, "r", encoding="utf-8") as f:
-                        p["masked_caption_content"] = f.read().strip()
-                except OSError:
-                    pass
-            
             if p["media_file"]:
                 # Ensure we use the correct key format (forward slashes)
                 lookup_key = p["media_file"].replace(os.sep, '/')
@@ -1674,6 +1674,49 @@ class DatasetManager:
             p["effective_controls"] = controls
 
         return result
+
+    def _read_pair_sidecars(self, name: str, dataset_path: str, p: dict) -> dict:
+        """Read one pair's caption / lyrics / masked-caption text from disk.
+
+        Pure function of the pair's filenames — no shared state is touched, so
+        `get_dataset_pairs` runs it for every pair concurrently. Returns the
+        fields to merge into the pair; a missing or unreadable sidecar yields
+        the same empty value the serial code produced (``""`` / ``None``).
+        """
+        fields: dict = {
+            "caption_content": "",
+            "masked_caption_content": None,
+            "lyrics_content": "",
+        }
+        if p["caption_file"]:
+            try:
+                fields["caption_content"] = self.read_caption(name, p["caption_file"])
+            except Exception:
+                fields["caption_content"] = ""
+
+        # Lyrics sidecar (audio only — `<stem>.lyrics.txt`).
+        if p["media_type"] == "audio":
+            lyrics_stem = os.path.splitext(os.path.basename(p["media_file"]))[0]
+            lyrics_rel = f"{lyrics_stem}.lyrics.txt"
+            if os.path.isfile(os.path.join(dataset_path, lyrics_rel)):
+                fields["lyrics_file"] = lyrics_rel
+                try:
+                    fields["lyrics_content"] = self.read_caption(name, lyrics_rel)
+                except Exception:
+                    fields["lyrics_content"] = ""
+            else:
+                fields["lyrics_file"] = None
+
+        # Masked caption, if one exists in masked/.
+        stem = os.path.splitext(os.path.basename(p["media_file"]))[0]
+        masked_cap_path = os.path.join(dataset_path, "masked", f"{stem}.txt")
+        if os.path.isfile(masked_cap_path):
+            try:
+                with open(masked_cap_path, "r", encoding="utf-8") as f:
+                    fields["masked_caption_content"] = f.read().strip()
+            except OSError:
+                pass
+        return fields
 
     def read_caption(self, name: str, filename: str) -> str:
         if name not in self.datasets:

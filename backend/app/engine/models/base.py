@@ -1231,7 +1231,7 @@ class BaseTrainingConfig(BaseModel):
             "Resolutions for F=1 STILL images when mixing stills + video "
             "datasets in one video job. Empty list means INHERIT from "
             "`resolutions`. Lets stills train at higher resolution than the "
-            "video buckets for extra detail (Phase 3, live since 2026-07)."
+            "video buckets for extra detail."
         ),
         json_schema_extra={"group": "VIDEO"},
     )

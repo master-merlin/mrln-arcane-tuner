@@ -14,6 +14,14 @@ afterEach(() => {
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
   failOnLeakedGlobalMock();
+  // Same shared-environment fact, different carrier: `localStorage` outlives the
+  // file that wrote it, so stores that hydrate from it (ModelContextStore,
+  // ThemeStore, …) boot into whatever an earlier file left behind — and the
+  // leak only shows when the file ORDER changes (CI run 33678676250: a fresh
+  // checkout has no duration cache, so model-selector.component.spec ran before
+  // details-mode.cover-pin.spec and left model-aware ON; the mount then died on
+  // NG0201). Wipe it after every test.
+  localStorage.clear();
 });
 
 // LANE-75 guard (class T). `ng test` runs EVERY spec file in one shared

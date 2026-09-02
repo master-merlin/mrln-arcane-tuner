@@ -8,10 +8,13 @@
  */
 import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
-import { provideHttpClient, withXhr } from '@angular/common/http';
+import { provideHttpClient } from '@angular/common/http';
+import { provideHttpClientTesting } from '@angular/common/http/testing';
+import { provideRouter } from '@angular/router';
 import { DetailsMode } from '../details-mode';
 import { OverlayStore } from '../../../state/overlay.store';
 import { MediaItemStore } from '../../../state/media-item.store';
+import { ModelContextStore } from '../../../state/model-context.store';
 import { RuntimeConfigService } from '../../../services/runtime-config.service';
 
 class StubOverlay {
@@ -45,7 +48,17 @@ function mount(coverFile: string | null, pair = makePair()) {
     TestBed.resetTestingModule();
     TestBed.configureTestingModule({
         providers: [
-            provideHttpClient(withXhr()),
+            // No network: the sidebars' init loads (preferences, templates,
+            // caption suggestions) stay pending instead of failing with a
+            // jsdom status-0 XHR after the test has already ended.
+            provideHttpClient(),
+            provideHttpClientTesting(),
+            // The caption sidebar inside DetailsMode carries a routerLink to
+            // /server once a model-aware definition is active (LANE-76). The
+            // real ModelContextStore hydrates that state from localStorage,
+            // which the Angular vitest runner SHARES across spec files
+            // (isolate:false) — so the mount must survive both states.
+            provideRouter([]),
             { provide: OverlayStore, useClass: StubOverlay },
             { provide: MediaItemStore, useClass: StubMediaItems },
             { provide: RuntimeConfigService, useClass: StubRtc },
@@ -66,8 +79,24 @@ function pinButton(fixture: any): HTMLButtonElement | null {
 }
 
 describe('DetailsMode — pin as library cover', () => {
+    // Deterministic store state regardless of which spec file ran before this
+    // one in the shared jsdom (CI run 33678676250: model-selector.component.spec
+    // left model-aware ON and the mount died on NG0201 "No provider for
+    // ActivatedRoute").
+    beforeEach(() => localStorage.clear());
+
     it('renders the pin control in the canvas footer', () => {
         expect(pinButton(mount(null))).toBeTruthy();
+    });
+
+    it('still mounts when a model-aware definition is active (the sidebar then carries a routerLink)', () => {
+        localStorage.setItem(
+            'mrln.modelContext',
+            JSON.stringify({ modelAware: true, definition: { id: 'ideogram4-fp8', family: 'ideogram4', name: 'Ideogram 4' } }),
+        );
+        const fixture = mount(null);
+        expect(TestBed.inject(ModelContextStore).activeDefinitionId()).toBe('ideogram4-fp8');
+        expect(pinButton(fixture)).toBeTruthy();
     });
 
     it('emits the media file when the shown item is not the cover', () => {

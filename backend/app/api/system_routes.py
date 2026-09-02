@@ -190,19 +190,26 @@ async def _restart_server_logic() -> None:
         # The child holds its own duplicate of the handle.
         log_handle.close()
 
-    # The last thing this console ever shows: where the rest of the story is.
-    # Silence with no explanation was the user-visible half of LANE-51.
+    # The last thing THIS process says. The console does not go quiet after it:
+    # the launcher narrates the restart to the same terminal until the
+    # replacement serves (LANE-56 — telling the user the console was about to go
+    # quiet was accurate and was still the wrong answer, because a silent wait
+    # of minutes is one he ends).
     logger.info(
         "restart_handoff",
         restart_log=str(restart_launcher.RESTART_LOG_PATH),
-        message=("this console goes quiet now — the replacement server's output and "
-                 "the outcome of its start are written to restart.log"),
+        message=("handing over to the restart launcher — it reports progress on this "
+                 "terminal until the replacement is serving, and the full output of "
+                 "its start is written to restart.log"),
     )
 
     # Not a port handoff (the launcher waits for the port itself) — only a
     # window for that last line to reach the queued WebSocket log mirror.
-    await asyncio.sleep(0.25)
-    os._exit(0)
+    # OFF the event loop, and that is the point (LANE-56): taken as
+    # `await asyncio.sleep(0.25)` this window was MEASURED at 26 s, because the
+    # loop had other work and did not come back — 26 s of a port this process
+    # no longer wants, with the launcher and the user both waiting on it.
+    restart_launcher.schedule_exit(0.25)
 
 
 @router.post("/restart", response_model=MessageResponse)

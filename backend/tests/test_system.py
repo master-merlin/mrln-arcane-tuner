@@ -38,7 +38,18 @@ class TestRestartEndpoint:
         durable, and with no reader that can ever stall it.
 
         Asserted on the artefact, not on the call: we write through the handle
-        the spawn was given and read the bytes back out of the restart log."""
+        the spawn was given and read the bytes back out of the restart log.
+
+        The exit is stubbed at ``schedule_exit`` rather than at ``os._exit``
+        (LANE-56). Two reasons, and the first is not a preference: this process
+        IS the one under test, so the real exit cannot run here — and the old
+        `patch("...system_routes.os._exit")` patched the attribute on the shared
+        `os` module, which made the whole suite's survival depend on the stub
+        outliving anything that had scheduled a call to it. What the exit
+        actually does is proved where it can be: against a real process, in
+        ``test_restart_launcher.py::
+        test_the_outgoing_server_leaves_the_port_even_when_its_loop_is_blocked``.
+        """
         from app.api import system_routes
 
         log_path = tmp_path / "restart.log"
@@ -51,7 +62,7 @@ class TestRestartEndpoint:
             patch.object(system_routes.restart_launcher, "RESTART_LOG_PATH", str(log_path)),
             patch("app.api.system_routes.subprocess.Popen",
                   side_effect=_child_writes) as popen,
-            patch("app.api.system_routes.os._exit") as fake_exit,
+            patch.object(system_routes.restart_launcher, "schedule_exit") as fake_exit,
             patch("app.api.system_routes.asyncio.sleep", new=AsyncMock()),
         ):
             asyncio.run(system_routes._restart_server_logic())
@@ -63,7 +74,8 @@ class TestRestartEndpoint:
         assert kwargs["stdout"].closed, "the parent must drop its copy of the handle"
         # The observable part: what the child wrote is on disk afterwards.
         assert "CHILD-SAYS-HELLO" in log_path.read_text(encoding="utf-8")
-        fake_exit.assert_called_once_with(0)
+        assert fake_exit.call_count == 1, "the outgoing server must still leave"
+        assert fake_exit.call_args.args[0] > 0, "the flush window must be bounded"
 
     def test_restart_hands_off_to_the_launcher_with_a_command_it_accepts(self):
         """The route and the launcher must agree on the command line. Pinned by

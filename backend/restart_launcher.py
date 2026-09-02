@@ -33,7 +33,14 @@ WHAT IT GUARANTEES, in order:
    the new one: the exact disagreement ``start_backend.bat``'s ONE-producer
    comment exists to prevent. A change is reported, never silent;
 3. the replacement is **watched** until it listens, dies, or the bound expires,
-   and each of those three outcomes is a record in the restart log.
+   and each of those three outcomes is a record in the restart log;
+4. the whole of the above is **narrated to the user's terminal** (LANE-56). The
+   restart log alone was not enough: a restart takes ~45 s warm and 6.5 MINUTES
+   cold, and for all of it the console said nothing, the SPA said "cannot
+   connect", and the only sign of life was a python.exe in the task list. Twice
+   the user ended that task — which on Windows is ``exit code 1``, so the
+   launcher then recorded a healthy boot as a failed one. Progress lines go to
+   the console DEVICE (``CONSOLE_PATH``), not through inherited stdio.
 """
 
 from __future__ import annotations
@@ -43,6 +50,7 @@ import os
 import socket
 import subprocess
 import sys
+import threading
 import time
 
 _THIS_DIR = os.path.dirname(os.path.abspath(__file__))  # backend/
@@ -61,10 +69,44 @@ RESTART_LOG_PATH = os.path.join(_THIS_DIR, "restart.log")
 #: restart, so it grows without one (invariant: every buffer bounded).
 MAX_LOG_BYTES = 2_000_000
 
-#: How long to wait for the outgoing server to release the port. It exits with
-#: ``os._exit`` immediately after spawning us, so this is a bound on a
-#: pathology (a wedged process), not on the normal case.
-PORT_FREE_TIMEOUT = 30.0
+#: The terminal the user is watching, as a DEVICE.
+#:
+#: LANE-56, from the user twice: "the restart still isn't coming back in the
+#: same terminal as it was in the past". This launcher shares the console of the
+#: server that spawned it, so a line written here lands in the window he
+#: actually has open. It is opened FRESH, by this process, on the console
+#: device — it is *not* the stdio handle inherited from the original launch,
+#: which is the dead pipe ``e2e3cfc8`` removed, and a console device has no
+#: reader whose full buffer can block a write. No console at all (a service, a
+#: container, a fully detached start) makes the open fail, and then the restart
+#: log is still the record.
+CONSOLE_PATH = "CONOUT$" if os.name == "nt" else "/dev/tty"
+
+#: How often the terminal is told the replacement is still coming up.
+#:
+#: Not cosmetic, and the reason is measured (LANE-56, 2026-09-01, this machine):
+#: a restart takes ~45 s warm and was measured at 6.5 MINUTES cold, all of it
+#: silent — the console said nothing, the SPA said "cannot connect", and the
+#: only sign of life was a python.exe in the task list. Twice the user drew the
+#: only available conclusion, ended the task, and started again by hand; the
+#: launcher then recorded ``exit_code 1`` and reported a healthy boot as a
+#: failed one. A progress line is what makes waiting a choice.
+HEARTBEAT_INTERVAL = 10.0
+
+#: How long to wait for the outgoing server to release the port.
+#:
+#: Was 30 s on the reasoning that the outgoing server exits with ``os._exit``
+#: immediately, so anything longer is a wedged process. MEASURED 2026-09-01
+#: (LANE-56) that reasoning was wrong twice over: the exit was scheduled on the
+#: outgoing server's own event loop, which took 26 s to come back to it once and
+#: **more than 30 s twice** — and each time the launcher refused, so the restart
+#: ended with NO server running at all. ``schedule_exit`` removed the loop from
+#: that path (the same restart now frees the port in 3.0 s), but the bound is
+#: raised anyway, because the two failures are not symmetrical: waiting too long
+#: costs seconds and now says so on the console, while refusing too early costs
+#: the user their backend. Still bounded — a wedged process must not hang here
+#: forever — just bounded where the damage is.
+PORT_FREE_TIMEOUT = 120.0
 
 #: How long to wait for the replacement to start listening. This must exceed a
 #: COLD start, where importing torch dominates — on a cold page cache a full
@@ -109,6 +151,95 @@ def open_log(path: str | None = None):
         record(handle, "restart_log_truncated", limit_bytes=MAX_LOG_BYTES,
                message="the restart log passed its size bound; earlier entries were dropped")
     return handle
+
+
+def schedule_exit(delay: float = 0.25) -> None:
+    """Leave the port, on a thread the outgoing server's loop cannot starve.
+
+    The outgoing server needs a moment between its last log line and its exit,
+    so that line can reach the queued WebSocket mirror. It used to take that
+    moment as ``await asyncio.sleep(delay)`` on its own event loop, and
+    MEASURED 2026-09-01 that took **26 seconds**: ``restart_handoff`` is
+    timestamped 20:47:37.2 in ``server.prev.log`` and :8137 only became bindable
+    at 20:48:03, because the loop had other work and never came back. The
+    launcher spent all 26 s waiting for a port the dying server was still
+    holding, and the user spent it looking at a terminal.
+
+    A window for a flush is not a handoff. It is bounded by a timer thread so a
+    busy loop cannot stretch it, and ``os._exit`` from any thread ends the
+    process — the same abrupt exit as before, at the time it was asked for.
+    """
+    threading.Timer(delay, os._exit, args=(0,)).start()
+
+
+def open_console():
+    """The user's terminal for progress lines, or ``None`` if there is none.
+
+    Never raises: a process with no console (a Windows service, a container, a
+    detached start) must restart exactly as before, just without the narration.
+    """
+    try:
+        return open(CONSOLE_PATH, "w", encoding="utf-8", errors="replace",
+                    buffering=1)
+    except OSError:
+        return None
+
+
+#: Characters this file's prose uses that a console window does not have.
+_CONSOLE_TRANSLITERATE = {"—": "-", "–": "-", "…": "...",
+                          "’": "'", "“": '"', "”": '"'}
+
+
+def say(console, text: str) -> None:
+    """One progress line to the user's terminal. Never raises.
+
+    Prefixed so it is unmistakably the restart talking and not the server: the
+    two share the window, and after a handoff the server's own lines stop.
+
+    Forced to ASCII, in ONE place rather than by discipline at each call site.
+    The terminal on the other end is a ``start_backend.bat`` console, which on
+    this machine is codepage 850 — a UTF-8 em dash arrives there as mojibake
+    (measured 2026-09-01, ``—`` came back as ``â€``). A progress line whose job
+    is to stop the user ending the process may not look like line noise.
+    """
+    if console is None:
+        return
+    for src, dst in _CONSOLE_TRANSLITERATE.items():
+        text = text.replace(src, dst)
+    text = text.encode("ascii", "replace").decode("ascii")
+    try:
+        console.write("[restart] " + text + "\n")
+        console.flush()
+    except Exception:  # noqa: BLE001 - narration may never take a restart down
+        pass
+
+
+def last_child_output(path: str, max_bytes: int = 65_536) -> str | None:
+    """The last line the CHILD wrote to the restart log, or ``None``.
+
+    On a failure this is the single most useful fact there is: it says how far
+    the replacement got before it stopped, which is what separates "it crashed"
+    from "it was still importing when someone ended it". Our own records carry
+    ``"service": "restart-launcher"`` and are skipped, so the answer is always
+    the child's.
+
+    The read is bounded from the END (invariant: every buffer bounded) — the log
+    holds a whole boot's console output and this runs on the failure path.
+    """
+    try:
+        with open(path, "rb") as fh:
+            fh.seek(0, os.SEEK_END)
+            start = max(0, fh.tell() - max_bytes)
+            fh.seek(start)
+            chunk = fh.read()
+    except OSError:
+        return None
+    for raw in reversed(chunk.decode("utf-8", "replace").splitlines()):
+        line = raw.strip()
+        if not line or '"service": "restart-launcher"' in line:
+            continue
+        return line[:400]
+    return None
 
 
 def record(handle, event: str, level: str = "info", **fields) -> None:
@@ -229,14 +360,26 @@ def port_is_free(host: str, port: int) -> bool:
 
 
 def wait_for_port_free(host: str, port: int, timeout: float,
-                       sleep=time.sleep) -> bool:
-    """Block until (host, port) is bindable, bounded by *timeout*."""
+                       sleep=time.sleep, console=None) -> bool:
+    """Block until (host, port) is bindable, bounded by *timeout*.
+
+    Narrated, because it is not instant: the outgoing server exits ~2.3 s after
+    the request, but it was MEASURED at 29 s once on this machine (LANE-56) —
+    the probe flipped to bindable in the same half-second the old listening
+    socket disappeared, so the wait is the old process taking that long to go,
+    not a probe that lies. Either way the terminal should not be blank for it.
+    """
     deadline = time.monotonic() + timeout
+    started = time.monotonic()
+    announced = False
     while True:
         if port_is_free(host, port):
             return True
         if time.monotonic() >= deadline:
             return False
+        if not announced and time.monotonic() - started >= 2.0:
+            announced = True
+            say(console, f"waiting for the outgoing server to release {host}:{port}…")
         sleep(_POLL_INTERVAL)
 
 
@@ -327,15 +470,19 @@ def main(argv: list[str] | None = None) -> int:
     """
     opts, child_argv = _parse_args(list(sys.argv[1:] if argv is None else argv))
     log = open_log()
+    console = open_console()
     try:
         record(log, "restart_launcher_started", old_pid=opts["old_pid"],
                command=child_argv)
+        say(console, "the server is restarting — this terminal reports progress "
+                     "until it is serving again.")
 
         try:
             command, port, previous_port = replacement_command(child_argv)
         except RestartRefused as exc:
             record(log, "restart_refused", level="error", reason=str(exc),
                    message="the replacement server was NOT started: " + str(exc))
+            say(console, "REFUSED — the replacement was not started: " + str(exc))
             return 2
 
         if previous_port is not None:
@@ -343,17 +490,24 @@ def main(argv: list[str] | None = None) -> int:
                    previous_port=previous_port, port=port,
                    message=(f"the replacement binds {port}, not {previous_port}: the port "
                             "is resolved from settings/PORT on every launch, never replayed"))
+            say(console, f"the port moved: the replacement binds {port}, not {previous_port}.")
 
         host = bind_host(command)
         free_timeout = opts["port_free_timeout"]
-        if not wait_for_port_free(host, port, free_timeout):
+        if not wait_for_port_free(host, port, free_timeout, console=console):
+            say(console, f"REFUSED - {host}:{port} was still held after "
+                         f"{free_timeout:.0f}s, so NO replacement was started and "
+                         f"NOTHING IS SERVING NOW. Start the backend again with "
+                         f"start_backend.bat. Details: {RESTART_LOG_PATH}")
             record(log, "restart_refused", level="error", host=host, port=port,
                    timeout_seconds=free_timeout,
-                   message=(f"{host}:{port} is still held after {free_timeout:.0f}s by some "
-                            "process — the outgoing server should have exited immediately. "
-                            "The replacement was NOT started, because two servers on one "
-                            "port is the failure this waits to avoid. Find what holds the "
-                            "port, end it, and start the backend again."))
+                   message=(f"{host}:{port} was still held after {free_timeout:.0f}s. The "
+                            "replacement was NOT started, because two servers on one port is "
+                            "the failure this waits to avoid — so NOTHING IS SERVING NOW and "
+                            "the backend must be started again by hand. The holder is almost "
+                            "certainly the outgoing server itself, still on its way out: "
+                            "measured 2026-09-01, it took 26 s once and over 30 s twice to "
+                            "release the port after asking to exit."))
             return 2
 
         try:
@@ -369,37 +523,74 @@ def main(argv: list[str] | None = None) -> int:
             record(log, "restart_failed", level="error", error=str(exc),
                    command=command,
                    message="the replacement server could not be started: " + str(exc))
+            say(console, "FAILED — the replacement could not be started: " + str(exc))
             return 1
 
         record(log, "restart_child_spawned", pid=child.pid, port=port, host=host)
-        return _watch(log, child, host, port, opts["ready_timeout"])
+        say(console, f"replacement started (pid {child.pid}) on {host}:{port}. "
+                     "Loading the model registry takes minutes on a cold start — "
+                     "do NOT end this task; progress follows.")
+        return _watch(log, child, host, port, opts["ready_timeout"], console=console)
     finally:
+        if console is not None:
+            console.close()
         log.close()
 
 
-def _watch(log, child, host: str, port: int, ready_timeout: float) -> int:
+def _watch(log, child, host: str, port: int, ready_timeout: float,
+           console=None) -> int:
     """Watch the replacement until it listens, dies, or the bound expires."""
-    deadline = time.monotonic() + ready_timeout
+    started = time.monotonic()
+    deadline = started + ready_timeout
+    next_beat = started + HEARTBEAT_INTERVAL
     while True:
         code = child.poll()
         if code is not None:
+            elapsed = time.monotonic() - started
+            # How far it got, in its own words. Without this the record accuses
+            # the server of failing when the honest reading may be that it was
+            # still starting — which is exactly what happened to the user.
+            tail = last_child_output(getattr(log, "name", RESTART_LOG_PATH))
+            note = ""
+            if code == 1 and os.name == "nt":
+                note = (" NOTE: on Windows, exit code 1 with no traceback above is also "
+                        "what Task Manager's 'End task' and `taskkill /F` produce, so "
+                        "this may be a healthy boot that was ended for looking hung. A "
+                        "cold start takes minutes; the last line it wrote is recorded here.")
             record(log, "restart_failed", level="error", pid=child.pid,
                    exit_code=code, host=host, port=port,
-                   message=(f"the replacement server exited with code {code} before it "
-                            f"served {host}:{port}. Its output is in this file, directly "
-                            "above this line."))
+                   elapsed_seconds=round(elapsed, 1), last_child_output=tail,
+                   message=(f"the replacement server exited with code {code} after "
+                            f"{elapsed:.0f}s, before it served {host}:{port}. Its output is "
+                            "in this file, directly above this line." + note))
+            say(console, f"FAILED — the replacement (pid {child.pid}) exited with code "
+                         f"{code} after {elapsed:.0f}s. See {RESTART_LOG_PATH}")
             return 1
         if is_listening(host, port):
+            elapsed = time.monotonic() - started
             record(log, "restart_ready", pid=child.pid, host=host, port=port,
+                   elapsed_seconds=round(elapsed, 1),
                    message=f"the replacement server is serving {host}:{port}")
+            say(console, f"serving http://{host}:{port} after {elapsed:.0f}s — "
+                         "this terminal is live again.")
             return 0
         if time.monotonic() >= deadline:
             record(log, "restart_not_ready", level="error", pid=child.pid,
                    host=host, port=port, timeout_seconds=ready_timeout,
+                   last_child_output=last_child_output(
+                       getattr(log, "name", RESTART_LOG_PATH)),
                    message=(f"the replacement server (pid {child.pid}) was still not serving "
                             f"{host}:{port} after {ready_timeout:.0f}s. It is still running "
                             "and was NOT killed; its output is in this file."))
+            say(console, f"still not serving {host}:{port} after {ready_timeout:.0f}s. "
+                         f"Pid {child.pid} is STILL RUNNING and was not killed — "
+                         f"see {RESTART_LOG_PATH} before ending it.")
             return 1
+        now = time.monotonic()
+        if now >= next_beat:
+            next_beat = now + HEARTBEAT_INTERVAL
+            say(console, f"still starting… {now - started:.0f}s elapsed "
+                         f"(pid {child.pid}). Do NOT end this task.")
         time.sleep(_POLL_INTERVAL)
 
 

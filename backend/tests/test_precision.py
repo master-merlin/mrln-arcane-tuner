@@ -242,21 +242,15 @@ class TestPrecisionConfig:
 # ── Server Log Reset ────────────────────────────────────────────────────
 
 
-class TestServerLogReset:
-    """Tests that server.log is reset on startup."""
-
-    def test_setup_logging_deletes_existing_log(self, tmp_path, monkeypatch):
-        """setup_logging removes existing server.log before creating a new one."""
-        fake_log = tmp_path / "server.log"
-        fake_log.write_text("old log content")
-        assert fake_log.exists()
-
-
-        def patched_setup(log_level="INFO", include_file_handler=True):
-            """Call setup but with the file handler pointing to our temp dir."""
-            import os
-            if os.path.exists(str(fake_log)):
-                os.remove(str(fake_log))
-
-        patched_setup()
-        assert not fake_log.exists(), "server.log was not deleted on startup"
+# The class that stood here, `TestServerLogReset`, was removed by LANE-56 and
+# replaced by `tests/test_server_log_rotation.py`, for two reasons.
+#
+# 1. It was VACUOUS. It defined a local `patched_setup` that called `os.remove`
+#    itself and then asserted the file was gone; `setup_logging` was never
+#    called, so it would have passed against an implementation that did nothing.
+#    It is the seventh test of that shape found in this round.
+# 2. It pinned the wrong contract. `setup_logging` no longer deletes the
+#    previous session's log, it ROTATES it to `server.prev.log` — because the
+#    next boot after a failed restart is the user's recovery, and the old
+#    behaviour had that recovery destroy the only record of what it was
+#    recovering from (LANE-56, measured 2026-09-01).

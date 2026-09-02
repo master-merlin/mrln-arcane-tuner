@@ -647,6 +647,11 @@ Combine **Inspect** results with **Targeted Layer Training** — inspect a refer
 
 ### 🖥️ Server Settings
 
+See [`docs/server-guide.md`](docs/server-guide.md) for the full storyline:
+the health KPI rail, restart and in-app updates, Connection/Models settings,
+the LLM Refine Endpoint's Save & Test, and the live, filterable Server Logs
+card.
+
 - **Backend & frontend port configuration** — set in Server Settings; the backend reads the saved port on its next start (the platform's own port outranks it inside a container)
 - **Log level control** — adjust structured logging verbosity at runtime
 - **Frontend auto-start** — optionally launch the Angular dev server and open a browser on backend startup

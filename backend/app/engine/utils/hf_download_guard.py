@@ -165,12 +165,31 @@ def _make_default_spawn(
         try:
             assert proc.stdin is not None
             proc.stdin.write(payload)
-            proc.stdin.close()
         except Exception:
             # A failed stdin write shouldn't crash the guard — the worker
             # will fail fast on empty/partial stdin and the normal
             # error-and-retry path below handles it.
             pass
+        finally:
+            # The payload is one-shot: close our end so the worker's
+            # ``sys.stdin.read()`` sees EOF, then DROP the closed pipe
+            # object. A closed file left on ``proc.stdin`` is a POSIX trap:
+            # CPython's ``Popen.communicate()`` flushes ``self.stdin``
+            # whenever it is truthy (subprocess.py, POSIX ``_communicate``:
+            # ``if self.stdin and not self._communication_started:
+            # self.stdin.flush()``) and a closed TextIOWrapper raises
+            # ``ValueError: I/O operation on closed file``. Windows'
+            # threaded ``_communicate`` only closes it again (a no-op), so
+            # the trap was invisible on the dev box and live in Docker
+            # (CI run 33687356291). ``None`` is what Popen itself holds
+            # when stdin is not a pipe, so every consumer — communicate,
+            # wait, kill, ``__exit__`` — skips it.
+            try:
+                if proc.stdin is not None:
+                    proc.stdin.close()
+            except Exception:
+                pass
+            proc.stdin = None
         return proc
 
     return _spawn

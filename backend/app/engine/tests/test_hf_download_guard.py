@@ -404,6 +404,34 @@ class TestDefaultSpawnWorker:
             f"stderr must name the offending key; stderr={stderr!r}"
         )
 
+    def test_default_spawn_leaves_no_closed_stdin_pipe(self):
+        """Pin for CI run 33687356291 (ubuntu): ``_make_default_spawn`` writes
+        the JSON handshake and closes its end of the pipe, but used to leave
+        the CLOSED file object on ``proc.stdin``. POSIX ``communicate()``
+        flushes a truthy ``stdin`` before draining and a closed TextIOWrapper
+        raises ``ValueError: I/O operation on closed file``; Windows' threaded
+        path only re-closes it, so the dev box never saw it. The platform-
+        independent observable is that ``stdin`` is ``None`` after spawn —
+        exactly what Popen holds when stdin is not a pipe, and the state every
+        ``communicate``/``wait``/``__exit__`` consumer skips."""
+        from app.engine.utils.hf_download_guard import _make_default_spawn
+
+        proc = _make_default_spawn(None, None, None)()
+        try:
+            assert proc.stdin is None, (
+                "spawn must not leave a closed PIPE object on proc.stdin; "
+                f"got {proc.stdin!r} (closed={getattr(proc.stdin, 'closed', None)})"
+            )
+            # The handshake still reached the child: with stdin=None the
+            # worker's ``sys.stdin.read()`` saw the payload + EOF and rejected
+            # ``repo_id=None`` by name, rather than hanging on an open pipe.
+            _stdout, stderr = proc.communicate(timeout=90)
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+        assert proc.returncode != 0
+        assert "repo" in (stderr or "").lower(), stderr
+
 
 class TestHfFetchWorkerProtocol:
     """The worker's own contract, tested in-process (no subprocess spawn) —

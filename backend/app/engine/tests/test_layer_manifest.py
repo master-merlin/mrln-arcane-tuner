@@ -1,5 +1,6 @@
 """Unit tests for Phase 4 — layer manifest, precision spec, block swapping, targeted training."""
 
+import pytest
 import torch
 import torch.nn as nn
 
@@ -84,6 +85,19 @@ class TestModelLayerManifest:
 
 
 class TestBlockSwappingManager:
+    @pytest.mark.skipif(
+        not torch.cuda.is_available(),
+        reason=(
+            "BlockSwappingManager.apply() stages every block into PINNED host "
+            "memory (block_swapping.py _get_or_create_pinned_shadow -> "
+            "tensor.pin_memory()), and a CPU-only torch raises 'Cannot access "
+            "accelerator device when none is available' (CI run 33687356291). "
+            "The product only builds the manager for CUDA training — the sole "
+            "caller, pipeline_optimization.py, passes the pipeline's execution "
+            "device, and swapping to CPU from CPU saves nothing — so the "
+            "test needs the accelerator, not a product fallback."
+        ),
+    )
     def test_apply_and_remove(self):
         """Hooks are registered and blocks move to CPU on apply."""
         from app.engine.core.optimization.block_swapping import BlockSwappingManager

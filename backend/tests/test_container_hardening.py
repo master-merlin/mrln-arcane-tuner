@@ -21,11 +21,14 @@ that CAN run every time, and the docstring says plainly what it does not cover
 from __future__ import annotations
 
 import os
+import re
 import subprocess
+import time
 from pathlib import Path
 
 import pytest
 
+from app.core.restart_contract import RESTART_EXIT_CODE
 from tests.support.bash_probe import bash_skip_reason, find_bash
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -441,3 +444,189 @@ class TestTheseMatchersActuallyFail:
     def test_setpriv_matcher_notices_removal(self):
         ep = _entrypoint().replace("setpriv", "sudo")
         assert "setpriv --reuid" not in ep
+
+
+# ── The entrypoint is the supervisor: it relaunches on the sentinel (LANE-56) ─
+
+# A stub interpreter for the SUPERVISED part of the script: the resolver call
+# prints a port; the uvicorn call records what it was handed and exits with the
+# next code in STUB_CODES ("wait" = block until TERM, then record it, exit 0).
+_STUB_PYTHON = r'''#!/bin/sh
+case "$1" in
+  */port_resolver.py)
+    echo asked >> "$STUB_RESOLVER_LOG"
+    echo "${PORT:-8765}"
+    exit 0
+    ;;
+esac
+if [ "$1" = "-m" ] && [ "$2" = "uvicorn" ]; then
+  n=0
+  [ -f "$STUB_RECORD" ] && n=$(wc -l < "$STUB_RECORD")
+  echo "restart=${MRLN_RESTART:-unset} supervised=${MRLN_SUPERVISED:-unset} ppid=$PPID argv=$*" >> "$STUB_RECORD"
+  code=$(echo "$STUB_CODES" | cut -d, -f$((n + 1)))
+  if [ "$code" = "wait" ]; then
+    trap 'echo term >> "$STUB_TERM_MARK"; exit 0' TERM
+    sleep 30 & wait $!
+    exit 0
+  fi
+  exit "${code:-0}"
+fi
+exit 0
+'''
+
+
+class _Supervised:
+    """Run the WHOLE entrypoint as a non-root user, with a private PATH.
+
+    Private, not merely prefixed: the script runs ``git config --global`` and
+    ``ollama serve`` when it finds them, and this machine may have both. With
+    only the shims and the coreutils next to bash on PATH, neither exists.
+    ``MRLN_APP_DIR`` points the checkout at a temp dir (it is the app's own
+    variable for that: ``self_update.py:386``), so ``/app/backend`` is never
+    needed.
+    """
+
+    def __init__(self, tmp: Path) -> None:
+        self.tmp = tmp
+        shim = tmp / "shim"
+        shim.mkdir()
+        (shim / "id").write_text("#!/bin/sh\necho 1000\n", encoding="utf-8")
+        (shim / "python").write_text(_STUB_PYTHON, encoding="utf-8")
+        for f in shim.iterdir():
+            f.chmod(0o755)
+        (tmp / "data").mkdir()
+        (tmp / "app" / "backend").mkdir(parents=True)
+        self.record = tmp / "uvicorn_runs.txt"
+        self.resolver_log = tmp / "resolver_calls.txt"
+        self.term_mark = tmp / "term.txt"
+        self.bash = _bash()
+        assert self.bash is not None  # requires_bash guards every caller
+        env = dict(os.environ)
+        for stale in ("MRLN_RESTART", "MRLN_SUPERVISED", "PORT", "MRLN_BIND_HOST",
+                      "MRLN_SETTINGS_PATH", "MRLN_AUTH_TOKEN"):
+            env.pop(stale, None)
+        env["PATH"] = os.pathsep.join([str(shim), *_bash_tool_dirs(self.bash)])
+        env["MRLN_DATA_DIR"] = str(tmp / "data")
+        env["MRLN_APP_DIR"] = (tmp / "app").as_posix()
+        env["STUB_RECORD"] = self.record.as_posix()
+        env["STUB_RESOLVER_LOG"] = self.resolver_log.as_posix()
+        env["STUB_TERM_MARK"] = self.term_mark.as_posix()
+        self.env = env
+        missing = _missing_commands(self.bash, env)
+        if missing:
+            pytest.skip(f"entrypoint.sh needs {', '.join(missing)} and {self.bash} cannot "
+                        f"resolve them on a private PATH of {env['PATH']}")
+
+    def start(self, codes: str) -> subprocess.Popen:
+        self.env["STUB_CODES"] = codes
+        return subprocess.Popen([self.bash, str(ENTRYPOINT)], stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, env=self.env,
+                                cwd=str(REPO_ROOT))
+
+    def run(self, codes: str) -> tuple[int, str]:
+        proc = self.start(codes)
+        out, _ = proc.communicate(timeout=120)
+        return proc.returncode, out
+
+    def runs(self) -> list[str]:
+        if not self.record.exists():
+            return []
+        return self.record.read_text(encoding="utf-8").splitlines()
+
+    def resolver_calls(self) -> int:
+        return len(self.resolver_log.read_text(encoding="utf-8").split()) \
+            if self.resolver_log.exists() else 0
+
+
+class TestEntrypointRelaunchesOnTheSentinel:
+    """Executable, under the script's REAL ``set -euo pipefail`` header — the
+    adversary's BLOCK was precisely that a bare ``python -m uvicorn`` returning
+    75 aborts the script at that line before any ``$?`` comparison."""
+
+    @requires_bash
+    def test_the_sentinel_relaunches_with_the_restart_flag_and_a_fresh_port(self, tmp_path):
+        sup = _Supervised(tmp_path)
+        code, out = sup.run(f"{RESTART_EXIT_CODE},0")
+
+        runs = sup.runs()
+        assert len(runs) == 2, (runs, out)
+        assert "restart=unset" in runs[0] and "supervised=1" in runs[0]
+        assert "restart=1" in runs[1] and "supervised=1" in runs[1]
+        assert sup.resolver_calls() == 2, "the port is resolved before EVERY launch"
+        assert code == 0, (code, out)
+        assert "restart requested" in out
+
+    @requires_bash
+    def test_any_other_exit_code_ends_the_container_with_that_code(self, tmp_path):
+        """A crash must not loop: 3 is uvicorn's STARTUP_FAILURE."""
+        sup = _Supervised(tmp_path)
+        code, out = sup.run("3,0")
+        assert len(sup.runs()) == 1, (sup.runs(), out)
+        assert code == 3, (code, out)
+
+    @requires_bash
+    def test_term_is_forwarded_to_the_server_and_the_loop_ends_with_its_code(self, tmp_path):
+        """``docker stop`` sends TERM to PID 1 — the loop. It must reach uvicorn,
+        and the container's exit code must be the server's, not 143."""
+        sup = _Supervised(tmp_path)
+        proc = sup.start("wait")
+        deadline = time.monotonic() + 60
+        while time.monotonic() < deadline and not sup.runs():
+            time.sleep(0.1)
+        assert sup.runs(), "the server stub never started"
+        # The stub recorded its parent's (msys) pid: the loop shell. Signalled
+        # from a sibling bash because Python's send_signal on Windows is
+        # TerminateProcess, which no trap can see.
+        ppid = re.search(r"ppid=(\d+)", sup.runs()[0]).group(1)
+        subprocess.run([sup.bash, "-c", f"kill -TERM {ppid}"], timeout=30, check=True)
+
+        out, _ = proc.communicate(timeout=60)
+        assert sup.term_mark.exists(), ("the server never received TERM", out)
+        assert proc.returncode == 0, (proc.returncode, out)
+        assert len(sup.runs()) == 1, "a forwarded TERM must not look like a restart"
+
+
+class TestEntrypointSupervisorText:
+    """The shape that keeps the loop correct under the header. Cheap; runs everywhere."""
+
+    def _loop(self) -> str:
+        text = _entrypoint()
+        start = text.index("export MRLN_SUPERVISED=1")
+        return text[start:]
+
+    def test_the_shebang_is_bash(self):
+        """bash reaps re-parented trainer children in its SIGCHLD handler;
+        a ``dash`` PID 1 would not (Assumption — observed in UAT item 5)."""
+        assert _entrypoint().splitlines()[0] == "#!/usr/bin/env bash"
+
+    def test_the_server_is_a_background_child_that_is_waited_for_twice_guarded(self):
+        loop = self._loop()
+        launch = next(line for line in loop.splitlines() if "-m uvicorn" in line)
+        assert "exec" not in launch, "exec makes uvicorn PID 1 and the exit the container's end"
+        assert launch.rstrip().endswith("&")
+        assert 'pid=$!' in loop
+        guarded = 'code=0; wait "$pid" || code=$?'
+        assert loop.count(guarded) == 2, (
+            "both waits must be in the errexit-exempt form: the first returns "
+            "128+15 when TERM interrupts it, and only the second yields the child's code")
+
+    def test_the_trap_is_installed_before_the_first_launch_and_forwards_guarded(self):
+        loop = self._loop()
+        assert loop.index("trap ") < loop.index("-m uvicorn")
+        assert 'kill -0 "$pid"' in loop
+        assert 'kill -TERM "$pid"' in loop
+        assert '${pid:-}' in loop, "under set -u a bare $pid in an early trap aborts the script"
+
+    def test_the_compared_literal_is_the_contracts_constant(self):
+        """RULE-21: the literal is the wire; this pin keeps it from drifting."""
+        assert f'"$code" -ne {RESTART_EXIT_CODE}' in self._loop()
+
+    def test_the_relaunch_sets_the_restart_flag_and_everything_else_exits(self):
+        loop = self._loop()
+        assert "export MRLN_RESTART=1" in loop
+        assert 'exit "$code"' in loop
+
+    def test_the_header_is_still_strict(self):
+        """The loop is written FOR ``set -euo pipefail``; loosening the header
+        would hide a regression in the guarded form."""
+        assert "set -euo pipefail" in _entrypoint()

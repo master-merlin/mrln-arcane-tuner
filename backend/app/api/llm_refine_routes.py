@@ -63,10 +63,18 @@ def _default_model() -> str:
 class ModelsResponse(BaseModel):
     curated: list[str]
     installed: list[str]
+    #: The endpoint answered a listing. A surface that picks its own model
+    #: from ``installed`` (the mass-caption Refine tab) gates on this.
     available: bool
     #: APPENDED (LANE-57): the sentence ``POST /captions/refine-batch`` refuses
-    #: with when the endpoint is down — the UI disables Start with THIS text,
-    #: never a re-derived one (RULE-21). ``None`` when a refine may start.
+    #: with — the UI disables Start with THIS text, never a re-derived one
+    #: (RULE-21). ``None`` when a refine that names NO model may start:
+    #: judged against the configured default model, because that is the model
+    #: a model-less request (the detail sidebar's Refine) is served with
+    #: (LANE-70; ``caption_routes.py`` ``refine-batch`` resolves the same
+    #: way). So ``available`` can be ``True`` with a reason: endpoint up,
+    #: default model not installed there — the sidebar is blocked, the
+    #: Refine tab with an installed model chosen is not.
     unavailable_reason: str | None = None
 
 
@@ -82,8 +90,9 @@ class RefinePreviewRequest(BaseModel):
 
 @router.get("/models", response_model=ModelsResponse)
 async def list_models() -> ModelsResponse:
-    # One probe through the same predicate the refine boundary refuses on.
-    ready = await refine_readiness(_client_or_400())
+    # One probe through the same predicate the refine boundary refuses on,
+    # judging the model a model-less refine request is served with.
+    ready = await refine_readiness(_client_or_400(), _default_model())
     return ModelsResponse(curated=CURATED_MODELS, installed=ready.installed,
                           available=ready.available, unavailable_reason=ready.reason)
 

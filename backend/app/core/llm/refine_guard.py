@@ -18,7 +18,7 @@ it the listing the caller actually uses:
   ``/api/tags``), consumed by the refine-batch boundary (409 ``reason``) and
   ``GET /api/llm-refine/models`` → ``unavailable_reason``;
 * ``caption_provider_readiness`` — an api-* captioning provider
-  (``openai_compat.list_models``, ``{base}/models``), consumed by the
+  (``openai_compat.list_models_async``, ``{base}/models``), consumed by the
   caption-batch boundary (409 ``reason``) and
   ``GET /api/captions/api-providers/{provider}/readiness`` → ``unavailable_reason``.
 
@@ -77,8 +77,13 @@ CAPTION_SURFACE = ReadinessSurface(
     model_hint="pick one the provider lists (Fetch models in the captioning API settings)")
 
 #: A UI probe, not a batch: a provider that has not answered a model listing
-#: in this long is not one the CTA should wait on.
-PROBE_TIMEOUT_S = 10.0
+#: in this long is "unreachable" and the sentence says so. Applied in ONE
+#: place, ``endpoint_readiness`` (LANE-70): before it, the refine probe ran
+#: on ``OllamaClient``'s 120 s inference timeout and the caption probe on its
+#: own 10 s, and a socket that accepts and never answers held the Generate /
+#: Refine CTA for that long. A live local listing answers in ~0.2-0.5 s
+#: (measured 2026-09-02), so a few seconds is generous, not tight.
+PROBE_TIMEOUT_S = 5.0
 
 
 def unreachable_reason(base_url: str, surface: ReadinessSurface = REFINE_SURFACE) -> str:
@@ -121,9 +126,14 @@ async def endpoint_readiness(
     ("a model that is not installed") and is refused by name.
     """
     try:
-        installed = await list_installed()
+        # The bound lives HERE, not in each client: a listing is the probe's
+        # whole job, and a client's own timeout is sized for inference.
+        installed = await asyncio.wait_for(list_installed(), PROBE_TIMEOUT_S)
     except OutboundUrlRejected:
         raise  # the URL itself is refused (layer L0) — a 400, not a readiness verdict
+    except TimeoutError:  # accepted the connection, never answered: unreachable
+        return RefineReadiness(base_url=base_url, available=False,
+                               reason=unreachable_reason(base_url, surface))
     except httpx.HTTPStatusError as e:
         return RefineReadiness(base_url=base_url, available=False,
                                reason=answered_error_reason(
@@ -151,7 +161,7 @@ async def caption_provider_readiness(provider: str, model: str | None = None) ->
     the URL itself, exactly as the listing call would; callers map that to 400.
     """
     from app.core.llm import provider_settings
-    from app.core.llm.openai_compat import list_models
+    from app.core.llm.openai_compat import list_models_async
 
     try:
         cfg = provider_settings.resolve_provider(provider)
@@ -159,11 +169,12 @@ async def caption_provider_readiness(provider: str, model: str | None = None) ->
         return RefineReadiness(base_url="", available=False, reason=str(e))
 
     async def _list() -> list[str]:
-        # ``list_models`` is a sync httpx call — off the event loop (D10).
+        # The async listing, not ``to_thread(list_models)``: a thread cannot be
+        # cancelled when the bound above fires, and the sync client's
+        # sequential connect pays ~2 s on ``localhost`` (see the docstring).
         try:
-            return await asyncio.to_thread(
-                lambda: list_models(base_url=cfg.base_url, api_key=cfg.api_key,
-                                    timeout=PROBE_TIMEOUT_S))
+            return await list_models_async(base_url=cfg.base_url, api_key=cfg.api_key,
+                                           timeout=PROBE_TIMEOUT_S)
         except OutboundUrlRejected:
             raise
         except ValueError as e:  # a body that is not JSON: reachable, not a listing

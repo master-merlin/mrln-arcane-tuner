@@ -41,6 +41,27 @@ describe('LlmAvailabilityStore', () => {
         http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['x'], available: true, unavailable_reason: null });
         expect(store.reason()).toBeNull();
     });
+    // LANE-70: the ONE gate a model-less Refine trigger reads. `available`
+    // alone is the endpoint verdict — the served reason (default model not
+    // installed) blocks too, and so does a probe that has not answered.
+    it('blocked/blockedReason: pending → checking; reason with available=true → blocked with it; all-clear → open; error → fallback', () => {
+        const { store, http } = setup();
+        expect(store.blocked()).toBe(true);
+        expect(store.blockedReason()).toContain('Checking');
+        const reason = 'Model \'qwen2.5:7b-instruct\' is not installed on http://127.0.0.1:11434 - pull it on the Server screen or pick an installed model.';
+        store.refresh();
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['gemma3:12b'], available: true, unavailable_reason: reason });
+        expect(store.available()).toBe(true);
+        expect(store.blocked()).toBe(true);
+        expect(store.blockedReason()).toBe(reason);
+        store.refresh();
+        http.expectOne('/api/llm-refine/models').flush({ curated: [], installed: ['qwen2.5:7b-instruct'], available: true, unavailable_reason: null });
+        expect(store.blocked()).toBe(false);
+        store.refresh();
+        http.expectOne('/api/llm-refine/models').error(new ProgressEvent('fail'));
+        expect(store.blocked()).toBe(true);
+        expect(store.blockedReason()).toContain('unreachable');
+    });
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });
 

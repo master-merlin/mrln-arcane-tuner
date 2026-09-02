@@ -201,5 +201,36 @@ def list_models(
     with httpx.Client(timeout=timeout, transport=transport) as client:
         resp = client.get(url, headers=_headers(api_key))
         resp.raise_for_status()
-        data = resp.json().get("data") or []
-        return [m["id"] for m in data if isinstance(m, dict) and m.get("id")]
+        return _model_ids(resp.json())
+
+
+async def list_models_async(
+    *,
+    base_url: str,
+    api_key: str | None,
+    timeout: float,
+) -> list[str]:
+    """``list_models`` on the event loop — for the readiness PROBE (LANE-70).
+
+    Not a convenience: the sync client connects to the resolved addresses one
+    after another, and ``localhost`` resolves to ``::1`` before ``127.0.0.1``
+    on Windows, where a refused IPv6 loopback connect costs ~2.0 s before the
+    IPv4 address is even tried (measured 2026-09-02: 2.30 s via ``localhost``
+    vs 0.19 s via ``127.0.0.1`` for the same live Ollama). The async client
+    dials the next address 250 ms in (happy eyeballs), so the CTA that waits
+    on this listing unblocks in well under a second instead of 2-3 s. It is
+    also cancellable, which is what lets ``refine_guard.endpoint_readiness``
+    bound the probe without a thread outliving the verdict.
+    """
+    url = f"{_validate_base_url(base_url)}/models"
+    async with httpx.AsyncClient(timeout=timeout) as client:
+        resp = await client.get(url, headers=_headers(api_key))
+        resp.raise_for_status()
+        return _model_ids(resp.json())
+
+
+def _model_ids(body: object) -> list[str]:
+    if not isinstance(body, dict):
+        raise ValueError("model listing is not a JSON object")
+    data = body.get("data") or []
+    return [m["id"] for m in data if isinstance(m, dict) and m.get("id")]

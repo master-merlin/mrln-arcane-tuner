@@ -243,12 +243,17 @@ export { apiBlockedReasonFor };
             <!-- Model-aware refined-variant review + refine trigger -->
             @if (modelContext.modelAware() && modelContext.activeDefinitionId(); as def) {
                 <div class="shrink-0 px-3 pb-3 pt-2 space-y-2 border-t border-surface-mid bg-surface-low/30">
+                    <!-- LANE-70: DISABLED + the backend's sentence beside it, the
+                         same contract as Generate above — a tooltip is not a gate. -->
                     <button (click)="refineVariant()" data-testid="refine-variant"
-                            [disabled]="!llm.available()"
-                            [title]="llm.available() ? 'Refine this caption for ' + def : (llm.reason() ?? 'LLM endpoint unreachable — configure it in Server settings')"
+                            [disabled]="llm.blocked()"
+                            [title]="llm.blocked() ? llm.blockedReason() : 'Refine this caption for ' + def"
                             class="w-full py-2 rounded-theme-lg font-bold text-xs bg-brand hover:bg-brand/90 text-white transition-all active:scale-95 disabled:opacity-40 disabled:cursor-not-allowed">
                         Refine for {{ def }}
                     </button>
+                    @if (llm.blocked()) {
+                        <p class="text-[10px] text-danger leading-snug" data-testid="refine-blocked-reason">{{ llm.blockedReason() }}</p>
+                    }
                     <app-caption-suggestion-review
                         [datasetName]="datasetName()"
                         [stem]="currentStem()"
@@ -657,6 +662,13 @@ export class DetailCaptionSidebarComponent {
     protected refineVariant(): void {
         const def = this.modelContext.activeDefinitionId();
         if (!def) return;
+        if (this.llm.blocked()) {
+            // Same sentence as the disabled button carries: a keyboard /
+            // programmatic call past the disabled attribute says why instead
+            // of dialing out to be refused with the identical 409 (LANE-70).
+            this.toast.error(this.llm.blockedReason());
+            return;
+        }
         this.datasetService.refineCaptions(this.datasetName(), [this.currentPair().media_file], def, 'standardize').subscribe({
             next: () => this.toast.success('Refine queued — suggestion will appear when ready.'),
             // A 409 names exactly what is missing (endpoint or model) — LANE-57.

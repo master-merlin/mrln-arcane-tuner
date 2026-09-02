@@ -724,6 +724,39 @@ describe('DatasetCaptionSettings — api-* readiness (LANE-65)', () => {
         expect(last.apiUnavailableReason).toContain('gpt-9');
     });
 
+    // LANE-70 (UAT-7.4): switching provider while the OLD provider's probe is
+    // still out. Its answer arrives AFTER the new selection was probed and must
+    // not gate it — neither unblock it (an all-clear for openai is not one for
+    // custom) nor overwrite the new provider's sentence. Two independent
+    // guards hold this: switchMap drops the older inner subscription, and the
+    // answer is keyed to the selection it was asked about. Mutation that
+    // turns it red: switchMap → mergeMap AND `answer?.key === key` → `true`.
+    it('an older provider\'s probe answer arriving after a newer selection is ignored', () => {
+        const late = new Subject<{ provider: string; base_url: string; available: boolean; unavailable_reason: string | null }>();
+        const customReason = 'LLM endpoint http://127.0.0.1:1/v1 is unreachable - start it, or configure and test it on the captioning API settings (Connection).';
+        api.readiness.mockImplementation((provider: string) => provider === 'openai'
+            ? late.asObservable()
+            : of({ provider: 'custom', base_url: 'http://127.0.0.1:1/v1', available: false, unavailable_reason: customReason }));
+        comp.switchMode('api');                       // api-openai: probe dialled, unanswered
+        vi.runAllTimers();
+        expect(api.readiness).toHaveBeenLastCalledWith('openai', undefined);
+        expect(last.apiReady).toBe(false);
+
+        comp.onModelChange('api-custom');             // the newer selection answers at once
+        vi.runAllTimers();
+        expect(api.readiness).toHaveBeenLastCalledWith('custom', undefined);
+        expect(last.modelId).toBe('api-custom');
+        expect(last.apiReady).toBe(false);
+        expect(last.apiUnavailableReason).toBe(customReason);
+
+        late.next({ provider: 'openai', base_url: '', available: true, unavailable_reason: null });
+        late.complete();                              // the older probe answers now
+        vi.runAllTimers();
+        expect(last.modelId).toBe('api-custom');
+        expect(last.apiReady).toBe(false);            // never unblocked by the openai answer
+        expect(last.apiUnavailableReason).toBe(customReason);
+    });
+
     it('a probe that fails to answer is apiReady=false with a "could not check" reason, never ready', () => {
         api.readiness.mockReturnValue(throwError(() => new Error('502')));
         comp.switchMode('api');

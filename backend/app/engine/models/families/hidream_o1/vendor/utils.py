@@ -1,4 +1,4 @@
-﻿# ruff: noqa
+# ruff: noqa
 import math
 import torch
 import json

@@ -1,4 +1,4 @@
-﻿import { Component, input, inject, OnInit, signal, computed, effect, ChangeDetectionStrategy } from '@angular/core';
+import { Component, input, inject, OnInit, signal, computed, effect, ChangeDetectionStrategy } from '@angular/core';
 import { FormControl, FormsModule } from '@angular/forms';
 import { ModelService } from '../../../services/model.service';
 import { ModelCapabilities, BlockTopologyGroup } from '../../../services/model-capabilities.service';
@@ -672,7 +672,7 @@ export class TargetLayersCardComponent implements OnInit {
         return;
       }
 
-      // Parse module names â€” support JSON array or comma-separated
+      // Parse module names — support JSON array or comma-separated
       let moduleNames: string[] = [];
       const trimmed = text.trim();
       try {
@@ -693,7 +693,7 @@ export class TargetLayersCardComponent implements OnInit {
       // Expand BFL/ComfyUI merged modules to diffusers equivalents
       // so e.g. "qkv" matches "to_q", "to_k", "to_v" in model scan
       const BFL_EXPAND: Record<string, string[]> = {
-        // Flux2/Klein BFL â†’ diffusers (both fused and unfused variants)
+        // Flux2/Klein BFL → diffusers (both fused and unfused variants)
         'qkv': ['to_qkv', 'to_q', 'to_k', 'to_v'],
         'proj': ['to_out.0', 'to_out'],
         'img_attn.qkv': ['to_qkv', 'to_q', 'to_k', 'to_v'],
@@ -708,7 +708,7 @@ export class TargetLayersCardComponent implements OnInit {
         'linear2': ['linear2', 'to_out'],
         // Flux2 dev single blocks (diffusers naming)
         'to_qkv_mlp_proj': ['to_qkv_mlp_proj', 'linear1'],
-        // Diffusers fused â†’ pre-fusion PEFT targets
+        // Diffusers fused → pre-fusion PEFT targets
         'to_qkv': ['to_q', 'to_k', 'to_v'],
         'to_added_qkv': ['add_q_proj', 'add_k_proj', 'add_v_proj'],
         'odd_q_proj': ['to_q'],
@@ -733,11 +733,11 @@ export class TargetLayersCardComponent implements OnInit {
       const isFullPaths = moduleNames.some(m => /\.\d+\./.test(m) && m.split('.').length > 3);
 
       if (isFullPaths) {
-        // â”€â”€ Per-instance matching â”€â”€
+        // ── Per-instance matching ──
         // LoRA paths like "diffusion_model.double_blocks.0.img_attn.qkv"
         // must be matched to tree nodes using topology group names.
 
-        // Map LoRA attr path segments â†’ topology group names
+        // Map LoRA attr path segments → topology group names
         const BLOCK_ALIASES: Record<string, string> = {
           'double_blocks': 'double_blocks',
           'single_blocks': 'single_blocks',
@@ -763,7 +763,7 @@ export class TargetLayersCardComponent implements OnInit {
           }
         }
 
-        // Expand fused/BFL suffixes â†’ pre-fusion layer names
+        // Expand fused/BFL suffixes → pre-fusion layer names
         const FUSED: Record<string, string[]> = {
           'img_attn.qkv': ['to_q', 'to_k', 'to_v'],
           'img_attn.proj': ['to_out', 'to_out.0'],
@@ -780,7 +780,7 @@ export class TargetLayersCardComponent implements OnInit {
           'to_qkv_mlp_proj': ['to_q', 'to_k', 'to_v', 'ff.net.0.proj'],
         };
 
-        // Build lookup: groupName â†’ blockIdx â†’ Set<layerName>
+        // Build lookup: groupName → blockIdx → Set<layerName>
         const lookup = new Map<string, Map<number, Set<string>>>();
         for (const p of parsedMods) {
           const expanded = FUSED[p.suffix] || [p.suffix];
@@ -815,14 +815,14 @@ export class TargetLayersCardComponent implements OnInit {
         this.commitTree();
 
         if (matchCount > 0) {
-          this.toast.success(`Imported ${moduleNames.length} modules â€” ${matchCount} layers selected`);
+          this.toast.success(`Imported ${moduleNames.length} modules — ${matchCount} layers selected`);
           this.importedModules.set(true);
           setTimeout(() => this.importedModules.set(false), 2000);
         } else {
           this.toast.error(`No matching layers found for ${moduleNames.length} module paths`);
         }
       } else {
-        // â”€â”€ Legacy: expand BFL/fused names and match by layer.name suffix â”€â”€
+        // ── Legacy: expand BFL/fused names and match by layer.name suffix ──
         const expandedNames: Set<string> = new Set(moduleNames);
         for (const m of moduleNames) {
           const expanded = BFL_EXPAND[m];
@@ -847,7 +847,7 @@ export class TargetLayersCardComponent implements OnInit {
         this.commitTree();
 
         if (matchCount > 0) {
-          this.toast.success(`Imported ${moduleNames.length} modules â€” ${matchCount} layers selected`);
+          this.toast.success(`Imported ${moduleNames.length} modules — ${matchCount} layers selected`);
           this.importedModules.set(true);
           setTimeout(() => this.importedModules.set(false), 2000);
         } else {

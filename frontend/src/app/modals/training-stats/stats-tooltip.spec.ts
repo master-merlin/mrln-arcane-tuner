@@ -1,4 +1,4 @@
-﻿import type uPlot from 'uplot';
+import type uPlot from 'uplot';
 import { tooltipPlugin } from './stats-tooltip';
 
 /**

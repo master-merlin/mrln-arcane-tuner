@@ -1,4 +1,4 @@
-﻿# ──────────────────────────────────────────────────────────────────────────
+# ──────────────────────────────────────────────────────────────────────────
 # MRLN Arcane Tuner — Windows install script
 #
 # Optionally creates a virtual environment, installs PyTorch with CUDA 13.0

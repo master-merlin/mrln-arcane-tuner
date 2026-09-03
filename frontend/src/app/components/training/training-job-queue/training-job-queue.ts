@@ -1,4 +1,4 @@
-﻿import { Component, ChangeDetectionStrategy, OnInit, DestroyRef, inject, signal, computed, effect, output, HostListener } from '@angular/core';
+import { Component, ChangeDetectionStrategy, OnInit, DestroyRef, inject, signal, computed, effect, output, HostListener } from '@angular/core';
 import { takeUntilDestroyed } from '@angular/core/rxjs-interop';
 import { DatePipe, NgTemplateOutlet } from '@angular/common';
 import { JobService, Job, JobStatus, type JobSample, type TrainingConfig, type JobCheckpointMeta } from '../../../services/job';
@@ -155,7 +155,7 @@ export class TrainingJobQueueComponent implements OnInit {
   autoResume = signal<boolean>(true);
   stopModalJobId = signal<string | null>(null);
 
-  // Model source overrides cache (definition_id â†’ source info)
+  // Model source overrides cache (definition_id → source info)
   jobModelSources = signal<Map<string, ModelSourceOverride>>(new Map());
 
   wsService = inject(WebSocketService);
@@ -206,7 +206,7 @@ export class TrainingJobQueueComponent implements OnInit {
     // lists, WS-driven status) that the store doesn't track. So we:
     //   1. PRUNE local rows the store no longer knows about (e.g. successful
     //      optimistic delete).
-    //   2. ADD store rows missing from local, partitioned by status â€” this
+    //   2. ADD store rows missing from local, partitioned by status — this
     //      restores rows when an optimistic delete rolls back on HTTP failure.
     // We never overwrite a local row that's already present: WS job_update
     // events carry richer state we'd lose by full-mirroring from the store.
@@ -217,11 +217,11 @@ export class TrainingJobQueueComponent implements OnInit {
 
       const storeIds = new Set(all.map(j => j.id));
 
-      // â”€â”€ Prune: drop local rows the store no longer knows about â”€â”€â”€â”€â”€â”€â”€â”€
+      // ── Prune: drop local rows the store no longer knows about ────────
       this.jobs.update(rows => rows.filter(j => storeIds.has(j.id)));
       this.historicalJobs.update(rows => rows.filter(j => storeIds.has(j.id)));
 
-      // â”€â”€ Add: re-introduce store rows missing from local, partitioned â”€â”€
+      // ── Add: re-introduce store rows missing from local, partitioned ──
       const arch = this.locallyArchived();
       const localActiveIds = new Set(this.jobs().map(j => j.id));
       const localArchiveIds = new Set(this.historicalJobs().map(j => j.id));
@@ -257,7 +257,7 @@ export class TrainingJobQueueComponent implements OnInit {
 
     // Mirror RegistryStore rows we've already seeded into the local
     // `jobModelSources` cache (template reads from the cache). Only
-    // patches keys the cache already knows about â€” never adds new ones
+    // patches keys the cache already knows about — never adds new ones
     // (the loadModelSources path remains the seed). This makes
     // cross-tab updates (entity.changed:registry_model) reflect in the
     // queue header badges without a refresh.
@@ -666,7 +666,7 @@ export class TrainingJobQueueComponent implements OnInit {
     });
     // Also seed the JobStore so optimistic deleteJob() can prune archived
     // rows. JobStore.loadHistory() currently ignores the project filter
-    // (no-arg listJobHistory) â€” acceptable temporary duplication until the
+    // (no-arg listJobHistory) — acceptable temporary duplication until the
     // store fully owns the archive view (Phase 5+).
     void this.jobStore.loadHistory();
   }
@@ -1031,7 +1031,7 @@ export class TrainingJobQueueComponent implements OnInit {
       if (!cached.has(defId)) {
         // Route through the store so cross-tab updates land in jobModelSources
         // (the reconcile effect below mirrors store rows into the local cache).
-        // On 404 (no override exists), loadFor rejects silently â€” we just
+        // On 404 (no override exists), loadFor rejects silently — we just
         // skip the cache write, matching the prior HTTP error branch.
         void this.registryStore.loadFor(defId).then(() => {
           const src = this.registryStore.byId(defId)();

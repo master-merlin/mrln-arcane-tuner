@@ -1,4 +1,4 @@
-﻿# The verification gate, run on a public clone.
+# The verification gate, run on a public clone.
 #
 # Until this file existed there was no `.github/` in the repository at all, so
 # nothing has ever verified a contributor's clone -- only the maintainer's
@@ -59,7 +59,7 @@ jobs:
       # in seconds instead of after a ten-minute dependency install.
       - name: Install ruff
         # Pinned to the venv's ruff (backend/requirements.txt) so CI and the local
-        # gate judge by the same rule set â€” an unpinned ruff drifts with pip and
+        # gate judge by the same rule set — an unpinned ruff drifts with pip and
         # CI's first-ever run went red on a rule the local version had not seen.
         run: python -m pip install --upgrade pip "ruff==0.16.5"
 
@@ -79,13 +79,13 @@ jobs:
       # the local install does, or pip would downgrade torch underneath it.
       # It must come from the SAME CPU index as torch: PyPI's torchaudio wheel
       # is the CUDA build, and its native library cannot load beside a CPU
-      # torch ("Could not load this library: _torchaudio.abi3.so" â€” CI's
+      # torch ("Could not load this library: _torchaudio.abi3.so" — CI's
       # first-ever pytest run, 138 collection errors, 2026-09-03).
       #
       # triton is part of the stack install-deps.sh refuses to touch, so it
       # must be installed HERE too: requirements.txt pins it for linux, the
       # boot-contract test asserts every applicable pin is installed, sam3's
-      # GPU NMS path imports it, and the boogu vendor probes it â€” five tests
+      # GPU NMS path imports it, and the boogu vendor probes it — five tests
       # went red on run 7 (2026-09-03) with no triton on the runner. The PyPI
       # wheel imports fine without a GPU; only its kernels need one.
       - name: Install torch (CPU wheels)
@@ -163,11 +163,11 @@ jobs:
         working-directory: frontend
         run: npm run build
 
-      # The CSP applies to the file FastAPI SERVES, which is this build output â€”
+      # The CSP applies to the file FastAPI SERVES, which is this build output —
       # not frontend/src/index.html. That distinction is not academic: the
       # production build once injected `onload="this.media='all'"` (Angular's
       # inlineCritical), which a strict script-src blocks, leaving the whole app
-      # unstyled â€” while every source-level check passed.
+      # unstyled — while every source-level check passed.
       #
       # dist/ is gitignored, so the coherence tests fall back to source when no
       # build is present. Running them HERE, in the only job that has the real
@@ -180,13 +180,13 @@ jobs:
         run: |
           set -euo pipefail
           test -s frontend/dist/frontend/browser/index.html || {
-            echo "::error::no built index.html â€” the CSP coherence check would" \
+            echo "::error::no built index.html — the CSP coherence check would" \
                  "silently fall back to source, which is what it exists to avoid."
             exit 1
           }
           # Importing app.api._security_headers runs backend/app/__init__.py,
           # which imports app.core.compat, which imports structlog at module
-          # level â€” so this hand-picked set must cover the whole import chain,
+          # level — so this hand-picked set must cover the whole import chain,
           # not just what the test file names. backend/tests/test_gate_csp_step_deps.py
           # walks that chain and fails when a new module-level third-party
           # import appears that this line does not provide (2026-09-03, run 4:

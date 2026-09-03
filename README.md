@@ -220,19 +220,45 @@ than from whatever the branch points at, so two builds of the same tag contain
 the same code and the image records which. A build without it fails immediately
 rather than quietly tracking a moving branch.
 
-```bash
-SHA=$(git rev-parse HEAD)   # the full 40-char commit; a short sha is refused
+Build through **`docker-build.ps1`** rather than calling `docker build`
+directly. `GIT_SHA` alone is not enough to guarantee what ends up in the image:
+the Dockerfile's own `git rev-parse HEAD == $GIT_SHA` assertion lives *inside* a
+`RUN`, and a cache hit never re-runs it. A published image once shipped a
+different commit than the one it was built with while the build exited 0,
+printed `writing image` and named its tags — so the wrapper builds to a scratch
+tag, reads the commit back **out of the finished image**, and applies the
+release tags only if it matches. A mismatch leaves the previous image holding
+`:latest`. It also writes the build log and the exact arguments it used to
+`.agent/workdir/`, and it never pushes.
 
-# Primary (cu128 — Blackwell + modern fleet). Tag with version and latest.
-docker build --build-arg GIT_SHA="$SHA" \
-    -t mastermerlin/mrln-arcane-tuner:0.8.0-beta.1 -t mastermerlin/mrln-arcane-tuner:latest .
-docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.1
-docker push mastermerlin/mrln-arcane-tuner:latest
+```powershell
+$SHA = git rev-parse HEAD   # the full 40-char commit; a short sha is refused
+
+# Primary (cu128 — Blackwell + modern fleet). Takes the version tag and latest.
+.\docker-build.ps1 -GitSha $SHA -Variant cu128 -Version 0.8.0-beta.1 `
+    -TokenPath <path-to-a-file-holding-a-github-token>
 
 # Fallback (cu126 — legacy R560–R565 drivers).
-docker build --build-arg GIT_SHA="$SHA" \
-    --build-arg CUDA_BASE=12.6.3 --build-arg TORCH_CUDA=cu126 \
-    -t mastermerlin/mrln-arcane-tuner:0.8.0-beta.1-cu126 .
+.\docker-build.ps1 -GitSha $SHA -Variant cu126 -Version 0.8.0-beta.1 `
+    -TokenPath <path-to-a-file-holding-a-github-token>
+```
+
+Each variant claims its own tags, and the wrapper applies them **only after the
+image has proven its commit** — so a failed verification leaves the previous
+image holding them:
+
+| Variant | Tags applied on success |
+| ------- | ----------------------- |
+| `cu128` (default) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.1` and `mastermerlin/mrln-arcane-tuner:latest` |
+| `cu126` (fallback) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.1-cu126` |
+
+Add `-NoCache` for a build you intend to publish: the clone layer is the one
+that went wrong, and rebuilding it unconditionally removes the ambiguity at the
+cost of a long build. Pushing stays a separate, deliberate step:
+
+```bash
+docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.1
+docker push mastermerlin/mrln-arcane-tuner:latest
 docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.1-cu126
 ```
 
@@ -244,11 +270,13 @@ retrieve.
 `ollama.com/install.sh` into a root shell, which is an **unpinned third-party
 script executing at build time**. For a build you intend to publish, pin it:
 
-```bash
+```powershell
 # Get the digest once, then pass both — one without the other is refused.
-curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/ollama-linux-amd64.tgz | sha256sum
-docker build --build-arg GIT_SHA="$SHA" \
-    --build-arg OLLAMA_VERSION=<tag> --build-arg OLLAMA_SHA256=<digest> ...
+# The published asset is a zstd tarball; the .tgz form no longer exists upstream.
+# Authoritative digests are in each release's sha256sum.txt.
+curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/ollama-linux-amd64.tar.zst | sha256sum
+.\docker-build.ps1 -GitSha $SHA -Variant cu128 -Version 0.8.0-beta.1 `
+    -TokenPath <token-file> -OllamaVersion <tag> -OllamaSha256 <digest>
 ```
 
 `--build-arg INSTALL_OLLAMA=0` skips it entirely; the app starts fine without

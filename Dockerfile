@@ -226,6 +226,47 @@ WORKDIR /app/backend
 # never diverge.
 RUN bash install-deps.sh
 
+# --- hpsv2's BPE vocabulary, baked in as root ---
+# hpsv2 vendors its own open_clip, whose tokenizer resolves this file with a
+# HARDCODED package-relative path (`os.path.join(os.path.dirname(__file__),
+# "bpe_simple_vocab_16e6.txt.gz")`) and whose wheel does not ship it. There is
+# no environment variable that redirects it, so it MUST live inside
+# site-packages. `apply_hpsv2_patches()` in backend/app/core/compat.py fetched
+# it on first boot, which worked only while the app ran as root: under the
+# non-root user the write is EACCES, the failure is swallowed into a warning,
+# and HPSv2 scoring is silently dead.
+# Doing it here, as root at build time, is the fix. It also makes the runtime
+# path a no-op — compat.py returns early when the file is already present — and
+# stops every fresh container needing github.com reachable at boot.
+# Chowning site-packages instead would "work" and would be wrong: the app must
+# not be able to rewrite the libraries it is about to execute.
+# The destination is resolved from the INSTALLED DISTRIBUTION, never hardcoded:
+# a base-image Python bump moves dist-packages, and a literal python3.12 path
+# would silently drop the file where nothing reads it.
+# PINNED to a commit and a digest, not to `main`. A `main` URL makes the build
+# irreproducible by definition: two builds of the same GIT_SHA can differ if
+# upstream moves the file, which is the same defect class as an image that
+# cannot prove which commit it contains. The gzip probe below is NOT a
+# substitute — it proves the bytes are *a* gzip, never that they are *the*
+# vocabulary — and `curl -f` does not catch a 200 serving an HTML error page.
+# The digest is what turns "we got a gzip" into "we got the file we validated
+# against"; the probe stays because it names the failure in one line when the
+# digest check is what fails.
+# The pin: openai/CLIP@3bee2811, the last commit to touch this path (2021-01-29).
+# To re-pin, take BOTH from the same commit:
+#   curl -fsSL https://github.com/openai/CLIP/raw/<sha>/clip/bpe_simple_vocab_16e6.txt.gz | sha256sum
+ARG CLIP_VOCAB_COMMIT=3bee28119e6b28e75b82b811b87b56935314e6a5
+ARG CLIP_VOCAB_SHA256=924691ac288e54409236115652ad4aa250f48203de50a9e4722a6ecd48d6804a
+RUN set -eu; \
+    dest="$(python -c 'import importlib.metadata as m, pathlib; print(pathlib.Path(str(m.distribution("hpsv2").locate_file(""))) / "hpsv2" / "src" / "open_clip")')"; \
+    [ -n "$dest" ] || { echo "ERROR: could not resolve the hpsv2 package directory." >&2; exit 1; }; \
+    mkdir -p "$dest"; \
+    curl -fsSL -o "$dest/bpe_simple_vocab_16e6.txt.gz" \
+      "https://github.com/openai/CLIP/raw/${CLIP_VOCAB_COMMIT}/clip/bpe_simple_vocab_16e6.txt.gz"; \
+    echo "${CLIP_VOCAB_SHA256}  $dest/bpe_simple_vocab_16e6.txt.gz" | sha256sum -c -; \
+    python -c 'import gzip,sys; gzip.open(sys.argv[1],"rb").read(1)' "$dest/bpe_simple_vocab_16e6.txt.gz"; \
+    echo "[build] hpsv2 BPE vocab baked into $dest"
+
 # Built SPA from stage 1 (overwrites the cloned, unbuilt frontend dist path).
 COPY --from=frontend /build/dist/frontend/browser /app/frontend/browser
 

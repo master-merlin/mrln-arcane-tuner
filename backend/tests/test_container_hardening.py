@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import os
 import re
+import shutil
 import subprocess
 import time
 from pathlib import Path
@@ -34,6 +35,7 @@ from tests.support.bash_probe import bash_skip_reason, find_bash
 REPO_ROOT = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO_ROOT / "Dockerfile"
 ENTRYPOINT = REPO_ROOT / "entrypoint.sh"
+BUILD_SCRIPT = REPO_ROOT / "docker-build.ps1"
 
 EXPECTED_UID = "10001"
 
@@ -48,6 +50,12 @@ def _entrypoint() -> str:
     if not ENTRYPOINT.exists():
         pytest.skip("entrypoint.sh not present in this checkout")
     return ENTRYPOINT.read_text(encoding="utf-8")
+
+
+def _build_script() -> str:
+    if not BUILD_SCRIPT.exists():
+        pytest.skip("docker-build.ps1 not present in this checkout")
+    return BUILD_SCRIPT.read_text(encoding="utf-8")
 
 
 # ── behaviour ────────────────────────────────────────────────────────────
@@ -472,6 +480,72 @@ class TestBuildContract:
         df = _dockerfile()
         assert "OLLAMA_SHA256=\n" in df or "ARG OLLAMA_SHA256=" in df
 
+    def test_hpsv2_vocab_is_baked_in_not_fetched_at_runtime(self):
+        """hpsv2's vocab must be in the image, placed before the drop.
+
+        Its vendored open_clip resolves the file with a hardcoded
+        package-relative path, so it has to sit inside site-packages and no
+        env var can move it. The runtime fetch in ``apply_hpsv2_patches`` only
+        ever worked as root; under the app user it is EACCES, swallowed into a
+        warning, and HPSv2 scoring is dead with nothing failing loudly.
+        """
+        df = _dockerfile()
+        assert "bpe_simple_vocab_16e6.txt.gz" in df, (
+            "the hpsv2 vocabulary is not baked into the image; it will be "
+            "fetched at runtime and fail as the non-root app user"
+        )
+        # Resolved from the distribution, not hardcoded: a base-image Python
+        # bump moves dist-packages and a literal path would put it nowhere.
+        assert 'm.distribution("hpsv2")' in df, (
+            "the destination must be resolved from the installed distribution, "
+            "not a hardcoded python3.N site-packages path"
+        )
+        # Ordering is the load-bearing part: written as root, before the image
+        # creates and hands ownership to the app user.
+        assert df.index("bpe_simple_vocab_16e6.txt.gz") < df.index("useradd"), (
+            "the vocab is baked AFTER the app user is created; it must be "
+            "written as root, before the privilege boundary"
+        )
+
+    def test_the_hpsv2_vocab_is_pinned_to_a_commit_and_a_digest(self):
+        """A `main`-branch URL makes the build irreproducible by definition:
+        two builds of the same GIT_SHA can differ if upstream moves the file.
+        Same shape as the Ollama pin, and the reason the gzip probe is not
+        enough — it proves the bytes are *a* gzip, never that they are *the*
+        vocabulary, and `curl -f` does not catch a 200 serving an HTML error
+        page.
+        """
+        df = _dockerfile()
+        # Comments excluded, or this matches the re-pin INSTRUCTION comment
+        # (which carries a literal `<sha>` placeholder) instead of the command.
+        # Fourth time today a name-based matcher has hit the prose explaining
+        # the thing it guards; the rule is now reflexive — match the operation.
+        vocab_line = next(
+            (
+                ln for ln in df.splitlines()
+                if "CLIP/raw/" in ln and not ln.lstrip().startswith("#")
+            ),
+            "",
+        )
+        assert vocab_line, "the CLIP vocabulary fetch has moved or gone"
+        assert "/raw/main/" not in vocab_line, (
+            "the vocabulary is fetched from a moving branch; pin it to a commit"
+        )
+        assert "${CLIP_VOCAB_COMMIT}" in vocab_line, (
+            "the fetch does not use the pinned commit arg"
+        )
+        assert re.search(r"ARG CLIP_VOCAB_COMMIT=[0-9a-f]{40}", df), (
+            "CLIP_VOCAB_COMMIT must be a full 40-hex commit sha"
+        )
+        assert re.search(r"ARG CLIP_VOCAB_SHA256=[0-9a-f]{64}", df), (
+            "CLIP_VOCAB_SHA256 must be a full sha256 digest"
+        )
+        # The digest must actually be CHECKED, not merely declared — a pin
+        # nobody verifies is a comment.
+        assert "${CLIP_VOCAB_SHA256}" in df and "sha256sum -c -" in df, (
+            "the digest is declared but never verified against the download"
+        )
+
     def test_image_does_not_set_user_root(self):
         df = _dockerfile()
         assert "USER root" not in df
@@ -544,7 +618,7 @@ esac
 if [ "$1" = "-m" ] && [ "$2" = "uvicorn" ]; then
   n=0
   [ -f "$STUB_RECORD" ] && n=$(wc -l < "$STUB_RECORD")
-  echo "restart=${MRLN_RESTART:-unset} supervised=${MRLN_SUPERVISED:-unset} ppid=$PPID argv=$*" >> "$STUB_RECORD"
+  echo "restart=${MRLN_RESTART:-unset} supervised=${MRLN_SUPERVISED:-unset} numba=${NUMBA_CACHE_DIR:-unset} ppid=$PPID argv=$*" >> "$STUB_RECORD"
   code=$(echo "$STUB_CODES" | cut -d, -f$((n + 1)))
   if [ "$code" = "wait" ]; then
     trap 'echo term >> "$STUB_TERM_MARK"; exit 0' TERM
@@ -585,7 +659,7 @@ class _Supervised:
         assert self.bash is not None  # requires_bash guards every caller
         env = dict(os.environ)
         for stale in ("MRLN_RESTART", "MRLN_SUPERVISED", "PORT", "MRLN_BIND_HOST",
-                      "MRLN_SETTINGS_PATH", "MRLN_AUTH_TOKEN"):
+                      "MRLN_SETTINGS_PATH", "MRLN_AUTH_TOKEN", "NUMBA_CACHE_DIR"):
             env.pop(stale, None)
         env["PATH"] = os.pathsep.join([str(shim), *_bash_tool_dirs(self.bash)])
         env["MRLN_DATA_DIR"] = str(tmp / "data")
@@ -666,6 +740,540 @@ class TestEntrypointRelaunchesOnTheSentinel:
         assert sup.term_mark.exists(), ("the server never received TERM", out)
         assert proc.returncode == 0, (proc.returncode, out)
         assert len(sup.runs()) == 1, "a forwarded TERM must not look like a restart"
+
+
+class TestNumbaHasAWritableCacheLocation:
+    """A user hit `cannot cache function '_make_tree': no locator available` at
+    import time — numba, reached through pymatting <- rembg <- the masking
+    service. numba tries site-packages (root-owned here), then
+    NUMBA_CACHE_DIR, then HOME. Only HOME was ever set, so one unwritable HOME
+    took the whole import down, and an import that raises is ARCHITECTURE D1.
+
+    Asserted from the SERVER PROCESS's own environment, not from the script
+    text: the export has to survive the supervisor loop to be worth anything.
+    """
+
+    @requires_bash
+    def test_the_server_is_launched_with_a_numba_cache_dir_on_the_data_volume(self, tmp_path):
+        sup = _Supervised(tmp_path)
+        code, out = sup.run("0")
+
+        runs = sup.runs()
+        assert runs, ("the server stub never started", out)
+        cache = re.search(r"numba=(\S+)", runs[0])
+        assert cache is not None, (runs[0], out)
+        assert cache.group(1) != "unset", (
+            "NUMBA_CACHE_DIR never reached the server; numba is back to "
+            f"depending on HOME alone. {runs[0]}"
+        )
+        # On the data volume specifically: /tmp would make every container start
+        # re-JIT from cold, and the point of the directory is that it persists.
+        # Compared against the value the harness actually exported, not a
+        # re-derived one — on Windows the two differ by separator alone, which
+        # would fail the assertion for a reason the container never has.
+        data = sup.env["MRLN_DATA_DIR"]
+        assert cache.group(1).startswith(data), (cache.group(1), data, out)
+        assert code == 0, (code, out)
+
+    @requires_bash
+    def test_the_cache_directory_actually_exists_by_the_time_the_server_starts(self, tmp_path):
+        """Exporting a path numba then cannot create is the same failure with
+        an extra step, so the directory itself is the assertion."""
+        sup = _Supervised(tmp_path)
+        _, out = sup.run("0")
+
+        runs = sup.runs()
+        assert runs, ("the server stub never started", out)
+        cache = Path(re.search(r"numba=(\S+)", runs[0]).group(1))
+        assert cache.is_dir(), (f"{cache} was exported but never created", out)
+
+    @requires_bash
+    def test_an_operator_set_numba_cache_dir_is_respected(self, tmp_path):
+        """Same `${VAR:-default}` contract as HF_HOME: the image picks a sane
+        default, the operator overrides it.
+
+        The directory assertion is not decoration. Asserting only that the
+        variable arrives is VACUOUS — the stub echoes whatever it inherits, so
+        that half passes on an entrypoint which does nothing at all (measured:
+        it did). Creating the operator's directory is the part only the
+        entrypoint can do.
+        """
+        sup = _Supervised(tmp_path)
+        chosen = tmp_path / "operator-cache"
+        sup.env["NUMBA_CACHE_DIR"] = chosen.as_posix()
+        _, out = sup.run("0")
+
+        runs = sup.runs()
+        assert runs, ("the server stub never started", out)
+        assert f"numba={chosen.as_posix()}" in runs[0], (runs[0], out)
+        assert chosen.is_dir(), (
+            "the operator's cache directory was passed through but never "
+            f"created: {chosen}",
+            out,
+        )
+
+
+class TestTheBuildWrapperCannotTagAnUnverifiedImage:
+    """LANE-82: a published image contained a commit nobody asked for, and
+    every signal we trusted said the build was fine — exit 0, "writing image",
+    "naming to <tag>". The Dockerfile's own `rev-parse HEAD == $GIT_SHA`
+    assertion cannot help, because it lives inside a RUN and a cache hit never
+    re-runs it.
+
+    So the wrapper's ONE invariant is ordering: build to a scratch tag, read
+    HEAD out of the artifact, and only then let a release tag move. These are
+    text assertions — the behaviour needs a GPU-sized docker build — so each
+    one is paired below with the mutation that must break it.
+    """
+
+    def _release_tag_ordering(self, text: str) -> tuple[int, int]:
+        """Return (position of the mismatch refusal, position of the first
+        release `docker tag`). The refusal must come first."""
+        refusal = text.index("Artifact commit mismatch.")
+        tagging = text.index("docker tag $scratchTag $t")
+        return refusal, tagging
+
+    def test_the_build_writes_to_a_scratch_tag_not_a_release_tag(self):
+        text = _build_script()
+        build_target = re.search(r"\$scratchTag\s*=\s*(.+)", text)
+        assert build_target is not None, "no scratch tag is defined"
+        assert "mrln-build-scratch" in build_target.group(1)
+        # The -t handed to docker build must be the scratch tag. If the build
+        # named a release tag directly, a wrong artifact would already own
+        # :latest by the time anything could be verified.
+        assert "'-t', $scratchTag" in text, "docker build must target the scratch tag"
+        assert "'-t', $Repository" not in text
+        # No tagging OPERATION may precede the build. Matched on `docker tag`
+        # rather than on the tag names: `:latest` and `$Repository` both appear
+        # in the header comment and the param block, so a name-based matcher
+        # fails on prose and proves nothing about the code.
+        assert "docker tag" not in text.split("docker @buildArgs")[0], (
+            "an image is tagged before the build; nothing may name a release "
+            "tag until the artifact has proven its commit"
+        )
+
+    def test_release_tags_are_applied_only_after_the_head_comparison(self):
+        refusal, tagging = self._release_tag_ordering(_build_script())
+        assert refusal < tagging, (
+            "the release tags are applied before the mismatch can refuse them"
+        )
+
+    def test_the_guard_reads_head_out_of_the_artifact_not_the_build_log(self):
+        """The distinction that this whole lane turns on. The read itself lives
+        in docker-verify-commit.ps1 so it can be exercised without a build; the
+        wrapper's job is to call it and to act on its verdict."""
+        if not VERIFIER.exists():
+            pytest.skip("docker-verify-commit.ps1 not present in this checkout")
+        verifier = VERIFIER.read_text(encoding="utf-8")
+        assert "docker run --rm --entrypoint git $Image" in verifier
+        assert "rev-parse HEAD" in verifier
+        # safe.directory, or the read fails on /app's non-root ownership and
+        # the guard degrades into "could not verify", which is not a guard.
+        assert "safe.directory=/app" in verifier
+        # The wrapper must actually invoke it, and on the SCRATCH tag.
+        text = _build_script()
+        assert "$verifier -Image $scratchTag -ExpectedSha $GitSha" in text
+
+    def test_the_wrapper_never_pushes(self):
+        """Publishing stays a separate, deliberate act (RULE-17 halt 4)."""
+        text = _build_script()
+        assert "docker push" not in text
+        assert "& docker push" not in text
+
+    def test_the_build_log_and_argument_vector_are_written_to_disk(self):
+        """The whole LANE-82 investigation existed because one build left no
+        log: four mechanisms were proposed and none could be tested against the
+        actual event, because "which sha was passed" rested on a hand-written
+        note. Detecting a bad artifact without recording how it was produced
+        makes the next anomaly detectable but not diagnosable."""
+        text = _build_script()
+        assert "--progress=plain" in text, "a log without the plain driver hides the step states"
+        assert "Tee-Object -FilePath $logPath" in text, "the build output is not persisted"
+        assert "$argvPath" in text, "the argument vector is not persisted"
+        # Written BEFORE the build: a build that dies mid-run must still leave
+        # behind what it was asked to do.
+        assert text.index("$argvPath") < text.index("docker @buildArgs")
+        # The token is passed as a PATH; the argv record must never carry a
+        # value that could be a secret.
+        argv_block = text.split("$argvPath")[1].split("Set-Content")[0]
+        assert "$TokenPath" not in argv_block
+
+    def test_the_version_check_is_not_mistaken_for_the_guard(self):
+        """`app.__version__` was IDENTICAL across the wrong commit and the
+        right one, so the version check would have passed this exact defect in
+        silence. It is defence against a different failure, and the script has
+        to say so or a later reader will trust it to do the HEAD check's job."""
+        text = _build_script()
+        assert "app.__version__" in text
+        assert "would have passed that build in silence" in text, (
+            "the version check's limit must be stated where it is written"
+        )
+
+
+VERIFIER = REPO_ROOT / "docker-verify-commit.ps1"
+
+# The naturally-occurring fixture for this whole lane: a real image whose real
+# commit really differs from the one it was built with. Nobody constructed it,
+# which is exactly its value — DO NOT DELETE these images.
+_FIXTURE_IMAGE = "mastermerlin/mrln-arcane-tuner:0.8.0-beta.1"
+_FIXTURE_SHA = "f1cbbbcfcab038cbdb559bc15278ca68e6f2a0ae"
+_OTHER_SHA = "98492c7265e084a19980f1486ddebfd477fa949b"
+
+VERIFY_OK, VERIFY_MISMATCH, VERIFY_UNVERIFIED = 0, 1, 2
+
+
+def _powershell() -> str | None:
+    for exe in ("pwsh", "powershell"):
+        found = shutil.which(exe)
+        if found:
+            return found
+    return None
+
+
+def _run_verifier(image: str, expected: str) -> int:
+    shell = _powershell()
+    if shell is None:
+        pytest.skip("no PowerShell on PATH")
+    if not VERIFIER.exists():
+        pytest.skip("docker-verify-commit.ps1 not present in this checkout")
+    if shutil.which("docker") is None:
+        pytest.skip("docker not on PATH")
+    proc = subprocess.run(
+        [shell, "-NoProfile", "-NonInteractive", "-File", str(VERIFIER),
+         "-Image", image, "-ExpectedSha", expected],
+        capture_output=True, text=True, timeout=300,
+    )
+    return proc.returncode
+
+
+def _fixture_available() -> bool:
+    if shutil.which("docker") is None:
+        return False
+    proc = subprocess.run(
+        ["docker", "image", "inspect", _FIXTURE_IMAGE],
+        capture_output=True, text=True, timeout=120,
+    )
+    return proc.returncode == 0
+
+
+class TestTheVerifierRefusesAnImageThatIsNotWhatWasAskedFor:
+    """The guard's four cases, exercised against a REAL image rather than a
+    simulation. Reproducing the Docker anomaly would be testing Docker; this
+    tests the one condition the guard actually checks — "the artifact's HEAD is
+    not the sha I asked for" — independently of how that came about, which is
+    the whole point of a cause-independent guard.
+    """
+
+    def test_it_refuses_when_the_image_holds_a_different_commit(self):
+        if not _fixture_available():
+            pytest.skip(f"{_FIXTURE_IMAGE} not on this machine")
+        assert _run_verifier(_FIXTURE_IMAGE, _OTHER_SHA) == VERIFY_MISMATCH
+
+    def test_it_accepts_when_the_image_holds_the_expected_commit(self):
+        """The positive control, and it is NOT optional: without it a verifier
+        that refuses everything passes the test above (CONVENTIONS rule 11)."""
+        if not _fixture_available():
+            pytest.skip(f"{_FIXTURE_IMAGE} not on this machine")
+        assert _run_verifier(_FIXTURE_IMAGE, _FIXTURE_SHA) == VERIFY_OK
+
+    def test_a_check_that_cannot_run_is_a_failure_not_a_pass(self):
+        """The dangerous case. If "I could not check" ever collapses into "the
+        check passed" — empty compared against empty, an error swallowed, a
+        fall-through — the guard reports clean on an image it never read. Same
+        silent-failure class as a linter reporting success on a file it could
+        not parse. The distinct exit code is the assertion.
+        """
+        code = _run_verifier(
+            "mrln-nonexistent-image-for-this-test:never-built", _FIXTURE_SHA
+        )
+        assert code == VERIFY_UNVERIFIED, (
+            "an unreadable image must report UNVERIFIED, never OK"
+        )
+        assert code != VERIFY_OK
+
+    def test_the_release_scripts_parse_at_all(self):
+        """Found the hard way: both scripts were written with em dashes, and
+        Windows PowerShell reads a BOM-less .ps1 as cp1252, where the UTF-8 em
+        dash decodes to a stray right-double-quote. The parser took it as a
+        string delimiter and NEITHER script would run — a release-time failure
+        in code that had never been executed, only reviewed.
+
+        Non-ASCII is banned outright rather than fixed with a BOM: the BOM has
+        to be preserved by every editor and tool that ever touches the file,
+        while ASCII cannot be got wrong.
+        """
+        for script in (BUILD_SCRIPT, VERIFIER):
+            if not script.exists():
+                pytest.skip(f"{script.name} not present in this checkout")
+            raw = script.read_bytes()
+            offenders = sorted({b for b in raw if b > 0x7F})
+            assert offenders == [], (
+                f"{script.name} contains non-ASCII bytes {offenders}; under "
+                "Windows PowerShell's cp1252 fallback these can become quote "
+                "characters and break parsing"
+            )
+
+    def test_the_three_outcomes_are_distinct_codes(self):
+        """Callers branch on these; collapsing any two re-creates the defect."""
+        assert len({VERIFY_OK, VERIFY_MISMATCH, VERIFY_UNVERIFIED}) == 3
+        text = VERIFIER.read_text(encoding="utf-8")
+        for code in ("exit 0", "exit 1", "exit 2"):
+            assert code in text, f"{code} is never returned"
+
+
+class TestTheWrapperTreatsUnverifiedAsFatal:
+    """Text-level, because the alternative is a 40-minute build. The behaviour
+    it pins is that the wrapper does not conflate the verifier's three codes.
+    """
+
+    def test_exit_code_two_is_handled_separately_from_a_mismatch(self):
+        text = _build_script()
+        assert "$verifyExit -eq 2" in text, (
+            "the wrapper does not distinguish 'could not check' from 'checked "
+            "and matched'"
+        )
+        # And it must be handled BEFORE the generic non-zero branch, or the
+        # distinction exists in the verifier and is thrown away by the caller.
+        assert text.index("$verifyExit -eq 2") < text.index("$verifyExit -ne 0")
+
+    def test_a_missing_verifier_refuses_rather_than_skipping_the_check(self):
+        text = _build_script()
+        assert "Refusing to tag an unverified image" in text
+
+    def test_the_argv_record_survives_a_failed_build(self):
+        """Case 3: a build that exits non-zero must still leave behind what it
+        was asked to do — that is the whole reason the record exists."""
+        text = _build_script()
+        argv_write = text.index("Set-Content -LiteralPath $argvPath")
+        build_run = text.index("docker @buildArgs")
+        build_fail = text.index("docker build failed with exit code")
+        assert argv_write < build_run < build_fail
+
+
+def _crlf_hint(script: Path) -> str:
+    """Explain a CRLF working copy, which git will swear is unmodified.
+
+    `.gitattributes` says `* text=auto eol=lf`, but git normalises at CHECKOUT
+    time: a file nobody has touched since an older `core.autocrlf=true` clone
+    keeps its CRLF forever. `text=auto` then normalises again when hashing, so
+    `git status` is clean and `git diff` is empty while bash cannot parse the
+    file — a line ending in `\\` escapes the `\\r` instead of the newline and
+    the continuation collapses.
+
+    Without this, the first person to hit it "fixes" a blob that was never
+    broken and commits a normalisation nobody needed. Deliberately NOT repaired
+    before parsing: on that machine the script genuinely could not run, and
+    hiding it would hide a real local breakage.
+    """
+    try:
+        if b"\r\n" not in script.read_bytes():
+            return ""
+    except OSError:
+        return ""
+    return (
+        "\n    NOTE: this file has CRLF line endings in YOUR WORKING COPY. This "
+        "check reads the working copy, not the committed blob, and git will "
+        "report the file as unmodified either way (`text=auto` normalises on "
+        "hash). Re-check it out — `git rm --cached <f> && git checkout <f>`, or "
+        "delete and restore it — rather than editing it or committing a "
+        "normalisation."
+    )
+
+
+class TestTheShippedShellScriptsParse:
+    """The `.sh` counterpart to the tracked-`.ps1` parse check.
+
+    A sibling investigation found `backend/install.ps1` unparsable on `main`
+    for a day — the documented Windows install path, dead, because an encoding
+    rule removed a BOM the file needed. Nothing covers the shell scripts at
+    all. They run inside the image, so a broken one fails the build loudly
+    rather than silently, which is why this is coverage rather than a blocker;
+    but `entrypoint.sh` is PID 1 of every container, and "it fails loudly" is a
+    poor thing to learn from a user's console.
+
+    Two checks of different kind, and the promises they make differ:
+
+      * the CRLF byte check tests the property itself — deterministic, no
+        shell, identical everywhere. Green means "has no CRLF".
+      * `bash -n` tests the effect with a real parser, and green means only
+        "parses with the bash THIS machine has". Two bashes on one Windows box
+        disagree about CRLF (see the byte check's docstring), so it is kept for
+        genuine syntax errors, where it earns its place, and is not relied on
+        for line endings.
+
+    `bash -n` parses without executing, so this costs milliseconds and cannot
+    have side effects.
+    """
+
+    def _tracked_shell_scripts(self) -> list[Path]:
+        proc = subprocess.run(
+            ["git", "ls-files", "*.sh"],
+            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60,
+        )
+        if proc.returncode != 0:
+            pytest.skip("not a git checkout")
+        return [REPO_ROOT / line for line in proc.stdout.split() if line]
+
+    def test_no_tracked_shell_script_has_crlf_line_endings(self):
+        """The CAUSE, checked in bytes — deterministic, no shell involved.
+
+        `bash -n` cannot be trusted for this, and the reason inverts the
+        obvious intuition. Measured across two bashes on one Windows machine:
+
+            Git Bash 5.3.15  x86_64-pc-cygwin     CRLF fixture -> exit 0
+            WSL bash 5.2.21  x86_64-pc-linux-gnu  same bytes   -> exit 2
+            WSL bash, CRs stripped                             -> exit 0
+
+        Cygwin's bash tolerates a CR before the newline; Linux bash does not.
+        So Git Bash — overwhelmingly the likeliest `bash` on a Windows checkout
+        — is blind to exactly the defect this guard exists for, in exactly the
+        environment where CRLF drift originates, while the container (Linux
+        bash, `entrypoint.sh` as PID 1) is where it is fatal. The parse check
+        is weakest where the risk is created and strongest where it cannot
+        occur; only a byte check tests the property itself.
+        """
+        scripts = self._tracked_shell_scripts()
+        assert scripts, "no tracked .sh files found — the matcher is looking in the wrong place"
+        offenders = [
+            s.name for s in scripts if s.exists() and b"\r\n" in s.read_bytes()
+        ]
+        assert offenders == [], (
+            f"tracked shell scripts contain CRLF line endings: {offenders}. "
+            "These run under Linux bash in the container, which rejects a CR "
+            "before a line continuation. If git reports the file unmodified, "
+            "this is working-copy drift from an older `core.autocrlf=true` "
+            "checkout — re-check the file out rather than editing it."
+        )
+
+    @requires_bash
+    def test_every_tracked_shell_script_parses(self):
+        bash = _bash()
+        assert bash is not None
+        scripts = self._tracked_shell_scripts()
+        assert scripts, "no tracked .sh files found — the matcher is looking in the wrong place"
+        broken = []
+        for script in scripts:
+            if not script.exists():
+                continue
+            proc = subprocess.run(
+                [bash, "-n", _sh_path(script)],
+                capture_output=True, text=True, timeout=60,
+            )
+            if proc.returncode != 0:
+                broken.append(f"{script.name}: {proc.stderr.strip()}{_crlf_hint(script)}")
+        assert broken == [], broken
+
+    @requires_bash
+    def test_the_parse_check_actually_rejects_a_broken_script(self, tmp_path):
+        """Vacuity control. Built at runtime rather than committed, because a
+        committed broken fixture would be picked up by the check above."""
+        bash = _bash()
+        assert bash is not None
+        bad = tmp_path / "broken.sh"
+        bad.write_text('#!/bin/sh\nif [ -z "$X" ; then\n  echo unterminated\n', encoding="utf-8")
+        proc = subprocess.run(
+            [bash, "-n", _sh_path(bad)], capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode != 0, "bash -n accepted a syntactically broken script"
+
+    def test_a_crlf_working_copy_is_named_as_such_in_the_failure(self, tmp_path):
+        """The failure this check will ACTUALLY produce on a Windows checkout:
+        a correct LF blob whose working copy is CRLF. A sibling session hit it
+        on `update.sh` — git reported the file unmodified (`text=auto`
+        normalises on hash) while their bash could not parse it. Without the
+        hint, the next person commits a normalisation of a blob that was never
+        broken.
+
+        Tested as a pure function of the BYTES, deliberately, because whether
+        a CRLF continuation actually fails is bash-implementation-dependent:
+        measured here, git-bash parses a fully CRLF-converted `update.sh`
+        without complaint (exit 0) while the bash that reported it did not. A
+        test that first had to reproduce the parse failure would therefore skip
+        on this machine and prove nothing — which is what it did before this
+        rewrite. The diagnostic must be correct wherever the failure lands.
+        """
+        crlf = tmp_path / "crlf.sh"
+        crlf.write_bytes(b"#!/bin/sh\r\nfor c in \\\r\n  a b; do\r\n  echo $c\r\ndone\r\n")
+        hint = _crlf_hint(crlf)
+        assert "CRLF" in hint and "WORKING COPY" in hint
+        assert "Re-check it out" in hint
+
+        # And it must stay quiet for an LF file, or every unrelated syntax
+        # error acquires a confident and wrong line-endings explanation.
+        lf = tmp_path / "lf.sh"
+        lf.write_bytes(b"#!/bin/sh\nif [ -z \"$X\" ; then\n  echo x\n")
+        assert _crlf_hint(lf) == ""
+
+
+class TestTheWrapperIsTheDocumentedPath:
+    """A guard you can bypass by typing the old command is a convention, not a
+    guard. The wrapper only protects builds that go through it, and the failure
+    it guards against is precisely a hand-run `docker build` — which is what the
+    README told everyone to do until now. Same shape as a rulebook teaching the
+    very form it forbids: people follow the instructions in good faith.
+    """
+
+    def _readme(self) -> str:
+        readme = REPO_ROOT / "README.md"
+        if not readme.exists():
+            pytest.skip("README.md not present in this checkout")
+        return readme.read_text(encoding="utf-8")
+
+    def test_the_readme_builds_through_the_wrapper(self):
+        text = self._readme()
+        assert "docker-build.ps1" in text, "the README does not mention the wrapper"
+
+    def test_the_readme_shows_no_raw_docker_build_invocation(self):
+        """The specific regression: a reader copying the old two-line recipe
+        gets an unverified image with `latest` already pointing at it."""
+        # Matched on the INVOCATION — a line that begins with the command —
+        # not on the words, which appear legitimately in the paragraph
+        # explaining why the wrapper exists. A name-based matcher here fails on
+        # its own prose and teaches nothing (LESSONS 2026-08-28).
+        offenders = [
+            line.strip()
+            for line in self._readme().splitlines()
+            if line.strip().startswith("docker build")
+        ]
+        assert offenders == [], (
+            "the README still shows a raw `docker build`; anyone following it "
+            f"bypasses the artifact verification: {offenders}"
+        )
+
+    def test_the_readme_pins_the_ollama_asset_that_actually_exists(self):
+        """The published asset is a zstd tarball. The `.tgz` the README used to
+        name has not existed upstream for the last sixty releases, so the pin
+        instruction could not be followed at all."""
+        text = self._readme()
+        assert "ollama-linux-amd64.tgz" not in text
+        assert "ollama-linux-amd64.tar.zst" in text
+
+
+class TestTheBuildWrapperMatchersActuallyFail:
+    """Five of a previous round's Dockerfile matchers passed on the PRE-fix
+    file. A matcher that cannot fail is documentation wearing a test's name, so
+    each assertion above is run here against the mutation it exists to catch.
+    """
+
+    def test_ordering_matcher_fails_when_tagging_moves_before_verification(self):
+        text = _build_script()
+        refusal_block = "throw 'Artifact commit mismatch.'"
+        assert refusal_block in text
+        # Move the tagging loop above the refusal — the exact regression.
+        mutated = text.replace(refusal_block, "docker tag $scratchTag $t\n" + refusal_block, 1)
+        guard = TestTheBuildWrapperCannotTagAnUnverifiedImage()
+        refusal, tagging = guard._release_tag_ordering(mutated)
+        assert tagging < refusal, "the mutation did not actually reorder the script"
+
+    def test_scratch_tag_matcher_fails_when_the_build_names_a_release_tag(self):
+        mutated = _build_script().replace("'-t', $scratchTag", "'-t', $Repository", 1)
+        assert "'-t', $scratchTag" not in mutated, "the mutation did not apply"
+
+    def test_artifact_read_matcher_fails_when_the_check_is_dropped(self):
+        mutated = _build_script().replace(
+            "docker run --rm --entrypoint git $scratchTag", "docker inspect $scratchTag", 1
+        )
+        assert "docker run --rm --entrypoint git $scratchTag" not in mutated
 
 
 class TestEntrypointSupervisorText:

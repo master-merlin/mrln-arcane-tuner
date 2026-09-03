@@ -507,6 +507,45 @@ class TestBuildContract:
             "written as root, before the privilege boundary"
         )
 
+    def test_the_hpsv2_vocab_is_pinned_to_a_commit_and_a_digest(self):
+        """A `main`-branch URL makes the build irreproducible by definition:
+        two builds of the same GIT_SHA can differ if upstream moves the file.
+        Same shape as the Ollama pin, and the reason the gzip probe is not
+        enough — it proves the bytes are *a* gzip, never that they are *the*
+        vocabulary, and `curl -f` does not catch a 200 serving an HTML error
+        page.
+        """
+        df = _dockerfile()
+        # Comments excluded, or this matches the re-pin INSTRUCTION comment
+        # (which carries a literal `<sha>` placeholder) instead of the command.
+        # Fourth time today a name-based matcher has hit the prose explaining
+        # the thing it guards; the rule is now reflexive — match the operation.
+        vocab_line = next(
+            (
+                ln for ln in df.splitlines()
+                if "CLIP/raw/" in ln and not ln.lstrip().startswith("#")
+            ),
+            "",
+        )
+        assert vocab_line, "the CLIP vocabulary fetch has moved or gone"
+        assert "/raw/main/" not in vocab_line, (
+            "the vocabulary is fetched from a moving branch; pin it to a commit"
+        )
+        assert "${CLIP_VOCAB_COMMIT}" in vocab_line, (
+            "the fetch does not use the pinned commit arg"
+        )
+        assert re.search(r"ARG CLIP_VOCAB_COMMIT=[0-9a-f]{40}", df), (
+            "CLIP_VOCAB_COMMIT must be a full 40-hex commit sha"
+        )
+        assert re.search(r"ARG CLIP_VOCAB_SHA256=[0-9a-f]{64}", df), (
+            "CLIP_VOCAB_SHA256 must be a full sha256 digest"
+        )
+        # The digest must actually be CHECKED, not merely declared — a pin
+        # nobody verifies is a comment.
+        assert "${CLIP_VOCAB_SHA256}" in df and "sha256sum -c -" in df, (
+            "the digest is declared but never verified against the download"
+        )
+
     def test_image_does_not_set_user_root(self):
         df = _dockerfile()
         assert "USER root" not in df

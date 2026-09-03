@@ -132,8 +132,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #     loud about it — but it is a real exposure, not a formality.
 #   * INSTALL_OLLAMA=0 skips the layer entirely; the app degrades cleanly
 #     because the entrypoint already probes for the binary.
-# Getting the digest: `curl -fsSL https://github.com/ollama/ollama/releases/\
-# download/<tag>/ollama-linux-amd64.tgz | sha256sum`. No digest is hardcoded
+# The asset is `ollama-linux-amd64.tar.zst` (zstd, NOT gzip): Ollama replaced the
+# old `ollama-linux-amd64.tgz` with split `.tar.zst` bundles and no longer ships
+# the `.tgz` at all — pinning against that stale name 404s on every current
+# release, which is why the extract below is `tar --zstd` and why zstd is
+# installed above for BOTH paths, not just the unpinned one.
+# Getting the digest: take it from the release's own `sha256sum.txt` asset
+# (`curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/sha256sum.txt`)
+# and use the `ollama-linux-amd64.tar.zst` line. No digest is hardcoded
 # here on purpose — a checksum nobody verified is worse than none, because it
 # reads as proof.
 ARG INSTALL_OLLAMA=1
@@ -146,11 +152,11 @@ RUN if [ "$INSTALL_OLLAMA" != "1" ]; then \
       && rm -rf /var/lib/apt/lists/* \
       && if [ -n "$OLLAMA_VERSION" ] && [ -n "$OLLAMA_SHA256" ]; then \
              echo "[build] Ollama ${OLLAMA_VERSION} — pinned, verifying sha256"; \
-             curl -fsSL -o /tmp/ollama.tgz \
-               "https://github.com/ollama/ollama/releases/download/${OLLAMA_VERSION}/ollama-linux-amd64.tgz" \
-             && echo "${OLLAMA_SHA256}  /tmp/ollama.tgz" | sha256sum -c - \
-             && tar -C /usr/local -xzf /tmp/ollama.tgz \
-             && rm -f /tmp/ollama.tgz; \
+             curl -fsSL -o /tmp/ollama.tar.zst \
+               "https://github.com/ollama/ollama/releases/download/${OLLAMA_VERSION}/ollama-linux-amd64.tar.zst" \
+             && echo "${OLLAMA_SHA256}  /tmp/ollama.tar.zst" | sha256sum -c - \
+             && tar -C /usr/local --zstd -xf /tmp/ollama.tar.zst \
+             && rm -f /tmp/ollama.tar.zst; \
          elif [ -n "$OLLAMA_VERSION" ] || [ -n "$OLLAMA_SHA256" ]; then \
              echo "ERROR: OLLAMA_VERSION and OLLAMA_SHA256 must be set together." >&2; \
              echo "       One without the other is an unverified download wearing a pin." >&2; \

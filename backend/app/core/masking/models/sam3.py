@@ -6,12 +6,19 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# `except Exception`, NOT `except ImportError` (ARCHITECTURE D1: nothing
+# imported at startup may raise, ever). This runs during `import app.main`.
+# A dependency that is PRESENT but cannot initialise -- a numba JIT cache it
+# cannot write, a CUDA library it cannot open -- raises something other than
+# ImportError, and before 2026-09-03 that escaped and killed the process
+# rather than disabling the feature. Absent and broken are the same outcome
+# here, so the guard is written about the outcome.
 try:
     # Correct import based on package inspection
     from sam3 import build_sam3_image_model
     from sam3.model.sam1_task_predictor import SAM3InteractiveImagePredictor  # noqa: F401
     SAM3_AVAILABLE = True
-except ImportError:
+except Exception:  # noqa: BLE001 — see the note above
     SAM3_AVAILABLE = False
 
 

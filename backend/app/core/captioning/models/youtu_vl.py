@@ -3,9 +3,16 @@ import sys
 from unittest.mock import MagicMock
 
 # Mock pydensecrf for Windows compatibility (custom modeling code in tencent/Youtu-VL-4B-Instruct depends on it)
+# `except Exception`, NOT `except ImportError` (ARCHITECTURE D1: nothing
+# imported at startup may raise, ever). This runs during `import app.main`.
+# A dependency that is PRESENT but cannot initialise -- a numba JIT cache it
+# cannot write, a CUDA library it cannot open -- raises something other than
+# ImportError, and before 2026-09-03 that escaped and killed the process
+# rather than disabling the feature. Absent and broken are the same outcome
+# here, so the guard is written about the outcome.
 try:
     import pydensecrf  # noqa: F401
-except ImportError:
+except Exception:  # noqa: BLE001 — see the note above
     mock = MagicMock()
     sys.modules["pydensecrf"] = mock
     sys.modules["pydensecrf.densecrf"] = mock

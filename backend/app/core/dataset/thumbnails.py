@@ -23,9 +23,16 @@ logger = structlog.get_logger(__name__)
 
 # Register the AVIF Pillow plugin if available. The import has the
 # side-effect of registering itself with Pillow's format registry.
+# `except Exception`, NOT `except ImportError` (ARCHITECTURE D1: nothing
+# imported at startup may raise, ever). This runs during `import app.main`.
+# A dependency that is PRESENT but cannot initialise -- a numba JIT cache it
+# cannot write, a CUDA library it cannot open -- raises something other than
+# ImportError, and before 2026-09-03 that escaped and killed the process
+# rather than disabling the feature. Absent and broken are the same outcome
+# here, so the guard is written about the outcome.
 try:
     import pillow_avif  # noqa: F401
-except ImportError:
+except Exception:  # noqa: BLE001 — see the note above
     pass
 
 _THUMB_DIR_NAME = ".thumbnails"

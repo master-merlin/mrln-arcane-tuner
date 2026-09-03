@@ -155,6 +155,26 @@ resolve_port
 # data volume.
 export HF_HOME="${HF_HOME:-$DATA_DIR/hf-cache}"
 
+# numba's JIT cache → the persistent volume. numba (via pymatting <- rembg <-
+# the masking service) looks for a cache location in a fixed order: beside the
+# source in site-packages, then NUMBA_CACHE_DIR, then a HOME-derived path. In
+# this image the first is root-owned and the app runs as an unprivileged user,
+# so without this the whole chain rests on HOME alone — and the moment anything
+# leaves HOME unwritable, numba raises `cannot cache function: no locator
+# available` at IMPORT time, which violates "nothing imported at startup may
+# raise" (ARCHITECTURE D1). An explicit cache dir makes that chain two-deep
+# instead of one, so a HOME regression degrades instead of crashing.
+# It belongs on the data volume rather than /tmp because the cache is a
+# build artifact of the first run: on tmpfs every container start pays the
+# full JIT cost again, and that cost is large enough to be felt at boot.
+export NUMBA_CACHE_DIR="${NUMBA_CACHE_DIR:-$DATA_DIR/.numba-cache}"
+mkdir -p "$NUMBA_CACHE_DIR" 2>/dev/null || {
+    # Never fatal: numba still has its own fallbacks, and a cache directory is
+    # an optimisation, not a dependency. Say so loudly rather than failing.
+    echo "[entrypoint] WARNING: cannot create NUMBA_CACHE_DIR=$NUMBA_CACHE_DIR —"
+    echo "[entrypoint] WARNING: numba will fall back to HOME=$HOME for its JIT cache."
+}
+
 # Trainer subprocess uses the same interpreter as the server. Deps are
 # installed system-wide in the image (no project venv), so point the trainer
 # at it explicitly — avoids a "venv python not found" fallback warning.

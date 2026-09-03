@@ -61,7 +61,7 @@ jobs:
         # Pinned to the venv's ruff (backend/requirements.txt) so CI and the local
         # gate judge by the same rule set â€” an unpinned ruff drifts with pip and
         # CI's first-ever run went red on a rule the local version had not seen.
-        run: python -m pip install --upgrade pip "ruff==0.16.0"
+        run: python -m pip install --upgrade pip "ruff==0.16.5"
 
       - name: ruff check
         run: python -m ruff check .

@@ -110,7 +110,7 @@ scenedetect==0.7.1  # installed with --no-deps to keep opencv-python-headless (n
 scikit-image==0.26.0
 scipy==1.18.1
 sentencepiece==0.2.2
-setuptools==78.1.1
+setuptools==78.1.1  # HELD: Dependabot #23 wants 83.0.0 for GHSA "MANIFEST.in bypass" (medium, sdist build path, macOS), but torch 2.12.1 declares `setuptools<82` — verified in the installed metadata, not guessed. The advisory needs us to build an sdist from untrusted input, which nothing here does. Unblocks with the torch 2.13 upgrade (DECISION-18), not with a dependency sweep
 shellingham==1.5.4
 six==1.17.0
 sophia-optimizer==0.2.5

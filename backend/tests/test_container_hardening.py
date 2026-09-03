@@ -4,18 +4,18 @@ Two kinds of test here, and the difference matters:
 
 * ``TestEntrypointDropsPrivileges`` actually RUNS the entrypoint's decision
   logic with ``id``/``setpriv`` shimmed onto PATH, and asserts on the command
-  line it tried to exec. That is observable behaviour, not a text match — it
+  line it tried to exec. That is observable behaviour, not a text match â€” it
   fails if the branch is wrong, if the uid is wrong, or if the drop is skipped.
   It needs a POSIX shell, so it skips on a machine without one.
 * ``TestBuildContract`` reads ``Dockerfile``/``entrypoint.sh`` as text. Text
   matching is a weak guard, so each assertion here is paired with a mutation
-  check proving the matcher actually notices when the property is removed —
+  check proving the matcher actually notices when the property is removed â€”
   otherwise a rewrite could delete the guard and leave this file green.
 
 Why not a real container test: the image is a multi-GB CUDA build. A test that
 cannot run in the gate is not a guard, so the gate gets the strongest thing
 that CAN run every time, and the docstring says plainly what it does not cover
-— an actual `docker run` asserting `id -u`, which belongs in release QA.
+â€” an actual `docker run` asserting `id -u`, which belongs in release QA.
 """
 
 from __future__ import annotations
@@ -50,7 +50,7 @@ def _entrypoint() -> str:
     return ENTRYPOINT.read_text(encoding="utf-8")
 
 
-# ── behaviour ────────────────────────────────────────────────────────────
+# â”€â”€ behaviour â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _bash() -> str | None:
@@ -58,7 +58,7 @@ def _bash() -> str | None:
 
     ``shutil.which("bash")`` used to answer this and got it wrong: on Windows it
     returns WSL's System32 bash about as often as Git Bash, and WSL cannot see
-    `D:\\...` — so the guard below was satisfied by a shell that then failed
+    `D:\\...` â€” so the guard below was satisfied by a shell that then failed
     every test instead of skipping. See ``tests/support/bash_probe.py``.
     """
     return find_bash(ENTRYPOINT) if ENTRYPOINT.exists() else None
@@ -74,14 +74,14 @@ requires_bash = pytest.mark.skipif(
 # because their ANSWER is what is under test; these come from the OS. Keep in
 # step with entrypoint.sh: a command added there and missing here surfaces as
 # "command not found" from the script rather than as a named skip.
-_ENTRYPOINT_NEEDS = ("mkdir",)
+_ENTRYPOINT_NEEDS = ("mkdir", "cut")
 
 
 def _bash_tool_dirs(bash: str) -> list[str]:
     """Directories holding the coreutils that ship NEXT TO this bash.
 
     A non-login ``bash <script>`` never sources ``/etc/profile``, and that is
-    what puts MSYS ``/usr/bin`` on PATH — so Git's ``bash.exe`` inherits the
+    what puts MSYS ``/usr/bin`` on PATH â€” so Git's ``bash.exe`` inherits the
     Windows PATH as-is, and whether ``mkdir`` resolves depends on the operator
     having ``C:\\Program Files\\Git\\usr\\bin`` exported. LANE-44 measured the
     consequence: the same commit was red from one shell and green from another.
@@ -101,7 +101,7 @@ def _missing_commands(bash: str, env: dict[str, str]) -> list[str]:
     """Which of ``_ENTRYPOINT_NEEDS`` this bash cannot resolve under ``env``.
 
     Asked of the shell that will run the script, with the PATH it will be
-    given — the only environment whose answer counts.
+    given â€” the only environment whose answer counts.
     """
     proc = subprocess.run(
         [
@@ -120,6 +120,21 @@ def _missing_commands(bash: str, env: dict[str, str]) -> list[str]:
     return proc.stdout.split()
 
 
+def _sh_path(p: Path) -> str:
+    """A path the test's shell can actually stat.
+
+    entrypoint.sh runs under git-bash on this machine, whose ``[ -d ]`` does not
+    resolve a drive-letter path like ``D:/x``; it wants the MSYS form ``/d/x``.
+    On Linux/macOS this is the plain posix path. Without it the home-directory
+    probe reports "missing" for a directory that is plainly there, and the test
+    fails for a reason that has nothing to do with the entrypoint.
+    """
+    s = p.as_posix()
+    if len(s) > 1 and s[1] == ":":
+        return f"/{s[0].lower()}{s[2:]}"
+    return s
+
+
 def _entrypoint_env(bash: str, shim: Path, data: Path) -> dict[str, str]:
     env = dict(os.environ)
     path_entries = [str(shim), *_bash_tool_dirs(bash), env.get("PATH", "")]
@@ -128,24 +143,45 @@ def _entrypoint_env(bash: str, shim: Path, data: Path) -> dict[str, str]:
     return env
 
 
-def _run_entrypoint_as_fake_root(tmp: Path, *, uid_exists: bool = True) -> str:
+def _run_entrypoint_as_fake_root(
+    tmp: Path, *, uid_exists: bool = True, home_exists: bool = True
+) -> str:
     """Run entrypoint.sh with ``id``, ``setpriv``, ``getent``, ``chown`` shimmed.
 
     The shims are the OPERATING SYSTEM, not the logic under test: the thing
     being asserted is which branch the script takes and what arguments it hands
     to ``setpriv``. ``setpriv`` prints its argv and exits, which stops the
     script exactly where the real one would hand off.
+
+    ``getent`` emits a REAL passwd line, because the script reads field 6 out of
+    it to find the app user's home. A shim that only set an exit status let the
+    home come back empty, which is precisely the bug this file now pins â€” the
+    shim has to be faithful in the field under test or it proves nothing.
+    ``home_exists`` controls whether that home is actually on disk, so the
+    "no usable home" branch can be exercised too.
     """
     shim = tmp / "shim"
     shim.mkdir()
 
+    home = tmp / "apphome"
+    if home_exists:
+        home.mkdir()
+
     (shim / "id").write_text("#!/bin/sh\necho 0\n", encoding="utf-8")
+    # Echo the inherited environment as well as argv: HOME/USER are exported
+    # BEFORE the exec, so the only way to observe them is from the child.
     (shim / "setpriv").write_text(
-        '#!/bin/sh\necho "SETPRIV_CALLED $*"\nexit 0\n', encoding="utf-8"
+        '#!/bin/sh\necho "SETPRIV_CALLED $*"\necho "SETPRIV_ENV HOME=$HOME USER=$USER"\nexit 0\n',
+        encoding="utf-8",
     )
-    (shim / "getent").write_text(
-        f"#!/bin/sh\nexit {0 if uid_exists else 2}\n", encoding="utf-8"
-    )
+    if uid_exists:
+        (shim / "getent").write_text(
+            f"#!/bin/sh\necho 'mrln:x:{EXPECTED_UID}:{EXPECTED_UID}::"
+            f"{_sh_path(home)}:/bin/sh'\nexit 0\n",
+            encoding="utf-8",
+        )
+    else:
+        (shim / "getent").write_text("#!/bin/sh\nexit 2\n", encoding="utf-8")
     (shim / "chown").write_text("#!/bin/sh\nexit 0\n", encoding="utf-8")
     for f in shim.iterdir():
         f.chmod(0o755)
@@ -162,7 +198,7 @@ def _run_entrypoint_as_fake_root(tmp: Path, *, uid_exists: bool = True) -> str:
         # failed (LANE-44). Name what is missing and where it was looked for.
         pytest.skip(
             f"entrypoint.sh needs {', '.join(missing)} and {bash} cannot resolve "
-            f"them — looked next to the shell in {_bash_tool_dirs(bash) or '(nothing)'} "
+            f"them â€” looked next to the shell in {_bash_tool_dirs(bash) or '(nothing)'} "
             "and on PATH"
         )
 
@@ -174,7 +210,7 @@ def _run_entrypoint_as_fake_root(tmp: Path, *, uid_exists: bool = True) -> str:
         timeout=60,
         # NOT cwd=tmp, deliberately. A child's working directory is an open
         # handle on that directory for the child's lifetime, and Windows
-        # releases it lazily after the process exits — so deleting the
+        # releases it lazily after the process exits â€” so deleting the
         # directory immediately afterwards intermittently raised
         # `PermissionError [WinError 32] file is being used by another
         # process`. entrypoint.sh uses only absolute paths before the
@@ -208,7 +244,7 @@ class TestEntrypointShellProbe:
         env["PATH"] = os.pathsep.join([str(shim), *_bash_tool_dirs(bash)])
         assert _missing_commands(bash, env) == [], (
             f"{bash} could not resolve {_ENTRYPOINT_NEEDS} from its own tool "
-            f"dirs {_bash_tool_dirs(bash)} — the fix depends on the operator's PATH again"
+            f"dirs {_bash_tool_dirs(bash)} â€” the fix depends on the operator's PATH again"
         )
 
     @requires_bash
@@ -267,14 +303,60 @@ class TestEntrypointDropsPrivileges:
         assert "SETPRIV_CALLED" not in out, "dropped to a uid that does not exist"
         assert "CONTINUING AS ROOT" in out, f"silent fallback to root:\n{out}"
 
+    @requires_bash
+    def test_drop_moves_home_to_the_app_user_not_just_the_uid(self, tmp_path):
+        """setpriv changes credentials and NOTHING else â€” including not HOME.
 
-# ── build contract ───────────────────────────────────────────────────────
+        Regression pin. The first non-root image dropped to uid 10001 while
+        leaving ``HOME=/root``, which that uid cannot write, and two things
+        broke on the same root cause:
+
+        * numba (pymatting <- rembg <- the masking service) could not place its
+          JIT cache â€” site-packages is read-only to the app user and the
+          HOME fallback was unwritable â€” and raised "no locator available" at
+          IMPORT time, taking the app down on boot;
+        * ``git config --global`` could not write /root/.gitconfig, so the
+          safe.directory the self-updater depends on was never set, and the
+          failure was swallowed by ``|| true``.
+
+        Asserting on the child's environment, not on the script's text: what
+        matters is the value the dropped process actually receives.
+        """
+        out = _run_entrypoint_as_fake_root(tmp_path)
+
+        assert "SETPRIV_CALLED" in out, f"no privilege drop happened:\n{out}"
+        assert "HOME=/root" not in out, (
+            "the dropped process inherited root's HOME â€” numba's JIT cache and "
+            f"`git config --global` both fail on that:\n{out}"
+        )
+        assert f"HOME={_sh_path(tmp_path / 'apphome')}" in out, (
+            "HOME was not moved to the app user's home from the passwd entry:\n" + out
+        )
+        assert "USER=mrln" in out, f"USER not set for the app user:\n{out}"
+
+    @requires_bash
+    def test_missing_home_warns_rather_than_silently_keeping_roots(self, tmp_path):
+        """Prove the negative: no home on disk must be loud, not silent.
+
+        A derived image could drop the home directory. Keeping root's HOME
+        without saying so is what made the original failure so hard to read â€”
+        the crash surfaced deep inside numba, nowhere near the privilege drop.
+        """
+        out = _run_entrypoint_as_fake_root(tmp_path, home_exists=False)
+
+        assert "SETPRIV_CALLED" in out, f"the drop must still happen:\n{out}"
+        assert "no home directory for uid" in out, (
+            f"HOME could not be set and the script said nothing:\n{out}"
+        )
+
+
+# â”€â”€ build contract â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 
 def _run_sha_validation(value: str | None) -> int:
     """Execute the Dockerfile's GIT_SHA check in isolation; return its exit code.
 
-    The validation is lifted from the Dockerfile rather than restated here — a
+    The validation is lifted from the Dockerfile rather than restated here â€” a
     copy would drift, and a test that agrees with its own copy of the logic
     proves nothing about the build.
     """
@@ -293,7 +375,7 @@ def _run_sha_validation(value: str | None) -> int:
 
     # A SENTINEL, not a bare exit code. An acceptance asserted purely on
     # `returncode == 0` cannot tell "the guard accepted the sha" from "bash
-    # never ran and returned 1" — and the rejection cases, which assert
+    # never ran and returned 1" â€” and the rejection cases, which assert
     # `!= 0`, pass happily on a spawn failure. That asymmetry made the
     # acceptance case the only one of the pair that could break for a reason
     # unrelated to the guard, which is exactly what happened.
@@ -326,10 +408,10 @@ class TestShaValidationActuallyRejects:
     @pytest.mark.parametrize(
         "value,why",
         [
-            (None, "unset — the default a plain `docker build` produces"),
+            (None, "unset â€” the default a plain `docker build` produces"),
             ("", "empty string"),
             ("main", "a branch name, the exact thing being removed"),
-            ("07f44457", "a short sha — ambiguous, cannot be verified"),
+            ("07f44457", "a short sha â€” ambiguous, cannot be verified"),
             ("z" * 40, "right length, not hex"),
             ("a" * 39, "one char short"),
             ("a" * 41, "one char long"),
@@ -350,7 +432,7 @@ class TestBuildContract:
         df = _dockerfile()
         assert "ARG GIT_SHA" in df
         assert "GIT_SHA=<full 40-hex commit> is required" in df, (
-            "the build must fail without an explicit commit — building from a "
+            "the build must fail without an explicit commit â€” building from a "
             "moving branch makes the image non-reproducible"
         )
 
@@ -446,7 +528,7 @@ class TestTheseMatchersActuallyFail:
         assert "setpriv --reuid" not in ep
 
 
-# ── The entrypoint is the supervisor: it relaunches on the sentinel (LANE-56) ─
+# â”€â”€ The entrypoint is the supervisor: it relaunches on the sentinel (LANE-56) â”€
 
 # A stub interpreter for the SUPERVISED part of the script: the resolver call
 # prints a port; the uvicorn call records what it was handed and exits with the
@@ -539,7 +621,7 @@ class _Supervised:
 
 
 class TestEntrypointRelaunchesOnTheSentinel:
-    """Executable, under the script's REAL ``set -euo pipefail`` header — the
+    """Executable, under the script's REAL ``set -euo pipefail`` header â€” the
     adversary's BLOCK was precisely that a bare ``python -m uvicorn`` returning
     75 aborts the script at that line before any ``$?`` comparison."""
 
@@ -566,7 +648,7 @@ class TestEntrypointRelaunchesOnTheSentinel:
 
     @requires_bash
     def test_term_is_forwarded_to_the_server_and_the_loop_ends_with_its_code(self, tmp_path):
-        """``docker stop`` sends TERM to PID 1 — the loop. It must reach uvicorn,
+        """``docker stop`` sends TERM to PID 1 â€” the loop. It must reach uvicorn,
         and the container's exit code must be the server's, not 143."""
         sup = _Supervised(tmp_path)
         proc = sup.start("wait")
@@ -596,7 +678,7 @@ class TestEntrypointSupervisorText:
 
     def test_the_shebang_is_bash(self):
         """bash reaps re-parented trainer children in its SIGCHLD handler;
-        a ``dash`` PID 1 would not (Assumption — observed in UAT item 5)."""
+        a ``dash`` PID 1 would not (Assumption â€” observed in UAT item 5)."""
         assert _entrypoint().splitlines()[0] == "#!/usr/bin/env bash"
 
     def test_the_server_is_a_background_child_that_is_waited_for_twice_guarded(self):
@@ -632,7 +714,7 @@ class TestEntrypointSupervisorText:
         assert "set -euo pipefail" in _entrypoint()
 
 
-# ── The pinned Ollama path must be reachable, verified, and fail closed ──────
+# â”€â”€ The pinned Ollama path must be reachable, verified, and fail closed â”€â”€â”€â”€â”€â”€
 
 
 def _ollama_block() -> str:

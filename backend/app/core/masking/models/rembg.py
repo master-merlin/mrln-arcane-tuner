@@ -4,11 +4,27 @@ import structlog
 
 logger = structlog.get_logger(__name__)
 
+# `except Exception`, deliberately, NOT `except ImportError` (ARCHITECTURE D1:
+# nothing imported at startup may raise, ever). On 2026-09-03 the cu128 image
+# died on its FIRST launch with
+#     RuntimeError: cannot cache function '_make_tree': no locator available
+#     for .../pymatting/util/kdtree.py
+# raised while importing rembg as a non-root user: numba tried to write its JIT
+# cache next to the source file inside site-packages and had nowhere to fall
+# back to. A RuntimeError is not an ImportError, so this guard did not catch
+# it, the exception escaped `import app.main`, and uvicorn never started. An
+# optional dependency that is merely ABSENT and one that is present but cannot
+# initialise are the same thing to this app -- masking degrades -- so the guard
+# has to be about the outcome, not about one exception class.
+# The reason is kept rather than swallowed: `load()` puts it in front of the
+# user, so this stays a diagnosis instead of a silent "unavailable".
 try:
     from rembg import remove, new_session
     REMBG_AVAILABLE = True
-except ImportError:
+    REMBG_UNAVAILABLE_REASON = ""
+except Exception as exc:  # noqa: BLE001 — see the note above
     REMBG_AVAILABLE = False
+    REMBG_UNAVAILABLE_REASON = f"{type(exc).__name__}: {exc}"
 
 class RemBGModel(MaskingModel):
     def __init__(self, service):
@@ -21,7 +37,7 @@ class RemBGModel(MaskingModel):
 
     def load(self) -> bool:
         if not REMBG_AVAILABLE:
-            raise ImportError("rembg library is not installed.")
+            raise ImportError(f"rembg is unavailable — {REMBG_UNAVAILABLE_REASON}")
         return True
 
     def unload(self):
@@ -29,7 +45,7 @@ class RemBGModel(MaskingModel):
 
     def generate(self, image: Image.Image, params: dict) -> Image.Image:
         if not REMBG_AVAILABLE:
-            raise ImportError("rembg not installed.")
+            raise ImportError(f"rembg is unavailable — {REMBG_UNAVAILABLE_REASON}")
         
         model_name = params.get("model_name", "u2net")
         alpha_matting = params.get("alpha_matting", False)

@@ -1,6 +1,13 @@
 import torch
 import torch.nn as nn
 
+# `except Exception`, NOT `except ImportError` (ARCHITECTURE D1: nothing
+# imported at startup may raise, ever). This runs during `import app.main`.
+# A dependency that is PRESENT but cannot initialise -- a numba JIT cache it
+# cannot write, a CUDA library it cannot open -- raises something other than
+# ImportError, and before 2026-09-03 that escaped and killed the process
+# rather than disabling the feature. Absent and broken are the same outcome
+# here, so the guard is written about the outcome.
 try:
     from torchao.quantization import (
         quantize_,
@@ -11,7 +18,7 @@ try:
         Float8DynamicActivationFloat8WeightConfig,
     )
     import torchao
-except ImportError:
+except Exception:  # noqa: BLE001 — see the note above
     torchao = None
 
 from ..quantization_base import QuantizationBase

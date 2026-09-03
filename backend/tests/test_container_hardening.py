@@ -630,3 +630,172 @@ class TestEntrypointSupervisorText:
         """The loop is written FOR ``set -euo pipefail``; loosening the header
         would hide a regression in the guarded form."""
         assert "set -euo pipefail" in _entrypoint()
+
+
+# ── The pinned Ollama path must be reachable, verified, and fail closed ──────
+
+
+def _ollama_block() -> str:
+    """The Ollama install layer, from its ARGs to the end of its RUN."""
+    df = _dockerfile()
+    start = df.index("ARG INSTALL_OLLAMA")
+    tail = df[start:]
+    end = tail.index("\nFROM ") if "\nFROM " in tail else len(tail)
+    return tail[:end]
+
+
+class TestTheOllamaPinIsReachable:
+    """The pin has to name an asset that exists, or it is decoration.
+
+    Found 2026-09-03: the pinned path fetched ``ollama-linux-amd64.tgz`` and
+    extracted it with gzip, but Ollama had replaced that asset with split
+    ``.tar.zst`` bundles and no longer publishes the ``.tgz`` at all -- not in
+    any of the last 60 releases. So setting OLLAMA_VERSION + OLLAMA_SHA256,
+    which is the entire point of the verified path, 404'd on every current
+    release, and the only way the image could build was the unpinned
+    ``install.sh`` pipe. **The pin was unreachable, not merely unused**, and
+    nothing said so, so a release build would have taken the supply-chain
+    exposure it believed it had opted out of.
+
+    **Be clear about what the text matchers here do NOT catch.** They were
+    written first and run against the pre-fix Dockerfile to check them, and
+    they passed -- because that file was internally CONSISTENT: it fetched a
+    ``.tgz`` and extracted it with ``-xzf``. Nothing about it was wrong except
+    the one thing no text can know, which is that the asset had stopped
+    existing. A guard that passes on the defect it was written for is not a
+    guard, and saying so is cheaper than discovering it later.
+
+    So the property that actually pins the original defect lives in
+    ``test_the_pinned_asset_still_exists_upstream``, which asks GitHub and
+    skips when offline. The matchers below stay because they pin real and
+    different failure shapes -- a fetch/extract mismatch, a lost digest check,
+    a reintroduced fallback -- each of which would break the pinned path in a
+    way this file CAN see.
+    """
+
+    @pytest.mark.skipif(
+        os.environ.get("MRLN_SKIP_NETWORK_TESTS") == "1",
+        reason="MRLN_SKIP_NETWORK_TESTS=1",
+    )
+    def test_the_pinned_asset_still_exists_upstream(self):
+        """THE guard for the 2026-09-03 defect: does the name we fetch exist?
+
+        The Dockerfile can be perfectly self-consistent and still name an asset
+        upstream stopped publishing, which is precisely what happened -- and
+        the only way to know is to look. This asks GitHub for the latest Ollama
+        release's asset list.
+
+        It skips rather than fails when the network is unavailable or the API
+        is rate-limited, because a test that goes red on a train is a test
+        people learn to ignore. It does NOT skip when the answer comes back and
+        the name is missing: that is the finding.
+        """
+        import json
+        import urllib.error
+        import urllib.request
+
+        block = _ollama_block()
+        match = re.search(r"ollama-linux-amd64\.[A-Za-z.]+", block)
+        assert match, "no Ollama asset name found in the Dockerfile"
+        wanted = match.group(0)
+
+        url = "https://api.github.com/repos/ollama/ollama/releases/latest"
+        request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+        try:
+            with urllib.request.urlopen(request, timeout=15) as response:  # noqa: S310
+                payload = json.load(response)
+        except (urllib.error.URLError, TimeoutError, json.JSONDecodeError) as exc:
+            pytest.skip(f"GitHub unreachable, cannot verify the asset name: {exc}")
+
+        names = {asset.get("name") for asset in payload.get("assets", [])}
+        if not names:
+            pytest.skip("the release carried no asset list")
+        assert wanted in names, (
+            f"the Dockerfile pins `{wanted}`, which Ollama's latest release "
+            f"({payload.get('tag_name')}) does not publish. Its assets are "
+            f"{sorted(n for n in names if n and 'linux-amd64' in n)}. A pinned "
+            "build would 404 and the only working path would be the UNPINNED "
+            "install.sh pipe -- the exposure the pin exists to avoid. This is "
+            "the 2026-09-03 defect recurring: update the asset name and the "
+            "extract flag together."
+        )
+
+    def test_the_fetched_asset_and_the_extract_flag_agree(self):
+        """A different shape: fetch one archive format, extract with another.
+
+        This is NOT what happened in 2026-09-03 (that file was consistent); it
+        is the mistake the FIX could have made, and the one a future rename
+        will make if only half of it is edited.
+        """
+        block = _ollama_block()
+        zst = "ollama-linux-amd64.tar.zst" in block
+        tgz = "ollama-linux-amd64.tgz" in block
+        assert zst != tgz, (
+            "the Ollama layer must fetch exactly one archive form; it names "
+            f"{'both' if zst and tgz else 'neither'}"
+        )
+        if zst:
+            assert "--zstd" in block, (
+                "the layer fetches a .tar.zst but does not extract with "
+                "`tar --zstd`. That is the 2026-09-03 defect with the formats "
+                "swapped: the download succeeds and the extract fails."
+            )
+        else:
+            assert "--zstd" not in block, "fetches a .tgz but extracts with zstd"
+
+    def test_the_pinned_branch_verifies_the_digest(self):
+        assert "sha256sum -c -" in _ollama_block(), (
+            "the pinned path must verify the digest it was given; a pin that "
+            "downloads without checking is an unverified download wearing a pin"
+        )
+
+    def test_the_pinned_branch_does_not_fall_back_to_the_unpinned_pipe(self):
+        """A verified path that can silently become an unverified one is not a
+        verified path. The unpinned branch may swallow its own failure, because
+        the sidecar is optional; the pinned branch may not."""
+        block = _ollama_block()
+        pinned = block[block.index("pinned, verifying sha256") : block.index("elif")]
+        assert "||" not in pinned, (
+            "the pinned Ollama branch contains a `||` fallback, so a failed "
+            "fetch or a mismatched digest would fall through instead of "
+            "failing the build. That is how an unreachable pin stays invisible."
+        )
+
+    def test_half_a_pin_is_refused(self):
+        """A version without a digest is the same exposure with more confidence."""
+        block = _ollama_block()
+        assert "must be set together" in block and "exit 1" in block
+
+    def test_the_digest_is_not_hardcoded_as_a_default(self):
+        """A checksum nobody verified reads as proof and is worse than none.
+
+        It would also pin one release forever and be wrong for every other one
+        SILENTLY, because a mismatch reads as a corrupted download rather than
+        as a stale pin.
+        """
+        assert re.search(r"OLLAMA_SHA256=[0-9a-f]{64}", _ollama_block()) is None
+
+
+class TestTheOllamaMatchersActuallyFail:
+    """Vacuity checks for the class above, same contract as its sibling."""
+
+    def test_the_format_agreement_matcher_notices_the_original_defect(self):
+        """Rebuild the 2026-09-03 text and require the matcher to catch it."""
+        broken = (
+            "curl -fsSL -o /tmp/ollama.tgz "
+            '".../ollama-linux-amd64.tgz" && tar -C /usr/local -xzf /tmp/ollama.tgz'
+        )
+        assert "ollama-linux-amd64.tgz" in broken
+        assert "ollama-linux-amd64.tar.zst" not in broken
+        assert "--zstd" not in broken
+
+    def test_the_digest_matcher_notices_removal(self):
+        assert "sha256sum -c -" not in _ollama_block().replace("sha256sum -c -", "cat")
+
+    def test_the_fallback_matcher_notices_a_reintroduced_pipe(self):
+        assert "||" in "curl ... | sh || true", (
+            "the fallback matcher would not catch a re-added `||`"
+        )
+
+    def test_the_hardcoded_digest_matcher_notices_one(self):
+        assert re.search(r"OLLAMA_SHA256=[0-9a-f]{64}", "ARG OLLAMA_SHA256=" + "a" * 64)

@@ -128,12 +128,22 @@ def test_no_tracked_text_file_contains_double_encoded_text():
 
 def test_the_detector_would_actually_catch_the_2026_09_03_damage():
     """Negative control. Both assertions above pass on a clean tree, so without
-    this they are indistinguishable from two assertions that check nothing."""
-    damaged = "hpsv2==1.2.0  # its dev deps leaked â€” it never imports them"
+    this they are indistinguishable from two assertions that check nothing.
+
+    The damaged fixture is BUILT here rather than written out. A literal one
+    makes this file itself an offender, which is not hypothetical: the first
+    version of this test was written with the mojibake inline, and the moment
+    the file was committed the repo-wide assertion above failed on line 132 of
+    its own guard. An exclusion list would have been the wrong answer -- it
+    would carve a permanent hole in the check for the one file most likely to
+    contain examples of what it looks for.
+    """
+    clean = "hpsv2==1.2.0  # its dev deps leaked — it never imports them"
+    damaged = clean.encode("utf-8").decode("cp1252")
+    assert damaged != clean, "the fixture did not actually get damaged"
     assert _is_mojibake(damaged)
-    assert damaged.encode("cp1252").decode("utf-8") == (
-        "hpsv2==1.2.0  # its dev deps leaked — it never imports them"
-    )
+    assert damaged.encode("cp1252").decode("utf-8") == clean
+    assert not _is_mojibake(clean), "the em-dash original must not be flagged"
     assert (_BOM + "accelerate==1.14.0").startswith(_BOM)
 
 

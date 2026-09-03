@@ -86,7 +86,11 @@ def _build_tiny_transformer():
 
 
 class TestImportSmoke:
-    """Every vendored module imports cleanly; flash_attn/triton fallback paths are live."""
+    """Every vendored module imports cleanly; the flash_attn fallback path is live.
+
+    The triton path is NOT a constant across our two platforms — see
+    ``test_triton_availability_follows_metadata_not_importability``.
+    """
 
     def test_flash_attn_not_importable_in_this_env(self):
         # Pins the premise of this whole test module: if flash_attn ever becomes
@@ -94,40 +98,56 @@ class TestImportSmoke:
         # need re-verification (flash_attn is a soft dep upstream, no install here).
         assert importlib.util.find_spec("flash_attn") is None
 
-    def test_triton_is_importable_but_reports_unavailable(self):
-        # Unlike flash_attn, a `triton` module IS importable in this venv
-        # (3.7.1, bundled as a torch/Windows build dependency) -- but it has
-        # no discoverable distribution metadata under that name, so
-        # importlib.metadata.version("triton") raises PackageNotFoundError
-        # and the vendored is_triton_available() (see next test) still
-        # correctly reports False. Pinned here so a future venv change that
-        # fixes triton's metadata doesn't silently flip which attention/norm
-        # path the tests below exercise without anyone noticing.
+    def test_triton_is_importable_on_every_platform_we_pin_it_for(self):
+        # The `triton` MODULE is importable in both supported environments,
+        # but by different routes: requirements.txt pins `triton-windows` on
+        # win32 and `triton` on linux. That difference is the whole subtlety
+        # below -- triton-windows ships the module while registering its
+        # distribution metadata under ITS OWN name, so a metadata lookup for
+        # "triton" fails on Windows and succeeds on Linux.
+        assert importlib.util.find_spec("triton") is not None
+
+    def test_triton_availability_follows_metadata_not_importability(self):
+        """The vendored probe gates on distribution metadata, not ``find_spec``.
+
+        This asserts the RELATIONSHIP rather than a constant, because the
+        constant is a property of the machine: on Windows `triton-windows`
+        supplies the module with no "triton" metadata, so the probe answers
+        False and the eager/fallback paths are live; on Linux the pinned
+        `triton` has metadata, so it answers True. Pinning ``is False`` here
+        encoded the maintainer's box and went red the first time CI installed
+        the linux pin (gate.yml run 33694088308). The invariant that holds on
+        both -- and that actually describes the product -- is that the probe
+        agrees with the metadata lookup, never with mere importability.
+        """
         import importlib.metadata
 
-        assert importlib.util.find_spec("triton") is not None
-        try:
-            importlib.metadata.version("triton")
-        except importlib.metadata.PackageNotFoundError:
-            pass
-        else:
-            raise AssertionError(
-                "triton now has discoverable package metadata in this venv -- "
-                "is_triton_available() may no longer be False; re-verify the "
-                "fallback-path assumptions in this test module"
-            )
-
-    def test_import_utils_reports_both_unavailable(self):
         from app.engine.models.families.boogu_image.vendor.utils.import_utils import (
-            is_flash_attn_available,
             is_triton_available,
         )
 
+        try:
+            importlib.metadata.version("triton")
+            metadata_present = True
+        except importlib.metadata.PackageNotFoundError:
+            metadata_present = False
+
+        assert is_triton_available() is metadata_present, (
+            "is_triton_available() must mirror `importlib.metadata."
+            f"version('triton')` (present={metadata_present}); the module is "
+            "importable either way, so a probe keyed on find_spec would be "
+            "wrong on exactly one of the two platforms we ship"
+        )
+
+    def test_import_utils_reports_flash_attn_unavailable(self):
+        # flash_attn is a soft upstream dependency installed nowhere in this
+        # project, on any platform -- so unlike triton this one IS a constant,
+        # and the eager attention path below is live everywhere.
+        from app.engine.models.families.boogu_image.vendor.utils.import_utils import (
+            is_flash_attn_available,
+        )
+
         assert is_flash_attn_available() is False
-        # False regardless of raw triton importability (see
-        # test_triton_is_importable_but_reports_unavailable) because
-        # is_triton_available() gates on importlib.metadata, not find_spec.
-        assert is_triton_available() is False
 
     def test_import_teacache_util(self):
         from app.engine.models.families.boogu_image.vendor.utils.teacache_util import (

@@ -104,6 +104,33 @@ def test_probe_mp4_with_audio(tmp_path):
     assert "h264" in (probe.video_codec or "")
 
 
+def _vp9_encoder_opens() -> bool:
+    """Can this PyAV build actually OPEN the VP9 encoder?
+
+    Not "is it compiled in" — the ubuntu wheel advertises ``libvpx-vp9`` and
+    then fails at ``avcodec_open2`` with EINVAL (gate.yml run 33694088308),
+    while the Windows wheel encodes the same clip fine. The only honest probe
+    is to try it, which is what the product would hit too.
+    """
+    import io
+
+    try:
+        with av.open(io.BytesIO(), mode="w", format="webm") as container:
+            stream = container.add_stream("libvpx-vp9", rate=24)
+            stream.width = 64
+            stream.height = 64
+            stream.pix_fmt = "yuv420p"
+            list(stream.encode(None))
+    except Exception:
+        return False
+    return True
+
+
+@pytest.mark.skipif(
+    not _vp9_encoder_opens(),
+    reason="this PyAV build cannot open the libvpx-vp9 encoder, so the clip "
+    "this test probes cannot be written here (LANE-79)",
+)
 def test_probe_webm_estimated_frame_count(tmp_path):
     """A VP9 webm exposes no exact frame count, so it is estimated from
     duration × fps (round(0.5 * 24) == 12) and flagged accordingly."""

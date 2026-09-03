@@ -480,6 +480,33 @@ class TestBuildContract:
         df = _dockerfile()
         assert "OLLAMA_SHA256=\n" in df or "ARG OLLAMA_SHA256=" in df
 
+    def test_hpsv2_vocab_is_baked_in_not_fetched_at_runtime(self):
+        """hpsv2's vocab must be in the image, placed before the drop.
+
+        Its vendored open_clip resolves the file with a hardcoded
+        package-relative path, so it has to sit inside site-packages and no
+        env var can move it. The runtime fetch in ``apply_hpsv2_patches`` only
+        ever worked as root; under the app user it is EACCES, swallowed into a
+        warning, and HPSv2 scoring is dead with nothing failing loudly.
+        """
+        df = _dockerfile()
+        assert "bpe_simple_vocab_16e6.txt.gz" in df, (
+            "the hpsv2 vocabulary is not baked into the image; it will be "
+            "fetched at runtime and fail as the non-root app user"
+        )
+        # Resolved from the distribution, not hardcoded: a base-image Python
+        # bump moves dist-packages and a literal path would put it nowhere.
+        assert 'm.distribution("hpsv2")' in df, (
+            "the destination must be resolved from the installed distribution, "
+            "not a hardcoded python3.N site-packages path"
+        )
+        # Ordering is the load-bearing part: written as root, before the image
+        # creates and hands ownership to the app user.
+        assert df.index("bpe_simple_vocab_16e6.txt.gz") < df.index("useradd"), (
+            "the vocab is baked AFTER the app user is created; it must be "
+            "written as root, before the privilege boundary"
+        )
+
     def test_image_does_not_set_user_root(self):
         df = _dockerfile()
         assert "USER root" not in df

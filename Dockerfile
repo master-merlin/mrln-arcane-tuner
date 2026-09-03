@@ -226,6 +226,35 @@ WORKDIR /app/backend
 # never diverge.
 RUN bash install-deps.sh
 
+# --- hpsv2's BPE vocabulary, baked in as root ---
+# hpsv2 vendors its own open_clip, whose tokenizer resolves this file with a
+# HARDCODED package-relative path (`os.path.join(os.path.dirname(__file__),
+# "bpe_simple_vocab_16e6.txt.gz")`) and whose wheel does not ship it. There is
+# no environment variable that redirects it, so it MUST live inside
+# site-packages. `apply_hpsv2_patches()` in backend/app/core/compat.py fetched
+# it on first boot, which worked only while the app ran as root: under the
+# non-root user the write is EACCES, the failure is swallowed into a warning,
+# and HPSv2 scoring is silently dead.
+# Doing it here, as root at build time, is the fix. It also makes the runtime
+# path a no-op — compat.py returns early when the file is already present — and
+# stops every fresh container needing github.com reachable at boot.
+# Chowning site-packages instead would "work" and would be wrong: the app must
+# not be able to rewrite the libraries it is about to execute.
+# The destination is resolved from the INSTALLED DISTRIBUTION, never hardcoded:
+# a base-image Python bump moves dist-packages, and a literal python3.12 path
+# would silently drop the file where nothing reads it.
+# The gzip probe is the integrity check that matters here — the failure this
+# guards against is a 200-with-an-HTML-error-page, which `curl -f` does not
+# catch and which would sit in the image looking like a vocabulary.
+RUN set -eu; \
+    dest="$(python -c 'import importlib.metadata as m, pathlib; print(pathlib.Path(str(m.distribution("hpsv2").locate_file(""))) / "hpsv2" / "src" / "open_clip")')"; \
+    [ -n "$dest" ] || { echo "ERROR: could not resolve the hpsv2 package directory." >&2; exit 1; }; \
+    mkdir -p "$dest"; \
+    curl -fsSL -o "$dest/bpe_simple_vocab_16e6.txt.gz" \
+      "https://github.com/openai/CLIP/raw/main/clip/bpe_simple_vocab_16e6.txt.gz"; \
+    python -c 'import gzip,sys; gzip.open(sys.argv[1],"rb").read(1)' "$dest/bpe_simple_vocab_16e6.txt.gz"; \
+    echo "[build] hpsv2 BPE vocab baked into $dest"
+
 # Built SPA from stage 1 (overwrites the cloned, unbuilt frontend dist path).
 COPY --from=frontend /build/dist/frontend/browser /app/frontend/browser
 

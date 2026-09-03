@@ -9,10 +9,10 @@ TDD order (mirrors test_ovis_image_family.py / test_krea2_family.py):
           driver sync, transformer property) + TE disk-cache layout
 
 Verified checkpoint facts (unet/config.json, revision="diffusers"):
-  block_out_channels (256, 512, 896); attention_head_dim (4, 8, 14) â†’
-  head_dim 64 at EVERY level; num_kv_heads=1 (MQA) â†’ to_k/to_v
+  block_out_channels (256, 512, 896); attention_head_dim (4, 8, 14) →
+  head_dim 64 at EVERY level; num_kv_heads=1 (MQA) → to_k/to_v
   out_features = 64; transformer_layers_per_block (1, 2, 4);
-  cross_attention_dim 2304; encoder_hid_dim_type "text_proj_rms" (2048â†’2304);
+  cross_attention_dim 2304; encoder_hid_dim_type "text_proj_rms" (2048→2304);
   addition_embed_type "time" (time_ids [w, h]); ff_mult 3; qk_norm rms_norm.
 """
 
@@ -66,7 +66,7 @@ def _make_dreamlite_definition(**kwargs) -> MagicMock:
     return definition
 
 
-# â”€â”€ Task 1: Family Registration â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Task 1: Family Registration ──────────────────────────────────────────────
 
 
 def test_family_registered():
@@ -111,7 +111,7 @@ def test_both_definitions_loaded():
     base = fam_defs["dreamlite-base"]
     mobile = fam_defs["dreamlite-mobile"]
 
-    # Canonical checkpoints â€” BOTH need the "diffusers" revision (@revision
+    # Canonical checkpoints — BOTH need the "diffusers" revision (@revision
     # suffix understood by ModelPathResolver since the dreamlite family).
     assert base.components["repo"].path == (
         "huggingface:carlofkl/DreamLite-base@diffusers"
@@ -120,12 +120,12 @@ def test_both_definitions_loaded():
         "huggingface:carlofkl/DreamLite-mobile@diffusers"
     ), f"wrong mobile repo path: {mobile.components['repo'].path!r}"
 
-    # Standard T2I â€” the diptych "[Edit]" mode is out of scope.
+    # Standard T2I — the diptych "[Edit]" mode is out of scope.
     assert base.control_inputs == 0
     assert mobile.control_inputs == 0
 
     # CFG split: base is the CFG (30-step) checkpoint, mobile is the
-    # CFG-distilled (4-step) checkpoint â€” the krea2 Raw/Turbo convention.
+    # CFG-distilled (4-step) checkpoint — the krea2 Raw/Turbo convention.
     assert base.defaults.get("is_distilled") is False
     assert mobile.defaults.get("is_distilled") is True
     assert base.defaults.get("guidance_scale") == 3.5
@@ -149,7 +149,7 @@ def test_both_definitions_loaded():
         assert arch.get("unet.ff_mult") == 3
         assert arch.get("unet.in_channels") == 4
         assert arch.get("unet.sample_size") == 128
-        # VAE: AutoencoderTiny (taesdxl) â€” 4 latent channels, 8Ã— spatial.
+        # VAE: AutoencoderTiny (taesdxl) — 4 latent channels, 8× spatial.
         assert arch.get("vae._class_name") == "AutoencoderTiny"
         assert arch.get("vae.latent_channels") == 4
         assert arch.get("vae.vae_scale_factor") == 8
@@ -166,13 +166,13 @@ def test_both_definitions_loaded():
         assert arch.get("te.drop_idx") == 34
 
 
-# â”€â”€ Task 2: Loader Manifest â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Task 2: Loader Manifest ──────────────────────────────────────────────────
 
 
 def test_manifest_components():
     """DreamLiteLoader manifest declares all four diffusers-native components.
 
-    The checkpoint stores its primary model under ``unet/`` (it IS a U-Net â€”
+    The checkpoint stores its primary model under ``unet/`` (it IS a U-Net —
     ``model_index.json`` names the component "unet"), unlike the DiT
     families' ``transformer/`` subfolder. All four components are
     diffusers-0.39 / transformers-4.57-native: the TE config is saved by
@@ -211,7 +211,7 @@ def test_manifest_components():
     )
     assert spec_map["text_encoder"].subfolder == "text_encoder"
 
-    # VAE: AutoencoderTiny (taesdxl â€” NO latent_dist, encode returns .latents)
+    # VAE: AutoencoderTiny (taesdxl — NO latent_dist, encode returns .latents)
     assert spec_map["vae"].hf_class == "diffusers.AutoencoderTiny"
     assert spec_map["vae"].subfolder == "vae"
 
@@ -221,7 +221,7 @@ def test_manifest_components():
 
 
 def test_loader_dtype_policy_is_generic():
-    """No dtype overrides â€” bf16 comes from driver.resolve_loading_dtype."""
+    """No dtype overrides — bf16 comes from driver.resolve_loading_dtype."""
     import torch  # noqa: PLC0415
 
     from app.engine.core.pipeline.loader_base import GenericComponentLoader
@@ -351,12 +351,12 @@ def test_text_encoder_hf_class_consumes_real_checkpoint_key_layout():
     )
 
 
-# â”€â”€ Task 4: Driver â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Task 4: Driver ───────────────────────────────────────────────────────────
 
 # Tiny UNet config for CPU tests. Structurally faithful to the checkpoint:
 # per-level attention_head_dim (== NUM HEADS per the UNet naming bug),
 # MQA (num_kv_heads=1) + rms_norm qk_norm, text_proj_rms encoder projection
-# (TE width 12 â†’ cross-attn 16), "time" addition embedding consuming
+# (TE width 12 → cross-attn 16), "time" addition embedding consuming
 # time_ids, ff_mult 3, sep-convs, linear projections, and the checkpoint's
 # per-level transformer_layers_per_block (1, 2, 4).
 _TINY_UNET_CFG = dict(
@@ -406,7 +406,7 @@ def _make_driver(model=None, arch=None):
 
 
 def test_driver_lora_targets_match_unet_module_tree():
-    """Every default LoRA target pattern matches â‰¥1 Linear in the tiny UNet;
+    """Every default LoRA target pattern matches ≥1 Linear in the tiny UNet;
     self-attention (attn1) exists ONLY where the checkpoint has it."""
     import torch  # noqa: PLC0415
 
@@ -455,7 +455,7 @@ def test_driver_lora_targets_match_unet_module_tree():
 
 def test_driver_lora_targets_pin_real_checkpoint_module_count():
     """Meta-instantiate the REAL checkpoint unet config and pin the LoRA
-    surface: 312 target modules â†’ 624 keys; MQA to_k/to_v out_features = 64
+    surface: 312 target modules → 624 keys; MQA to_k/to_v out_features = 64
     at EVERY level (head_dim 64, num_kv_heads 1)."""
     import torch  # noqa: PLC0415
 
@@ -506,7 +506,7 @@ def test_driver_lora_targets_pin_real_checkpoint_module_count():
                 f"{n}: expected MQA width 64, got {linear[n].out_features}"
             )
 
-    # Param count sanity â€” 0.39 B (the vram_estimator entry's provenance).
+    # Param count sanity — 0.39 B (the vram_estimator entry's provenance).
     n_params = sum(p.numel() for p in model.parameters())
     assert 380e6 < n_params < 400e6, f"unexpected param count {n_params:,}"
 
@@ -514,13 +514,13 @@ def test_driver_lora_targets_pin_real_checkpoint_module_count():
 def test_driver_forward_matches_pipeline_unet_call():
     """forward_pass mirrors DreamLitePipeline's UNet invocation EXACTLY:
 
-    1. model input = cat([latents, zeros_like(latents)], dim=3) â€” the
+    1. model input = cat([latents, zeros_like(latents)], dim=3) — the
        generate-mode width concat (zero image-conditioning half);
     2. timestep passed RAW on the [0, 1000] scale (``t.expand(B).to(dtype)``
-       â€” the UNet's sinusoidal time_proj consumes raw timesteps; NO /1000);
+       — the UNet's sinusoidal time_proj consumes raw timesteps; NO /1000);
     3. encoder_attention_mask forwarded;
     4. added_cond_kwargs = {"time_ids": [[w_px, h_px]] * B} (pixel dims =
-       latent dims Ã— vae_scale_factor);
+       latent dims × vae_scale_factor);
     5. prediction sliced back to the latent width (``[..., :W]``).
     """
     import torch  # noqa: PLC0415
@@ -558,7 +558,7 @@ def test_driver_forward_matches_pipeline_unet_call():
     assert torch.equal(sample[..., :W], noisy)
     assert sample[..., W:].abs().sum() == 0, "conditioning half must be zeros"
 
-    # 2. RAW timesteps â€” identical values, latent dtype (NO /1000!)
+    # 2. RAW timesteps — identical values, latent dtype (NO /1000!)
     ts = captured["timestep"]
     assert torch.allclose(ts.float(), torch.tensor([500.0, 250.0])), (
         f"UNet must receive RAW [0,1000] timesteps, got {ts}"
@@ -609,13 +609,13 @@ def test_driver_encode_text_replicates_pipeline_encode_prompt():
     1. the caption is inserted into the pinned chat template;
     2. tokenized with max_length = max_sequence_length + drop_idx,
        padding + truncation;
-    3. TE forward WITH output_hidden_states â†’ hidden_states[-1];
+    3. TE forward WITH output_hidden_states → hidden_states[-1];
     4. per-sequence mask-select, drop the first drop_idx (34) template
        tokens, re-pad with zeros; fresh 0/1 mask.
 
     Deviation for cacheability (mask-equivalent): embeddings/mask are
     right-padded to the FIXED te.max_sequence_length instead of the batch
-    max â€” padded positions carry mask 0 and zero embeddings, exactly the
+    max — padded positions carry mask 0 and zero embeddings, exactly the
     pipeline's padding convention.
     """
     import torch  # noqa: PLC0415
@@ -692,7 +692,7 @@ def test_driver_encode_text_replicates_pipeline_encode_prompt():
 
     # 3+4. hidden_states[-1], mask-select, drop 34, re-pad to max_seq
     assert out.embeddings.shape == (2, max_seq, D)
-    # cap 0: full-length valid â†’ 20 user tokens survive the drop
+    # cap 0: full-length valid → 20 user tokens survive the drop
     assert torch.allclose(out.embeddings[0], hidden[0, drop_idx:, :])
     # cap 1: 5 valid user tokens, rest zero-padded
     assert torch.allclose(out.embeddings[1, :5], hidden[1, drop_idx:drop_idx + 5, :])
@@ -705,7 +705,7 @@ def test_driver_encode_text_replicates_pipeline_encode_prompt():
     assert mask[1, :5].sum() == 5
 
 
-# â”€â”€ Task 5: Trainer override trio + [Generate] prefix + TE cache â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+# ── Task 5: Trainer override trio + [Generate] prefix + TE cache ─────────────
 
 _TE_ARCH = {
     "te.max_sequence_length": 20,
@@ -794,7 +794,7 @@ def _build_real_trainer_shell():
 
 def test_trainer_encode_to_forward_real_seam():
     """C1/C2: trainer.encode_text returns a (emb, mask) TUPLE consumable by
-    driver.forward_pass â€” the whole encodeâ†’forward round trip produces a
+    driver.forward_pass — the whole encode→forward round trip produces a
     finite [B, C, H, W] prediction."""
     import torch  # noqa: PLC0415
 
@@ -850,7 +850,7 @@ def test_trainer_encode_applies_generate_prefix_negatives_stay_raw():
         "negatives must NOT carry the [Generate] prefix"
     )
 
-    # Distinct cache keys â€” no positive/negative collision.
+    # Distinct cache keys — no positive/negative collision.
     assert "[Generate]: blurry" in trainer.text_cache
     assert "blurry" in trainer.text_cache
     assert len(trainer.text_cache) == 2

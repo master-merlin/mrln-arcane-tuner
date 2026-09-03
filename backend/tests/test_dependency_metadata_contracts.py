@@ -3,8 +3,12 @@
 Three packages in `requirements.txt` are installed with ``--no-deps`` because
 their declared requirements are wrong in ways that would otherwise abort the
 resolve: `scenedetect` (declares GUI `opencv-python`, which would clobber the
-pinned headless build), `sam3` (a stale `huggingface-hub<1.0` ceiling), and
-`hpsv2` (its pytest dev dependencies leaked into its INSTALL requirements).
+pinned headless build) and `hpsv2` (its pytest dev dependencies leaked into its
+INSTALL requirements). `sam3` is the third, and as of 0.1.4 its metadata is no
+longer wrong at all — the `huggingface-hub<1.0` ceiling that put it here was
+fixed upstream. It keeps ``--no-deps`` only to stay out of the bulk resolve,
+which means its live ceilings (numpy, tqdm, typing_extensions) are enforced by
+nothing pip runs; `_harness/tools/pin_coherence.py` is what checks those.
 
 ``--no-deps`` is a claim, and the claim is not "the package installs" — pip will
 happily install anything with its dependencies switched off. The claim is **"the
@@ -322,11 +326,12 @@ ACCEPTED_CONSTRAINT_VIOLATIONS = {
         "The leaked dev pin. Covered behaviourally by "
         "test_hpsv2_imports_under_a_runner_its_metadata_forbids."
     ),
-    ("sam3", "huggingface-hub"): (
-        "A stale <1.0 ceiling. Covered behaviourally by "
-        "test_sam3_imports_cleanly_despite_declared_hub_pin in "
-        "test_transformers5_compat.py."
-    ),
+    # ("sam3", "huggingface-hub") lived here from 0.1.2, whose stale <1.0
+    # ceiling our hub pin crossed. sam3 0.1.4 declares `<2.0,>=0.30.0` and the
+    # violation is simply gone, so the entry was removed on 2026-09-03 rather
+    # than left as a licence for something that no longer happens. This is
+    # `test_no_accepted_violation_has_quietly_stopped_being_one` doing its job:
+    # it went red on the bump, which is the only reason anyone looked.
 }
 
 

@@ -309,9 +309,16 @@ def test_only_one_typer_distribution_is_installed():
 
 
 def test_sam3_imports_cleanly_despite_declared_hub_pin():
-    """sam3 declares huggingface-hub<1.0 but works with 1.x. app/core/masking/
-    models/sam3.py swallows ImportError into SAM3_AVAILABLE=False, so without
-    this test a real break would silently disable masking."""
+    """sam3 must import against the pinned huggingface-hub, whatever it declares.
+
+    The name is historical: sam3 0.1.2 declared `huggingface-hub<1.0` while
+    working fine with 1.x, and 0.1.4 dropped the ceiling (`<2.0,>=0.30.0`). The
+    test outlives that detail because its real subject never was the metadata —
+    `app/core/masking/models/sam3.py` swallows ImportError into
+    SAM3_AVAILABLE=False, so a genuine break disables masking in silence with
+    nothing else to notice it. The name is kept because it is referenced from
+    requirements.txt and four install scripts (public surfaces are not renamed
+    on a whim, ARCHITECTURE D2)."""
     from app.core.masking.models import sam3
 
     assert sam3.SAM3_AVAILABLE is True, (

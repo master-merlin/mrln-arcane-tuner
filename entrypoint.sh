@@ -53,6 +53,37 @@ if [ "$(id -u)" = "0" ]; then
 
         if command -v setpriv >/dev/null 2>&1; then
             echo "[entrypoint] dropping root -> uid=$APP_UID gid=$APP_GID"
+            # setpriv changes the CREDENTIALS and nothing else — it does not
+            # touch the environment, so without this the app user inherits
+            # root's HOME=/root, which it cannot write. That is not cosmetic:
+            #   * numba (via pymatting <- rembg <- the masking service) caches
+            #     JIT'd functions next to the source, falls back to a HOME-based
+            #     cache when site-packages is read-only — as it is for the app
+            #     user — and when THAT is unwritable too it raises
+            #     "no locator available", at import time, which took the whole
+            #     app down on first boot of the non-root image;
+            #   * `git config --global` below silently failed to write
+            #     /root/.gitconfig, so safe.directory was never actually set and
+            #     the self-updater would later refuse the checkout as
+            #     "dubious ownership".
+            # Both are one bug: a privilege drop that moved the user but not the
+            # environment. Take HOME from the passwd entry rather than assuming
+            # /home/<name>, so a rebuilt image with a different APP_UID still
+            # lands in that account's real home.
+            APP_HOME="$(getent passwd "$APP_UID" | cut -d: -f6)"
+            if [ -n "$APP_HOME" ] && [ -d "$APP_HOME" ]; then
+                # The volume chown above does not cover HOME (it is in the
+                # image, not on the volume), and a derived image could leave it
+                # root-owned; make it the app user's or the drop reintroduces
+                # the same unwritable-HOME failure.
+                chown "$APP_UID:$APP_GID" "$APP_HOME" 2>/dev/null || true
+                export HOME="$APP_HOME"
+                export USER="$(getent passwd "$APP_UID" | cut -d: -f1)"
+                export LOGNAME="$USER"
+            else
+                echo "[entrypoint] WARNING: no home directory for uid $APP_UID —"
+                echo "[entrypoint] WARNING: HOME stays $HOME; numba/git may fail if it is unwritable."
+            fi
             # Re-exec THIS script as the app user; it then takes the non-root
             # branch below and never returns here. --init-groups so the app
             # picks up its supplementary groups rather than root's.

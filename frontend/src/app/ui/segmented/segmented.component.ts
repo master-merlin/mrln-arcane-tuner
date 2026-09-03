@@ -1,8 +1,5 @@
 import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
-import { icons } from '@lucide/angular';
-import { IcoComponent } from '../../icons/ico.component';
-
-type IconKey = keyof typeof icons extends `Lucide${infer R}` ? R : never;
+import { IcoComponent, type IconKey } from '../../icons/ico.component';
 
 export interface SegOption<T> {
     value: T;

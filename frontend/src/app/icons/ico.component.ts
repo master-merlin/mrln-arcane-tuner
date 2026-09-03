@@ -1,5 +1,7 @@
 import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
-import { LucideDynamicIcon, type LucideIcon, type LucideIconData, icons } from '@lucide/angular';
+import { LucideDynamicIcon, type LucideIcon, type LucideIconData } from '@lucide/angular';
+
+import { type IconKey, iconSet } from './icon-set';
 
 /**
  * Thin wrapper around `@lucide/angular`'s `LucideDynamicIcon`. Lets us
@@ -8,15 +10,17 @@ import { LucideDynamicIcon, type LucideIcon, type LucideIconData, icons } from '
  * Usage: `<app-ico name="Database" [size]="16"/>`
  *
  * The `name` is the PascalCase icon stem (e.g. `"Database"` /
- * `"ChevronDown"`); the wrapper prepends `Lucide` to look the component
- * up in the `icons` barrel from `@lucide/angular`, then extracts the
- * static `icon` data so `LucideDynamicIcon` can render it without
- * needing the icon to be registered via `provideLucideIcons`.
+ * `"ChevronDown"`); the wrapper looks it up in `iconSet` and extracts the
+ * static `icon` data so `LucideDynamicIcon` can render it without needing
+ * the icon to be registered via `provideLucideIcons`.
+ *
+ * The lookup used to run against `icons`, the barrel of every icon Lucide
+ * ships, with a key built at runtime — which no bundler can narrow, so all of
+ * them shipped. `icon-set.ts` says why that stopped being acceptable. The
+ * shape here is unchanged; only the map it reads is now finite.
  */
 
-// All exported names from `icons` start with `Lucide`. Strip that prefix
-// for the public API of this component so the call sites stay short.
-export type IconKey = keyof typeof icons extends `Lucide${infer R}` ? R : never;
+export { type IconKey } from './icon-set';
 
 @Component({
     selector: 'app-ico',
@@ -35,8 +39,7 @@ export class IcoComponent {
     strokeWidth = input<number>(2);
 
     iconData = computed<LucideIconData>(() => {
-        const key = `Lucide${this.name()}` as keyof typeof icons;
-        const cmp = icons[key] as unknown as LucideIcon;
+        const cmp = iconSet[this.name()] as unknown as LucideIcon;
         return cmp.icon;
     });
 }

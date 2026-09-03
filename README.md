@@ -661,6 +661,7 @@ card.
 - **Frontend auto-start** — optionally launch the Angular dev server and open a browser on backend startup
 - **System restart** — restart the backend from the UI
 - **GPU monitoring** — real-time GPU utilization and VRAM usage display
+- **Free GPU memory** — one click in the topbar unloads the resident captioning, masking and scoring models; a model a batch is still using is kept, and the toast says which and why
 
 ---
 

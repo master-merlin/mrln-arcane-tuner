@@ -81,6 +81,14 @@ tracks the shorter background operations dataset work kicks off (rescans,
 captioning batches, masking, harmonize) — a training run never shows up
 there, and a Task Center job never shows up here.
 
+Beside it sits **Free GPU memory**. Captioning, masking and scoring models
+stay resident after they finish so the next batch does not pay to load them
+again, which is what you want right up until you need that VRAM for a
+training run. The button unloads them all; hover it to see what is currently
+loaded. It is deliberately conservative — anything still in use is kept, and
+the toast names what it kept and why. A training run is never touched by it;
+to free the GPU from a run in progress, use **Save & stop** (below).
+
 ## The selected job's detail pane
 
 ### Header

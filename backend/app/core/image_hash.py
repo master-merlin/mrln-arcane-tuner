@@ -1,8 +1,67 @@
 import cv2
 import numpy as np
 import structlog
+from PIL import Image, ImageOps
+
+# Registers AVIF with Pillow's format registry as an import side-effect. The
+# hash path needs it for the same reason the thumbnail path does, and it must
+# NOT rely on `app.core.dataset.thumbnails` having been imported first --
+# import order is not a contract. Registration is idempotent.
+# `except Exception`, NOT `except ImportError` (ARCHITECTURE D1: nothing
+# imported at startup may raise, ever). A dependency that is PRESENT but
+# cannot initialise raises something else, and this runs during
+# `import app.main`.
+try:
+    import pillow_avif  # noqa: F401
+except Exception:  # noqa: BLE001 — see the note above
+    pass
 
 logger = structlog.get_logger(__name__)
+
+
+def _decode_grayscale(image_path):
+    """Decode *image_path* to a grayscale uint8 array, or raise.
+
+    **cv2 first, always.** Every ``solid_hash`` in every existing database was
+    produced from a cv2 decode, and a perceptual hash is a PERSISTED format:
+    if this function ever handed a cv2-readable file to a different decoder,
+    stored hashes would stop matching freshly computed ones and duplicate
+    detection would degrade across every dataset already on disk, silently.
+    So the Pillow branch below is reachable ONLY when cv2 returns ``None``
+    (pinned by ``test_cv2_stays_the_primary_decoder``).
+
+    **Pillow second, because the two libraries do not agree about what this
+    product supports.** Measured 2026-09-04 on `opencv-python-headless` 4.13
+    AND 5.0: both report ``AVIF: NO``. Pillow reads AVIF through
+    ``pillow-avif-plugin``, which this repo pins and which the thumbnail path
+    already depends on -- so before this fallback an ``.avif`` would be
+    ingested, thumbnailed, and displayed looking perfectly healthy while
+    carrying NO hash, unable to match anything at any threshold (LANE-85 (a),
+    found by the user in UAT-9.4 on a real dataset).
+
+    Known and deliberate: a file decoded here would hash DIFFERENTLY if a
+    future OpenCV gained that format and took the primary branch. That is the
+    same persisted-format drift the stability suite already measures across an
+    opencv major, and it is preferable to the alternative, which is no hash at
+    all. Anything that changes which decoder wins needs a rehash decision --
+    see ``test_image_hash_stability``'s module docstring.
+    """
+    # `fromfile` rather than `imread` so non-ASCII Windows paths work.
+    file_bytes = np.fromfile(image_path, dtype=np.uint8)
+    img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
+    if img is not None:
+        return img
+
+    try:
+        with Image.open(image_path) as handle:
+            # cv2.imdecode honours EXIF orientation; match it, so the fallback
+            # sees the same pixels the primary decoder would have.
+            return np.array(ImageOps.exif_transpose(handle).convert("L"))
+    except Exception as exc:
+        raise ValueError(
+            f"Image could not be decoded by cv2 or Pillow: {image_path} ({type(exc).__name__}: {exc})"
+        ) from exc
+
 
 def solide_hash_robust(image_path, size=48):
     """
@@ -15,14 +74,11 @@ def solide_hash_robust(image_path, size=48):
     4. Compute D-Hash (Structural Gradient).
     """
     try:
-        # 1. READ & GRAYSCALE (Using imdecode for better Windows path support)
-        # We use fromfile to handle non-ASCII characters in paths
-        file_bytes = np.fromfile(image_path, dtype=np.uint8)
-        img = cv2.imdecode(file_bytes, cv2.IMREAD_GRAYSCALE)
-        
-        if img is None:
-            raise ValueError(f"Image could not be decoded: {image_path}")
-            
+        # 1. READ & GRAYSCALE (cv2 first, Pillow only where cv2 has no
+        # decoder at all -- see _decode_grayscale for why the order is a
+        # correctness constraint and not a preference)
+        img = _decode_grayscale(image_path)
+
         # 2. QUANTIZE (Pre-processing)
         # Smooth out noise so it doesn't affect the angle calculation
         img = cv2.GaussianBlur(img, (3, 3), 0)

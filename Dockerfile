@@ -81,9 +81,28 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # install-deps.sh filters those lines out of its requirements install so
 # neither this image build nor the runtime self-update ever clobbers the
 # trio baked into this layer.
+# torchao belongs in THIS layer, with the trio, and for the same reason: it
+# ships compiled CUDA extensions, so its wheel is bound to a CUDA ABI. PyPI
+# publishes only the CUDA-13 build, whose kernels need `libcudart.so.13` — an
+# image on the 12.8/12.6 base therefore loaded neither `_C_cutlass_90a` nor
+# `_C_mxfp8`, and every published image has shipped it that way. The failure was
+# invisible to the app: `import torchao` still succeeds, so `is_available()`
+# returns True and none of the product's "quantization unavailable" fallbacks
+# fire — the wheel is broken UNDERNEATH that predicate, and the error surfaces
+# inside `quantize_()` at load time instead.
+# NOT a version change: `download.pytorch.org/whl/${TORCH_CUDA}` publishes the
+# same pinned 0.17.0 as `0.17.0+${TORCH_CUDA}`, so this is the pin we already
+# had, fetched from the index that matches the base image.
+# install-deps.sh does NOT need to exclude it, verified rather than assumed: its
+# bare `torchao==0.17.0` in requirements.txt is satisfied by the local version
+# (`Requirement already satisfied: torchao==0.17.0 ... (0.17.0+cu128)`), so the
+# bulk resolve leaves this wheel alone. Keeping it OUT of that exclusion regex
+# matters, because the regex is shared with the local venv and the runtime
+# self-update, where excluding it would silently drop torchao entirely.
 ARG TORCH_CUDA=cu128
 RUN python -m pip install --break-system-packages \
         torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
+        torchao==0.17.0 \
         --index-url https://download.pytorch.org/whl/${TORCH_CUDA} \
     # setuptools/wheel ship via apt in the base image (no pip RECORD), so pip
     # can't uninstall them to honor the pinned versions. Install pip-managed
@@ -225,6 +244,27 @@ WORKDIR /app/backend
 # self-update reuses the same script, so the build and self-update installs
 # never diverge.
 RUN bash install-deps.sh
+
+# --- torchao's compiled kernels must actually LOAD on this base ---
+# Placed AFTER install-deps.sh on purpose: the bulk resolve is the step that
+# could replace the CUDA-matched wheel with PyPI's, so the assertion has to run
+# downstream of it or it proves nothing about the shipped image.
+# This tests the CONDITION, not the cause. A text check that the Dockerfile
+# names the right index would pass on an image where nothing loads, and would
+# not notice a base-image or CUDA bump; dlopen notices all of it.
+# `import torch` FIRST is load-bearing: it puts libc10/libcudart on the loader
+# path, and without it every extension fails for that reason instead of the
+# real one. (Measured the wrong way round first.)
+# ctypes.CDLL rather than importing torchao, because torchao CATCHES the load
+# failure and prints a warning -- the exact swallow that hid this for so long.
+# No GPU is needed: dlopen resolves libcudart from the image, not the driver.
+RUN python -c "\
+import ctypes, glob, sys; \
+import torch; \
+sos = sorted(glob.glob('/usr/local/lib/python3.12/dist-packages/torchao/*.so')); \
+sys.exit('ERROR: no torchao extensions found -- did the wheel change?') if not sos else None; \
+[ctypes.CDLL(p) for p in sos]; \
+print('[build] torchao kernels load:', ', '.join(p.split('/')[-1] for p in sos))"
 
 # --- hpsv2's BPE vocabulary, baked in as root ---
 # hpsv2 vendors its own open_clip, whose tokenizer resolves this file with a

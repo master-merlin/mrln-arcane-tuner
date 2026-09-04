@@ -564,6 +564,62 @@ class TestBuildContract:
             "the digest is declared but never verified against the download"
         )
 
+    def test_torchao_comes_from_the_cuda_matched_index_and_is_load_checked(self):
+        """torchao ships compiled CUDA extensions, so its wheel is ABI-bound.
+
+        PyPI publishes only the CUDA-13 build, whose kernels need
+        `libcudart.so.13`; the image is CUDA 12.8/12.6, so neither extension
+        loaded — in every published image. Nothing in the app reported it:
+        `import torchao` still succeeds, so `is_available()` is True and none
+        of the "quantization unavailable" fallbacks fire. The wheel is broken
+        underneath that predicate.
+
+        The real guard is the dlopen assertion in the build. This test only
+        pins that both halves are present, because a text assertion about an
+        index would pass on an image where nothing loads.
+        """
+        df = _dockerfile()
+        code = _code_only(df)
+        assert "torchao==0.17.0" in code, "torchao is not pinned in the Dockerfile layer"
+        # In the SAME install as the torch trio, i.e. the CUDA-matched index.
+        torch_install = code[code.index("torch==2.11.0"):]
+        torch_install = torch_install[: torch_install.index("RUN", 1)] if "RUN" in torch_install[1:] else torch_install
+        assert "torchao==0.17.0" in torch_install, (
+            "torchao must be installed from download.pytorch.org/whl/${TORCH_CUDA}, "
+            "in the same layer as torch — PyPI's wheel is built for another CUDA"
+        )
+        # And the load check must exist and run AFTER the bulk resolve, which is
+        # the step that could put PyPI's wheel back.
+        assert "ctypes.CDLL(p) for p in sos" in code, (
+            "the build does not verify that torchao's kernels actually load"
+        )
+        assert code.index("bash install-deps.sh") < code.index("ctypes.CDLL(p) for p in sos"), (
+            "the load check runs before install-deps.sh, so it proves nothing "
+            "about the shipped image"
+        )
+
+    def test_torchao_is_not_excluded_from_the_shared_dependency_install(self):
+        """The trap in the tidy version of the fix.
+
+        `install-deps.sh`'s exclusion regex is shared by the Docker build, the
+        local venv and the runtime self-update. Adding torchao to it would keep
+        the image correct and silently drop torchao from a fresh Windows
+        install. Measured instead: pip reports the bare `torchao==0.17.0` pin
+        satisfied by `0.17.0+cu128`, so the bulk resolve leaves the wheel alone
+        and no exclusion is needed.
+        """
+        script = (REPO_ROOT / "backend" / "install-deps.sh")
+        if not script.exists():
+            pytest.skip("install-deps.sh not present in this checkout")
+        text = script.read_text(encoding="utf-8")
+        excl = [ln for ln in text.splitlines() if "grep -ivE" in ln]
+        assert excl, "the exclusion filter has moved; this guard is looking in the wrong place"
+        assert not any("torchao" in ln for ln in excl), (
+            "torchao was added to the shared exclusion regex — that fixes the "
+            "image and silently removes torchao from the local venv and the "
+            "runtime self-update"
+        )
+
     def test_image_does_not_set_user_root(self):
         df = _dockerfile()
         assert "USER root" not in df

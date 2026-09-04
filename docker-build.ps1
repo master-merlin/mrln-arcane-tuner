@@ -64,7 +64,12 @@ param(
 
     # Where the build log and argument vector are written. Overridable so the
     # guard's own tests can run without depositing artifacts in the repo.
-    [string]$LogDir = ''
+    [string]$LogDir = '',
+
+    # Claim the release tags (:<version>, :latest, :<version>-cuNNN). OFF by
+    # default: a validation build must not name a release. See the tagging
+    # section below for what this cost when it defaulted the other way.
+    [switch]$ReleaseTags
 )
 
 $ErrorActionPreference = 'Stop'
@@ -179,12 +184,19 @@ if ($verifyExit -ne 0) {
     throw 'Artifact commit mismatch.'
 }
 
-# Second, independent check on the same artifact: the version the image will
-# claim. Defence in depth against a DIFFERENT failure -- an image built from
-# another release line -- and explicitly NOT a second opinion on the defect
-# above: `app.__version__` was identical in the wrong commit and the right one,
-# so this check would have passed that build in silence. The HEAD assertion is
-# the guard; this one must never be mistaken for it.
+# Second look at the same artifact, and it is WEAK BY CONSTRUCTION -- read the
+# next paragraph before trusting it for anything.
+#
+# It reads `app.__version__` out of the image and compares it to the version
+# being applied. Both come from the same tree, so within a bump window it
+# matches for EVERY build and can only ever pass: the image is compared against
+# itself. On 2026-09-04 that self-reference actively licensed a wrong tag --
+# `0.8.0-beta.1` was applied to an image 40 commits past the public git tag of
+# that name, and this line printed "verified" while it happened.
+# It is retained only to catch an image from a DIFFERENT release line (a stale
+# base, a wrong scratch tag). The HEAD assertion above and the git-tag
+# agreement check below are the real guards; this one must never be mistaken
+# for either.
 $imgVersion = (& docker run --rm --entrypoint python $scratchTag `
     -c "import sys; sys.path.insert(0, '/app/backend'); import app; print(app.__version__)" `
     2>&1 | Select-Object -Last 1)
@@ -195,7 +207,82 @@ if ($imgVersion -ne $Version) {
 }
 Write-Host "[build] verified: image version == $imgVersion"
 
-# -- Only now may a release tag move ------------------------------------------
+# -- Release tags: opt IN, never by default -----------------------------------
+# Most builds are validation builds. They get inspected, smoke-tested and then
+# thrown away, and they have no business naming a release. Defaulting to ON
+# meant a validation build silently claimed `:latest` and a version tag, which
+# is a loaded gun sitting next to `docker push`. Naming a release is a release
+# action and now requires saying so.
+if (-not $ReleaseTags) {
+    Write-Host ''
+    Write-Host "[build] DONE (validation). $Variant verified at $($GitSha.ToLower())."
+    Write-Host "[build] Image is $scratchTag -- NO release tag was applied."
+    Write-Host '[build] Re-run with -ReleaseTags to claim the release tags.'
+    exit 0
+}
+
+# The invariant the version check above was reaching for and missing: a release
+# tag `X` may only name an image whose commit agrees with the git tag `vX`.
+# `v$Version` is public once pushed, so it already denotes a specific tree;
+# labelling a different tree with the same name produces two commits under one
+# version, which is the exact defect this wrapper exists to prevent. Checked
+# against $GitSha, which the artifact has already been proven to contain.
+# Where no `v$Version` exists the name is unclaimed and applying it is fine --
+# this fails closed without depending on anyone's bump discipline.
+# Asked of ORIGIN, not of this checkout, for two reasons. On the merits: what
+# makes `v$Version` binding is that it is PUBLIC, so the remote is the
+# authority and whatever tags this clone happens to hold is not. And
+# defensively: a local `git rev-list -n 1 v$Version` returns empty with exit
+# 128 both when the tag does not exist AND when it exists but was never
+# fetched -- measured, the two are byte-identical -- so a fresh clone or a
+# shallow CI checkout (actions/checkout fetches no tags by default) would take
+# the "unclaimed" branch and tag anyway. That is "could not check" reported as
+# "check passed", the failure this whole wrapper exists to refuse.
+# Three outcomes, kept apart exactly as docker-verify-commit.ps1 keeps its own:
+# a line -> compare; empty with exit 0 -> genuinely unclaimed; non-zero exit ->
+# UNDETERMINED, which must refuse rather than proceed.
+$previousEap = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+try {
+    $lsOut = & git -C $PSScriptRoot ls-remote --tags origin "refs/tags/v$Version" 2>&1
+    $lsExit = $LASTEXITCODE
+} finally {
+    $ErrorActionPreference = $previousEap
+}
+if ($lsExit -ne 0) {
+    Write-Host ''
+    Write-Host "[build] REFUSING TO TAG -- could not ask origin whether v$Version exists."
+    Write-Host "[build]   git ls-remote exit $lsExit : $(($lsOut | Out-String).Trim())"
+    Write-Host '[build] UNDETERMINED is not the same as unclaimed. No release tag was applied.'
+    throw "Could not determine whether the release tag v$Version is already claimed."
+}
+
+# Annotated tags report the tag OBJECT on `refs/tags/vX` and the commit it
+# points at on `refs/tags/vX^{}`; lightweight tags report only the first, which
+# is already the commit. Prefer the dereferenced line when present, or an
+# annotated tag would compare a tag-object sha against a commit sha and refuse
+# every time.
+$tagCommit = ''
+foreach ($line in (($lsOut | Out-String) -split "`n")) {
+    if ($line -match '^([0-9a-f]{40})\s+refs/tags/\S+\^\{\}\s*$') { $tagCommit = $matches[1]; break }
+    if ($line -match '^([0-9a-f]{40})\s+refs/tags/\S+\s*$') { $tagCommit = $matches[1] }
+}
+
+if ($tagCommit -ne '') {
+    if ($tagCommit -ne $GitSha.ToLower()) {
+        Write-Host ''
+        Write-Host "[build] REFUSING TO TAG -- git tag v$Version does not name this commit."
+        Write-Host "[build]   git tag v$Version -> $tagCommit"
+        Write-Host "[build]   image contains     -> $($GitSha.ToLower())"
+        Write-Host '[build] Tagging this image would put two different commits under one'
+        Write-Host '[build] version name. Bump the version, or build the tagged commit.'
+        throw "Release tag v$Version already denotes a different commit."
+    }
+    Write-Host "[build] verified: origin's tag v$Version agrees with the image's commit"
+} else {
+    Write-Host "[build] note: origin has no tag v$Version; the name is unclaimed"
+}
+
 $tags = @("${Repository}:$Version-$Variant")
 if ($Variant -eq 'cu128') {
     # cu128 is the default variant: it owns the bare version tag and :latest.

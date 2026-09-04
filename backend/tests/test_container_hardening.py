@@ -58,6 +58,24 @@ def _build_script() -> str:
     return BUILD_SCRIPT.read_text(encoding="utf-8")
 
 
+def _code_only(text: str) -> str:
+    """The script with comment lines removed.
+
+    Seven times in one session a matcher searching for a NAME matched the PROSE
+    about that name — and three of those were the comment written to justify
+    the very guard doing the matching. A guard that documents itself well is
+    the guard most likely to trip its own text search, which makes this the
+    normal case rather than the exceptional one.
+
+    So: assert against code, and let comments say whatever they need to. Where
+    the assertion is genuinely ABOUT the documentation (that a caveat is
+    present, say), match the full text deliberately instead.
+    """
+    return "\n".join(
+        ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
+    )
+
+
 # ── behaviour ────────────────────────────────────────────────────────────
 
 
@@ -546,6 +564,121 @@ class TestBuildContract:
             "the digest is declared but never verified against the download"
         )
 
+    def test_torchao_comes_from_the_cuda_matched_index_and_is_load_checked(self):
+        """torchao ships compiled CUDA extensions, so its wheel is ABI-bound.
+
+        PyPI publishes only the CUDA-13 build, whose kernels need
+        `libcudart.so.13`; the image is CUDA 12.8/12.6, so neither extension
+        loaded — in every published image. Nothing in the app reported it:
+        `import torchao` still succeeds, so `is_available()` is True and none
+        of the "quantization unavailable" fallbacks fire. The wheel is broken
+        underneath that predicate.
+
+        The real guard is the dlopen assertion in the build. This test only
+        pins that both halves are present, because a text assertion about an
+        index would pass on an image where nothing loads.
+        """
+        df = _dockerfile()
+        code = _code_only(df)
+        assert "torchao==0.17.0" in code, "torchao is not pinned in the Dockerfile layer"
+        # In the SAME install as the torch trio, i.e. the CUDA-matched index.
+        torch_install = code[code.index("torch==2.11.0"):]
+        torch_install = torch_install[: torch_install.index("RUN", 1)] if "RUN" in torch_install[1:] else torch_install
+        assert "torchao==0.17.0" in torch_install, (
+            "torchao must be installed from download.pytorch.org/whl/${TORCH_CUDA}, "
+            "in the same layer as torch — PyPI's wheel is built for another CUDA"
+        )
+        # And the load check must exist and run AFTER the bulk resolve, which is
+        # the step that could put PyPI's wheel back.
+        assert "ctypes.CDLL(p) for p in sos" in code, (
+            "the build does not verify that torchao's kernels actually load"
+        )
+        assert code.index("bash install-deps.sh") < code.index("ctypes.CDLL(p) for p in sos"), (
+            "the load check runs before install-deps.sh, so it proves nothing "
+            "about the shipped image"
+        )
+
+    def test_torchao_is_not_excluded_from_the_shared_dependency_install(self):
+        """The trap in the tidy version of the fix.
+
+        `install-deps.sh`'s exclusion regex is shared by the Docker build, the
+        local venv and the runtime self-update. Adding torchao to it would keep
+        the image correct and silently drop torchao from a fresh Windows
+        install. Measured instead: pip reports the bare `torchao==0.17.0` pin
+        satisfied by `0.17.0+cu128`, so the bulk resolve leaves the wheel alone
+        and no exclusion is needed.
+        """
+        script = (REPO_ROOT / "backend" / "install-deps.sh")
+        if not script.exists():
+            pytest.skip("install-deps.sh not present in this checkout")
+        text = script.read_text(encoding="utf-8")
+        excl = [ln for ln in text.splitlines() if "grep -ivE" in ln]
+        assert excl, "the exclusion filter has moved; this guard is looking in the wrong place"
+        assert not any("torchao" in ln for ln in excl), (
+            "torchao was added to the shared exclusion regex — that fixes the "
+            "image and silently removes torchao from the local venv and the "
+            "runtime self-update"
+        )
+
+    def test_the_torchao_pin_is_the_same_in_requirements_and_the_dockerfile(self):
+        """The two pins must move together, because ONE of them is load-bearing
+        in a place no build-time guard can see.
+
+        The CUDA fix holds on a coincidence of PEP 440: the bare
+        `torchao==0.17.0` in requirements.txt is *already satisfied* by the
+        `0.17.0+cu128` the Dockerfile installed, so the bulk resolve leaves the
+        CUDA-matched wheel alone. Bump requirements.txt alone and that stops
+        being true — pip goes to PyPI and takes the CUDA-13 wheel again. The
+        runtime self-update re-runs install-deps.sh INSIDE A LIVE CONTAINER
+        with no image rebuild, so the Dockerfile's dlopen assertion is not in
+        that path at all. torchao is now the only CUDA-ABI-bound package left
+        in the bulk resolve; torch and triton are excluded for exactly this
+        reason.
+
+        WHAT THIS GUARD DOES AND DOES NOT PROMISE, stated because a guard whose
+        limits are folklore is a trap. It cannot make a bump safe: raise BOTH
+        pins in step and the self-update still fetches PyPI's wheel for the new
+        version, since nothing excludes torchao from the resolve. What it does
+        is make a bump impossible to land in requirements.txt alone, which
+        forces whoever bumps it into the Dockerfile's torch layer and past the
+        comment explaining why the index matters. That is a routing guarantee,
+        not a correctness one.
+
+        The structural fix — exclude torchao from install-deps.sh AND add an
+        explicit CUDA-matched install to install.ps1 beside the torch trio,
+        which is the shape torch already has — is deliberately NOT done here.
+        Excluding it without the install.ps1 half is precisely the silent
+        deletion that `test_torchao_is_not_excluded_from_the_shared_dependency_install`
+        exists to prevent, so the two halves must land together or not at all.
+        """
+        df = _dockerfile()
+        requirements = REPO_ROOT / "backend" / "requirements.txt"
+        if not requirements.exists():
+            pytest.skip("requirements.txt not present in this checkout")
+
+        # Comments stripped: the Dockerfile's justification names the pin too,
+        # and matching that would compare the prose to itself.
+        in_dockerfile = re.findall(r"torchao==([0-9][^\s\\#]*)", _code_only(df))
+        assert in_dockerfile, "no torchao pin found in the Dockerfile's install layer"
+        assert len(set(in_dockerfile)) == 1, (
+            f"the Dockerfile pins torchao at more than one version: {sorted(set(in_dockerfile))}"
+        )
+
+        in_requirements = re.findall(
+            r"^torchao==([0-9][^\s#]*)",
+            requirements.read_text(encoding="utf-8"),
+            re.MULTILINE,
+        )
+        assert in_requirements, "no torchao pin found in requirements.txt"
+
+        assert in_dockerfile[0] == in_requirements[0], (
+            f"torchao is pinned at {in_requirements[0]} in requirements.txt but "
+            f"{in_dockerfile[0]} in the Dockerfile. Whichever you meant to bump, bump "
+            "both — a requirements-only bump sends the bulk resolve back to PyPI's "
+            "CUDA-13 wheel, and the runtime self-update runs that resolve inside a "
+            "live container where no build-time check can catch it."
+        )
+
     def test_image_does_not_set_user_root(self):
         df = _dockerfile()
         assert "USER root" not in df
@@ -622,6 +755,13 @@ if [ "$1" = "-m" ] && [ "$2" = "uvicorn" ]; then
   code=$(echo "$STUB_CODES" | cut -d, -f$((n + 1)))
   if [ "$code" = "wait" ]; then
     trap 'echo term >> "$STUB_TERM_MARK"; exit 0' TERM
+    # Written AFTER the trap exists, and that ordering is the proof, not a
+    # margin: sh executes sequentially, so this file cannot appear before TERM
+    # is trappable. A caller that waits on it therefore cannot signal into the
+    # window where TERM would still take its default disposition.
+    # Named for the property it asserts, not for when it happens -- "ready" is
+    # exactly the word that let the original race exist.
+    echo trap_installed >> "$STUB_TRAP_READY"
     sleep 30 & wait $!
     exit 0
   fi
@@ -655,6 +795,7 @@ class _Supervised:
         self.record = tmp / "uvicorn_runs.txt"
         self.resolver_log = tmp / "resolver_calls.txt"
         self.term_mark = tmp / "term.txt"
+        self.trap_ready = tmp / "trap_ready.txt"
         self.bash = _bash()
         assert self.bash is not None  # requires_bash guards every caller
         env = dict(os.environ)
@@ -667,6 +808,7 @@ class _Supervised:
         env["STUB_RECORD"] = self.record.as_posix()
         env["STUB_RESOLVER_LOG"] = self.resolver_log.as_posix()
         env["STUB_TERM_MARK"] = self.term_mark.as_posix()
+        env["STUB_TRAP_READY"] = self.trap_ready.as_posix()
         self.env = env
         missing = _missing_commands(self.bash, env)
         if missing:
@@ -726,9 +868,19 @@ class TestEntrypointRelaunchesOnTheSentinel:
         and the container's exit code must be the server's, not 143."""
         sup = _Supervised(tmp_path)
         proc = sup.start("wait")
+        # Wait for the TRAP, not for the process. Waiting on the record file
+        # (i.e. "the stub started") was a race: the stub writes that line, then
+        # runs a forking command substitution, and only then installs the TERM
+        # handler. Signalling in that window killed the shell with TERM's
+        # default disposition, no marker was written, and the failure read "the
+        # server never received TERM" -- true, and pointing squarely at signal
+        # forwarding in the product when the fault was the test declaring
+        # readiness before readiness existed. A true message naming the wrong
+        # subject is worse than a vague one.
         deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and not sup.runs():
-            time.sleep(0.1)
+        while time.monotonic() < deadline and not sup.trap_ready.exists():
+            time.sleep(0.05)
+        assert sup.trap_ready.exists(), "the stub never installed its TERM trap"
         assert sup.runs(), "the server stub never started"
         # The stub recorded its parent's (msys) pid: the loop shell. Signalled
         # from a sibling bash because Python's send_signal on Windows is
@@ -876,9 +1028,9 @@ class TestTheBuildWrapperCannotTagAnUnverifiedImage:
 
     def test_the_wrapper_never_pushes(self):
         """Publishing stays a separate, deliberate act (RULE-17 halt 4)."""
-        text = _build_script()
-        assert "docker push" not in text
-        assert "& docker push" not in text
+        code = _code_only(_build_script())
+        assert "docker push" not in code
+        assert "& docker push" not in code
 
     def test_the_build_log_and_argument_vector_are_written_to_disk(self):
         """The whole LANE-82 investigation existed because one build left no
@@ -905,8 +1057,9 @@ class TestTheBuildWrapperCannotTagAnUnverifiedImage:
         to say so or a later reader will trust it to do the HEAD check's job."""
         text = _build_script()
         assert "app.__version__" in text
-        assert "would have passed that build in silence" in text, (
-            "the version check's limit must be stated where it is written"
+        assert "WEAK BY CONSTRUCTION" in text and "licensed a wrong tag" in text, (
+            "the version check's limit must be stated where it is written, or a "
+            "later reader trusts it to do the HEAD check's job"
         )
 
 
@@ -914,8 +1067,17 @@ VERIFIER = REPO_ROOT / "docker-verify-commit.ps1"
 
 # The naturally-occurring fixture for this whole lane: a real image whose real
 # commit really differs from the one it was built with. Nobody constructed it,
-# which is exactly its value — DO NOT DELETE these images.
-_FIXTURE_IMAGE = "mastermerlin/mrln-arcane-tuner:0.8.0-beta.1"
+# which is exactly its value — DO NOT DELETE this image.
+#
+# Addressed by a DEDICATED IMMUTABLE TAG, not by the release tag it originally
+# carried. It first pointed at `mastermerlin/mrln-arcane-tuner:0.8.0-beta.1`,
+# and the first successful run of docker-build.ps1 moved that tag onto the
+# freshly built image — correctly, that is the wrapper's whole job — which
+# silently swapped this fixture underneath its own test. The lesson this file
+# exists to teach, applied to the file itself: **a tag is a mutable pointer,
+# and a test pinned to one is not pinned.** Recreate with:
+#     docker tag <image id> mrln-test-fixture:wrong-commit
+_FIXTURE_IMAGE = "mrln-test-fixture:wrong-commit"
 _FIXTURE_SHA = "f1cbbbcfcab038cbdb559bc15278ca68e6f2a0ae"
 _OTHER_SHA = "98492c7265e084a19980f1486ddebfd477fa949b"
 
@@ -1035,6 +1197,68 @@ class TestTheWrapperTreatsUnverifiedAsFatal:
         # And it must be handled BEFORE the generic non-zero branch, or the
         # distinction exists in the verifier and is thrown away by the caller.
         assert text.index("$verifyExit -eq 2") < text.index("$verifyExit -ne 0")
+
+    def test_release_tags_are_opt_in_not_the_default(self):
+        """A validation build must not name a release.
+
+        With release tagging on by default, the first successful run applied
+        `:latest` and `:<version>` to a throwaway validation image — a local
+        `:latest` pointing at an unreleased commit, sitting next to a
+        `docker push`. Most builds are validation builds, so the safe branch
+        has to be the one you get by saying nothing.
+        """
+        text = _build_script()
+        assert re.search(r"\[switch\]\$ReleaseTags", text), (
+            "ReleaseTags must be a switch, so its default is OFF"
+        )
+        assert "if (-not $ReleaseTags)" in text
+        # The early exit must come BEFORE any tagging, or the default is safe
+        # in name only.
+        assert text.index("if (-not $ReleaseTags)") < text.index("docker tag $scratchTag $t")
+
+    def test_a_release_tag_is_refused_when_the_git_tag_names_another_commit(self):
+        """The invariant the version check was reaching for and missing.
+
+        `app.__version__` is read out of the image and compared to the version
+        being applied — both from the same tree, so within a bump window it
+        matches for every build by construction. On 2026-09-04 that
+        self-reference licensed `0.8.0-beta.1` onto an image 40 commits past
+        the public git tag of that name: two commits under one version.
+        """
+        text = _build_script()
+        assert "ls-remote --tags origin" in text, (
+            "the tag check must ask ORIGIN — a public tag is what makes the "
+            "name binding, and this checkout's tags are not authoritative"
+        )
+        assert "$lsExit -ne 0" in text, "a failed lookup must be distinguishable"
+        assert "UNDETERMINED is not the same as unclaimed" in text
+        # Annotated tags put the tag OBJECT on refs/tags/vX and the commit on
+        # refs/tags/vX^{}. Without the dereferenced form this compares a tag
+        # sha to a commit sha and refuses every build — broken in the safe
+        # direction is still broken.
+        assert r"\^\{\}" in text, "annotated tags are not dereferenced"
+
+    def test_the_tag_check_cannot_read_a_failed_lookup_as_unclaimed(self):
+        """The specific fail-open this replaced.
+
+        A local `git rev-list -n 1 v<version>` returns empty with exit 128 both
+        when the tag does not exist and when it exists but was never fetched —
+        measured, byte-identical — so on a fresh clone or a shallow CI checkout
+        (actions/checkout fetches no tags) the old form said "unclaimed" while
+        meaning "I could not look". Same class as a linter reporting clean on a
+        file it could not parse.
+        """
+        text = _build_script()
+        # Code only: the comment above the fixed lookup explains the old
+        # `rev-list` form and why it was wrong, so a whole-text match finds the
+        # explanation rather than the code.
+        code = _code_only(text)
+        assert "rev-list -n 1" not in code, (
+            "the local-only lookup is back; it cannot tell a missing tag from "
+            "an unfetched one"
+        )
+        # The refusal must precede the proceed-if-empty branch.
+        assert text.index("$lsExit -ne 0") < text.index("$tagCommit -ne ''")
 
     def test_a_missing_verifier_refuses_rather_than_skipping_the_check(self):
         text = _build_script()

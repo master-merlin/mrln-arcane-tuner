@@ -58,6 +58,24 @@ def _build_script() -> str:
     return BUILD_SCRIPT.read_text(encoding="utf-8")
 
 
+def _code_only(text: str) -> str:
+    """The script with comment lines removed.
+
+    Seven times in one session a matcher searching for a NAME matched the PROSE
+    about that name — and three of those were the comment written to justify
+    the very guard doing the matching. A guard that documents itself well is
+    the guard most likely to trip its own text search, which makes this the
+    normal case rather than the exceptional one.
+
+    So: assert against code, and let comments say whatever they need to. Where
+    the assertion is genuinely ABOUT the documentation (that a caveat is
+    present, say), match the full text deliberately instead.
+    """
+    return "\n".join(
+        ln for ln in text.splitlines() if not ln.lstrip().startswith("#")
+    )
+
+
 # ── behaviour ────────────────────────────────────────────────────────────
 
 
@@ -622,6 +640,13 @@ if [ "$1" = "-m" ] && [ "$2" = "uvicorn" ]; then
   code=$(echo "$STUB_CODES" | cut -d, -f$((n + 1)))
   if [ "$code" = "wait" ]; then
     trap 'echo term >> "$STUB_TERM_MARK"; exit 0' TERM
+    # Written AFTER the trap exists, and that ordering is the proof, not a
+    # margin: sh executes sequentially, so this file cannot appear before TERM
+    # is trappable. A caller that waits on it therefore cannot signal into the
+    # window where TERM would still take its default disposition.
+    # Named for the property it asserts, not for when it happens -- "ready" is
+    # exactly the word that let the original race exist.
+    echo trap_installed >> "$STUB_TRAP_READY"
     sleep 30 & wait $!
     exit 0
   fi
@@ -655,6 +680,7 @@ class _Supervised:
         self.record = tmp / "uvicorn_runs.txt"
         self.resolver_log = tmp / "resolver_calls.txt"
         self.term_mark = tmp / "term.txt"
+        self.trap_ready = tmp / "trap_ready.txt"
         self.bash = _bash()
         assert self.bash is not None  # requires_bash guards every caller
         env = dict(os.environ)
@@ -667,6 +693,7 @@ class _Supervised:
         env["STUB_RECORD"] = self.record.as_posix()
         env["STUB_RESOLVER_LOG"] = self.resolver_log.as_posix()
         env["STUB_TERM_MARK"] = self.term_mark.as_posix()
+        env["STUB_TRAP_READY"] = self.trap_ready.as_posix()
         self.env = env
         missing = _missing_commands(self.bash, env)
         if missing:
@@ -726,9 +753,19 @@ class TestEntrypointRelaunchesOnTheSentinel:
         and the container's exit code must be the server's, not 143."""
         sup = _Supervised(tmp_path)
         proc = sup.start("wait")
+        # Wait for the TRAP, not for the process. Waiting on the record file
+        # (i.e. "the stub started") was a race: the stub writes that line, then
+        # runs a forking command substitution, and only then installs the TERM
+        # handler. Signalling in that window killed the shell with TERM's
+        # default disposition, no marker was written, and the failure read "the
+        # server never received TERM" -- true, and pointing squarely at signal
+        # forwarding in the product when the fault was the test declaring
+        # readiness before readiness existed. A true message naming the wrong
+        # subject is worse than a vague one.
         deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and not sup.runs():
-            time.sleep(0.1)
+        while time.monotonic() < deadline and not sup.trap_ready.exists():
+            time.sleep(0.05)
+        assert sup.trap_ready.exists(), "the stub never installed its TERM trap"
         assert sup.runs(), "the server stub never started"
         # The stub recorded its parent's (msys) pid: the loop shell. Signalled
         # from a sibling bash because Python's send_signal on Windows is
@@ -876,9 +913,9 @@ class TestTheBuildWrapperCannotTagAnUnverifiedImage:
 
     def test_the_wrapper_never_pushes(self):
         """Publishing stays a separate, deliberate act (RULE-17 halt 4)."""
-        text = _build_script()
-        assert "docker push" not in text
-        assert "& docker push" not in text
+        code = _code_only(_build_script())
+        assert "docker push" not in code
+        assert "& docker push" not in code
 
     def test_the_build_log_and_argument_vector_are_written_to_disk(self):
         """The whole LANE-82 investigation existed because one build left no
@@ -905,8 +942,9 @@ class TestTheBuildWrapperCannotTagAnUnverifiedImage:
         to say so or a later reader will trust it to do the HEAD check's job."""
         text = _build_script()
         assert "app.__version__" in text
-        assert "would have passed that build in silence" in text, (
-            "the version check's limit must be stated where it is written"
+        assert "WEAK BY CONSTRUCTION" in text and "licensed a wrong tag" in text, (
+            "the version check's limit must be stated where it is written, or a "
+            "later reader trusts it to do the HEAD check's job"
         )
 
 
@@ -914,8 +952,17 @@ VERIFIER = REPO_ROOT / "docker-verify-commit.ps1"
 
 # The naturally-occurring fixture for this whole lane: a real image whose real
 # commit really differs from the one it was built with. Nobody constructed it,
-# which is exactly its value — DO NOT DELETE these images.
-_FIXTURE_IMAGE = "mastermerlin/mrln-arcane-tuner:0.8.0-beta.1"
+# which is exactly its value — DO NOT DELETE this image.
+#
+# Addressed by a DEDICATED IMMUTABLE TAG, not by the release tag it originally
+# carried. It first pointed at `mastermerlin/mrln-arcane-tuner:0.8.0-beta.1`,
+# and the first successful run of docker-build.ps1 moved that tag onto the
+# freshly built image — correctly, that is the wrapper's whole job — which
+# silently swapped this fixture underneath its own test. The lesson this file
+# exists to teach, applied to the file itself: **a tag is a mutable pointer,
+# and a test pinned to one is not pinned.** Recreate with:
+#     docker tag <image id> mrln-test-fixture:wrong-commit
+_FIXTURE_IMAGE = "mrln-test-fixture:wrong-commit"
 _FIXTURE_SHA = "f1cbbbcfcab038cbdb559bc15278ca68e6f2a0ae"
 _OTHER_SHA = "98492c7265e084a19980f1486ddebfd477fa949b"
 
@@ -1035,6 +1082,68 @@ class TestTheWrapperTreatsUnverifiedAsFatal:
         # And it must be handled BEFORE the generic non-zero branch, or the
         # distinction exists in the verifier and is thrown away by the caller.
         assert text.index("$verifyExit -eq 2") < text.index("$verifyExit -ne 0")
+
+    def test_release_tags_are_opt_in_not_the_default(self):
+        """A validation build must not name a release.
+
+        With release tagging on by default, the first successful run applied
+        `:latest` and `:<version>` to a throwaway validation image — a local
+        `:latest` pointing at an unreleased commit, sitting next to a
+        `docker push`. Most builds are validation builds, so the safe branch
+        has to be the one you get by saying nothing.
+        """
+        text = _build_script()
+        assert re.search(r"\[switch\]\$ReleaseTags", text), (
+            "ReleaseTags must be a switch, so its default is OFF"
+        )
+        assert "if (-not $ReleaseTags)" in text
+        # The early exit must come BEFORE any tagging, or the default is safe
+        # in name only.
+        assert text.index("if (-not $ReleaseTags)") < text.index("docker tag $scratchTag $t")
+
+    def test_a_release_tag_is_refused_when_the_git_tag_names_another_commit(self):
+        """The invariant the version check was reaching for and missing.
+
+        `app.__version__` is read out of the image and compared to the version
+        being applied — both from the same tree, so within a bump window it
+        matches for every build by construction. On 2026-09-04 that
+        self-reference licensed `0.8.0-beta.1` onto an image 40 commits past
+        the public git tag of that name: two commits under one version.
+        """
+        text = _build_script()
+        assert "ls-remote --tags origin" in text, (
+            "the tag check must ask ORIGIN — a public tag is what makes the "
+            "name binding, and this checkout's tags are not authoritative"
+        )
+        assert "$lsExit -ne 0" in text, "a failed lookup must be distinguishable"
+        assert "UNDETERMINED is not the same as unclaimed" in text
+        # Annotated tags put the tag OBJECT on refs/tags/vX and the commit on
+        # refs/tags/vX^{}. Without the dereferenced form this compares a tag
+        # sha to a commit sha and refuses every build — broken in the safe
+        # direction is still broken.
+        assert r"\^\{\}" in text, "annotated tags are not dereferenced"
+
+    def test_the_tag_check_cannot_read_a_failed_lookup_as_unclaimed(self):
+        """The specific fail-open this replaced.
+
+        A local `git rev-list -n 1 v<version>` returns empty with exit 128 both
+        when the tag does not exist and when it exists but was never fetched —
+        measured, byte-identical — so on a fresh clone or a shallow CI checkout
+        (actions/checkout fetches no tags) the old form said "unclaimed" while
+        meaning "I could not look". Same class as a linter reporting clean on a
+        file it could not parse.
+        """
+        text = _build_script()
+        # Code only: the comment above the fixed lookup explains the old
+        # `rev-list` form and why it was wrong, so a whole-text match finds the
+        # explanation rather than the code.
+        code = _code_only(text)
+        assert "rev-list -n 1" not in code, (
+            "the local-only lookup is back; it cannot tell a missing tag from "
+            "an unfetched one"
+        )
+        # The refusal must precede the proceed-if-empty branch.
+        assert text.index("$lsExit -ne 0") < text.index("$tagCommit -ne ''")
 
     def test_a_missing_verifier_refuses_rather_than_skipping_the_check(self):
         text = _build_script()

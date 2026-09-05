@@ -4,7 +4,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.8.0-beta.1` · PyTorch 2.12.1 local / 2.11.0 container · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
+`v0.8.0-beta.2` · PyTorch 2.12.1 local / 2.11.0 container · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
 
 **Author:** [master-merlin](https://github.com/master-merlin) · **Repository:** [github.com/master-merlin/mrln-arcane-tuner](https://github.com/master-merlin/mrln-arcane-tuner)
 
@@ -197,8 +197,8 @@ required:
 
 ```
 mastermerlin/mrln-arcane-tuner:latest             # rolling latest (CUDA 12.8 / cu128)
-mastermerlin/mrln-arcane-tuner:0.8.0-beta.1        # pinned version (CUDA 12.8 / cu128)
-mastermerlin/mrln-arcane-tuner:0.8.0-beta.1-cu126  # fallback for legacy R560–R565 drivers
+mastermerlin/mrln-arcane-tuner:0.8.0-beta.2        # pinned version (CUDA 12.8 / cu128)
+mastermerlin/mrln-arcane-tuner:0.8.0-beta.2-cu126  # fallback for legacy R560–R565 drivers
 ```
 
 The default image bundles **CUDA 12.8 (cu128) · PyTorch 2.11.0 · Python 3.12**
@@ -235,11 +235,11 @@ release tags only if it matches. A mismatch leaves the previous image holding
 $SHA = git rev-parse HEAD   # the full 40-char commit; a short sha is refused
 
 # Primary (cu128 — Blackwell + modern fleet). Takes the version tag and latest.
-.\docker-build.ps1 -GitSha $SHA -Variant cu128 -Version 0.8.0-beta.1 `
+.\docker-build.ps1 -GitSha $SHA -Variant cu128 -Version 0.8.0-beta.2 `
     -TokenPath <path-to-a-file-holding-a-github-token>
 
 # Fallback (cu126 — legacy R560–R565 drivers).
-.\docker-build.ps1 -GitSha $SHA -Variant cu126 -Version 0.8.0-beta.1 `
+.\docker-build.ps1 -GitSha $SHA -Variant cu126 -Version 0.8.0-beta.2 `
     -TokenPath <path-to-a-file-holding-a-github-token>
 ```
 
@@ -249,17 +249,17 @@ image holding them:
 
 | Variant | Tags applied on success |
 | ------- | ----------------------- |
-| `cu128` (default) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.1` and `mastermerlin/mrln-arcane-tuner:latest` |
-| `cu126` (fallback) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.1-cu126` |
+| `cu128` (default) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.2` and `mastermerlin/mrln-arcane-tuner:latest` |
+| `cu126` (fallback) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.2-cu126` |
 
 Add `-NoCache` for a build you intend to publish: the clone layer is the one
 that went wrong, and rebuilding it unconditionally removes the ambiguity at the
 cost of a long build. Pushing stays a separate, deliberate step:
 
 ```bash
-docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.1
+docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.2
 docker push mastermerlin/mrln-arcane-tuner:latest
-docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.1-cu126
+docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.2-cu126
 ```
 
 The commit must already be **pushed to the remote** — the build clones it, so a
@@ -275,7 +275,7 @@ script executing at build time**. For a build you intend to publish, pin it:
 # The published asset is a zstd tarball; the .tgz form no longer exists upstream.
 # Authoritative digests are in each release's sha256sum.txt.
 curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/ollama-linux-amd64.tar.zst | sha256sum
-.\docker-build.ps1 -GitSha $SHA -Variant cu128 -Version 0.8.0-beta.1 `
+.\docker-build.ps1 -GitSha $SHA -Variant cu128 -Version 0.8.0-beta.2 `
     -TokenPath <token-file> -OllamaVersion <tag> -OllamaSha256 <digest>
 ```
 
@@ -293,7 +293,7 @@ an earlier root-run container may need `chown -R 10001:10001` once.
   6000 Blackwell). The default image is built for **CUDA 12.8** (cu128) and
   needs an **R570+** host driver — standard on current cloud hosts and mandatory
   for Blackwell anyway. On a legacy host stuck on **R560–R565**, use the
-  `:0.8.0-beta.1-cu126` tag instead (no Blackwell support). Avoid CUDA 13 in the
+  `:0.8.0-beta.2-cu126` tag instead (no Blackwell support). Avoid CUDA 13 in the
   container: it needs R580+ and its forward-compat layer breaks cuBLAS on older
   drivers.
 - **Container image:** `mastermerlin/mrln-arcane-tuner:latest`

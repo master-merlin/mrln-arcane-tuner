@@ -1238,6 +1238,51 @@ class TestTheWrapperTreatsUnverifiedAsFatal:
         # direction is still broken.
         assert r"\^\{\}" in text, "annotated tags are not dereferenced"
 
+    def test_the_tag_lookup_ASKS_for_the_peeled_ref_not_just_parses_it(self):
+        """The assertion above is true and was not enough, which is the point.
+
+        `ls-remote` filters by ref NAME, and an annotated tag's peeled ref is
+        literally named ``refs/tags/vX^{}`` — a name the pattern ``refs/tags/vX``
+        does not match. So asking for one pattern returns exactly one line, the
+        tag OBJECT's sha, and the dereferencing parser never sees the commit
+        line it exists to prefer. **A parser cannot dereference a line the query
+        filtered out.**
+
+        Measured 2026-09-05 on the first annotated release tag this repository
+        has ever had: the cu128 build of `v0.8.0-beta.2` was refused with
+        "already denotes a different commit", comparing tag object `a76ed3a9`
+        against the image's `7048d66d` — the same tag. Truth table, both
+        queries against the real remote:
+
+            annotated  v0.8.0-beta.2  one pattern -> REFUSES   both -> agrees
+            lightweight v0.8.0-beta.1 one pattern -> agrees    both -> agrees
+
+        The second row is why two days passed with nobody noticing, and why the
+        test above passed the whole time: `v0.8.0-beta.1` is LIGHTWEIGHT, one
+        line that is already a commit, so the guard agreed for a reason that had
+        nothing to do with dereferencing. The first correctly annotated tag is
+        what exercised the path — and `/bump-version` only started producing
+        annotated tags because `--follow-tags` silently pushes nothing else.
+
+        The generalisation, and it is why this test exists next to its sibling
+        rather than replacing it: **a guard's INPUT is part of the guard.**
+        Reviewing the parsing half and reporting the item closed is what
+        happened here, in a release-audit entry, by me.
+        """
+        code = _code_only(_build_script())
+        lookup = [ln for ln in code.splitlines() if "ls-remote --tags origin" in ln]
+        assert lookup, "the tag lookup is gone entirely"
+        # The invocation may be wrapped across lines by a backtick continuation,
+        # so take the lookup line plus what follows it rather than that line alone.
+        idx = code.splitlines().index(lookup[0])
+        invocation = "\n".join(code.splitlines()[idx : idx + 3])
+        assert "^{}" in invocation, (
+            "the tag lookup asks origin for `refs/tags/v$Version` only, so the "
+            "peeled ref of an ANNOTATED tag is filtered out before the parser "
+            "ever sees it and the guard refuses every annotated release. Pass "
+            "both patterns: `refs/tags/v$Version` and `refs/tags/v$Version^{}`."
+        )
+
     def test_the_tag_check_cannot_read_a_failed_lookup_as_unclaimed(self):
         """The specific fail-open this replaced.
 

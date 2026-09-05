@@ -241,10 +241,28 @@ if (-not $ReleaseTags) {
 # Three outcomes, kept apart exactly as docker-verify-commit.ps1 keeps its own:
 # a line -> compare; empty with exit 0 -> genuinely unclaimed; non-zero exit ->
 # UNDETERMINED, which must refuse rather than proceed.
+#
+# BOTH ref patterns are passed, and that is load-bearing rather than belt-and-
+# braces. `ls-remote` filters by ref NAME, and the peeled ref of an annotated
+# tag is literally named `refs/tags/vX^{}`, which the pattern `refs/tags/vX`
+# does not match. Asking for `refs/tags/vX` alone therefore returns ONE line --
+# the tag OBJECT's sha -- and the dereferencing parser below never sees the
+# commit line it exists to prefer. Measured 2026-09-05 on the first annotated
+# release tag this repo has ever had: the cu128 build of `v0.8.0-beta.2` was
+# refused with "already denotes a different commit", comparing tag object
+# a76ed3a9 against the image's 7048d66d, which is the SAME tag.
+#
+# The parser was written for exactly this case and was reviewed and reported as
+# closing it. It could not, because a parser cannot dereference a line the
+# query filtered out -- and nothing caught it for two days, because
+# `v0.8.0-beta.1` was LIGHTWEIGHT: one line, already a commit, guard passes.
+# The first correct annotated tag is what exercised the path. Reading the code
+# is not running it; a guard's INPUT is part of the guard.
 $previousEap = $ErrorActionPreference
 $ErrorActionPreference = 'Continue'
 try {
-    $lsOut = & git -C $PSScriptRoot ls-remote --tags origin "refs/tags/v$Version" 2>&1
+    $lsOut = & git -C $PSScriptRoot ls-remote --tags origin `
+        "refs/tags/v$Version" "refs/tags/v$Version^{}" 2>&1
     $lsExit = $LASTEXITCODE
 } finally {
     $ErrorActionPreference = $previousEap

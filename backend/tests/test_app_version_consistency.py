@@ -94,6 +94,22 @@ _README_IMAGE_TAG = re.compile(r"mrln-arcane-tuner:([\w.+-]+)")
 #: too, so it is a real occurrence and must be checked like the others.
 _README_BARE_TAG = re.compile(r"`:(\d[\w.+-]*)`")
 
+#: The version handed to the documented build command as a CLI ARGUMENT:
+#: ``.\docker-build.ps1 -GitSha $SHA -Variant cu128 -Version 0.8.0-beta.2``.
+#:
+#: Added 2026-09-05. The 0.8.0-beta.2 bump moved the badge, all six image tags and
+#: the prose shorthand, left three of these reading ``0.8.0-beta.1``, and this file
+#: passed 27/27 — because every pattern above matches a version-SHAPED string
+#: (backticked ``v…``, ``name:…``) and this one is an ordinary command-line flag.
+#: The three surviving patterns agreed with each other and with the source of truth;
+#: nothing was inconsistent, the scan simply did not reach here.
+#:
+#: It is not cosmetic. A reader following the README builds an image LABELLED with
+#: the previous release — precisely the defect `docker-build.ps1`'s tag guard exists
+#: to prevent, arriving through the documentation, where that guard cannot see it:
+#: the operator is passing the wrong version deliberately, on the README's authority.
+_README_VERSION_ARG = re.compile(r"-Version\s+(\d+\.\d+\.\d+(?:-[A-Za-z][\w.]*)?)")
+
 #: A Docker build-variant suffix appended AFTER the version in an image tag.
 #: Stripped before comparing; it is not part of the version.
 _CUDA_VARIANT_SUFFIX = re.compile(r"-cu\d+$")
@@ -106,6 +122,8 @@ _CUDA_VARIANT_SUFFIX = re.compile(r"-cu\d+$")
 _MIN_BADGES = 1
 _MIN_IMAGE_TAGS = 6
 _MIN_BARE_TAGS = 1
+# Measured 2026-09-05: 3 `-Version <ver>` arguments (README lines 238, 242, 278).
+_MIN_VERSION_ARGS = 3
 
 # ── the scheme ─────────────────────────────────────────────────────────
 #: Permitted semver pre-release part: empty, ``beta``, ``beta.<N>``, ``rc.<N>``.
@@ -190,6 +208,7 @@ def collect_version_occurrences(
     badge_pattern: re.Pattern[str] = _README_BADGE,
     image_tag_pattern: re.Pattern[str] = _README_IMAGE_TAG,
     bare_tag_pattern: re.Pattern[str] = _README_BARE_TAG,
+    version_arg_pattern: re.Pattern[str] = _README_VERSION_ARG,
 ) -> list[tuple[str, str]]:
     """Every place the app version is written, as ``(label, value)`` pairs.
 
@@ -222,6 +241,10 @@ def collect_version_occurrences(
         occurrences.append(
             ("README.md `:<tag>` shorthand", _CUDA_VARIANT_SUFFIX.sub("", tag))
         )
+    for arg in version_arg_pattern.findall(readme):
+        # No `-cuNNN` strip here: the build variant is a separate `-Variant` flag,
+        # so anything trailing the version in this position is part of the version.
+        occurrences.append(("README.md docker-build.ps1 -Version argument", arg))
     return occurrences
 
 
@@ -246,6 +269,13 @@ def _assert_not_vacuous(occurrences: list[tuple[str, str]]) -> None:
     assert bare_tags >= _MIN_BARE_TAGS, (
         f"README bare `:<tag>` scan found {bare_tags} occurrence(s), expected at least "
         f"{_MIN_BARE_TAGS}. The prose shorthand moved or the pattern drifted."
+    )
+    version_args = sum(1 for label, _ in occurrences if "-Version argument" in label)
+    assert version_args >= _MIN_VERSION_ARGS, (
+        f"README `-Version <ver>` scan found {version_args} occurrence(s), expected at "
+        f"least {_MIN_VERSION_ARGS}. The documented build commands moved or the pattern "
+        "drifted -- and a stale version HERE tells a reader to build an image labelled "
+        "with the previous release."
     )
 
 

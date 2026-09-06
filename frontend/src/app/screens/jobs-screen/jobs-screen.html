@@ -117,7 +117,7 @@
                         <div class="kpi-viz"><div class="bar lg"><i [style.width.%]="progressPct()"></i></div></div>
                     </app-kpi-tile>
 
-                    <app-kpi-tile label="Loss" [value]="lossLabel()" accent="success" [compact]="true">
+                    <app-kpi-tile label="Loss (raw)" [value]="lossLabel()" accent="success" [compact]="true">
                         @if (status(); as st) {
                             <div class="kpi-status"
                                  [class.success]="st.tone === 'success'"

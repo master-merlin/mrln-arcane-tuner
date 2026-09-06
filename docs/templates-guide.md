@@ -2,7 +2,7 @@
 
 A **template** is a saved configuration you reuse instead of re-deciding it every
 time: a captioning system prompt, a set of masking parameters, a full training
-config for one model family, or a set of adaptive-targeting knobs. Once you have
+config for one model definition, or a set of adaptive-targeting knobs. Once you have
 one client's caption style, training settings and layer-targeting preference set
 up the way they want it, the next dataset from that client reuses all of it —
 nothing has to be re-decided.
@@ -19,7 +19,9 @@ import.
   Global or scoped to one project, in one filterable list.
 - Save the settings you just tuned as a new template, right where you tuned
   them (captioning/masking on the Datasets tab, training and adaptive targeting
-  on the Training screen) — no separate "create template" flow.
+  on the Training screen, or a training template from a job's resolved
+  config on the [Jobs screen](jobs-guide.md)) — no separate "create
+  template" flow.
 - **Branch** a Global or another project's template into the project you have
   open, so you can tweak it there without touching the original.
 - Edit any template in place — captioning and masking through the same settings
@@ -52,9 +54,15 @@ Every template belongs to exactly one domain, and belongs either to no project
   it into your own copy first.
 
 Every template also carries a `readonly` flag (a factory default you cannot
-delete, only branch or copy from) and an `is_default` flag (the one applied
-automatically when nothing else is chosen). A `branched_from` marker shows on
-any template created by branching another one.
+delete, only branch or copy from). Caption, mask and training templates add
+an `is_default` flag — the one applied automatically when nothing else is
+chosen. Adaptive is the exception: its three factory presets carry
+`is_default = 0` (they're identified as factory rows by `readonly`, not by
+being a default), and the preset you pick is recorded in the run's own
+config rather than flagged as a domain-wide default — so `is_default` is a
+per-domain idea, not a guarantee every template row has meaningfully set. A
+`branched_from` marker shows on any template created by branching another
+one.
 
 ![Templates screen listing captioning, masking, training and adaptive-targeting templates, Global and per-project](images/templates-screen-overview.png)
 
@@ -81,8 +89,9 @@ search across name, definition and model. Each row's actions:
   presets, which have no dialog of their own, open the JSON editor.
 - **Edit JSON** — the raw JSON editor, for any domain: name, `config`, and the
   domain-specific fields (`system_prompt` + `wildcard` for captioning,
-  `model_id`, `definition_id`). Server-managed fields (id, timestamps,
-  `readonly`, `is_default`, `used_count`) are not editable here. Invalid JSON
+  `model_id`, `definition_id`). Server-managed identity, scope and provenance
+  fields — id, timestamps, `readonly`, `is_default`, `used_count`,
+  `project_id` and `branched_from` — are not editable here. Invalid JSON
   blocks Save.
 - **Branch** — copies the template into the project you currently have open
   (disabled with no project scoped). Branching a read-only factory row is how
@@ -93,8 +102,10 @@ search across name, definition and model. Each row's actions:
 The header's **Refresh** button re-pulls the list (picks up templates or
 projects created elsewhere since the screen loaded); **Export all** — its
 label carries the live count, e.g. "Export all (42)" — downloads every
-template that currently matches your filters as one bundle; **Import** opens
-the same import wizard the Datasets and Projects screens use.
+template that currently matches your filters as one `templates-bundle.zip`
+(a different file from the single-template `.template.zip` a row's own
+**Export** produces); **Import** opens the same import wizard the Datasets
+and Projects screens use.
 
 ## Creating and editing templates where you use them
 
@@ -115,10 +126,15 @@ you are already tuning the setting, and they show up in the library afterward:
   default template instead creates (once) or reuses a per-definition "Default
   by User" copy in the current project, so the factory default itself is
   never overwritten.
+- **Jobs** — a training job's Run Config panel has its own **Save as
+  Template** action, which captures that job's resolved config into a new
+  reusable training template without re-opening the original Training form —
+  see the [Jobs guide](jobs-guide.md#run-config).
 - **Adaptive targeting** — the Adaptive Layer Targeting card's **Preset**
   dropdown seeds the knobs below it; editing any knob after picking a
   read-only factory preset branches it into your own copy automatically (you
-  do not need to press Branch yourself). A preset only seeds values at
+  do not need to press Branch yourself) — into the project you currently have
+  open if one is scoped, or Global if none is. A preset only seeds values at
   selection time — the job stores the knobs themselves, so editing a preset
   later never changes a run that already queued.
 
@@ -126,15 +142,29 @@ you are already tuning the setting, and they show up in the library afterward:
 
 ## Export and import
 
-**Export** (per-row, or "Export all" for everything matching the current
-filter) downloads a `.template.zip` bundle. **Import** accepts that bundle, a
-dataset zip, or a full project export — the wizard detects which kind it is.
-Importing a template bundle first shows an import **plan**: one row per
-template in the bundle, flagging a duplicate name, a model definition that is
-missing/invalid on this install, or one that is installable — before anything
-is created. You choose, per entry, to create it or skip it; a missing
-definition can be installed as part of applying the plan. Nothing is created
-until you confirm the plan.
+**Export** (per-row) downloads a single `.template.zip`; **Export all**
+downloads a `templates-bundle.zip` covering everything matching the current
+filter. **Import** accepts either kind of template archive, a dataset zip,
+or a full project export — the wizard detects which kind it is. Importing a
+template archive first shows an import **plan**: one row per template in
+the archive, flagging a duplicate name, a model definition that is
+missing/invalid on this install, or one that is installable — before
+anything is created.
+
+Not every flag on that plan blocks creation. A duplicate name or a genuinely
+missing, uninstallable definition is a **blocker** — that entry can only be
+skipped. An invalid or borderline config value (an adaptive knob set that
+fails validation, say) surfaces as a non-blocking warning instead: the entry
+still defaults to "create," and you decide whether to skip it or accept the
+warning and let it in as-is. Two other checkboxes can appear per entry, and
+they answer different questions: **Install carried definition** appears
+when the model definition itself is missing but installable, and installs
+it as part of applying the plan; **Use this machine's source** appears
+separately, when a component the archive references by a local file path
+from the exporting machine has a Hugging Face equivalent available, and
+substitutes that instead of the (almost certainly absent) original path.
+You choose, per entry, to create or skip it; nothing is created until you
+confirm the plan.
 
 ## Recipes
 
@@ -149,17 +179,19 @@ same project. The caption template, masking template, training templates (one
 per model definition) and adaptive preset are already there — nothing to
 re-configure, you just start captioning and training.
 
-**Move a template to another machine.** Export it (or "Export all" filtered to
-one project) from `/templates`, carry the `.template.zip`, and import it on the
-other install. The import plan tells you before you commit whether a model
-definition needs installing or a name will collide.
+**Move a template to another machine.** Export it (a `.template.zip`), or
+"Export all" filtered to one project (a `templates-bundle.zip`), from
+`/templates`, carry the file over, and import it on the other install. The
+import plan tells you before you commit whether a model definition needs
+installing or a name will collide.
 
 ## What survives an update
 
 Templates live in the same SQLite database as everything else — an update to
-the app does not touch them. The three factory adaptive-targeting presets are
-reseeded read-only; any template you branched or created of your own is
-untouched.
+the app does not touch them. The three factory adaptive-targeting presets
+are seeded once, when missing — an update never overwrites an existing
+factory row, even if that row's own contents changed since; any template you
+branched or created of your own is untouched either way.
 
 ## Where things live
 
@@ -168,3 +200,7 @@ Every template is a row in the app's database, scoped by domain, project (or
 about a template writes to your dataset folders — applying one only changes
 what the next captioning run, masking run, training run or adaptive-targeting
 configuration uses.
+
+A template's own home is one project, or Global — for the workspace that
+gathers templates and datasets together into one client's setup, see the
+[Projects guide](projects-guide.md).

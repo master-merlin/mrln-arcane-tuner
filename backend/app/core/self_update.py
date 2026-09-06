@@ -338,7 +338,31 @@ class SelfUpdateService:
 
             shutil.rmtree(served_old, ignore_errors=True)
             if os.path.isdir(served):
-                os.rename(served, served_old)
+                # `shutil.move`, not `os.rename`, and only for THIS step.
+                # Measured inside a container 2026-09-06, with a control:
+                #
+                #   os.rename  a dir that came from the image  -> EXDEV (18)
+                #   os.rename  a dir created at runtime        -> OK
+                #   shutil.move a dir that came from the image -> OK
+                #
+                # overlayfs cannot move a whole directory from a lower layer
+                # into the upper one unless the kernel's `redirect_dir` is
+                # enabled, and it is off by default — so the rename fails with
+                # "Invalid cross-device link" even though source and target are
+                # the same directory. `served` is precisely such a directory on
+                # a container's FIRST self-update: baked in by
+                # `COPY --from=frontend` and never written since. This is not a
+                # container-wide ban on renaming directories, which is why the
+                # line below still uses os.rename: `served_new` was created by
+                # the copytree above, at runtime, so it renames normally.
+                # (It is also why the failure is invisible everywhere it is
+                # cheap to look — a second update, a plain filesystem, CI.)
+                #
+                # shutil.move degrades to copytree+rmtree for that one case,
+                # and the copy runs BEFORE anything is deleted, so a failure
+                # here still leaves the live build serving — the property the
+                # `.new` staging exists for, preserved on the new path.
+                shutil.move(served, served_old)
             os.rename(served_new, served)
             shutil.rmtree(served_old, ignore_errors=True)
 

@@ -114,6 +114,17 @@ _README_VERSION_ARG = re.compile(r"-Version\s+(\d+\.\d+\.\d+(?:-[A-Za-z][\w.]*)?
 #: Stripped before comparing; it is not part of the version.
 _CUDA_VARIANT_SUFFIX = re.compile(r"-cu\d+$")
 
+#: The tags that deliberately do NOT carry a version, and are therefore exempt
+#: from the agreement check. `latest` was the only one until 2026-09-06, when
+#: every variant gained a moving pointer (`latest-cu126`, `latest-cu128`) so a
+#: cu126 host could follow its line instead of being repointed by hand at each
+#: release. This guard caught that change the moment the README documented it,
+#: which is the behaviour we want — so it is written as an ANCHORED pattern for
+#: exactly `latest` optionally plus a `-cuNNN` variant, never as "skip anything
+#: that does not look like a version". A loose exemption here would let a real
+#: typo (`:lastest`, `:0.8.O-beta.2`) pass as intentionally floating.
+_FLOATING_TAG = re.compile(r"latest(?:-cu\d+)?")
+
 # Measured on this tree (2026-08-30, README.md at 0.7.9-beta): 1 badge,
 # 6 version-bearing image tags (lines 194, 195, 222, 223, 229, 230 — line 222's
 # second tag is `:latest` and is excluded), 1 bare shorthand (line 262).
@@ -232,7 +243,7 @@ def collect_version_occurrences(
     for badge in badge_pattern.findall(readme):
         occurrences.append(("README.md `v<version>` badge", badge))
     for tag in image_tag_pattern.findall(readme):
-        if tag == "latest":
+        if _FLOATING_TAG.fullmatch(tag):
             continue  # a floating tag, deliberately not version-pinned
         occurrences.append(
             ("README.md mrln-arcane-tuner:<tag> image tag", _CUDA_VARIANT_SUFFIX.sub("", tag))

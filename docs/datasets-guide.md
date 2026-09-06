@@ -16,10 +16,11 @@ that guard anything permanent.
 
 - Bring a dataset in and take it out again whole: scan a folder of images into
   a dataset (each image matched to its `.txt` caption automatically), import a
-  `.zip` — a plain archive of images, or a portable archive another install
-  exported — and export any dataset as that same portable archive. Import is
-  described under [New Dataset / Import](#new-dataset--import); export and what the
-  archive carries under [Move on — export](#move-on--export-train-and-where-the-lora-lands).
+  portable archive this app (or another install of it) exported, and export
+  any dataset as that same portable archive. Import is described under
+  [New Dataset / Import](#new-dataset--import); export and what the archive
+  carries under
+  [Move on — export](#move-on--export-train-and-where-the-lora-lands).
 - Generate captions with a local vision model, an OpenAI-compatible API, or
   refine existing captions with a local LLM (Ollama) — one image or the whole
   dataset.
@@ -53,7 +54,10 @@ Six tiles, each aggregated over the datasets currently visible (scope +
 search + filters all narrow this, so the tiles change as you filter):
 
 - **DATASETS** — count in scope.
-- **IMAGES** — total media files across those datasets.
+- **IMAGES** — total media files across those datasets. The label says
+  "images" but the count includes video and audio media too; unless a
+  paragraph in this guide says an operation is image-only, "image" in a
+  count or header means any media entry.
 - **CAPTIONED** — total files with a caption.
 - **MASKED** — total files with a mask.
 - **CACHED** — datasets with a training cache (latents / text embeddings) on
@@ -62,9 +66,12 @@ search + filters all narrow this, so the tiles change as you filter):
   once at startup; while it is running the tile honestly says "calculating"
   rather than showing a placeholder zero.
 - **HPS — MEDIAN** — median HPSv2 quality score across visible datasets, with
-  a mini-histogram and range. Scores cluster around 0.2–0.3; a score below
-  0.27 counts as "low" everywhere in this screen (the Low HPS filter and the
-  histogram tone both use that threshold).
+  a mini-histogram and range, for the images that have a score. Scoring is
+  skipped when HPSv2 isn't available and tolerated if it fails on a given
+  image, so this is a median of eligible images, not a guaranteed per-image
+  value. A score below 0.27 counts as "low" everywhere in this screen (the
+  Low HPS filter and the histogram tone both use that threshold) — treat
+  0.27/0.24 as this app's review bands, not a universal quality scale.
 
 ### Search, filters and sort
 
@@ -136,9 +143,13 @@ wording reflects that.
 ### New Dataset / Import
 
 **New Dataset** opens the dataset form to create an empty dataset (you add
-files afterward). **Import Dataset** accepts a `.zip` either uploaded from
-the browser or already sitting on the server's filesystem (path mode); on a
-name collision it offers Rename or Overwrite instead of just failing.
+files afterward). **Import Dataset** accepts this app's own portable dataset
+archive — a `.zip` carrying a `manifest.json` with `kind: "dataset"`, whether
+uploaded from the browser or already sitting on the server's filesystem (path
+mode) — and on a name collision it offers Rename or Overwrite instead of just
+failing. A plain zip of loose images without that manifest is rejected; bring
+loose files in by creating a dataset and uploading them, or by dropping a
+folder under the app's `datasets/` directory and running a rescan.
 
 #### Dataset form (Create / Edit)
 
@@ -149,7 +160,7 @@ name collision it offers Rename or Overwrite instead of just failing.
 | **Name** | Letters, digits, space, `-`, `_` | Forbidden characters (`< > : " / \ | ? *`) are rejected inline; the sanitized name is also checked against existing dataset names so `"Foo (bar)"` and `"Foo bar"` are treated as the same folder name. |
 | **Type** | Standard / Edit (paired) | Standard = single training images. Edit is for image-edit models (Kontext, Qwen-Edit): a `control/` folder holds the "before" image, matched by filename, and captions describe the edit rather than the subject. |
 | **Category** | A standard list (vehicle / person / style / object / landscape), a previously-used category, or a typed custom one | Purely organizational — drives the "+ Filter" category chips. |
-| **Trigger word** | Free text, or generated from the dataset name via the wand button | The token baked into captions for LoRA activation. |
+| **Trigger word** | Free text, or generated from the dataset name via the wand button | Stores the activation token so caption and training controls can reuse it. Creating or editing this field does not rewrite existing captions — you still add the token to a caption yourself, or as part of a captioning run. |
 | **Tags** | Free-form chips, comma or Enter to confirm | |
 | **Description / Notes** | Free text | Notes are meant for training hints (LR, rank, prompt tips) — internal, not used by the trainer. |
 
@@ -172,7 +183,9 @@ scroll position), not a separate route.
 
 Above the grid (not pictured — the frame starts below it): a top bar with the
 dataset's name, version (click the version tag to bump the MAJOR version; the
-pencil opens a manual version editor), a "ready for training" count when the
+pencil opens a manual version editor; ordinary edits also bump the PATCH
+version automatically, once per workspace session, and a change in media
+count bumps MINOR), a "ready for training" count when the
 active model definition can tell you one, the project-membership pill, the
 active project/model-context switcher, and — always available regardless of
 mode — **Analyze**, **Cache** (disabled with "No cache data" until the
@@ -297,9 +310,9 @@ cluster" / "Review all") (see [Analyze](#analyze) below) — opens a cluster of
 the original
 image plus every near-duplicate the similarity search found, each tagged
 with its similarity percentage and a higher-res / lower-res / same-res badge
-against the original. **Delete** on a card is permanent: the image, its
-caption and any mask are removed from disk immediately, no confirm beyond
-the button itself — the modal's footer says so. Use it to thin out
+against the original. **Delete** on a card opens a confirmation; confirming
+removes the image, its caption and any mask from disk permanently. Use it to
+thin out
 near-duplicate bursts (a burst-mode shoot, or the same subject re-captioned)
 without the mask/caption editing detour the grid would otherwise want.
 
@@ -363,10 +376,12 @@ tile so you never have to leave the grid to see them.
 
 ### HPS quality score
 
-Every image gets an HPSv2 aesthetic score, **but only as a side effect of a
-rescan** — there's no separate "score this dataset" button, so a freshly
-imported dataset shows no HPS pill until its first rescan runs (Full or
-Incremental both score). Once scored, each tile carries an **HPS** pill in
+An image gets an HPSv2 aesthetic score when HPSv2 is available and scoring
+succeeds, **and only as a side effect of a rescan** — there's no separate
+"score this dataset" button, so a freshly imported dataset shows no HPS pill
+until its first rescan runs (Full or Incremental both score). A skipped or
+failed score just leaves the pill absent for that tile, not an error you have
+to act on. Once scored, each tile carries an **HPS** pill in
 its header band, colour-coded to the same bands the Low-HPS filters use:
 
 | Score | Colour |
@@ -407,6 +422,11 @@ exclude anything you're unsure about, come back to it later, and use
 **Enable all** in the Browse toolbar as the bulk undo. The **Excluded** filter
 chip isolates everything currently skipped so a pass doesn't get lost in the
 full grid.
+
+Deleting an audio entry removes its caption, masks, masked derivatives,
+control slots and overlay data, but not a separate `<stem>.lyrics.txt` file —
+don't rely on Delete entry for complete cleanup of an audio item's lyrics
+sidecar yet.
 
 ### Reading the two review surfaces together
 
@@ -452,7 +472,11 @@ both queued as a background task you can watch progress on:
   dataset (plus captions, masks, masked copies and control images) to a
   canonical `<slugified-dataset-name>_00001.jpg` sequence (e.g. "Porsche 918
   Spyder" → `porsche_918_spyder_00001.jpg`). **It does not resize or crop
-  pixels** — that is what Crop all is for. Audio pairs are left untouched.
+  pixels** — that is what Crop all is for. Harmonize and Crop all are both
+  image-oriented: audio entries are left untouched, and a video entry can
+  fail its conversion and be skipped mid-run without failing the whole task —
+  expect a mixed-media dataset to need a follow-up look at anything the task
+  reports as skipped.
 
   ![Harmonize confirm dialog](images/harmonize-confirm.png)
 
@@ -483,9 +507,14 @@ variant captions, not the general caption.
 ![Analyze modal — Caption tab](images/analyze-modal-caption.png)
 
 Read this tab after a caption pass, before training: a tall Orphan-tags list
-usually means a typo or a one-off tag worth folding into an existing one, and
-a non-empty Contradictions list is the caption vocabulary disagreeing with
-itself (e.g. both `red_car` and `blue_car` on visually identical crops).
+usually means a typo or a one-off tag worth folding into an existing one.
+Contradictions is a small same-caption vocabulary lint, not a visual-
+consistency detector — it does not inspect pixels, and it only flags a
+caption that names both halves of one of four fixed opposite pairs:
+day/night, indoor/outdoor, summer/winter, smiling/frowning. A non-empty
+result means one caption's words disagree with each other, worth a manual
+look; it will not catch a broader color or style inconsistency across the
+dataset.
 
 ### Rescan
 
@@ -497,11 +526,12 @@ Two modes:
 
 - **Incremental Scan** ("safe") — detects new and removed files; keeps
   captions, masks and HPS scores.
-- **Full Rescan** — recomputes hashes, HPS and metadata; cached entries
-  (latents / text embeddings) are dropped and will be rebuilt at next
-  training. Captions and mask files are never deleted by either mode. Full
-  Rescan can take several minutes on a large dataset and runs as a background
-  task — closing the modal does not cancel it.
+- **Full Rescan** — recomputes media hashes, HPS and metadata from scratch.
+  It does not delete the training cache (latents / text embeddings) — use
+  **Cache administration** below if you want that space back. Captions and
+  mask files are never deleted by either mode. Full Rescan can take several
+  minutes on a large dataset and runs as a background task — closing the
+  modal does not cancel it.
 
 ### Cache administration
 
@@ -515,7 +545,7 @@ Shows disk usage broken down by **model → version → cache type**
 te2, etc.), so you can clear exactly the version or type you no longer need
 instead of wiping the whole `.cache/` folder. Every purge is behind its own
 confirm dialog and cannot be undone — the cache rebuilds automatically the
-next time you train or analyze, just not for free.
+next time a training run prepares this dataset, just not for free.
 
 ### Mass caption
 
@@ -662,8 +692,10 @@ forward: take it out of the app, or take it into a training run.
 
 ### Export — a portable archive
 
-**Download as zip** (Library card actions, above) streams a plain zip of the
-files as they sit on disk — no manifest, just the folder contents. **Export
+**Download as zip** (Library card actions, above) streams the dataset's
+source and sidecar files without a manifest — the derived `.cache` and
+`.thumbnails` folders are omitted, same as the portable export below; the
+difference between the two is the manifest, not what's included. **Export
 (portable zip + metadata)** is the one you want for round-tripping into
 another install or another machine: it's a single click with no picker, and
 it packages the dataset's own folder — images, captions (both the general
@@ -725,9 +757,9 @@ embeddings are, and they regenerate automatically.
 
 Captions, masks, tags, categories, trigger words, notes, dataset version
 numbers and pinned covers are stored in the app's own database and dataset
-folders — an app update never touches them. A **Full Rescan** intentionally
-drops the training cache (latents/text embeddings), which is expected to
-regenerate; it never drops captions or masks.
+folders — an app update never touches them. A **Full Rescan** recomputes
+media metadata but does not purge the training cache; use Cache
+administration for that. Neither rescan mode drops captions or masks.
 
 ## Where things live
 
@@ -738,4 +770,9 @@ specific model-family variant rather than the general one). Masks and their
 matching masked-variant captions share one `masked/` subfolder
 (`masked/<stem>.png` and `masked/<stem>.txt`); control images (for Edit-kind
 datasets) and the training cache each have their own subfolder inside the
-dataset directory — nothing here reaches outside the dataset's own folder.
+dataset directory. The media, captions, masks, controls, overlays and
+training cache described in this guide all stay under the dataset's own
+folder — the dataset's metadata (name, category, trigger word, tags,
+description, notes, version) lives separately in the app's own database, and
+auxiliary models used while editing (captioning, masking) keep their own
+storage outside any dataset.

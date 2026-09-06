@@ -1942,3 +1942,97 @@ class TestTheAccessTokenIsNeverThePublishedPlaceholder:
             f"fell through to a token after generation failed: {effective!r}\n{out}"
         )
         assert "ERROR" in out, f"the failure was silent:\n{out}"
+
+
+# -- Release tags: every variant needs a pinned name AND a moving pointer -----
+#
+# Asked for by the user on 2026-09-06, after publishing v0.8.0-beta.2: cu126
+# shipped only `:<version>-cu126`. That is pinnable but not FOLLOWABLE -- a
+# cu126 user had to read the release notes to learn each new version string,
+# while cu128 users just followed `:latest`. `:latest-<variant>` closes it.
+#
+# Writing that guard turned up a second thing nobody had noticed: the
+# `-ReleaseTags` help text has always advertised `:<version>-cuNNN`, and for
+# cu128 the code never produced it -- the cu128 branch REPLACED the tag list
+# rather than adding to it. Documentation promising a tag the code does not
+# create is the same shape as a comment asserting a mechanism that never runs,
+# so the third test below compares the help text against the code instead of
+# trusting either one alone.
+
+
+def _release_tag_set(code: str, variant: str) -> set[str]:
+    """The tags docker-build.ps1 applies for *variant*, by substitution.
+
+    Parsed from the source rather than hard-coded here, so this cannot drift
+    into asserting what the test wishes were true.
+    """
+    base = re.search(r"^\$tags = @\((.+?)\)$", code, re.M)
+    assert base, "could not find the base $tags assignment"
+    branch = re.search(
+        r"if \(\$Variant -eq 'cu128'\) \{\s*\$tags \+= @\((.+?)\)\s*\}", code, re.S
+    )
+    assert branch, (
+        "the cu128 branch must ADD to $tags with `+=`. A plain `=` there drops "
+        "the variant-suffixed names the -ReleaseTags help text promises."
+    )
+
+    exprs = list(re.findall(r'"([^"]+)"', base.group(1)))
+    if variant == "cu128":
+        exprs += re.findall(r'"([^"]+)"', branch.group(1))
+    return {
+        e.replace("${Repository}", "R")
+        .replace("$Version", "V")
+        .replace("$Variant", variant)
+        for e in exprs
+    }
+
+
+class TestEveryVariantHasBothAPinnedNameAndAMovingPointer:
+    def test_cu126_can_be_followed_not_only_pinned(self):
+        tags = _release_tag_set(_code_only(_build_script()), "cu126")
+        assert "R:V-cu126" in tags, "cu126 lost its pinnable version tag"
+        assert "R:latest-cu126" in tags, (
+            "cu126 has no moving pointer: nothing to `docker pull` for 'the "
+            "current cu126 image' without knowing the version string"
+        )
+
+    def test_cu128_keeps_the_unsuffixed_names_it_already_published(self):
+        tags = _release_tag_set(_code_only(_build_script()), "cu128")
+        # Tags are a public surface: this set may grow, never shrink. Both of
+        # these are already on the hub and pinned from our own README.
+        assert "R:V" in tags
+        assert "R:latest" in tags
+        # And the explicit ones, so cu128 is nameable as a variant too.
+        assert "R:V-cu128" in tags
+        assert "R:latest-cu128" in tags
+
+    def test_the_ReleaseTags_help_text_and_the_code_name_the_same_tags(self):
+        """The help text is documentation ABOUT the code, so compare them.
+
+        It promised `:<version>-cuNNN` for both variants while the cu128 branch
+        produced neither that nor `:latest-cu128`. Nothing failed; the text was
+        simply not true, and a reader had no way to tell.
+        """
+        script = _build_script()
+        code = _code_only(script)
+        help_text = re.search(
+            r"# Claim the release tags\.(.+?)# a validation build", script, re.S
+        )
+        assert help_text, "the -ReleaseTags help text moved; re-anchor this guard"
+        blurb = help_text.group(1)
+
+        documented = {
+            t.replace("<version>", "V").strip()
+            # No '.' in the class: it is a sentence separator here, and
+            # including it swallowed the trailing period of ":latest-cu128."
+            for t in re.findall(r":[<>\w-]+", blurb)
+        }
+        produced = {
+            tag.split(":", 1)[1]
+            for v in ("cu128", "cu126")
+            for tag in _release_tag_set(code, v)
+        }
+        documented = {d.lstrip(":") for d in documented}
+        assert documented == produced, (
+            f"help text says {sorted(documented)}, code produces {sorted(produced)}"
+        )

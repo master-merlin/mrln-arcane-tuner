@@ -2,7 +2,7 @@
 
 A project is a reusable way of working, not a folder for one LoRA. The thing
 that makes it durable is configuration, not data: branch a caption template,
-a mask template, and a training template per model family into a project
+a mask template, and a training template per model definition into a project
 once, tuned to how a particular client or subject wants their LoRAs done, and
 those branches stay put in the project's own template rows independent of
 any dataset. Datasets pass through — link one in, train from it, unlink it
@@ -17,16 +17,18 @@ dataset in and nothing else has to be re-decided.
 - Branch a global caption/mask/training/adaptive-targeting template into the
   project so it's tuned for this client or subject without touching the
   shared original — and keep more than one training template per project
-  (one per model family you train this client against; templates are keyed
-  by project **and** model definition, so they don't collide).
+  (one per model **definition** you train this client against; a training
+  template is keyed to a concrete definition, not the broader family, so two
+  definitions that share a family don't collide).
 - Create a project, link one or more existing datasets to it (or create a
   dataset directly inside it), and everything downstream — Training, Quick
   Train, the Analyze panel — can be scoped to just that project instead of
   your whole library.
-- Launch a training run in three steps from a project's Quick Train tab
-  without leaving the page, picking up whichever branched template already
-  matches the dataset's model family, or hand the same picks to the full
-  Training screen for finer control.
+- Launch a training run in three stages from a project's Quick Train tab
+  without leaving the page: choose one or more linked dataset rows and a
+  project training template independently (the template is what supplies
+  the definition — there's no automatic dataset-to-family matching), or hand
+  the same picks to the full Training screen for finer control.
 - Export a project (its branched templates plus its datasets, chosen
   per-dataset as embedded / referenced / excluded) as one portable zip, and
   import it — or a lone dataset zip, or a lone template zip — back in through
@@ -83,9 +85,10 @@ destructive style) and opens the same confirm dialog described below.
 Opens at `/projects/:id` (click a card, or navigate to a project from the
 scope switcher). The header repeats the project's color, initials and name,
 its raw id, and four actions: **Export project**, **Import into project**
-(the same wizard as the Projects-screen Import button, but pre-scoped so
-imported templates and datasets land in this project), **Edit project**, and
-**Delete project**. Below that, a five-cell stat strip: **Datasets**,
+(the same wizard as the Projects-screen Import button, but what "into this
+project" actually scopes depends on the archive kind — see
+[Export, import and delete](#export-import-and-delete)), **Edit project**,
+and **Delete project**. Below that, a five-cell stat strip: **Datasets**,
 **Templates** (caption · mask · training · adaptive, summed), **Active jobs**,
 **Runs** (this project's job history count) and **Updated**.
 
@@ -133,9 +136,10 @@ never mutates the global original).
 
 ![Quick Train — pick a dataset, pick a project training template, name and launch](images/projects-quick-train.png)
 
-A three-step guided flow for firing off a run without the full Training
-screen: **① pick a dataset** linked to this project (via the same
-schema-driven datasets form the Training screen uses), **② pick a project
+A three-stage guided flow for firing off a run without the full Training
+screen: **① pick a dataset** linked to this project — the same schema-driven
+datasets form the Training screen uses, so it accepts more than one dataset
+row with its own per-row settings, not just a single dataset — **② pick a project
 training template** (with a live estimate panel once one and a dataset are
 both chosen), **③ name and launch** — LoRA prefix/suffix with a wand button
 that derives them from the dataset, a LoRA name field that supports
@@ -163,12 +167,34 @@ name>.project.zip`.
 
 **Import** (Projects-screen header, or a project's own **Import into
 project**) accepts a dataset zip, a template-bundle zip, or a full project
-zip, and detects which one it is from the archive's contents. A project
-import shows you what it's about to create — new templates (renameable, with
-per-entry "skip if a definition it needs isn't installed" and similar
-guards), linked or missing dataset references, and a name-conflict choice
-(**Rename** or **Overwrite**) for the project itself and, separately, for any
-dataset name collision.
+zip, and detects which one it is from the archive's contents — but "into
+this project" only applies to one of the three, so what actually happens
+depends on which kind you drop in:
+
+- **A standalone template archive** is the only kind the currently open
+  project actually scopes: its templates are created **in this project**.
+- **A standalone dataset archive** always lands in the global datasets
+  library, regardless of which project you opened the wizard from — it is
+  not linked to that project. Link it from the project's Datasets tab
+  afterward if you want it there.
+- **A full project archive** creates the project that archive describes —
+  its own name, its own templates, its own dataset references — independent
+  of whichever project you had open when you started the import. It does
+  not merge into the currently open project.
+
+A project import shows you what it's about to create — new templates
+(renameable, with per-entry "skip if a definition it needs isn't installed"
+and similar guards), linked or missing dataset references, and a
+name-conflict choice for the project itself and, separately, for any
+dataset name collision: **Rename** creates alongside the existing one with a
+new name; **Overwrite** deletes the existing project first, then creates
+the new one from the archive — if the import fails partway through, the old
+project is already gone and cannot be recovered, so prefer Rename unless
+you're certain. If the import proceeded
+with some references skipped, a **Rollback import** action appears
+afterward — it deletes the project it just created and only the
+datasets/definitions this import's own receipt recorded, so an import you
+don't like undoes cleanly instead of leaving a half-built project behind.
 
 ![Delete project confirm dialog — the exact wording about what is kept and what is removed](images/projects-delete-confirm.png)
 
@@ -184,19 +210,20 @@ you're returned to the Projects list.
 
 **Set up a client once.** New project → name it and pick a color → Templates
 tab → Branch a caption template for how they like things captioned, and a
-training template per model family you train them against (each one keyed to
-its own model definition, so a second model's template doesn't overwrite the
-first). This is the work that only has to happen once per client.
+training template per model definition you train them against (each one
+keyed to its own definition, so a second model's template doesn't overwrite
+the first). This is the work that only has to happen once per client.
 
 **A new dataset arrives.** Datasets tab → New dataset (or Link existing) →
 Quick Train, which already offers the project's own branched templates —
 nothing about captioning style or training settings needs deciding again.
 Repeat this recipe alone for every future batch from the same client.
 
-**Reuse a project's setup for a variant client.** Export the project
-(templates as embed, datasets as reference so the zip stays small) → Import
-into a fresh project → the branched templates come across; swap in the new
-client's dataset and adjust only what's actually different for them.
+**Reuse a project's setup for a variant client.** Export the project (select
+the templates you want carried over; set datasets to reference so the zip
+stays small) → Import into a fresh project → the branched templates come
+across; swap in the new client's dataset and adjust only what's actually
+different for them.
 
 **Clean up after a project is done.** Datasets tab → Remove all (datasets
 stay in the library, just unlinked) → Delete project from the header. Nothing
@@ -217,3 +244,8 @@ global ones (tagged with the project's id); its linked datasets are still
 ordinary folders under the app's `datasets/` directory, exactly as described
 in the Datasets guide, just referenced by this project's dataset-link table
 rather than owned by it.
+
+Once a project's Quick Train has produced a run you like, open it in
+[Jobs](jobs-guide.md) to watch it through and save its config as a
+[Template](templates-guide.md) — that's the setup this project keeps for
+next time.

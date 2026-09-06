@@ -157,3 +157,113 @@ async def test_build_frontend_copy_failure_leaves_served_dir_untouched(
     served = fe / "browser"
     assert served.is_dir()
     assert (served / "index.html").read_text() == "OLD BUILD"
+
+
+# -- _build_frontend: the served dir may be UNRENAMEABLE (found in UAT) -------
+#
+# The first real self-update from a running container failed with
+#
+#   self_update_failed  [Errno 18] Invalid cross-device link:
+#   '/app/frontend/browser' -> '/app/frontend/browser.old'
+#
+# Source and target are the same directory, so "cross-device" reads as
+# nonsense until you remember what a container's filesystem is. `served` is
+# baked into the image by `COPY --from=frontend` and never written afterwards,
+# so it still lives in a LOWER overlayfs layer, and overlayfs cannot move a
+# whole directory up into the writable layer unless the kernel's
+# `redirect_dir` is enabled -- which it is not, by default. Measured in a
+# container on 2026-09-06, with a control, because the interesting part is
+# the second row:
+#
+#   os.rename   a directory that came from the image  -> errno 18 EXDEV
+#   os.rename   a directory created at runtime        -> OK
+#   shutil.move a directory that came from the image  -> OK, tree intact
+#
+# So it is not "containers cannot rename directories". It is *this* directory,
+# *once*: after one successful update `browser` is a runtime directory and
+# renames fine, which is why the defect survived every place it is cheap to
+# look -- a plain filesystem on Windows, CI, and any second run.
+
+
+def _explodes_on(path: str, real_rename):
+    """os.rename that refuses exactly one path, the way overlayfs does."""
+
+    def _rename(src, dst, *a, **kw):
+        if str(src) == path:
+            raise OSError(18, "Invalid cross-device link")
+        return real_rename(src, dst, *a, **kw)
+
+    return _rename
+
+
+@pytest.mark.asyncio
+async def test_build_frontend_swaps_in_the_new_build_when_served_cannot_be_renamed(
+    tmp_path, monkeypatch
+):
+    fe = tmp_path / "frontend"
+    _write(fe / "dist" / "frontend" / "browser" / "index.html", "NEW BUILD")
+    _write(fe / "browser" / "index.html", "OLD BUILD")
+
+    monkeypatch.setattr(
+        "app.core.self_update.subprocess.run",
+        lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    # Patched on the `os` module itself, so `shutil.move`'s own internal
+    # os.rename hits it too -- that is the whole point: the fix works because
+    # shutil.move CATCHES this and copies instead.
+    monkeypatch.setattr(os, "rename", _explodes_on(str(fe / "browser"), os.rename))
+
+    svc = SelfUpdateService(app_dir=str(tmp_path), branch="main", remote="")
+    await svc._build_frontend()
+
+    served = fe / "browser"
+    assert served.is_dir()
+    assert (served / "index.html").read_text() == "NEW BUILD"
+    assert not (fe / "browser.new").exists()
+    assert not (fe / "browser.old").exists()
+
+
+@pytest.mark.asyncio
+async def test_build_frontend_keeps_serving_the_old_build_when_the_fallback_copy_fails(
+    tmp_path, monkeypatch
+):
+    """The `.new` staging exists so a failed swap never breaks the live site.
+
+    That property has to survive on the fallback path too, and it is not
+    self-evident there: shutil.move copies the old tree aside and only THEN
+    deletes it, so a failure during that copy must leave `served` whole. Pinned
+    because the alternative reading -- delete first, copy after -- is exactly
+    the bug the rename-swap replaced in W5.T10.
+    """
+    fe = tmp_path / "frontend"
+    _write(fe / "dist" / "frontend" / "browser" / "index.html", "NEW BUILD")
+    _write(fe / "browser" / "index.html", "OLD BUILD")
+
+    monkeypatch.setattr(
+        "app.core.self_update.subprocess.run",
+        lambda *a, **kw: types.SimpleNamespace(returncode=0, stdout="", stderr=""),
+    )
+    monkeypatch.setattr(os, "rename", _explodes_on(str(fe / "browser"), os.rename))
+
+    import shutil
+
+    real_copytree = shutil.copytree
+    calls = {"n": 0}
+
+    def _copytree(*a, **kw):
+        # 1st call stages the new build; the 2nd is shutil.move's fallback,
+        # copying the old build aside. Fail that one.
+        calls["n"] += 1
+        if calls["n"] >= 2:
+            raise OSError("disk full")
+        return real_copytree(*a, **kw)
+
+    monkeypatch.setattr(shutil, "copytree", _copytree)
+
+    svc = SelfUpdateService(app_dir=str(tmp_path), branch="main", remote="")
+    with pytest.raises(OSError, match="disk full"):
+        await svc._build_frontend()
+
+    served = fe / "browser"
+    assert served.is_dir()
+    assert (served / "index.html").read_text() == "OLD BUILD"

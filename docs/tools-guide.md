@@ -9,15 +9,22 @@ path.
 
 ## What you can actually do with it
 
-- **Inspect any `.safetensors` LoRA** — one you just trained, one you
-  downloaded, one from a completely different tool — without loading a model
-  or opening a training job. Format detection (Kohya, ai-toolkit/Ostris,
-  PEFT), rank, alpha, dtype, module count and file size come back in under a
-  few seconds.
-- **See which layers carry the learned effect and which are dead weight** —
-  a per-layer Frobenius-norm breakdown (`‖ΔW‖ = ‖B@A‖`) ranked and tiered into
-  essential / contributing / negligible, with a **Speed Training Suggestion**
-  naming the exact module list that reproduces ~90% of the effect.
+- **Inspect a safetensors LoRA adapter** — one you just trained, one you
+  downloaded, one from a different tool — without loading a model or opening
+  a training job. Format detection (Kohya, ai-toolkit/Ostris, PEFT), rank,
+  alpha, dtype, module count and file size come back from a local read; there
+  is no separate load step, but inspection time isn't benchmarked here and
+  will vary with file size, rank and your CPU. Layer analysis and Resize both
+  need a recognized down/up (A/B) module-key layout — an adapter saved in an
+  unrecognized layout, or with a non-standard convolution shape, fails with a
+  named error rather than a silent partial read.
+- **See which layers carry the most weight-delta norm and which carry the
+  least** — a per-layer Frobenius-norm breakdown (`‖ΔW‖ = ‖B@A‖`) ranked and
+  tiered into essential / contributing / negligible, with a **Speed Training
+  Suggestion** naming the module list that accounts for ~90% of that norm
+  energy. This is a norm-energy heuristic, not a measurement of visual effect,
+  training speed or output quality — treat the tiers as a starting hypothesis
+  for your next run, not a verified result.
 - **Copy that module list** straight to the clipboard for [Targeted Layer
   Training](training-guide.md) on your next run.
 - **Read back a LoRA's training metadata** — the Kohya-style `ss_*` keys
@@ -52,11 +59,13 @@ Collapsed by default; expand it to get:
   per-layer weight-delta norms across the whole LoRA, plus which single
   module is the strongest and which is the weakest.
 - **Speed Training Suggestion** — every layer is tiered by how much of the
-  LoRA's total learned "energy" it accounts for: **essential** (🔥, together
-  they cover ~90%), **contributing** (⚡, the next slice out to ~97%), and
-  **negligible** (🧊, the long tail below 3%). The card states how many
-  layers are essential out of the total, what percentage of parameters that
-  is, and an estimated training-speed gain from dropping the rest. **Copy
+  LoRA's total weight-delta norm it accounts for: **essential** (🔥, together
+  they cover ~90% of that norm), **contributing** (⚡, the next slice out to
+  ~97%), and **negligible** (🧊, the long tail below 3%). The card states how
+  many layers are essential out of the total and what percentage of
+  parameters that is; the accompanying speed figure is a parameter-ratio
+  estimate (the inverse of the retained-parameter fraction), not a measured
+  wall-clock gain — it does not account for actual GPU behavior. **Copy
   Modules** puts the essential layers' full per-instance module paths (not
   just their type) onto the clipboard as JSON, ready to paste into a targeted
   layer list.
@@ -83,18 +92,31 @@ doesn't carry that data:
 
 ## Resize
 
+> **Choose a different output path than your input path.** The form does not
+> check whether the two paths resolve to the same file, and if they do, the
+> write replaces your source LoRA with the resized one — there is no
+> confirmation and no separate backup. Point Output Path at a new filename
+> (the suggested `<name>_resized.safetensors` already does this) unless you
+> have your own copy of the source elsewhere.
+
 Switch to the **Resize** tab. Inspecting a LoRA first pre-fills the input
 path and suggests an output path (`<name>_resized.safetensors` next to the
 source); you can also fill the form from scratch.
 
 ![LoRA Tools — Resize form: Input/Output Path, New Rank, optional New Alpha and Save Dtype, Resize via SVD](images/tools-resize-form.png)
 
-- **Input Path / Output Path** — both required. The output is always a
-  separate file; Resize never overwrites the source.
-- **New Rank** — the target rank, 1–256.
+- **Input Path / Output Path** — both required, and validated independently.
+  Give them different paths (see the warning above).
+- **New Rank** — the target rank; the form offers 1–256, and the backend
+  accepts any value of 1 or more. Raising the rank above the adapter's
+  effective rank pads the new dimensions with zeros — it satisfies a
+  compatibility requirement (e.g. a fixed rank a downstream tool expects) but
+  adds no new learned information by itself.
 - **New Alpha** *(optional)* — leave blank to auto-scale proportionally to
   the rank change; set it explicitly to override.
 - **Save Dtype** *(optional)* — Preserve Original, FP16, BF16 or FP32.
+  Applies to the resized LoRA (A/B) matrices; any other tensor in the file is
+  copied through unchanged, and alpha tensors are always written as fp32.
 
 **Resize via SVD** reconstructs each module's effective delta `W = B @ A`,
 decomposes it with truncated SVD, and re-factors the result at the new rank —
@@ -122,7 +144,9 @@ matter for that kind of effect — fewer parameters, faster steps, less VRAM.
 
 **Shrink a LoRA before sharing it.** Train at a comfortable rank, then Resize
 down once you're happy with the result — a lower rank means a smaller file
-with (for most subjects) little visible quality loss, without retraining.
+without retraining. Compare samples from the resized adapter against the
+original before you rely on it; the resize itself doesn't measure quality
+loss.
 
 **Sanity-check a LoRA you didn't train yourself.** Format, rank, alpha and
 training metadata tell you what you're actually loading before you commit

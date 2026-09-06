@@ -3,8 +3,8 @@
 The Jobs screen is where a queued run becomes a finished LoRA. Every job
 started from the [Training screen](training-guide.md) (full form or Quick
 Train, see [`docs/projects-guide.md`](projects-guide.md)) lands here first,
-and stays here afterward — this is also the archive of everything you have
-ever trained.
+and stays here afterward — a history of every job you haven't deleted (see
+[Delete a job](#delete-a-job) for what that removes).
 
 ## What you can actually do with it
 
@@ -22,7 +22,12 @@ ever trained.
   hits its sampling cadence, grouped by prompt when a run samples more than
   one.
 - Download a finished LoRA's `.safetensors`, or a full resumable checkpoint
-  `.zip` you can carry to another machine.
+  `.zip` containing its optimizer/scheduler/EMA state — a portable copy of
+  the on-disk recovery state, not an in-app upload-and-resume flow (see
+  [Checkpoints](#checkpoints)).
+- Filter the queue live with the **filter jobs…** box — it matches LoRA
+  name, model and job id at once, so you don't have to remember which group
+  a run landed in.
 - Open **Training Statistics** for the cross-run picture: activity over time,
   loss distribution and per-family success rates, hyperparameter spread, and
   records (longest run, most steps, best loss).
@@ -75,6 +80,25 @@ completed row gets a checkmark. Failed/stopped rows carry **Resume** (if a
 resumable checkpoint exists) or **Restart**, plus edit-config and delete.
 The chart icon at the top of the Archive header opens **Training
 Statistics** (below).
+
+Three recovery actions look similar and are easy to conflate:
+
+| Action | What it keeps | What it does |
+| --- | --- | --- |
+| **Restart** | The existing output folder (checkpoints, samples, logs) | Reuses the folder, starts a fresh run from step 0 |
+| **Restart fresh** | Nothing — deletes the output folder first | Starts from step 0 with a clean folder (confirmed; irreversible) |
+| **Resume** | A specific saved checkpoint's optimizer/scheduler/step state | Continues training from exactly that step |
+
+#### Delete a job
+
+> **Before you delete a job:** deleting a pending, completed, failed or
+> stopped job removes it from this screen and from the app's job history
+> (a confirmation dialog names the job first). Deleting a running or paused
+> job additionally force-stops its trainer process after that confirmation.
+> Delete removes the job **record**; it does not touch the run's output
+> folder on disk — the `.safetensors` files, checkpoint folders and logs
+> stay where they were saved unless you remove them yourself. There is no
+> undo for the record itself once confirmed.
 
 Training jobs are a separate queue from the topbar's **Task Center**, which
 tracks the shorter background operations dataset work kicks off (rescans,
@@ -131,11 +155,19 @@ persisted metrics still show.
 metrics; the reference completed job carries none, per `metrics()`
 returning empty for a finished run.)*
 
-**Step** (with a progress bar and `n/total` sub-label), **Loss** (with a
+**Step** (with a progress bar and `n/total` sub-label), **Loss (raw)** (with a
 convergence chip — success/warning/danger — and a sparkline), **Best Loss**,
 **Step Time**, **Resolution** (when the run reports one, with megapixels)
 and **ETA** (with a projected finish time once one is known). Each tile's
 sparkline reflects the same windowed data as Training Curves below it.
+
+**Loss (raw)** is the value the trainer reported for the latest step, with
+nothing applied to it — the same series the chart below draws as its thin
+`Loss (raw)` line. The chart's bold **Loss** line is that number put through
+the smoothing slider, so the two legitimately differ, and by however much you
+set. The tile is named for the raw one on purpose: it is the reading that does
+not move when you drag a display control, and **Best Loss** beside it ranks
+raw steps too, so the two tiles stay comparable.
 
 ### Training Curves
 
@@ -172,20 +204,26 @@ prompt (and lyrics, for audio families that use them) shows underneath.
 Every saved checkpoint for the run: step (or `Final`), file size, save time,
 a **`.safetensors`** download (the LoRA weights) and, for a resumable
 checkpoint, a **`.zip`** download of the full training state (optimizer,
-scheduler, EMA, cache manifests) you can move to another machine to
-continue training there.
+scheduler, EMA, cache manifests, `training_state.json`). That ZIP is the
+same data the in-app **Resume** reads from disk — moving it to another
+machine and continuing there is a manual filesystem operation (unpack it
+into a matching job's output folder with the same model/config, then point
+that install's Resume at it) rather than something this screen can do for
+you: there is no checkpoint upload or import action in the UI.
 
 ### Run Config
 
 ![Run Config card, Info view — key/value grid plus Reload into Training and Save as Template](images/jobs-detail-run-config.png)
 
 Toggle between a **key/value grid** and **raw JSON**. A pending job's config
-is editable in place (invalid JSON blocks Save); a running or paused job's
-is read-only, since the backend rejects config changes to a job already in
-flight. Two actions work from any job's config: **Reload into Training**
-(loads it into the Training screen's form without creating a template) and
-**Save as Template** (stores it as a reusable training template — see the
-[Templates guide](templates-guide.md)).
+is editable in place (invalid JSON blocks Save), and so is a terminal one —
+completed, failed or stopped — since editing there only changes the stored
+record (or what a later restart uses), not a process that already finished.
+A running or paused job's config is read-only, since the backend rejects
+config changes to a job already in flight. Two actions work from any job's
+config: **Reload into Training** (loads it into the Training screen's form
+without creating a template) and **Save as Template** (stores it as a
+reusable training template — see the [Templates guide](templates-guide.md)).
 
 ### Log
 
@@ -243,10 +281,13 @@ default and narrowable to one project, with three tabs:
 
 ## Recipes
 
-**Recover from a GPU fault mid-run.** Turn on **auto-resume** in the queue
-header before you start a long run — a transient driver reset (TDR) then
-relaunches the job from its last checkpoint instead of leaving it dead in
-the queue.
+**Recover from a GPU fault mid-run.** **Auto-resume** is on by default in
+the queue header — verify the toggle rather than turning it on. It only
+fires for a transient driver/device fault (a TDR-style GPU reset), never for
+an out-of-memory failure, and only when a resumable checkpoint exists; it
+then waits ~45 seconds before relaunching from that checkpoint, and gives up
+after two relaunches that made no step progress or 20 total attempts in one
+backend session — it is not general crash recovery.
 
 **Free up the GPU without losing progress.** **Save & stop** on the header
 (or the soft-stop icon on the queue card) finishes the current step, saves a
@@ -266,9 +307,26 @@ where it shows up afterward.
 
 A job's configuration is a snapshot taken when it queued — a later template
 edit or app update never changes a job already queued, running or archived.
-Job history, metrics, checkpoints and adaptive-targeting records live in the
-app's database and survive restarts; only a deleted output folder (or a
-deliberate **Restart fresh**) removes the files themselves.
+
+Persistence splits into two places, and knowing which is which matters for
+recovery:
+
+- **Database records** — job history, step metrics and the durable
+  adaptive-targeting event log live in the app's database and survive
+  restarts and Delete of *other* jobs, independent of any file on disk.
+- **Disk artifacts** — the LoRA `.safetensors` files and the resumable
+  `checkpoint-NNNNNN/`/`final/` training-state folders (with
+  `training_state.json`) live under the run's output folder, not in the
+  database. Deleting or moving that folder removes resume and download
+  capability even though the job's metrics keep showing in the database.
+
+Three things remove disk artifacts, and they don't overlap: **Delete** on
+the job record leaves the output folder untouched (see
+[Delete a job](#delete-a-job)); **Restart fresh** wipes the whole folder on
+purpose; and a `keep_last_checkpoints` retention setting prunes older
+`checkpoint-NNNNNN/` training-state folders automatically as a run
+progresses — it never removes the root `.safetensors` files or `final/`, so
+the downloadable LoRA outlives its own training-state history.
 
 ## Where things live
 
@@ -276,8 +334,10 @@ Job state, step metrics, checkpoint metadata and the durable adaptive-
 targeting record are written by the trainer as the run goes and read back by
 `job_manager.py` and the jobs routes; the queue itself (running/pending
 ordering, auto-resume/auto-queue) is in-memory on the backend and rebuilt
-from the database on restart. A finished LoRA's `.safetensors` lands under
-`outputs/<lora_name>_<model_part>` — `model_part` is the trained
+from the database on restart. With the default output directory, a finished
+LoRA's `.safetensors` lands under `outputs/<lora_name>_<model_part>` —
+`output_dir` is itself a config field, so a job can target another root —
+and `model_part` is the trained
 **definition id**, not the family (e.g. `krea2-raw`), so one folder exists
 per definition even when several definitions share a family — downloadable
 from the Checkpoints card on this screen.

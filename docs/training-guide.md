@@ -73,39 +73,49 @@ as a `.template.zip` without leaving the form. See
 Choose the **family** and, once a family is picked, the **definition** — the
 concrete checkpoint from that family's YAML. A family is an architecture with
 its own loader, driver, trainer, sampler and saver; a definition is one
-shipped checkpoint of it. The app ships **29 families, 54 definitions**
-across image, video and audio, but the dropdown only enumerates the
-definitions that have cleared their availability gate — today that's **28
-families, 51 definitions**; the three gated ones (currently the MiniMax H3
-definitions) stay hidden until they clear. Also on this card: the
+shipped checkpoint of it. The dropdown only enumerates definitions that have
+cleared their availability gate; the Server screen's model count includes
+gated ones too (currently the MiniMax H3 definitions), so it will read
+higher than what you can actually pick here. Also on this card: the
 **quantization backend** and **quantization** level for the base model, and
-the same pair for the text encoder — quantizing either trades some quality
-for VRAM, and the base-model quantization can also mean training
-acceleration on newer GPUs depending on the level chosen. A badge next to the
-model name flags a **Unified Transformer** architecture (different VRAM
-characteristics than a diffusion model) and, when the model's weights come
-from a local path instead of the Hub, a **LOCAL**/**SAFETENSORS**/**OFFLINE**
-chip.
+the same pair for the text encoder — quantizing either trades reduced weight
+memory for compute and fidelity effects that vary by backend and model, and
+can speed up training on newer GPUs at some levels. There's no general
+benchmark backing a single "right" level across families; compare a couple
+of samples and the wall-time/VRAM estimate for your own definition rather
+than assuming a universal win. A badge next to the model name flags a
+**Unified Transformer** architecture (different VRAM characteristics than a
+diffusion model) and, when the model's weights come from a local path
+instead of the Hub, a **LOCAL**/**SAFETENSORS**/**OFFLINE** chip.
 
 ## Tune what this run needs
 
 Below Model Selection and the VRAM Budget card, the rest of the form is
-generated from the schema in the same grouping the form shows:
+generated from the schema in the same grouping the form shows. A field or
+whole group described here can be absent for a given definition — video
+controls, dual-expert settings, joint-audio training, masking and paired
+control-image fields only appear when the selected definition's own
+capabilities declare them, so an image-only definition simply won't show
+Video Settings at all.
 
 - **General Settings** — the dataset rows this run trains on (one per
   attached dataset, scoped to the current project when you're inside one):
   a **caption prefix**, **caption dropout rate** (the chance a caption is
-  dropped entirely, which enables classifier-free guidance at inference), a
-  **repeat count**, caption toggles (use captions at all, and whether to
-  prefer the model-aware caption variant), and masking toggles (include
-  masked variants, optionally regenerating them with a chosen opacity and a
-  minimum probability of keeping the original) — multiple datasets can be
-  attached to the same run, each weighted independently; this is the same
-  picker documented from the dataset side in the Datasets guide's "Move on"
-  section. Also on this card: LoRA filename (**LoRA Prefix** / **Suffix** /
-  **Name**, the name field supporting `{placeholder}` substitution), a
-  global trigger word, output directory, and data toggles (latent caching,
-  horizontal/vertical flip augmentation).
+  dropped entirely, training the unconditioned examples that a CFG-capable
+  inference workflow needs — whether and how CFG is actually applied is up
+  to the family and sampler, not this setting), a **repeat count** (changes
+  how often this dataset's samples are drawn relative to the others in the
+  same run — a relative sampling frequency, not a normalized weight),
+  caption toggles (use captions at all, and whether to prefer the
+  model-aware caption variant), and masking toggles (include masked
+  variants, optionally regenerating them with a chosen opacity and a minimum
+  probability of keeping the original) — multiple datasets can be attached
+  to the same run; this is the same picker documented from the dataset side
+  in the Datasets guide's "Move on" section. Also on this card: LoRA
+  filename (**LoRA Prefix** / **Suffix** / **Name**, the name field
+  supporting `{placeholder}` substitution), a global trigger word, output
+  directory, and data toggles (latent caching, horizontal/vertical flip
+  augmentation).
 - **Training Dynamics** — max steps, batch size, gradient accumulation,
   gradient checkpointing (VRAM for speed), checkpoint cadence and how many to
   keep, resume-from-checkpoint with cache re-use toggles, target
@@ -211,7 +221,11 @@ refine, only structure and composition to learn, which lives in the
 high-noise steps. Late in training structure is settled and what is left to
 improve is texture and fine detail, which lives in the low-noise steps. A
 fixed distribution spends the same attention on both phases throughout;
-RADC spends it where the run actually needs it at that point in training.
+RADC is designed to spend it where the run needs it at that point in
+training instead. That the sampling window moves as described is verifiable
+in the code and its tests; that this produces better structure or detail
+than a fixed distribution is the hypothesis behind the feature, not a
+measured result — judge it on your own samples.
 
 **How.** Four knobs, all in Training Dynamics once `timestep_sampling` is set
 to `radc` (`backend/app/engine/models/base.py`):
@@ -256,7 +270,10 @@ uses) shows wall time, throughput, VRAM, output size and disk footprint, each
 with a confidence sub-label — `calibrated · N runs` once the backend has
 history for this model, `estimated · defaults` before that. If no local runs
 exist yet, an **Update stats from history** button backfills calibration from
-past jobs and re-estimates. Below it, the **VRAM report** card breaks the
+past jobs and re-estimates. Treat every figure here as a planning estimate,
+not an admission guarantee — it's least reliable for a definition with no
+calibration history yet, and Windows shared-memory spillover behaves
+differently from what a static estimate can capture. Below it, the **VRAM report** card breaks the
 estimate down by component (model weights, text encoder, activations,
 optimizer state, headroom, …) as a proportional bar plus a legend, with any
 backend warnings about the configuration listed underneath, and — once a
@@ -297,9 +314,30 @@ the same database as everything else and are untouched by an update.
 
 ## Field reference (generated from the schema)
 
+<!-- This heading is a machine anchor, not prose: `_harness/tools/
+     docs_schema_explainers.py` looks for it verbatim (`_SECTION_HEADING`) to
+     find the generated blocks below. Renaming it makes --check report all
+     nine groups as stale. Change the tool's constant in the same commit or
+     leave the wording alone. -->
+
+
 <!-- schema-explainers:INTRO start -->
 Generated from the training schema and the in-app help texts, and regenerated whenever either changes. Where a field has a `?` icon in the form, the text below is that icon's tip, verbatim. Fields without one (currently 25, mostly Video Settings) are marked "From the schema:" and show the schema's own description instead, which the form does not display anywhere. Headings below are the form's own group names; fields within a group are alphabetical, not the form's own field order.
 <!-- schema-explainers:INTRO end -->
+
+This is a reference to the *base* schema every family shares — not a full
+picture of what the screen shows. It collapses `datasets` and `sample_prompts`
+to a one-line array entry each, even though every row is itself a small
+object (see General Settings and Sampling above for what the nested fields
+actually are). It also can't show the bespoke, hand-built controls that
+aren't ordinary schema fields at all: **Model Selection**, **Template
+Selection**, the **target layers** picker inside LoRA Parameters, **block
+swapping** inside VRAM Budget, and the **Adaptive Layer Targeting** card —
+each documented in its own section above. The selected definition and
+template remain authoritative in the running form: a definition's YAML can
+override a default shown here or hide a field entirely through its declared
+capabilities, so what you see on screen for a given model always wins over
+this list.
 
 ### General Settings
 
@@ -455,10 +493,28 @@ Generated from the training schema and the in-app help texts, and regenerated wh
 - **Sampling Min Free Vram Fraction** (`sampling_min_free_vram_fraction`) — From the schema: Skip a training sample if free VRAM is below this fraction of total. Prevents the sampling spike from spilling into Windows shared system memory (a freeze). Training continues uninterrupted. 0 = never skip. Default `0.15` (range 0.0 to 0.9, step 0.05).
 <!-- schema-explainers:SAMPLING end -->
 
+## What's next
+
+A run this good is worth keeping — Template Selection's **Clone as New
+Template** turns it into the starting point for the next dataset, so the
+second attempt for this client and model starts from success instead of
+memory. Watch it land in [`docs/jobs-guide.md`](jobs-guide.md).
+
 ## Where things live
 
 The training form is driven by the model definition's own YAML plus the
-shared base schema (`backend/app/engine/models/base.py`) — a new field on
-either surfaces here automatically, with no frontend change needed. A queued
-job's full configuration, step metrics, checkpoint locations and final LoRA
-path are recorded in the app's database and surfaced on the Jobs screen.
+shared base schema (`backend/app/engine/models/base.py`). An ordinary
+scalar/list/object field added to either one appears in the form
+automatically, with no frontend change — that's what the generated
+reference above documents. It is not true for the screen's bespoke
+controls: Model Selection, the dataset array, the target-layers picker,
+block swapping and Adaptive Layer Targeting are each hand-built frontend
+components (`target-layers-card`, `adaptive-targeting-card`, and special-
+cased handling inside `training-dynamic-config.ts` for `datasets` and the
+other array/object fields above) — adding or changing one of those needs
+frontend work and its own tests, not just a schema edit. A queued job's full
+configuration and step metrics are recorded in the app's database;
+checkpoint state and the final LoRA file are filesystem artifacts under the
+resolved output directory (some checkpoint metadata is also recorded in the
+database) — both are surfaced together on the Jobs screen. See
+[`docs/jobs-guide.md`](jobs-guide.md) for the database/disk split in full.

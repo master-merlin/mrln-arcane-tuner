@@ -236,10 +236,18 @@ The published image is on Docker Hub — you can use it directly, no build
 required:
 
 ```
-mastermerlin/mrln-arcane-tuner:latest             # rolling latest (CUDA 12.8 / cu128)
+mastermerlin/mrln-arcane-tuner:latest              # rolling latest (CUDA 12.8 / cu128)
+mastermerlin/mrln-arcane-tuner:latest-cu126        # rolling latest, legacy R560–R565 drivers
 mastermerlin/mrln-arcane-tuner:0.8.0-beta.2        # pinned version (CUDA 12.8 / cu128)
-mastermerlin/mrln-arcane-tuner:0.8.0-beta.2-cu126  # fallback for legacy R560–R565 drivers
+mastermerlin/mrln-arcane-tuner:0.8.0-beta.2-cu126  # pinned version, legacy R560–R565 drivers
 ```
+
+Every variant has both a **rolling** name and a **pinned** one. Follow a
+`:latest*` tag to get each release automatically; pin a version tag when you
+want a pod to behave the same next month. `:latest` and `:latest-cu128` are the
+same image — the unsuffixed names belong to cu128 because it is the default
+variant. The rolling cu126 tags are new; before them a version tag was the only
+cu126 name, so a cu126 host had to be repointed by hand at every release.
 
 The default image bundles **CUDA 12.8 (cu128) · PyTorch 2.11.0 · Python 3.12**
 (runtime) and a **Node 24 / Angular 22** production build of the UI. cu128 ships

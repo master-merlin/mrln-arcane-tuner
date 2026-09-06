@@ -66,9 +66,10 @@ param(
     # guard's own tests can run without depositing artifacts in the repo.
     [string]$LogDir = '',
 
-    # Claim the release tags (:<version>, :latest, :<version>-cuNNN). OFF by
-    # default: a validation build must not name a release. See the tagging
-    # section below for what this cost when it defaulted the other way.
+    # Claim the release tags. cu128: :<version>, :latest, :<version>-cu128,
+    # :latest-cu128. cu126: :<version>-cu126, :latest-cu126. OFF by default:
+    # a validation build must not name a release. See the tagging section
+    # below for what this cost when it defaulted the other way.
     [switch]$ReleaseTags
 )
 
@@ -301,10 +302,21 @@ if ($tagCommit -ne '') {
     Write-Host "[build] note: origin has no tag v$Version; the name is unclaimed"
 }
 
-$tags = @("${Repository}:$Version-$Variant")
+# Every variant gets BOTH a pinned name and a moving pointer. Before
+# 2026-09-06 cu126 got only `:<version>-cu126` -- pinnable, but nothing to
+# follow: someone tracking the cu126 line had to read the release notes to
+# learn each new version string, while cu128 users just followed `:latest`.
+# `:latest-<variant>` closes that. cu128 additionally keeps the UNSUFFIXED
+# names because it is the default variant and they are already published;
+# it now also gets its own `:<version>-cu128`, which the -ReleaseTags help
+# text has always promised and the code never produced (the cu128 branch
+# REPLACED the list instead of adding to it).
+#
+# Tags are a public surface: this list may grow, never shrink. Dropping a
+# name breaks every `docker pull` and every digest pin taken from our README.
+$tags = @("${Repository}:$Version-$Variant", "${Repository}:latest-$Variant")
 if ($Variant -eq 'cu128') {
-    # cu128 is the default variant: it owns the bare version tag and :latest.
-    $tags = @("${Repository}:$Version", "${Repository}:latest")
+    $tags += @("${Repository}:$Version", "${Repository}:latest")
 }
 foreach ($t in $tags) {
     & docker tag $scratchTag $t

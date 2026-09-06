@@ -299,3 +299,82 @@ describe('JobsScreen curve — re-reading from disk on demand', () => {
         expect((comp as any).curveReloading()).toBe(false);
     });
 });
+
+describe('JobsScreen KPI rail — one name, one number', () => {
+    /**
+     * Found in a RunPod container UAT, not by a test: the KPI rail said "Loss"
+     * and the chart's tooltip also said "Loss", and they were different numbers.
+     * The tile shows `m.loss` — the raw per-step value straight off the metrics
+     * socket. The chart's "Loss" series is that value put through
+     * `applySmoothing`, and the chart labels the unsmoothed one "Loss (raw)".
+     *
+     * The tile is the one that had to move, and not because it is the smaller
+     * edit. The chart's smoothing is a DISPLAY CONTROL the user drives — a
+     * slider bound to `smoothing()` and an EMA/SMA toggle. Pointing a headline
+     * KPI at it would make the rail's number change when someone drags a
+     * control under the graph, which is a worse defect than the mislabel. The
+     * tile is also raw all the way through: value, sparkline
+     * (`lossSparkData` -> raw `lossPoints`), and the "Best Loss" tile beside it,
+     * which ranks raw points. Name only "Loss" for the smoothed series and the
+     * two tiles stop being comparable — "Loss" could read below "Best Loss"
+     * with nothing wrong anywhere.
+     *
+     * Same class as the whole-run-best test above: two numbers under one name.
+     */
+    /**
+     * `stepLine` above is enough for the curve, but not for the KPI rail:
+     * `latestMetrics` only returns a reading for a line whose `status` is
+     * `training`, so a fixture without it renders no tiles at all — and then
+     * "there is no tile called Loss" passes for the wrong reason. Caught by the
+     * positive assertion failing beside it.
+     */
+    const metricLine = (step: number, loss: number) =>
+        `STEP_LOG:${JSON.stringify({ step, loss, learning_rate: 0.0001, status: 'training' })}`;
+
+    function labelled(fixture: ComponentFixture<JobsScreen>, label: string): Element | null {
+        const tiles = Array.from(
+            fixture.nativeElement.querySelectorAll('[data-testid="kpi-tile"]'),
+        ) as Element[];
+        return (
+            tiles.find(
+                t => t.querySelector('[data-testid="kpi-tile-label"]')?.textContent?.trim() === label,
+            ) ?? null
+        );
+    }
+
+    it('labels the raw-loss tile with the name the chart gives that same series', () => {
+        const { fixture, view } = setup();
+        view.activeJobs.set([makeJob({ logs: [metricLine(10, 0.0125), metricLine(11, 0.5)] })]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+
+        // Not "Loss": that name belongs to the chart's smoothed series.
+        expect(labelled(fixture, 'Loss')).toBeNull();
+
+        const tile = labelled(fixture, 'Loss (raw)');
+        expect(tile).toBeTruthy();
+        // And it really is the raw last value, not a smoothed one — the label
+        // is only true because of what sits under it.
+        expect(tile!.querySelector('[data-testid="kpi-tile-value"]')?.textContent?.trim()).toBe(
+            (0.5).toFixed(4),
+        );
+    });
+
+    it('hands the chart a smoothing setting the USER controls — the reason the tile cannot borrow that name', () => {
+        const { fixture, view, comp } = setup();
+        view.activeJobs.set([
+            makeJob({ logs: [10, 11, 12].map(s => metricLine(s, 1 / s)) }),
+        ]);
+        view.selectedId.set(JOB_ID);
+        fixture.detectChanges();
+
+        const before = (comp as any).smoothing();
+        (comp as any).smoothing.set(before === 0.5 ? 0.2 : 0.5);
+        fixture.detectChanges();
+
+        // The KPI is untouched by that move. If this ever fails, the tile has
+        // been rebound to the smoothed series and the label is wrong again.
+        expect(labelled(fixture, 'Loss (raw)')).toBeTruthy();
+        expect((comp as any).lossLabel()).toBe((1 / 12).toFixed(4));
+    });
+});

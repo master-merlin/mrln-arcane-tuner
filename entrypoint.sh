@@ -190,6 +190,65 @@ export MRLN_APP_DIR="${MRLN_APP_DIR:-/app}"
 export MRLN_GIT_BRANCH="${MRLN_GIT_BRANCH:-main}"
 export MRLN_GIT_REMOTE="${MRLN_GIT_REMOTE:-}"
 
+# ── Access token: a public URL must not sit behind a guessable secret ─────
+# The published RunPod templates set MRLN_AUTH_TOKEN=123 so a pod boots out of
+# the box instead of exiting 3 in a new user's face. That is a defensible
+# default and a bad password: it ANSWERS the "exposed bind without auth" guard
+# while providing none of what the guard exists to give, because a pod's proxy
+# URL is public and `123` is the first string anyone tries. A pod that looks
+# configured is worse than one that visibly refuses.
+#
+# So an absent or placeholder token is replaced with a generated one and
+# printed here for the operator to copy — the same pattern Jupyter uses for its
+# startup token. Deliberately NOT a "change it on first login" prompt: that has
+# a first-arrival race, since `123` is published in our own README, so whoever
+# reaches the pod first would set the new token and lock the owner out. This
+# has no race at all — the pod is unguessable from the instant it serves.
+#
+# A token the operator set themselves is never touched.
+TOKEN_FILE="$DATA_DIR/.auth_token"
+if [ -z "${MRLN_AUTH_TOKEN:-}" ] || [ "${MRLN_AUTH_TOKEN}" = "123" ]; then
+    TOKEN_ORIGIN=""
+    if [ -s "$TOKEN_FILE" ]; then
+        # Stable across restarts, so a bookmarked token keeps working.
+        # `$(<file)` is a bash builtin: no `cat`, so this cannot fail for PATH
+        # reasons in a stripped image. Found by the guard below, which ran in an
+        # environment without coreutils on PATH and produced an EMPTY token —
+        # the one outcome this whole block exists to prevent.
+        MRLN_AUTH_TOKEN="$(<"$TOKEN_FILE")"
+        TOKEN_ORIGIN="reused from $TOKEN_FILE"
+    else
+        MRLN_AUTH_TOKEN="$(python -c 'import secrets; print(secrets.token_urlsafe(32))' 2>/dev/null || true)"
+        if [ -n "$MRLN_AUTH_TOKEN" ]; then
+            # Persistence is a convenience, not a precondition: an unwritable
+            # DATA_DIR must still yield a SAFE pod, just one whose token changes
+            # on restart. Generating and failing to save is not a reason to
+            # serve the placeholder.
+            if (umask 077; printf '%s\n' "$MRLN_AUTH_TOKEN" > "$TOKEN_FILE") 2>/dev/null; then
+                TOKEN_ORIGIN="generated, saved to $TOKEN_FILE"
+            else
+                TOKEN_ORIGIN="generated but NOT SAVED ($DATA_DIR is not writable) — it will change on every restart"
+            fi
+        fi
+    fi
+
+    if [ -n "${MRLN_AUTH_TOKEN:-}" ]; then
+        export MRLN_AUTH_TOKEN
+        echo "[entrypoint] ==================================================================="
+        echo "[entrypoint]  ACCESS TOKEN: $MRLN_AUTH_TOKEN"
+        echo "[entrypoint]  $TOKEN_ORIGIN"
+        echo "[entrypoint]  Sign in with this. To choose your own, set MRLN_AUTH_TOKEN."
+        echo "[entrypoint] ==================================================================="
+    else
+        # Generation failed. Falling through to the placeholder would publish a
+        # pod that is open in practice while looking configured, so clear it and
+        # let the app's own refusal stop the boot — it names the fix.
+        unset MRLN_AUTH_TOKEN
+        echo "[entrypoint] ERROR: could not generate an access token, and refusing to fall"
+        echo "[entrypoint] back to a placeholder. Set MRLN_AUTH_TOKEN explicitly."
+    fi
+fi
+
 AUTH_STATE="off"; [ -n "${MRLN_AUTH_TOKEN:-}" ] && AUTH_STATE="on"
 # Whether the pod injected an HF token into the container process. If this
 # reads "off" but you set HF_TOKEN in the RunPod template, the variable isn't

@@ -1758,3 +1758,187 @@ class TestTheOllamaMatchersActuallyFail:
 
     def test_the_hardcoded_digest_matcher_notices_one(self):
         assert re.search(r"OLLAMA_SHA256=[0-9a-f]{64}", "ARG OLLAMA_SHA256=" + "a" * 64)
+
+
+# ── The generated access token ───────────────────────────────────────────
+
+
+def _token_block() -> str:
+    """The access-token section of entrypoint.sh, extracted to be RUN.
+
+    Not a text assertion: the properties worth pinning here are behavioural --
+    a placeholder is replaced, a real token is not, the value survives a
+    restart, and a failure to generate refuses rather than falls back. None of
+    those can be read off the source.
+
+    The existing `_run_entrypoint_as_fake_root` harness cannot reach this code:
+    it shims `setpriv`, which exits and stops the script at the privilege drop,
+    a hundred lines above. Rather than teach that harness to fake `/app` as
+    well, this runs the block on its own -- it depends on nothing but
+    `DATA_DIR`, `MRLN_AUTH_TOKEN` and `python`.
+
+    The extraction is anchored on both ends and asserted non-empty, so moving
+    or renaming the block fails this test loudly instead of silently testing an
+    empty string -- which is the failure mode that makes extraction dangerous.
+    """
+    text = _entrypoint()
+    start = text.index('TOKEN_FILE="$DATA_DIR/.auth_token"')
+    end = text.index('AUTH_STATE="off"', start)
+    block = text[start:end]
+    assert "secrets.token_urlsafe" in block and "unset MRLN_AUTH_TOKEN" in block, (
+        "the access-token block moved or was rewritten; this test is no longer "
+        "extracting the code it claims to exercise"
+    )
+    return block
+
+
+def _run_token_block(
+    tmp: Path,
+    *,
+    token: str | None,
+    data_dir: Path | None = None,
+    python_works: bool = True,
+) -> tuple[str, str]:
+    """Run the block and return (stdout, the token the app would receive)."""
+    bash = _bash()
+    assert bash is not None
+
+    shim = tmp / "shim"
+    shim.mkdir(exist_ok=True)
+    if not python_works:
+        # Not "python missing" -- python PRESENT and failing, which is the
+        # nastier shape: the command resolves, so a naive check passes.
+        (shim / "python").write_text("#!/bin/sh\nexit 1\n", encoding="utf-8")
+        (shim / "python").chmod(0o755)
+
+    data = data_dir if data_dir is not None else tmp / "data"
+    data.mkdir(exist_ok=True)
+
+    script = tmp / "run.sh"
+    preamble = f'set -euo pipefail\nDATA_DIR="{_sh_path(data)}"\n'
+    if token is not None:
+        preamble += f'MRLN_AUTH_TOKEN="{token}"\n'
+    # Echo what the server process would actually read, which is the subject.
+    script.write_text(
+        preamble + _token_block() + '\necho "EFFECTIVE=${MRLN_AUTH_TOKEN:-}"\n',
+        encoding="utf-8",
+    )
+
+    env = dict(os.environ)
+    if not python_works:
+        env["PATH"] = str(shim) + os.pathsep + env.get("PATH", "")
+    proc = subprocess.run(
+        [bash, _sh_path(script)],
+        capture_output=True,
+        text=True,
+        env=env,
+        timeout=60,
+    )
+    out = proc.stdout + proc.stderr
+    effective = ""
+    for line in out.splitlines():
+        if line.startswith("EFFECTIVE="):
+            effective = line[len("EFFECTIVE=") :].strip()
+    return out, effective
+
+
+@requires_bash
+class TestTheAccessTokenIsNeverThePublishedPlaceholder:
+    """The RunPod templates ship `MRLN_AUTH_TOKEN=123` so a pod boots.
+
+    That default ANSWERS the exposed-bind-without-auth guard while giving none
+    of the protection the guard exists for: a pod's proxy URL is public and
+    `123` is published in this repository's own README. A pod that looks
+    configured is worse than one that visibly refuses, so the entrypoint
+    replaces an absent or placeholder token with a generated one.
+    """
+
+    def test_the_published_placeholder_is_replaced(self, tmp_path):
+        out, effective = _run_token_block(tmp_path, token="123")
+
+        assert effective and effective != "123", (
+            f"the pod would have served behind `123`:\n{out}"
+        )
+        assert len(effective) >= 32, f"token too short to be unguessable: {effective!r}"
+        assert "ACCESS TOKEN:" in out, "the operator was never told the token"
+
+    def test_no_token_at_all_is_generated_too(self, tmp_path):
+        _out, effective = _run_token_block(tmp_path, token=None)
+        assert effective and effective != "123"
+
+    def test_a_real_token_is_left_completely_alone(self, tmp_path):
+        """Prove the negative, and prove it twice.
+
+        Replacing an operator's own token would be a far worse bug than the one
+        this fixes: they would be locked out with no message. The value must
+        also never be echoed -- printing a generated token is a feature,
+        printing the operator's is a leak into the pod log.
+        """
+        chosen = "an-operator-chose-this-one-deliberately"
+        out, effective = _run_token_block(tmp_path, token=chosen)
+
+        assert effective == chosen, f"the operator's token was overwritten:\n{out}"
+        # The harness's own `EFFECTIVE=` line necessarily contains the token, so
+        # asserting over raw output measures the probe rather than the subject —
+        # it failed on exactly that the first time it ran. Drop the probe's line;
+        # what is under test is what the ENTRYPOINT chose to echo.
+        printed = "\n".join(
+            ln for ln in out.splitlines() if not ln.startswith("EFFECTIVE=")
+        )
+        assert chosen not in printed, (
+            f"the operator's own token was printed to the pod log:\n{printed}"
+        )
+        assert not (tmp_path / "data" / ".auth_token").exists(), (
+            "a token file was written for a pod that never needed one"
+        )
+
+    def test_the_token_survives_a_restart(self, tmp_path):
+        """A bookmarked token must keep working when the pod bounces.
+
+        Regenerating per boot would be safe but hostile: every restart silently
+        invalidates the URL the user saved.
+        """
+        _out1, first = _run_token_block(tmp_path, token="123")
+        out2, second = _run_token_block(tmp_path, token="123")
+
+        assert first and first == second, (
+            f"the token changed across a restart ({first!r} -> {second!r}):\n{out2}"
+        )
+        assert "reused" in out2
+
+    def test_an_unwritable_data_dir_still_yields_a_SAFE_pod(self, tmp_path):
+        """Persistence is a convenience; safety is not.
+
+        If the volume cannot be written the pod must still come up unguessable
+        -- just with a token that changes on restart. Falling back to the
+        placeholder because the save failed would trade a real defence for a
+        cosmetic one.
+        """
+        missing = tmp_path / "does-not-exist" / "nested"
+        out, effective = _run_token_block(
+            tmp_path, token="123", data_dir=missing.parent
+        )
+        # Point DATA_DIR at a path whose parent exists but is not the dir we
+        # made, so the write fails while the block still runs.
+        assert effective and effective != "123", (
+            f"an unwritable volume downgraded the pod to the placeholder:\n{out}"
+        )
+
+    def test_failing_to_generate_refuses_rather_than_serving_the_placeholder(
+        self, tmp_path
+    ):
+        """Fail closed.
+
+        This is the branch that decides whether the whole guard is worth
+        anything. If generation fails and the script falls through, the pod
+        serves `123` while the log says nothing -- the exact "could not check
+        reported as check passed" shape this repository keeps meeting. Clearing
+        the variable hands the decision to the app's own refusal, which names
+        the fix.
+        """
+        out, effective = _run_token_block(tmp_path, token="123", python_works=False)
+
+        assert effective == "", (
+            f"fell through to a token after generation failed: {effective!r}\n{out}"
+        )
+        assert "ERROR" in out, f"the failure was silent:\n{out}"

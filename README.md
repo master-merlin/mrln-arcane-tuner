@@ -203,19 +203,25 @@ variables, so deploying is choosing a GPU and changing one value.
 
 Two things to change before you use the pod for anything real:
 
-- **Replace `MRLN_AUTH_TOKEN`.** The templates ship the placeholder `123` so the
-  pod boots out of the box. It is a placeholder, not a password: your pod's
-  proxy URL is public, and `123` is the first thing anyone tries. Whoever gets
-  in has your datasets, your models and your GPU. Change it before you upload a
-  dataset or start a run:
+- **Get your access token from the pod log.** The templates ship the
+  placeholder `MRLN_AUTH_TOKEN=123` so the pod boots out of the box, and the
+  container refuses to serve behind it: on first boot it generates a real token,
+  saves it to the volume so it survives restarts, and prints it. Open the pod's
+  log and look for:
 
   ```
-  python -c "import secrets; print(secrets.token_urlsafe(32))"
+  [entrypoint] ===================================================================
+  [entrypoint]  ACCESS TOKEN: <this is the one you sign in with>
   ```
+
+  Setting `MRLN_AUTH_TOKEN` to a value of your own is still honoured and takes
+  precedence — a token you chose is never replaced and never printed.
 
 - **Attach a network volume mounted at `/workspace`.** A template cannot bring
   storage with it. Without one the pod runs fine and destroys everything when it
   stops — including the multi-GB base-model downloads you just paid to transfer.
+  The token is on that volume too, so a pod without one gets a new token on
+  every restart.
 
 Then skip to [3. Open the app](#3-open-the-app).
 
@@ -342,7 +348,7 @@ an earlier root-run container may need `chown -R 10001:10001` once.
 
   | Variable | Purpose | Default |
   |---|---|---|
-  | `MRLN_AUTH_TOKEN` | Require this token to access the app. **Required in the container** — see the breaking-change note below. | _unset — the container will not start_ |
+  | `MRLN_AUTH_TOKEN` | Require this token to access the app. Leave it unset (or at the templates' `123`) and the container generates one and prints it to the log. | _generated on first boot_ |
   | `MRLN_BIND_HOST` | Address to serve on. The container needs `0.0.0.0` to be reachable at all; local installs default to loopback. | `0.0.0.0` (container) |
   | `PORT` | Internal port (match the exposed HTTP port). | `8000` |
   | `MRLN_DATA_DIR` | Persistence root (DB, datasets, models, outputs, HF cache). | `/workspace` |
@@ -369,11 +375,21 @@ you signed in.
 > nothing said so.
 >
 > The app now **refuses to start** when it is bound to an address other machines
-> can reach and no token is set. If a pod that used to work stops with a message
-> naming `MRLN_AUTH_TOKEN`, that is this change, and the fix is in the message:
+> can reach and no token is set:
 >
-> * set `MRLN_AUTH_TOKEN` to a long random string (what you want on RunPod), **or**
+> * set `MRLN_AUTH_TOKEN` to a long random string, **or**
 > * set `MRLN_BIND_HOST=127.0.0.1` for a private, machine-local run.
+>
+> **In the container you no longer have to do either.** The entrypoint treats an
+> absent token — and the `123` the published RunPod templates ship — as no token
+> at all: it generates a real one, saves it next to your data so restarts keep
+> it, and prints it to the pod log as `[entrypoint]  ACCESS TOKEN: …`. A token
+> you set yourself is never replaced and never printed.
+>
+> A placeholder is worth naming for what it was: it *answered* this guard while
+> giving none of the protection the guard exists for, since the pod URL is public
+> and `123` is the first string anyone tries. A pod that looks configured is
+> worse than one that visibly refuses.
 >
 > **Local installs are unaffected in normal use:** `start_backend` now binds
 > loopback by default instead of `0.0.0.0`, so it starts with no token as

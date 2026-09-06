@@ -190,7 +190,41 @@ ingress proxy.
 - Persistent data (SQLite DB, datasets, models, outputs) lives on a mounted
   volume so it survives pod restarts.
 
-### 1. Get the image
+### Option 1 — deploy a ready-made template (fastest)
+
+Two public RunPod templates track this image, one per CUDA variant. They
+pre-fill the image, the exposed port, the volume mount path and the environment
+variables, so deploying is choosing a GPU and changing one value.
+
+| Template | Use it when | Deploy |
+|---|---|---|
+| `mastermerlin-mrln-arcane-tuner` (cu128) | **Default.** Any Ampere-or-newer GPU **including Blackwell**; host driver R570+ | [Deploy on RunPod](https://console.runpod.io/deploy?template=2lyo58uiku) |
+| `mastermerlin-mrln-arcane-tuner-cu126` | Only a legacy host on driver R560–R565. **No Blackwell support** | [Deploy on RunPod](https://console.runpod.io/deploy?template=2va2yuv6b5) |
+
+Two things to change before you use the pod for anything real:
+
+- **Replace `MRLN_AUTH_TOKEN`.** The templates ship the placeholder `123` so the
+  pod boots out of the box. It is a placeholder, not a password: your pod's
+  proxy URL is public, and `123` is the first thing anyone tries. Whoever gets
+  in has your datasets, your models and your GPU. Change it before you upload a
+  dataset or start a run:
+
+  ```
+  python -c "import secrets; print(secrets.token_urlsafe(32))"
+  ```
+
+- **Attach a network volume mounted at `/workspace`.** A template cannot bring
+  storage with it. Without one the pod runs fine and destroys everything when it
+  stops — including the multi-GB base-model downloads you just paid to transfer.
+
+Then skip to [3. Open the app](#3-open-the-app).
+
+### Option 2 — create your own pod
+
+Use this if you want to configure the pod yourself, pin a specific version tag,
+build the image from source, or deploy somewhere other than RunPod.
+
+#### 1. Get the image
 
 The published image is on Docker Hub — you can use it directly, no build
 required:
@@ -287,7 +321,7 @@ only long enough to take ownership of the mounted data volume, then drops. If
 you mount a volume whose contents are owned by a different UID, files created by
 an earlier root-run container may need `chown -R 10001:10001` once.
 
-### 2. Create the pod on RunPod
+#### 2. Create the pod on RunPod
 
 - **GPU:** any NVIDIA Ampere+ GPU, **including Blackwell** (RTX 50xx / RTX PRO
   6000 Blackwell). The default image is built for **CUDA 12.8** (cu128) and
@@ -316,7 +350,7 @@ an earlier root-run container may need `chown -R 10001:10001` once.
   | `HF_HOME` | Hugging Face cache location. Auto-set to `$MRLN_DATA_DIR/hf-cache` so downloads persist on the volume — only override to relocate the cache. | `/workspace/hf-cache` |
   | `CUDA_VISIBLE_DEVICES` | Pin a specific GPU on multi-GPU pods. | _all_ |
 
-### 3. Open the app
+#### 3. Open the app
 
 RunPod exposes the port at:
 

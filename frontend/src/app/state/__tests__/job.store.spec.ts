@@ -37,7 +37,9 @@ describe('JobStore', () => {
         api = {
             listJobs: vi.fn().mockReturnValue(of([makeJob('a'), makeJob('b')])),
             listJobHistory: vi.fn().mockReturnValue(of([])),
-            deleteJob: vi.fn().mockReturnValue(of({ status: 'deleted', job_id: 'a' })),
+            deleteJob: vi.fn().mockReturnValue(
+                of({ status: 'deleted', job_id: 'a', files_deleted: false, files_error: null }),
+            ),
         };
         wsMock = { entityChanged: signal(null), reconnected: signal(0) };
         toastMock = { error: vi.fn() };
@@ -66,7 +68,7 @@ describe('JobStore', () => {
         // Should be immediate — signal updates synchronously
         expect(store.entities().map(j => j.id)).toEqual(['b']);
         await p;
-        expect(api.deleteJob).toHaveBeenCalledWith('a', false);
+        expect(api.deleteJob).toHaveBeenCalledWith('a', false, false);
     });
 
     it('deleteJob rolls back on API failure', async () => {
@@ -75,6 +77,47 @@ describe('JobStore', () => {
         await store.deleteJob('a');
         expect(store.entities().map(j => j.id).sort()).toEqual(['a', 'b']);
         expect(toastMock.error).toHaveBeenCalledWith(`Couldn't delete job — restored.`);
+    });
+
+
+    // DECISION-29: the record and the FILES are two outcomes, and the second
+    // can fail on its own. Saying nothing when it does is where this started --
+    // a dialog telling users their files were gone while they sat on disk.
+
+    it('warns when files were requested but are still on disk', async () => {
+        api.deleteJob.mockReturnValue(of({
+            status: 'deleted', job_id: 'a',
+            files_deleted: false, files_error: 'lora.safetensors: in use',
+        }));
+        await store.loadAll();
+        await store.deleteJob('a', false, true);
+
+        expect(store.entities().map(j => j.id)).toEqual(['b']);  // record still gone
+        expect(toastMock.error).toHaveBeenCalledWith(
+            expect.stringContaining('still on disk'),
+        );
+        expect(toastMock.error).toHaveBeenCalledWith(
+            expect.stringContaining('lora.safetensors: in use'),
+        );
+    });
+
+    it('stays quiet when the files were removed, or were never asked for', async () => {
+        await store.loadAll();
+
+        // Asked, and done.
+        api.deleteJob.mockReturnValue(of({
+            status: 'deleted', job_id: 'a', files_deleted: true, files_error: null,
+        }));
+        await store.deleteJob('a', false, true);
+        expect(toastMock.error).not.toHaveBeenCalled();
+
+        // Not asked: a false `files_deleted` is the EXPECTED answer here, and
+        // must not be reported as a failure -- the noisy-toast trap.
+        api.deleteJob.mockReturnValue(of({
+            status: 'deleted', job_id: 'b', files_deleted: false, files_error: null,
+        }));
+        await store.deleteJob('b');
+        expect(toastMock.error).not.toHaveBeenCalled();
     });
 
     it('loadHistory merges historical jobs into the store', async () => {

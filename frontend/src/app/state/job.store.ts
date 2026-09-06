@@ -39,11 +39,22 @@ export class JobStore extends EntityStore<Job> {
         }
     }
 
-    async deleteJob(id: string, force = false): Promise<void> {
-        await this.runOptimistic({
+    async deleteJob(id: string, force = false, deleteFiles = false): Promise<void> {
+        const result = await this.runOptimistic({
             apply: m => { const n = new Map(m); n.delete(id); return n; },
-            request: () => firstValueFrom(this.api.deleteJob(id, force)),
+            request: () => firstValueFrom(this.api.deleteJob(id, force, deleteFiles)),
             errorMessage: `Couldn't delete job — restored.`,
         });
+        // The record went; the files are a SEPARATE outcome and can fail on
+        // their own (a locked file, a folder already moved). Saying nothing
+        // here would put us back where DECISION-29 started — the user is told
+        // files are gone and they are not. Only speak when they asked for it.
+        if (result.ok && deleteFiles && !result.value.files_deleted) {
+            this.toast.error(
+                `Job deleted, but its files are still on disk — ${
+                    result.value.files_error ?? 'the folder could not be removed'
+                }`,
+            );
+        }
     }
 }

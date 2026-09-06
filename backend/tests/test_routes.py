@@ -390,12 +390,17 @@ def test_delete_job(mock_to_thread, mock_jm, client):
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
+    # `delete_job` returns the file outcome since DECISION-29; a bare MagicMock
+    # here fails response validation, which is the response_model doing its job.
+    mock_jm.delete_job.return_value = {"files_deleted": False, "files_error": None}
     response = client.delete("/api/jobs/job-1")
     assert response.status_code == 200
     assert response.json()["status"] == "deleted"
-    # Default (no ?force=) must be False, so an active job isn't silently
-    # force-killed by a caller unaware of the flag.
-    mock_jm.delete_job.assert_called_once_with("job-1", False)
+    # Both defaults must be False. `force` so an active job isn't silently
+    # force-killed by a caller unaware of the flag; `delete_files` so a delete
+    # never removes a run's output unless it was explicitly asked to.
+    mock_jm.delete_job.assert_called_once_with("job-1", False, False)
+    assert response.json()["files_deleted"] is False
 
 
 @patch("app.api.training.job_routes.job_manager")
@@ -423,10 +428,57 @@ def test_delete_running_job_with_force_query_param_passes_through(
     async def run_sync(func, *args, **kw):
         return func(*args, **kw)
     mock_to_thread.side_effect = run_sync
+    mock_jm.delete_job.return_value = {"files_deleted": False, "files_error": None}
     response = client.delete("/api/jobs/job-1?force=true")
     assert response.status_code == 200
-    mock_jm.delete_job.assert_called_once_with("job-1", True)
+    mock_jm.delete_job.assert_called_once_with("job-1", True, False)
 
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_delete_files_query_param_passes_through_and_is_reported(
+    mock_to_thread, mock_jm, client
+):
+    """?delete_files=true reaches the manager, and what happened comes BACK.
+
+    The response model is its own type for a reason: a FastAPI `response_model`
+    silently drops undeclared keys, so returning `files_deleted` under the old
+    `JobActionResponse` would have sent the UI nothing while the UI went on
+    assuming the files were gone (DECISION-29).
+    """
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_jm.delete_job.return_value = {"files_deleted": True, "files_error": None}
+
+    response = client.delete("/api/jobs/job-1?delete_files=true")
+
+    assert response.status_code == 200
+    mock_jm.delete_job.assert_called_once_with("job-1", False, True)
+    assert response.json()["files_deleted"] is True
+
+
+@patch("app.api.training.job_routes.job_manager")
+@patch("app.api.training.job_routes.asyncio.to_thread")
+def test_a_failed_file_removal_reaches_the_caller(mock_to_thread, mock_jm, client):
+    """Deleting the record while the files survive is a 200 that must still
+    say so -- reporting only the record is how the user ends up believing a
+    deletion that did not happen."""
+    async def run_sync(func, *args, **kw):
+        return func(*args, **kw)
+    mock_to_thread.side_effect = run_sync
+    mock_jm.delete_job.return_value = {
+        "files_deleted": False, "files_error": "lora.safetensors: in use",
+    }
+
+    response = client.delete("/api/jobs/job-1?delete_files=true")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "deleted"
+    assert body["files_deleted"] is False
+    assert body["files_error"] == "lora.safetensors: in use"
 
 # ── Sample Image Routes ─────────────────────────────────────────────────
 

@@ -133,7 +133,7 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         data.onConfirm();
         // force=false here: the job isn't found in either jobs()/historicalJobs()
         // (neither was seeded in this test), so `active` resolves false.
-        expect(del).toHaveBeenCalledWith('archived-1', false);
+        expect(del).toHaveBeenCalledWith('archived-1', false, false);
     });
 
     it('deleteJob() passes force=true for a RUNNING job (backend requires it to kill the trainer instead of 409ing)', () => {
@@ -148,7 +148,59 @@ describe('TrainingJobQueueComponent — store reconciliation', () => {
         const data = overlay.openModal.mock.calls.at(-1)![1] as { onConfirm: () => void };
         data.onConfirm();
 
-        expect(del).toHaveBeenCalledWith('running-1', true);
+        expect(del).toHaveBeenCalledWith('running-1', true, false);
+    });
+
+
+    // ── DECISION-29: the dialog promised a deletion the backend never did ──
+    //
+    // It read "its output, checkpoints and logs will be permanently removed
+    // from disk. This cannot be undone", while `delete_job` removed only the
+    // record and never opened the output folder. Nothing was destroyed, which
+    // is why it survived so long -- but anyone deleting runs to reclaim disk
+    // reclaimed none. Answered (c): offer the choice, default to keeping.
+
+    it('does not claim disk deletion in the default dialog text', () => {
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: Mock };
+
+        component.deleteJob('archived-1');
+
+        const data = overlay.openModal.mock.calls.at(-1)![1] as {
+            message: string; checkboxLabel?: string; checkboxInitial?: boolean;
+        };
+        // The exact sentence that was untrue, in the shape it took.
+        expect(data.message).not.toMatch(/permanently removed from disk/i);
+        expect(data.message).toMatch(/kept unless/i);
+        // The destructive half exists, and is opt-IN.
+        expect(data.checkboxLabel).toMatch(/also delete/i);
+        expect(data.checkboxInitial).toBe(false);
+    });
+
+    it('passes the files flag through exactly as the user set it', () => {
+        const component = TestBed.inject(TrainingJobQueueComponent);
+        const overlay = TestBed.inject(OverlayStore) as unknown as { openModal: Mock };
+        const store = TestBed.inject(JobStore);
+        const del = vi.spyOn(store, 'deleteJob').mockResolvedValue(undefined);
+
+        component.deleteJob('archived-1');
+        const data = overlay.openModal.mock.calls.at(-1)![1] as {
+            onConfirm: (checked?: boolean) => void;
+        };
+
+        // Ticked -> the backend is asked to remove the files.
+        data.onConfirm(true);
+        expect(del).toHaveBeenCalledWith('archived-1', false, true);
+
+        // Un-ticked, and the undefined the modal sends when it has no checkbox
+        // at all, must both mean KEEP -- `undefined` reaching the service as a
+        // truthy-ish value is exactly how an opt-in becomes an opt-out.
+        del.mockClear();
+        data.onConfirm(false);
+        expect(del).toHaveBeenCalledWith('archived-1', false, false);
+        del.mockClear();
+        data.onConfirm();
+        expect(del).toHaveBeenCalledWith('archived-1', false, false);
     });
 
     it('toggleAutoResume() flips the signal and persists server-side', () => {

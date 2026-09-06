@@ -28,6 +28,7 @@ from app.api.schemas.job_schemas import (
     SetAutoQueueRequest,
     SetAutoResumeRequest,
     JobActionResponse,
+    JobDeleteResponse,
     JobRestartResponse,
     JobReorderResponse,
     JobCadenceSetResponse,
@@ -258,20 +259,32 @@ async def get_job_logs(job_id: str):
     return result
 
 
-@router.delete("/jobs/{job_id}", response_model=JobActionResponse)
-async def delete_job(job_id: str, force: bool = False):
+@router.delete("/jobs/{job_id}", response_model=JobDeleteResponse)
+async def delete_job(job_id: str, force: bool = False, delete_files: bool = False):
     """Remove a job from the registry.
 
     A RUNNING/PAUSED job's trainer subprocess must be explicitly torn down —
     pass ``force=true`` to kill the process tree first. Without it, deleting
     an active job 409s instead of silently orphaning a GPU-zombie trainer.
+
+    ``delete_files=true`` additionally removes the run's output folder (LoRA
+    files, checkpoints, samples, logs). It defaults to FALSE: deleting a job has
+    always removed only the record, and the response now reports what actually
+    happened to the files rather than leaving the caller to assume (DECISION-29).
     """
-    logger.info("deleting_job", job_id=job_id, force=force)
+    logger.info("deleting_job", job_id=job_id, force=force, delete_files=delete_files)
     try:
-        await asyncio.to_thread(job_manager.delete_job, job_id, force)
+        result = await asyncio.to_thread(
+            job_manager.delete_job, job_id, force, delete_files
+        )
     except JobConflictError as e:
         raise HTTPException(status_code=409, detail=str(e))
-    return {"status": "deleted", "job_id": job_id}
+    return {
+        "status": "deleted",
+        "job_id": job_id,
+        "files_deleted": bool(result.get("files_deleted")),
+        "files_error": result.get("files_error"),
+    }
 
 
 # ── Sampling Control ────────────────────────────────────────────────────

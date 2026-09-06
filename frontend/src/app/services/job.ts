@@ -112,6 +112,14 @@ export interface JobCheckpointMeta {
 /** Echo ack for a job lifecycle action (mirrors backend JobActionResponse). */
 export interface JobActionResponse { status: string; job_id: string; }
 
+/** Delete result. `files_deleted` is true only when the run's output folder is
+ *  verifiably gone; `files_error` says why not, so the UI can report what
+ *  happened instead of what was requested (DECISION-29). */
+export interface JobDeleteResponse extends JobActionResponse {
+  files_deleted: boolean;
+  files_error: string | null;
+}
+
 /** Aggregate cross-job statistics from `GET /jobs/history/stats`. */
 export interface ActivityWeek { week_start: string; completed: number; failed: number; stopped: number; other: number; }
 export interface FamilyStats { id: string | null; count: number; completed: number; success_rate: number; avg_step_time: number | null; best_loss: number | null; }
@@ -302,9 +310,17 @@ export class JobService {
 
   /** Remove a job. A RUNNING/PAUSED job's trainer subprocess must be killed
    *  explicitly — pass `force = true` (the queue's confirm-gated delete does
-   *  this for active jobs) or the backend 409s instead of orphaning it. */
-  deleteJob(jobId: string, force = false): Observable<JobActionResponse> {
-    return this.http.delete<JobActionResponse>(`${this.apiUrl}/${encodeURIComponent(jobId)}?force=${force}`);
+   *  this for active jobs) or the backend 409s instead of orphaning it.
+   *
+   *  `deleteFiles` also removes the run's output folder (LoRA files,
+   *  checkpoints, samples, logs). It defaults to FALSE, which is the behaviour
+   *  delete has always had — the dialog simply used to claim otherwise. The
+   *  response reports what actually happened to the files, so a caller never
+   *  has to assume (DECISION-29). */
+  deleteJob(jobId: string, force = false, deleteFiles = false): Observable<JobDeleteResponse> {
+    return this.http.delete<JobDeleteResponse>(
+      `${this.apiUrl}/${encodeURIComponent(jobId)}?force=${force}&delete_files=${deleteFiles}`,
+    );
   }
 
   getJobSamples(jobId: string): Observable<JobSample[]> {

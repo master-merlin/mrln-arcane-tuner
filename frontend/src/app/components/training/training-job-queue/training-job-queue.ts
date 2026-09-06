@@ -884,9 +884,16 @@ export class TrainingJobQueueComponent implements OnInit {
   }
 
   deleteJob(id: string) {
-    // Delete removes the run's output, checkpoints and logs from disk and
-    // cannot be undone — gate it behind the themed confirm modal (mirrors
-    // stopJob / onSaveAsTemplate). The delete only fires from onConfirm.
+    // Delete removes the job RECORD. It does not touch the run's output folder
+    // unless the user opts in below — and until 2026-09-06 this dialog said the
+    // opposite, promising that "output, checkpoints and logs will be
+    // permanently removed from disk" while `delete_job` never opened the
+    // folder. Nothing was destroyed, which made it the safe direction and the
+    // reason nobody noticed; but anyone deleting runs to reclaim disk reclaimed
+    // none, and anyone deleting a bad LoRA still had it. DECISION-29 answered
+    // (c): offer the choice, default to keeping files, and make the wording
+    // match whichever is chosen. Gated behind the themed confirm modal
+    // (mirrors stopJob / onSaveAsTemplate); the delete only fires from onConfirm.
     const job = this.jobs().find(j => j.id === id)
       ?? this.historicalJobs().find(j => j.id === id);
     const name = (job?.config?.['lora_name'] as string) || id;
@@ -895,14 +902,19 @@ export class TrainingJobQueueComponent implements OnInit {
         || job.status === JobStatus.PENDING
         || job.status === JobStatus.PAUSED);
     const message = active
-      ? `"${name}" is still queued or running. Deleting it stops the run and permanently removes its output, checkpoints and logs from disk. This cannot be undone.`
-      : `"${name}" and its output, checkpoints and logs will be permanently removed from disk. This cannot be undone.`;
+      ? `"${name}" is still queued or running. Deleting it stops the run and removes it from the job list. Its files on disk are kept unless you tick the box below.`
+      : `"${name}" will be removed from the job list. Its files on disk — the .safetensors, checkpoint folders and logs — are kept unless you tick the box below.`;
     this.overlay.openModal('confirm', {
       title: 'Delete this job?',
       message,
       confirmLabel: 'Delete',
       destructive: true,
-      onConfirm: () => {
+      // Default OFF, deliberately: the destructive half is opt-in, and the
+      // message above describes the DEFAULT rather than the worst case, so the
+      // dialog is true as it stands and true again once this is ticked.
+      checkboxLabel: 'Also delete this run’s files on disk (cannot be undone)',
+      checkboxInitial: false,
+      onConfirm: (alsoDeleteFiles?: boolean) => {
         // Optimistic delete via JobStore: the store updates synchronously
         // (row disappears from store.entities() this tick), the effect above
         // prunes our local jobs/historicalJobs signals so the template
@@ -911,7 +923,7 @@ export class TrainingJobQueueComponent implements OnInit {
         // message above already tells the user this stops the run — the
         // backend refuses to delete a RUNNING/PAUSED job otherwise (409),
         // to stop a blind caller from orphaning a GPU-zombie trainer.
-        void this.jobStore.deleteJob(id, active);
+        void this.jobStore.deleteJob(id, active, !!alsoDeleteFiles);
       },
     });
   }

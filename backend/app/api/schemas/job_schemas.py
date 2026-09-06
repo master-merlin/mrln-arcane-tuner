@@ -44,6 +44,20 @@ class JobActionResponse(BaseModel):
     job_id: str
 
 
+class JobDeleteResponse(JobActionResponse):
+    """Delete result, including what happened to the run's files on disk.
+
+    Declared as its own model because a FastAPI ``response_model`` silently
+    DROPS undeclared keys: returning ``files_deleted`` from the route while the
+    model was still ``JobActionResponse`` would have sent the UI nothing, and
+    the UI would have gone on reporting whatever it assumed. ``files_deleted``
+    is true only when the folder is verifiably gone; ``files_error`` carries why
+    not, so the toast can say what actually happened rather than what was asked.
+    """
+    files_deleted: bool = False
+    files_error: str | None = None
+
+
 class JobRestartResponse(JobActionResponse):
     """Restart action result, including whether the run folder was wiped."""
     fresh: bool

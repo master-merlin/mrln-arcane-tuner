@@ -829,8 +829,21 @@ class JobManager:
             return True
         return False
 
-    def delete_job(self, job_id: str, force: bool = False) -> None:
+    def delete_job(
+        self, job_id: str, force: bool = False, delete_files: bool = False
+    ) -> dict[str, object]:
         """Remove a job from the registry and the database. Broadcasts entity.changed.
+
+        ``delete_files`` additionally removes the run's output folder — the
+        LoRA files, checkpoint folders, samples and logs. It defaults to False,
+        and that default is the contract: for its whole life this method removed
+        only the record while the confirm dialog told users their files were
+        "permanently removed from disk". DECISION-29 answered (c): the caller
+        chooses, and whichever it chooses is what actually happens.
+
+        Returns ``{"files_deleted": bool, "files_error": str | None}`` so the
+        caller can tell the user the truth. ``files_deleted`` is only True when
+        the folder is verifiably gone.
 
         A RUNNING/PAUSED job has a live trainer subprocess holding VRAM.
         Deleting its registry entry without stopping it first would orphan a
@@ -888,6 +901,22 @@ class JobManager:
         # is off, another job is still active, or nothing is pending.)
         if freed_gpu:
             self.schedule_advance_queue()
+
+        # Files LAST, and only now. Two orderings matter and neither is taste:
+        # the trainer must already be dead, because a live process holds handles
+        # on Windows and the tree would half-delete; and `job` was captured at
+        # the top, before the record left the registry, because the output path
+        # is derived from the job's CONFIG and cannot be resolved once it is
+        # gone. Getting this backwards yields a delete that reports success and
+        # leaves the folder — the exact defect this option exists to fix.
+        files_deleted = False
+        files_error: str | None = None
+        if delete_files:
+            if job is None:
+                files_error = "no job record, so its output folder could not be located"
+            else:
+                files_deleted, files_error = self._delete_job_output_dir(job)
+        return {"files_deleted": files_deleted, "files_error": files_error}
 
     # ── Log Tailer Dispatcher ────────────────────────────────────────
 
@@ -1782,14 +1811,63 @@ class JobManager:
         run_name = f"{lora_name}_{model_part}"
         return os.path.join(output_dir, run_name)
 
-    def _delete_job_output_dir(self, job: Job) -> None:
-        """Delete a run's output folder (for a fresh restart). No-op if absent."""
+    def _delete_job_output_dir(self, job: Job) -> tuple[bool, str | None]:
+        """Delete a run's output folder. Returns ``(removed, error)``.
+
+        ``removed`` is decided by LOOKING at the filesystem afterwards, never by
+        the call returning. That distinction is the whole point of DECISION-29:
+        this used to be ``rmtree(ignore_errors=True)``, which reports nothing at
+        all, and the api-layer ``safe_rmtree`` returns True even when its retry
+        handler gave up. Either would let a caller tell a user "your files are
+        deleted" while a Windows file lock left them on disk — the same shape as
+        the dialog that promised a deletion the backend never performed.
+
+        A missing folder is not a failure: there is nothing to remove and the
+        post-condition the caller cares about already holds.
+        """
         import shutil
 
         output_dir = self._get_job_output_dir(job)
-        if output_dir and os.path.isdir(output_dir):
-            shutil.rmtree(output_dir, ignore_errors=True)
-            logger.info("deleted_job_output_dir", job_id=job.id, output_dir=output_dir)
+        if not output_dir or not os.path.isdir(output_dir):
+            return False, None
+
+        # Never delete the output ROOT, only a run folder inside it. A job whose
+        # config lost its lora_name and definition_id resolves to a run name of
+        # "untitled_", but a future change to that derivation could resolve to
+        # the root itself — and this call is now reachable from a user clicking
+        # Delete, not just from a restart. Refuse anything that is not a direct
+        # child of the configured root.
+        root = os.path.abspath(job.config.get("output_dir", "outputs"))
+        target = os.path.abspath(output_dir)
+        if target == root or os.path.dirname(target) != root:
+            logger.error(
+                "refusing_to_delete_job_output_dir",
+                job_id=job.id, path=target, root=root,
+            )
+            return False, "refused: that path is not a run folder inside the output root"
+
+        retry_errors: list[str] = []
+
+        def _on_error(func, err_path, exc):  # noqa: ANN001
+            """Retry once after a short sleep (Windows AV / indexer locking)."""
+            time.sleep(0.2)
+            try:
+                func(err_path)
+            except OSError as retry_exc:
+                retry_errors.append(f"{err_path}: {retry_exc}")
+
+        shutil.rmtree(target, onexc=_on_error)
+
+        if os.path.isdir(target):
+            detail = retry_errors[0] if retry_errors else "the folder is still on disk"
+            logger.warning(
+                "job_output_dir_not_fully_deleted",
+                job_id=job.id, path=target, error=detail,
+            )
+            return False, detail
+
+        logger.info("deleted_job_output_dir", job_id=job.id, output_dir=target)
+        return True, None
 
     def pause_job(self, job_id: str) -> None:
         """Send pause signal to a running training job."""
@@ -1873,7 +1951,16 @@ class JobManager:
         self._pending_rebuilds.pop(job_id, None)
 
         if fresh:
-            self._delete_job_output_dir(job)
+            # A restart still proceeds if the wipe was partial — but it no
+            # longer does so SILENTLY. "Restart fresh" that quietly reused a
+            # folder it failed to clear is the same untruth as a Delete that
+            # promises files are gone (DECISION-29); at least say it in the log.
+            _wiped, wipe_error = self._delete_job_output_dir(job)
+            if wipe_error:
+                logger.warning(
+                    "restart_fresh_output_not_fully_wiped",
+                    job_id=job_id, error=wipe_error,
+                )
             self._auto_resume_state.pop(job_id, None)  # clean slate → reset budget
             self._rebuild_restarts.pop(job_id, None)   # …including the rebuild budget
             # A from-zero restart must NOT resume. If this job was previously

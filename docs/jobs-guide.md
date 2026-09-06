@@ -95,10 +95,14 @@ Three recovery actions look similar and are easy to conflate:
 > stopped job removes it from this screen and from the app's job history
 > (a confirmation dialog names the job first). Deleting a running or paused
 > job additionally force-stops its trainer process after that confirmation.
-> Delete removes the job **record**; it does not touch the run's output
-> folder on disk — the `.safetensors` files, checkpoint folders and logs
-> stay where they were saved unless you remove them yourself. There is no
-> undo for the record itself once confirmed.
+> By default Delete removes the job **record** only: the run's output folder
+> stays on disk, so the `.safetensors` files, checkpoint folders and logs are
+> exactly where they were saved. The dialog carries a checkbox — **“Also
+> delete this run's files on disk”** — which is unticked by default; tick it
+> and the output folder is removed too. There is no undo for either, and if
+> the files cannot be removed (a file still locked by another program, say)
+> the job is still deleted and a message tells you the files are still there
+> rather than letting you assume they went.
 
 Training jobs are a separate queue from the topbar's **Task Center**, which
 tracks the shorter background operations dataset work kicks off (rescans,

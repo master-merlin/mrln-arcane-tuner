@@ -8,6 +8,7 @@ import os
 import asyncio
 
 import pytest
+import pathlib
 from unittest.mock import MagicMock, patch
 
 from app.core.job import Job, JobStatus
@@ -710,7 +711,12 @@ class TestRestartJob:
         job.config["resume_from_checkpoint"] = r"D:\outputs\run\final"
 
         persisted: dict = {}
-        with patch.object(mgr, "_delete_job_output_dir"), patch.object(
+        # `(removed, error)` since DECISION-29 — a bare MagicMock does not
+        # unpack, and restart_job now reads the error so a partial wipe is
+        # logged instead of passing silently.
+        with patch.object(
+            mgr, "_delete_job_output_dir", return_value=(True, None)
+        ), patch.object(
             mgr, "_reset_job_log_state"
         ), patch.object(mgr, "_persist_status"), patch.object(
             mgr, "_persist_config", side_effect=lambda jid, cfg: persisted.update(cfg)
@@ -2342,3 +2348,100 @@ class TestResumeFromCheckpoint:
         with pytest.raises(ValueError, match="Cannot resume"):
             mgr.resume_from_checkpoint(job.id, "checkpoint-000500")
 
+
+class TestDeleteJobChoosesWhetherFilesGo:
+    """DECISION-29 (c): Delete offers the choice, and does what it says.
+
+    For its whole life `delete_job` removed only the record while the confirm
+    dialog told users "its output, checkpoints and logs will be permanently
+    removed from disk. This cannot be undone." Nothing was destroyed -- the safe
+    direction, and why it went unnoticed -- but someone deleting runs to reclaim
+    disk reclaimed nothing and believed otherwise. Found by an mrln-docs agent
+    verifying the jobs guide against code, not by a test.
+    """
+
+    def _job_with_run_dir(self, mgr, tmp_path, name="run1"):
+        job = mgr.create_job("flux/dev", _make_config(output_dir=str(tmp_path), lora_name=name))
+        run_dir = pathlib.Path(mgr._get_job_output_dir(job))
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "lora_final.safetensors").write_text("weights", encoding="utf-8")
+        (run_dir / "checkpoint-000100").mkdir()
+        return job, run_dir
+
+    def test_the_default_keeps_the_files(self, tmp_path):
+        """The DEFAULT is the contract, not an implementation detail: a delete
+        that silently removed files would be a data-loss regression for every
+        caller written against the old behaviour."""
+        mgr = JobManager()
+        job, run_dir = self._job_with_run_dir(mgr, tmp_path)
+
+        result = mgr.delete_job(job.id)
+
+        assert mgr.get_job(job.id) is None
+        assert run_dir.is_dir(), "delete must not touch files unless asked"
+        assert result["files_deleted"] is False
+        assert result["files_error"] is None
+
+    def test_opting_in_actually_removes_them(self, tmp_path):
+        mgr = JobManager()
+        job, run_dir = self._job_with_run_dir(mgr, tmp_path)
+
+        result = mgr.delete_job(job.id, delete_files=True)
+
+        assert mgr.get_job(job.id) is None
+        assert not run_dir.exists()
+        assert result["files_deleted"] is True
+        assert result["files_error"] is None
+
+    def test_a_missing_folder_is_not_reported_as_a_failure(self, tmp_path):
+        """Nothing to remove means the caller's post-condition already holds."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config(output_dir=str(tmp_path), lora_name="ghost"))
+
+        result = mgr.delete_job(job.id, delete_files=True)
+
+        assert result["files_deleted"] is False
+        assert result["files_error"] is None
+
+    def test_a_failed_removal_is_REPORTED_not_swallowed(self, tmp_path, monkeypatch):
+        """The whole point. `rmtree(ignore_errors=True)` reports nothing, and
+        the api-layer `safe_rmtree` returns True even when its retry handler
+        gives up -- either would tell the user their files are gone while a
+        lock left them on disk, rebuilding the defect this fixes. Success is
+        decided by LOOKING at the filesystem afterwards."""
+        import shutil
+
+        mgr = JobManager()
+        job, run_dir = self._job_with_run_dir(mgr, tmp_path)
+
+        # A tree that refuses to go, the way a locked file behaves.
+        monkeypatch.setattr(shutil, "rmtree", lambda *a, **kw: None)
+
+        result = mgr.delete_job(job.id, delete_files=True)
+
+        assert mgr.get_job(job.id) is None, "the record still goes"
+        assert run_dir.is_dir()
+        assert result["files_deleted"] is False
+        assert result["files_error"], "a failure must carry a reason for the toast"
+
+    def test_it_refuses_to_delete_the_output_ROOT(self, tmp_path):
+        """A run folder, never the root. This path is now reachable from a user
+        clicking Delete, so a config that resolved to the root itself would take
+        every other run with it."""
+        mgr = JobManager()
+        job, _run_dir = self._job_with_run_dir(mgr, tmp_path, name="victim")
+        sibling = tmp_path / "someone_elses_run"
+        sibling.mkdir()
+
+        monkeypatch_target = str(tmp_path)
+        job.config["output_dir"] = monkeypatch_target
+        # Force the resolver to hand back the ROOT rather than a child.
+        object.__setattr__(
+            mgr, "_get_job_output_dir", lambda _job: monkeypatch_target
+        )
+
+        removed, error = mgr._delete_job_output_dir(job)
+
+        assert removed is False
+        assert "refused" in (error or "")
+        assert sibling.is_dir(), "the root and everything in it must survive"

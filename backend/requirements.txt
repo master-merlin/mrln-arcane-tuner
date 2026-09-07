@@ -132,7 +132,7 @@ triton==3.7.1; sys_platform == 'linux'
 typer==0.27.2  # transformers requires the full `typer`, not typer-slim; both provide an importable `typer` module so only one may be installed (see test_only_one_typer_distribution_is_installed)
 typing-inspection==0.4.4
 typing_extensions==4.15.0  # HELD with numpy above: sam3 0.1.4 declares typing_extensions<4.16.0.
-tzdata==2025.3
+tzdata==2026.3
 urllib3==2.7.0
 uvicorn==0.52.4
 wcwidth==0.8.3

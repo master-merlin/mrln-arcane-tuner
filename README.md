@@ -214,8 +214,19 @@ Two things to change before you use the pod for anything real:
   [entrypoint]  ACCESS TOKEN: <this is the one you sign in with>
   ```
 
+  It is on the pod's **Logs** tab, under **Container** — the token itself is
+  blanked out here, and so is the pod ID:
+
+  ![The RunPod pod page on the Logs tab with the Container feed selected, showing the entrypoint's ACCESS TOKEN line and the note that the token was reused from /workspace/.auth_token](docs/images/runpod-pod-log-access-token.png)
+
   Setting `MRLN_AUTH_TOKEN` to a value of your own is still honoured and takes
   precedence — a token you chose is never replaced and never printed.
+
+  **Treat that line as the password it is.** Anyone with your pod's proxy URL
+  and this token has your datasets, models and GPU, so do not paste an
+  unredacted pod log into an issue or a screenshot. To retire a token, delete
+  `/workspace/.auth_token` and restart the pod, or set `MRLN_AUTH_TOKEN`
+  yourself.
 
 - **Attach a network volume mounted at `/workspace`.** A template cannot bring
   storage with it. Without one the pod runs fine and destroys everything when it

@@ -26,7 +26,7 @@ fastapi==0.141.1
 filelock==3.32.4
 flatbuffers==25.12.19
 frozenlist==1.8.0
-fsspec==2025.10.0
+fsspec==2026.7.0
 ftfy==6.3.1
 h11==0.16.0
 hf-xet==1.6.0

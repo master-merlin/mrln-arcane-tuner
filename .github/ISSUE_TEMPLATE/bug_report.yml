@@ -1,0 +1,46 @@
+name: Bug report
+description: Something does not work the way the documentation says it should.
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report this. A report with steps that reproduce the problem
+        can be turned into a fix right away; without them we will first ask for the missing details.
+        Please do not post API keys, tokens or private file contents.
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: |
+        Numbered steps that make the problem happen again from a fresh start, plus the smallest
+        dataset, config or log excerpt that shows it. Leave it empty if you cannot reproduce it yet.
+      placeholder: |
+        1. Open a dataset with ...
+        2. Click ...
+        3. The caption loses its last line
+    validations:
+      required: false
+  - type: textarea
+    id: versions
+    attributes:
+      label: Versions
+      description: The app version, how you run it (local install or container), the OS, the GPU and driver.
+      placeholder: 0.8.0-beta.3, local install, Windows 11, RTX 4090, driver 580.xx
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs
+      description: The relevant lines of the server log or the browser console, if any.
+      render: text
+    validations:
+      required: false

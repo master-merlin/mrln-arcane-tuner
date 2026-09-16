@@ -28,13 +28,19 @@ Design, item by item:
   judge-then-unlink has a window in which a second waiter recovers the same
   stale file and takes the lock, and unlinking THEN deletes a live owner's
   lock and admits two holders at once (VERIFY 1.01). So recovery takes a
-  turn — its own ``O_EXCL`` sentinel ``.<name>.lock.recover``, the one place
-  an unlink of a stale lock may happen — and inside that turn re-reads the
-  file and unlinks only if the bytes are still the ones it judged stale.
-  A stale owner is dead, so it cannot release its own file; with every
-  recovery serialised, identical bytes inside the turn mean the same file.
-  A sentinel orphaned by a crashed recoverer is itself recovered by age
-  (``UNREADABLE_GRACE_S``), so a crash cannot wedge the lock forever.
+  turn — the one place an unlink of a stale lock may happen — and inside that
+  turn re-reads the file and unlinks only if the bytes are still the ones it
+  judged stale. A stale owner is dead, so it cannot release its own file; with
+  every recovery serialised, identical bytes inside the turn mean the same file.
+  The turn itself is the OS's exclusive lock on ``.<name>.lock.recover``, a
+  file created once and NEVER removed. An earlier version took the turn with a
+  second ``O_EXCL`` file and broke an orphaned one by age — but "old enough"
+  judges the NAME, and between the ``stat`` and the ``unlink`` that name can
+  already belong to a fresh, live turn: a merely slow recoverer was robbed and
+  two recoverers ran at once, which is precisely what makes the identity check
+  above conclusive (VERIFY 2.02). A kernel lock has no such window: it is bound
+  to the open handle, so it cannot be stolen, and the kernel drops it when the
+  holder dies, so a crashed recoverer cannot wedge the lock either.
 * **timeout** — a bounded wait, then ``MachineLockTimeout`` naming the holder.
   The pytest side turns that into a FAILURE, never a skip (a silent skip is a
   gate hole) and never a proceed (proceeding is the collision the lock exists
@@ -67,8 +73,12 @@ POLL_S = 0.1
 # A file that exists but cannot be parsed is a winner mid-write for this long;
 # after it, it is a crashed writer and is recovered like a dead pid.
 UNREADABLE_GRACE_S = 10.0
-# The recovery turn's file, beside the lock it recovers.
+# The recovery turn's file, beside the lock it recovers. Created once and never
+# deleted: the turn is the OS lock on it, not its existence (see _recovery_turn).
 RECOVER_SUFFIX = ".recover"
+# The byte of that file the OS lock is taken on — past the pid written at 0,
+# because a Windows lock makes its range unreadable to other processes.
+TURN_LOCK_OFFSET = 1024
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]  # backend/tests/support/x.py → repo
 
@@ -153,36 +163,78 @@ def recovery_sentinel(path: Path) -> Path:
     return path.with_name(path.name + RECOVER_SUFFIX)
 
 
+def _try_lock(fd: int) -> bool:
+    """Take the OS's exclusive lock on *fd*'s turn byte, or report failure.
+
+    The KERNEL owns this lock: it goes away when the handle closes and when the
+    process dies, crash included. That is why the turn needs no age heuristic
+    and no unlink — and an unlink is exactly what could never be bound to the
+    file it judged (VERIFY 2.02): ``stat`` the name, ``unlink`` the name, and
+    in between the name may belong to a fresh, live turn.
+
+    The byte locked is ``TURN_LOCK_OFFSET``, past the pid the file carries for
+    a human reading it: on Windows a locked range is MANDATORY, so locking
+    byte 0 would make the file unreadable to everyone else, including this
+    module's own test.
+    """
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, TURN_LOCK_OFFSET, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError:
+            return False  # another process holds the turn
+        return True
+    import fcntl
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, TURN_LOCK_OFFSET, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_UN)
+
+
 @contextmanager
 def _recovery_turn(path: Path) -> Iterator[bool]:
     """Yield ``True`` while THIS process is the only one recovering *path*.
 
-    ``O_EXCL`` again: the same primitive the lock itself is built on. A
-    sentinel left by a recoverer that died is broken by age — recovery is a
-    few file operations, so anything older than the grace is a corpse.
+    The turn file is created once and never removed — not on release, not by
+    age. Its EXISTENCE grants nothing; the OS lock on it does, and that is
+    bound to the open handle, so the turn cannot be stolen from a slow holder
+    nor leaked by a crashed one.
     """
     sentinel = recovery_sentinel(path)
     try:
-        fd = os.open(sentinel, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-    except FileExistsError:
-        try:
-            if time.time() - sentinel.stat().st_mtime > UNREADABLE_GRACE_S:
-                sentinel.unlink()
-        except OSError:
-            pass  # gone, or someone else's to clear — the caller re-polls
-        yield False
+        fd = os.open(sentinel, os.O_CREAT | os.O_RDWR)
+    except OSError:
+        yield False  # e.g. the directory vanished — the caller re-polls
         return
     try:
-        os.write(fd, str(os.getpid()).encode("ascii"))
+        if not _try_lock(fd):
+            yield False
+            return
+        try:
+            os.ftruncate(fd, 0)
+            os.lseek(fd, 0, os.SEEK_SET)
+            os.write(fd, str(os.getpid()).encode("ascii"))  # who holds it, for a human
+            yield True
+        finally:
+            _unlock(fd)
     finally:
         os.close(fd)
-    try:
-        yield True
-    finally:
-        try:
-            sentinel.unlink()
-        except FileNotFoundError:
-            pass
 
 
 def _recover(path: Path, judged: str | None) -> None:

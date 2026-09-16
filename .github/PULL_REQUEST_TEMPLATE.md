@@ -10,7 +10,7 @@
 
 <!-- gen:gate:list -->
 - [ ] `./backend/venv/Scripts/python.exe -m ruff check .` green
-- [ ] `./backend/venv/Scripts/python.exe -m pytest backend` green
+- [ ] `./backend/venv/Scripts/python.exe -m pytest backend -n 4 --dist loadgroup` green
 - [ ] `npm --prefix frontend run test -- --watch=false` green
 - [ ] `npm --prefix frontend run build` green
 <!-- /gen -->

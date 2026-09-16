@@ -17,6 +17,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.support import machine_lock as machine_lock_mod
 from tests.support.machine_lock import (
     LOCK_DIR_ENV,
     MachineLockTimeout,
@@ -155,6 +156,85 @@ def test_an_unreadable_lock_is_a_writer_in_flight_until_the_grace_runs_out(tmp_p
         assert read_holder(p).pid == os.getpid()
 
 
+def _live_owner(worker: str = "gwB") -> str:
+    """Owner metadata for a LIVE process — this one, so ``psutil`` agrees."""
+    return json.dumps({"pid": os.getpid(), "worker": worker, "tree": "another-tree",
+                       "since": "2026-09-16T00:00:00+00:00"})
+
+
+def test_recovery_never_deletes_a_lock_another_waiter_took_in_the_window(tmp_path,
+                                                                        monkeypatch):
+    """VERIFY 1.01: between judging a lock stale and unlinking it, a second
+    waiter can have recovered it and taken it. Unlinking THAT file admits two
+    holders at once. The window is forced open here by making the liveness
+    probe itself replace the file — exactly what a second waiter does.
+    """
+    p = tmp_path / ".probe.lock"
+    p.write_text(json.dumps({"pid": DEAD_PID, "worker": None, "tree": "x",
+                             "since": "2026-01-01T00:00:00+00:00"}))
+    live, probes = _live_owner(), []
+    real_alive = machine_lock_mod._pid_alive
+
+    def racing_probe(pid: int) -> bool:
+        probes.append(pid)
+        if len(probes) == 1:
+            assert pid == DEAD_PID
+            p.write_text(live)  # waiter B recovered it and now holds it
+            return False
+        return real_alive(pid)
+
+    monkeypatch.setattr(machine_lock_mod, "_pid_alive", racing_probe)
+    with pytest.raises(MachineLockTimeout):
+        with machine_lock("probe", path=p, timeout_s=0.5):
+            pass
+    assert p.exists(), "the recovering waiter deleted the live lock of waiter B"
+    assert p.read_text() == live, "B's lock was replaced — two holders at once"
+
+
+def test_recovery_leaves_no_sentinel_behind(tmp_path):
+    """The recovery turn is itself a file; a real recovery must not leak it."""
+    p = tmp_path / ".probe.lock"
+    p.write_text(json.dumps({"pid": DEAD_PID, "worker": None, "tree": "x",
+                             "since": "2026-01-01T00:00:00+00:00"}))
+    with machine_lock("probe", path=p, timeout_s=5.0):
+        pass
+    assert not p.exists()
+    assert sorted(q.name for q in tmp_path.iterdir()) == [], list(tmp_path.iterdir())
+
+
+def test_a_live_recovery_turn_keeps_a_second_waiter_out_of_the_unlink(tmp_path):
+    """The serialisation itself, seen: while another process holds the recovery
+    turn, this waiter may not remove the stale lock — only ONE process is ever
+    between a judgement and an unlink, which is what makes the identity check
+    conclusive. It waits its bound instead."""
+    p = tmp_path / ".probe.lock"
+    stale = json.dumps({"pid": DEAD_PID, "worker": None, "tree": "x",
+                        "since": "2026-01-01T00:00:00+00:00"})
+    p.write_text(stale)
+    sentinel = machine_lock_mod.recovery_sentinel(p)
+    sentinel.write_text("a recoverer at work")  # fresh: inside the grace
+    with pytest.raises(MachineLockTimeout):
+        with machine_lock("probe", path=p, timeout_s=0.5):
+            pass
+    assert p.read_text() == stale, "recovered a lock while another turn was open"
+    sentinel.unlink()
+
+
+def test_a_sentinel_left_by_a_crashed_recoverer_does_not_block_recovery(tmp_path):
+    """Prove the negative for the serialisation itself: an orphaned turn older
+    than the grace must not make the lock unrecoverable forever."""
+    p = tmp_path / ".probe.lock"
+    p.write_text(json.dumps({"pid": DEAD_PID, "worker": None, "tree": "x",
+                             "since": "2026-01-01T00:00:00+00:00"}))
+    sentinel = machine_lock_mod.recovery_sentinel(p)
+    sentinel.write_text("crashed recoverer")
+    old = time.time() - 10 * machine_lock_mod.UNREADABLE_GRACE_S
+    os.utime(sentinel, (old, old))
+    with machine_lock("probe", path=p, timeout_s=10.0):
+        assert read_holder(p).pid == os.getpid()
+    assert not sentinel.exists()
+
+
 # ── a live holder past the bound is a FAILURE naming it ──────────────────
 
 
@@ -225,8 +305,24 @@ def test_a_grouped_test_holds_its_group_lock_while_it_runs():
         raise RuntimeError("deliberate")
 
 
+@pytest.mark.xdist_group("lockprobe")
+def test_a_second_grouped_test_of_the_group_takes_the_lock_in_its_turn():
+    """Runs in the same child as the probe above (VERIFY 1.02): if the first
+    test's teardown failed to release, this one waits out its whole bound
+    against its own still-live process and errors."""
+    p = lock_path("lockprobe")
+    assert p.exists(), f"no lock at {p} — the marker/lock pairing is gone"
+    holder = read_holder(p)
+    assert holder is not None and holder.pid == os.getpid(), holder
+
+
+_PROBE_1 = "test_a_grouped_test_holds_its_group_lock_while_it_runs"
+_PROBE_2 = "test_a_second_grouped_test_of_the_group_takes_the_lock_in_its_turn"
+
+
 def _child_pytest(lock_dir_: Path, *extra: str, raise_: bool,
-                  env_extra: dict | None = None) -> subprocess.CompletedProcess:
+                  env_extra: dict | None = None,
+                  nodes: tuple[str, ...] = (_PROBE_1,)) -> subprocess.CompletedProcess:
     env = dict(os.environ, **{LOCK_DIR_ENV: str(lock_dir_)}, **(env_extra or {}))
     # An invented worker id keeps the child's logs off the serial names the
     # parent pytest may be holding open (see test_xdist_worker_isolation.py).
@@ -235,8 +331,27 @@ def _child_pytest(lock_dir_: Path, *extra: str, raise_: bool,
         env["MRLN_LOCK_PROBE_RAISE"] = "1"
     return subprocess.run(
         [sys.executable, "-m", "pytest", "-q", "-p", "no:cacheprovider", *extra,
-         f"{__file__}::test_a_grouped_test_holds_its_group_lock_while_it_runs"],
+         *(f"{__file__}::{node}" for node in nodes)],
         cwd=str(BACKEND), env=env, capture_output=True, text=True, timeout=300)
+
+
+def test_a_raising_teardown_hook_still_releases_the_group_lock(tmp_path):
+    """VERIFY 1.02: a fixture finaliser that raises makes the runner's own
+    teardown hookimpl raise, and pluggy then never calls the impls ordered
+    after it. With the release in a plain ``trylast`` hook the lock survived
+    the test, and the NEXT test of the group waited out its bound against its
+    own still-live process. Observable: the second probe passes, no
+    machine-lock message anywhere, no lock file left on disk."""
+    proc = _child_pytest(tmp_path, "-p", "tests.support.raising_teardown_plugin",
+                         raise_=False, nodes=(_PROBE_1, _PROBE_2),
+                         env_extra={"MRLN_MACHINE_LOCK_TIMEOUT": "3"})
+    assert "deliberate teardown explosion" in proc.stdout, proc.stdout[-2000:]
+    assert "machine lock" not in proc.stdout, (
+        "the second grouped test timed out against the first test's unreleased lock\n"
+        + proc.stdout[-2000:])
+    assert "2 passed" in proc.stdout, proc.stdout[-2000:]
+    assert not (tmp_path / ".lockprobe.lock").exists(), (
+        "the lock outlived a teardown that raised")
 
 
 def test_the_group_lock_is_gone_after_a_grouped_test_raised(tmp_path):

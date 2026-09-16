@@ -103,10 +103,22 @@ def pytest_runtest_setup(item):
     pytest.fail(f"xdist_group({group!r}) machine lock: {timeout_msg}", pytrace=False)
 
 
-@pytest.hookimpl(trylast=True)
+@pytest.hookimpl(wrapper=True)
 def pytest_runtest_teardown(item, nextitem):
-    """Release AFTER the fixtures are torn down (trylast), whatever the outcome."""
-    path = getattr(item, _LOCK_ATTR, None)
-    if path is not None:
-        delattr(item, _LOCK_ATTR)
-        release(path)
+    """Release AFTER the fixtures are torn down, whatever the outcome.
+
+    A WRAPPER, not a ``trylast`` hookimpl: pluggy stops calling the remaining
+    impls once one of them raises, so a plain trylast release is skipped
+    whenever an earlier teardown hook (a plugin's, a fixture finaliser's
+    dispatcher) blows up — and the next test of the group then waits out its
+    whole bound against its own still-live worker (VERIFY 1.02). The wrapper's
+    ``finally`` runs for every outcome, which is the invariant this needs:
+    every resource released in ``finally``.
+    """
+    try:
+        return (yield)
+    finally:
+        path = getattr(item, _LOCK_ATTR, None)
+        if path is not None:
+            delattr(item, _LOCK_ATTR)
+            release(path)

@@ -24,6 +24,17 @@ Design, item by item:
   TERMINATES the process) means the file is removed and the open retried. An
   unreadable file (the winner between ``open`` and ``write``) counts as live
   for ``UNREADABLE_GRACE_S`` and stale after. A live owner is never broken.
+  The removal is **bound to the identity that was judged**: a naked
+  judge-then-unlink has a window in which a second waiter recovers the same
+  stale file and takes the lock, and unlinking THEN deletes a live owner's
+  lock and admits two holders at once (VERIFY 1.01). So recovery takes a
+  turn — its own ``O_EXCL`` sentinel ``.<name>.lock.recover``, the one place
+  an unlink of a stale lock may happen — and inside that turn re-reads the
+  file and unlinks only if the bytes are still the ones it judged stale.
+  A stale owner is dead, so it cannot release its own file; with every
+  recovery serialised, identical bytes inside the turn mean the same file.
+  A sentinel orphaned by a crashed recoverer is itself recovered by age
+  (``UNREADABLE_GRACE_S``), so a crash cannot wedge the lock forever.
 * **timeout** — a bounded wait, then ``MachineLockTimeout`` naming the holder.
   The pytest side turns that into a FAILURE, never a skip (a silent skip is a
   gate hole) and never a proceed (proceeding is the collision the lock exists
@@ -56,6 +67,8 @@ POLL_S = 0.1
 # A file that exists but cannot be parsed is a winner mid-write for this long;
 # after it, it is a crashed writer and is recovered like a dead pid.
 UNREADABLE_GRACE_S = 10.0
+# The recovery turn's file, beside the lock it recovers.
+RECOVER_SUFFIX = ".recover"
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]  # backend/tests/support/x.py → repo
 
@@ -92,13 +105,20 @@ def lock_path(name: str) -> Path:
     return lock_dir() / f".{name}.lock"
 
 
+def _parse_holder(raw: str) -> Holder | None:
+    try:
+        data = json.loads(raw)
+        return Holder(pid=int(data["pid"]), worker=data.get("worker"),
+                      tree=str(data["tree"]), since=str(data["since"]))
+    except (ValueError, KeyError, TypeError):
+        return None
+
+
 def read_holder(path: Path) -> Holder | None:
     """The owner recorded in *path*, or ``None`` when absent or not yet written."""
     try:
-        data = json.loads(path.read_text(encoding="utf-8"))
-        return Holder(pid=int(data["pid"]), worker=data.get("worker"),
-                      tree=str(data["tree"]), since=str(data["since"]))
-    except (OSError, ValueError, KeyError, TypeError):
+        return _parse_holder(path.read_text(encoding="utf-8"))
+    except OSError:
         return None
 
 
@@ -108,15 +128,75 @@ def _pid_alive(pid: int) -> bool:
     return psutil.pid_exists(pid)
 
 
-def _is_stale(path: Path) -> bool:
-    holder = read_holder(path)
+def _inspect(path: Path) -> tuple[bool, str | None]:
+    """``(is_stale, the exact bytes judged)``; ``None`` when unreadable/absent.
+
+    The bytes come back with the verdict so the caller can bind an unlink to
+    the identity it judged, instead of to the path (VERIFY 1.01).
+    """
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError:
+        return False, None  # vanished under us — the retry will find out
+    holder = _parse_holder(raw)
     if holder is not None:
-        return not _pid_alive(holder.pid)
+        return (not _pid_alive(holder.pid)), raw
     try:
         age = time.time() - path.stat().st_mtime
     except OSError:
-        return False  # vanished under us — the retry will find out
-    return age > UNREADABLE_GRACE_S
+        return False, None
+    return age > UNREADABLE_GRACE_S, raw
+
+
+def recovery_sentinel(path: Path) -> Path:
+    """The turn-taking file for recovering *path*; public for its own test."""
+    return path.with_name(path.name + RECOVER_SUFFIX)
+
+
+@contextmanager
+def _recovery_turn(path: Path) -> Iterator[bool]:
+    """Yield ``True`` while THIS process is the only one recovering *path*.
+
+    ``O_EXCL`` again: the same primitive the lock itself is built on. A
+    sentinel left by a recoverer that died is broken by age — recovery is a
+    few file operations, so anything older than the grace is a corpse.
+    """
+    sentinel = recovery_sentinel(path)
+    try:
+        fd = os.open(sentinel, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        try:
+            if time.time() - sentinel.stat().st_mtime > UNREADABLE_GRACE_S:
+                sentinel.unlink()
+        except OSError:
+            pass  # gone, or someone else's to clear — the caller re-polls
+        yield False
+        return
+    try:
+        os.write(fd, str(os.getpid()).encode("ascii"))
+    finally:
+        os.close(fd)
+    try:
+        yield True
+    finally:
+        try:
+            sentinel.unlink()
+        except FileNotFoundError:
+            pass
+
+
+def _recover(path: Path, judged: str | None) -> None:
+    """Remove *path* only if it is still byte-for-byte the lock we judged stale."""
+    with _recovery_turn(path) as mine:
+        if not mine:
+            return
+        stale, raw = _inspect(path)
+        if not stale or raw != judged:
+            return  # a different — possibly LIVE — lock lives here now
+        try:
+            path.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _write_owner(fd: int) -> None:
@@ -133,12 +213,14 @@ def acquire(path: Path, timeout_s: float, poll_s: float = POLL_S) -> None:
         try:
             fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
         except FileExistsError:
-            if _is_stale(path):
-                try:
-                    path.unlink()
-                except FileNotFoundError:
-                    pass  # another waiter recovered it first; race for it below
-                continue
+            stale, judged = _inspect(path)
+            if stale:
+                _recover(path, judged)
+                if not path.exists():
+                    continue  # recovered: race for the free path at once
+                # still there: another waiter's turn, or a lock that is no
+                # longer the one we judged. Wait it out like any live owner —
+                # recovery never spins unbounded.
             if time.monotonic() >= deadline:
                 holder = read_holder(path)
                 who = holder.describe() if holder else f"an unreadable owner ({path})"

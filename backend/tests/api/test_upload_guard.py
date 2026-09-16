@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 from fastapi import HTTPException
@@ -48,15 +49,29 @@ class FakeUpload:
         return chunk
 
 
-def _temp_files() -> set[Path]:
-    return set(Path(tempfile.gettempdir()).glob("*.ziptest"))
+def _unique_suffix() -> str:
+    """A suffix no other test — and no other xdist worker — can produce.
+
+    ``tempfile.gettempdir()`` is one directory per MACHINE, so a glob for
+    ``*.ziptest`` also sees the IN-FLIGHT temp file of a sibling worker running
+    these same tests under ``-n 4`` and reports it as this test's leak
+    (observed 2026-09-16: ``test_client_disconnect_mid_upload_leaves_no_temp_file``
+    failed on ``D:/docker/tmp/tmpw0v9oog2.ziptest``, a file it never created).
+    The invariant is "the files THIS upload left behind", so the identity of
+    this test's uploads — its suffix — is what the glob must be keyed on.
+    """
+    return f".{uuid4().hex}.ziptest"
+
+
+def _temp_files(suffix: str) -> set[Path]:
+    return set(Path(tempfile.gettempdir()).glob(f"*{suffix}"))
 
 
 @pytest.mark.asyncio
 async def test_upload_under_the_limit_is_written_whole():
     payload = b"x" * (3 * CHUNK_BYTES + 17)
     async with spooled_upload(
-        FakeUpload(payload), suffix=".ziptest", max_bytes=len(payload) + 1
+        FakeUpload(payload), suffix=_unique_suffix(), max_bytes=len(payload) + 1
     ) as path:
         assert path.read_bytes() == payload
 
@@ -66,7 +81,7 @@ async def test_upload_over_the_limit_is_413():
     payload = b"x" * (2 * CHUNK_BYTES)
     with pytest.raises(HTTPException) as exc:
         async with spooled_upload(
-            FakeUpload(payload), suffix=".ziptest", max_bytes=CHUNK_BYTES
+            FakeUpload(payload), suffix=_unique_suffix(), max_bytes=CHUNK_BYTES
         ):
             raise AssertionError("body must not run for an oversized upload")
     assert exc.value.status_code == 413
@@ -77,48 +92,90 @@ async def test_upload_over_the_limit_is_413():
 @pytest.mark.asyncio
 async def test_oversized_upload_leaves_no_temp_file():
     """The cap is worthless if the rejected bytes stay on disk."""
-    before = _temp_files()
+    suffix = _unique_suffix()
+    before = _temp_files(suffix)
     payload = b"x" * (4 * CHUNK_BYTES)
     with pytest.raises(HTTPException):
         async with spooled_upload(
-            FakeUpload(payload), suffix=".ziptest", max_bytes=CHUNK_BYTES
+            FakeUpload(payload), suffix=suffix, max_bytes=CHUNK_BYTES
         ):
             pass
-    assert _temp_files() == before
+    assert _temp_files(suffix) == before
 
 
 @pytest.mark.asyncio
 async def test_client_disconnect_mid_upload_leaves_no_temp_file():
     """The case the plan called out: a partial file is slow disk exhaustion."""
-    before = _temp_files()
+    suffix = _unique_suffix()
+    before = _temp_files(suffix)
     payload = b"x" * (8 * CHUNK_BYTES)
     with pytest.raises(ConnectionResetError):
         async with spooled_upload(
-            FakeUpload(payload, fail_after=2), suffix=".ziptest"
+            FakeUpload(payload, fail_after=2), suffix=suffix
         ):
             raise AssertionError("body must not run when the client vanished")
-    assert _temp_files() == before
+    assert _temp_files(suffix) == before
+
+
+@pytest.mark.asyncio
+async def test_a_sibling_workers_temp_file_is_not_this_tests_leak():
+    """The parallel-gate defect these tests carried, pinned (LANE-63).
+
+    Under ``-n 4`` a sibling worker holds its own ``*.ziptest`` open in the
+    SAME machine temp dir for the length of its upload. A leak check that
+    globs the whole suffix therefore fails on a file it never created — a
+    red gate that says nothing about the code. Here that file is present for
+    real; the check must still be about this test's own uploads, and must
+    not touch the stranger's file.
+    """
+    foreign = Path(tempfile.gettempdir()) / f"tmp{uuid4().hex}.ziptest"
+
+    class SiblingWorkerUpload(FakeUpload):
+        """Its first chunk is when the OTHER worker opens its own temp file —
+        i.e. after this test took its 'before' snapshot, which is what makes
+        the stranger indistinguishable from a leak to a whole-suffix glob."""
+
+        async def read(self, size: int = -1) -> bytes:
+            if self.reads == 0:
+                foreign.write_bytes(b"a sibling xdist worker's upload, in flight")
+            return await super().read(size)
+
+    try:
+        suffix = _unique_suffix()
+        before = _temp_files(suffix)
+        with pytest.raises(ConnectionResetError):
+            async with spooled_upload(
+                SiblingWorkerUpload(b"x" * (8 * CHUNK_BYTES), fail_after=2),
+                suffix=suffix,
+            ):
+                raise AssertionError("body must not run when the client vanished")
+        assert _temp_files(suffix) == before
+        assert foreign.exists(), "the check reached into another worker's files"
+    finally:
+        foreign.unlink(missing_ok=True)
 
 
 @pytest.mark.asyncio
 async def test_failure_inside_the_caller_body_still_cleans_up():
     """Cleanup is unconditional, not just on the guard's own error paths."""
-    before = _temp_files()
+    suffix = _unique_suffix()
+    before = _temp_files(suffix)
     with pytest.raises(ZeroDivisionError):
-        async with spooled_upload(FakeUpload(b"small"), suffix=".ziptest"):
+        async with spooled_upload(FakeUpload(b"small"), suffix=suffix):
             1 / 0  # noqa: B018
-    assert _temp_files() == before
+    assert _temp_files(suffix) == before
 
 
 @pytest.mark.asyncio
 async def test_success_path_also_removes_the_temp_file():
     """Prove the negative: the happy path is not the leak either."""
-    before = _temp_files()
-    async with spooled_upload(FakeUpload(b"payload"), suffix=".ziptest") as path:
+    suffix = _unique_suffix()
+    before = _temp_files(suffix)
+    async with spooled_upload(FakeUpload(b"payload"), suffix=suffix) as path:
         assert path.exists()
         kept = path
     assert not kept.exists()
-    assert _temp_files() == before
+    assert _temp_files(suffix) == before
 
 
 @pytest.mark.asyncio
@@ -132,7 +189,8 @@ async def test_limit_is_on_bytes_read_not_a_declared_length():
     upload = FakeUpload(payload)
     upload.headers = {"content-length": "1"}  # the lie
     with pytest.raises(HTTPException) as exc:
-        async with spooled_upload(upload, suffix=".ziptest", max_bytes=CHUNK_BYTES):
+        async with spooled_upload(upload, suffix=_unique_suffix(),
+                                  max_bytes=CHUNK_BYTES):
             pass
     assert exc.value.status_code == 413
 
@@ -154,7 +212,7 @@ async def test_no_more_than_one_chunk_is_written_past_the_limit():
 
     with pytest.raises(HTTPException):
         async with spooled_upload(
-            Watcher(payload), suffix=".ziptest", max_bytes=2 * CHUNK_BYTES
+            Watcher(payload), suffix=_unique_suffix(), max_bytes=2 * CHUNK_BYTES
         ):
             pass
 

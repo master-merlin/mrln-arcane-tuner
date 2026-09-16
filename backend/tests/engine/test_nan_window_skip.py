@@ -229,6 +229,7 @@ def test_all_nan_window_emits_marker_log_step(tmp_path):
 # ── Test 2: ALL-NaN window under AMP — scaler must be skipped too ─────────
 
 
+@pytest.mark.xdist_group("gpu")  # tensors on the real device (LANE-63: machine lock)
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="autocast(cuda, enabled=True) needs a CUDA device")
 def test_all_nan_window_under_amp_skips_scaler_too(tmp_path):
     t = _ScriptedTrainer(

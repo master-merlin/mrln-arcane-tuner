@@ -20,16 +20,32 @@ from app.core.logger import (
 
 # ── Helpers ──────────────────────────────────────────────────────────────
 
+_RESTORED_LOGGERS = ["uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"]
+
+
 @pytest.fixture(autouse=True)
 def _clean_logging():
-    """Reset root logger handlers after each test to avoid cross-contamination."""
-    yield
+    """Put the loggers back the way this test FOUND them.
+
+    The old version wiped ``root.handlers`` after each test. That also
+    discarded the session's ``tests.log`` FileHandler installed by
+    ``tests/conftest.py::_isolate_test_logging``, so from this module on
+    nothing in the run reached ``tests.log`` (measured 2026-09-02: the log
+    stopped at 02:01 in a 73-minute run) and the LANE-63 isolation test went
+    red whenever it ran after this file. Snapshot and restore is what "avoid
+    cross-contamination" actually requires.
+    """
     root = logging.getLogger()
-    root.handlers = []
-    for name in ["uvicorn", "uvicorn.access", "uvicorn.error", "fastapi"]:
+    before = (list(root.handlers), root.level)
+    named = {n: (list(logging.getLogger(n).handlers), logging.getLogger(n).propagate)
+             for n in _RESTORED_LOGGERS}
+    yield
+    root.handlers, level = list(before[0]), before[1]
+    root.setLevel(level)
+    for name, (handlers, propagate) in named.items():
         lg = logging.getLogger(name)
-        lg.handlers = []
-        lg.propagate = True
+        lg.handlers = list(handlers)
+        lg.propagate = propagate
 
 
 # ── setup_logging ────────────────────────────────────────────────────────
@@ -225,3 +241,17 @@ class TestEndpointFilter:
         )
         # All filters should pass this
         assert all(f.filter(record) for f in filters)
+
+
+# ── the cleanup restores, it does not wipe (LANE-63) ─────────────────────
+
+
+def test_the_session_file_handler_survives_this_module():
+    """Runs LAST in this file. Every test above called setup_logging and was
+    cleaned up by ``_clean_logging``; the session's tests.log FileHandler
+    (``tests/conftest.py::_isolate_test_logging``) must still be on the root
+    logger, or the rest of the run logs to nowhere. RED with the old
+    ``root.handlers = []`` cleanup."""
+    files = [h.baseFilename for h in logging.getLogger().handlers
+             if isinstance(h, logging.FileHandler)]
+    assert any(f.endswith(".log") and "tests" in f for f in files), files

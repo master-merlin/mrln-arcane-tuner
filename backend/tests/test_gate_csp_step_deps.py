@@ -71,10 +71,19 @@ def csp_step_packages(workflow_text: str = "") -> set[str]:
 # ── the import-chain side ───────────────────────────────────────────────────
 
 
+# Top-level packages that live under ``backend/`` and are therefore on the
+# import path of every run of this suite — they are files to WALK INTO, never
+# modules a `pip install` line could provide. ``tests`` joined ``app`` when
+# LANE-63 moved ``SourceFallbackWarning`` out of ``test_csp_policy.py`` into
+# ``tests/support/source_fallback.py`` so the xdist controller could import it
+# (a class defined in a test module is unpicklable across workers).
+FIRST_PARTY = ("app", "tests")
+
+
 def _module_path(dotted: str) -> Path | None:
     """``app.x.y`` → the file that import statement executes, if it is ours."""
     parts = dotted.split(".")
-    if parts[0] != "app":
+    if parts[0] not in FIRST_PARTY:
         return None
     base = BACKEND.joinpath(*parts)
     if base.with_suffix(".py").is_file():
@@ -127,7 +136,7 @@ def reachable_third_party(roots: tuple[Path, ...] = ROOTS) -> set[str]:
             top = module.split(".")[0]
             if top == "__future__" or top in stdlib:
                 continue
-            if top != "app":
+            if top not in FIRST_PARTY:
                 third_party.add(top)
                 continue
             stack.extend(_package_inits(module))
@@ -207,6 +216,16 @@ def test_the_walker_reaches_through_the_app_package_init():
     assert "structlog" in reached, reached
     assert "starlette" in reached, reached
     assert "pytest" in reached, reached
+
+
+def test_a_first_party_package_under_backend_is_walked_not_demanded_from_pip():
+    """``tests.support.source_fallback`` is a file in this repo, not a PyPI
+    distribution. The walker must follow it exactly as it follows ``app`` —
+    otherwise the two pins below demand ``pip install tests`` on the runner
+    and go red for a module no index has. Mutation: drop ``"tests"`` from
+    FIRST_PARTY and both pins fail with ``{'tests'}``."""
+    assert _module_path("tests.support.source_fallback") is not None
+    assert "tests" not in reachable_third_party()
 
 
 def test_a_pip_line_without_structlog_is_caught():

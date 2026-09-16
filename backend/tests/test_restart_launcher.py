@@ -31,6 +31,13 @@ LAUNCHER = BACKEND / "restart_launcher.py"
 sys.path.insert(0, str(BACKEND))
 import restart_launcher  # noqa: E402
 
+# LANE-63: every test here hands the launcher a port it probed as free BEFORE
+# the child exists (the launcher polls for "free", then spawns), so the child
+# cannot bind 0 and report — probe-then-bind is inherent to the subject. One
+# xdist worker runs the file (loadgroup) and backend/conftest.py holds the
+# cross-process `.ports.lock` around each test against other pytest runs.
+pytestmark = pytest.mark.xdist_group("ports")
+
 
 # ── helpers ──────────────────────────────────────────────────────────────
 
@@ -193,11 +200,11 @@ class TestNoOverlapOnThePort:
         """The old code spawned first and exited 1.0s later. Here the port is
         still held, so the replacement must not run at all — observable as its
         marker file never appearing."""
-        port = _free_port()
         marker = tmp_path / "child-ran.txt"
         holder = socket.socket()
-        holder.bind(("127.0.0.1", port))
+        holder.bind(("127.0.0.1", 0))  # bind first, THEN read — no probe/bind gap
         holder.listen(5)
+        port = holder.getsockname()[1]
         try:
             proc, log = _run_launcher(
                 tmp_path,

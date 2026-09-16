@@ -510,6 +510,7 @@ def test_minimax_h3_estimate_is_sane_order_of_magnitude():
         assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id
 
 
+@pytest.mark.xdist_group("gpu")  # one real NVML read (LANE-63: machine lock)
 def test_still_resolutions_ignored_for_image_family(frozen_gpu_snapshot):
     """The field is is_video-gated: a stale still_resolutions on an image job
     must not change its estimate (resolve_still_resolutions inherits base)."""

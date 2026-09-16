@@ -92,6 +92,7 @@ def test_unfrozen_estimates_differ_when_the_device_moves(moving_gpu):
     assert moving_gpu["n"] == 2  # both estimates really did read the device
 
 
+@pytest.mark.xdist_group("gpu")  # one real NVML read (LANE-63: machine lock)
 def test_frozen_snapshot_holds_a_moving_device_still(moving_gpu, frozen_gpu_snapshot):
     """POSITIVE control — same moving device, one reading, identical dicts.
 

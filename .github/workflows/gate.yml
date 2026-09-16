@@ -124,6 +124,14 @@ jobs:
       # live-GPU and port-binding tests) on one worker, and backend/conftest.py
       # holds a cross-process lock per group (a clone without _harness/ puts it
       # in the runner's temp dir). Per-worker logs come from the same conftest.
+      #
+      # The count here is `auto` and NOT the documented local `-n 4`: a
+      # GitHub-hosted ubuntu runner has 2 vCPU and ~16 GB, so `auto` is 2, and
+      # four concurrent torch imports on that runner buy nothing and risk the
+      # OOM killer. The local `-n 4` is a hard CEILING set by the user
+      # (2026-09-16) after this lane's `-n 16` runs took the maintainer's box
+      # down; `auto` on a 2-vCPU runner is below that ceiling, and `auto` must
+      # never be used on the maintainer's 32-core box.
       - name: pytest
         run: python -m pytest backend -q -n auto --dist loadgroup
 

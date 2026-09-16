@@ -40,7 +40,16 @@ SERVER_LOG_PATH = _resolve_server_log_path()
 # session only" (`/api/system/logs` and the Server screen read it and would
 # otherwise show a foreign boot's lines as if they were this one's), and a
 # bounded history keeps that while making the previous boot answerable.
-PREVIOUS_SERVER_LOG_PATH = Path(__file__).resolve().parents[2] / "server.prev.log"
+# Derived from SERVER_LOG_PATH, never re-anchored on __file__: the rotation
+# target has to follow the DIVERT (LANE-63). A pytest process (or an xdist
+# worker) runs with MRLN_SERVER_LOG_PATH pointing at its own file, and a test
+# that reloads `app.main` re-runs `setup_logging`, which rotates — so an
+# independently anchored constant would have the test run move the LIVE
+# backend's `backend/server.log` aside and overwrite `backend/server.prev.log`,
+# which is exactly the evidence LANE-56 exists to keep.
+PREVIOUS_SERVER_LOG_PATH = SERVER_LOG_PATH.with_name(
+    f"{SERVER_LOG_PATH.stem}.prev{SERVER_LOG_PATH.suffix}"
+)
 
 
 _log_loop = None

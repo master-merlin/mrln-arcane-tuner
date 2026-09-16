@@ -28,6 +28,7 @@ from tests.support.worker_paths import WORKER_ENV, current_worker, worker_suffix
 BACKEND = Path(__file__).resolve().parents[1]
 TESTS = BACKEND / "tests"
 LIVE_SERVER_LOG = BACKEND / "server.log"
+LIVE_PREVIOUS_SERVER_LOG = BACKEND / "server.prev.log"
 
 
 # ── the rule ──────────────────────────────────────────────────────────────
@@ -56,6 +57,21 @@ def test_this_process_never_points_at_the_live_server_log():
         f"diverted it to {expected} before app.core.logger was imported"
     )
     assert logger.SERVER_LOG_PATH != LIVE_SERVER_LOG
+
+
+def test_the_rotation_target_follows_the_divert():
+    """``setup_logging`` MOVES the current server log onto
+    ``PREVIOUS_SERVER_LOG_PATH`` (LANE-56) — so the divert has to carry that
+    second path too. Any test process that re-runs ``setup_logging`` (every
+    ``importlib.reload(app.main)`` does) would otherwise rotate the LIVE
+    backend's ``server.log`` onto ``server.prev.log`` and destroy exactly the
+    evidence LANE-56 keeps; under xdist, four workers would do it at once.
+    Observed on this process, so it holds serially and in every worker."""
+    from app.core import logger
+
+    assert logger.PREVIOUS_SERVER_LOG_PATH != logger.SERVER_LOG_PATH
+    assert logger.PREVIOUS_SERVER_LOG_PATH.parent == logger.SERVER_LOG_PATH.parent
+    assert logger.PREVIOUS_SERVER_LOG_PATH != LIVE_PREVIOUS_SERVER_LOG
 
 
 def test_this_process_logs_to_its_own_tests_log():

@@ -26,11 +26,31 @@ def _dev_app_after_each_test():
     dependency is set up before the test's own ``monkeypatch`` and therefore
     torn down AFTER it has undone the env, so the reload sees the real
     environment — no token, no dist override — and rebuilds the dev app.
+
+    The root logger is snapshotted and restored around the whole thing for the
+    same reason the app is: ``app/main.py`` calls ``setup_logging`` at module
+    level, so every reload here REPLACES the session's ``tests.log`` handler
+    (installed once by ``tests/conftest.py``) with a fresh server-log handler.
+    Serially that silently redirected the rest of the session's logging; under
+    xdist it is a worker's log vanishing mid-run, which is how it was found
+    (``test_xdist_worker_isolation.py::test_this_process_logs_to_its_own_tests_log``
+    went red in the full run while passing alone).
     """
+    import logging
+
+    root = logging.getLogger()
+    saved = list(root.handlers)
+    saved_level = root.level
     yield
     import app.main as main
 
     importlib.reload(main)
+    for handler in list(root.handlers):
+        if handler not in saved:
+            handler.close()
+            root.removeHandler(handler)
+    root.handlers = saved
+    root.setLevel(saved_level)
 
 
 def _reload_app(monkeypatch, *, dist_dir=None, token=""):

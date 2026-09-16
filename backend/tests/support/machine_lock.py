@@ -16,9 +16,13 @@ Design, item by item:
   box. ``MRLN_MACHINE_LOCK_DIR`` overrides the directory (the lock's own tests
   use it so they never contend with a real run). Anchored on ``__file__``,
   never the CWD.
-* **acquisition** — ``os.open(O_CREAT | O_EXCL)``: atomic on NTFS and POSIX.
-  The winner writes its owner metadata (pid, xdist worker id, worktree, ISO
-  timestamp) into the file before returning, i.e. before any GPU read.
+* **acquisition** — the owner metadata (pid, xdist worker id, worktree, ISO
+  timestamp) is written into a temp file beside the lock and then ``os.link``ed
+  onto the lock's name: atomic on NTFS and POSIX, and the name never exists
+  without its content. ``O_CREAT | O_EXCL`` then a write was equally atomic
+  about the NAME but left the file empty for an instant, and an empty lock is
+  indistinguishable from a crashed writer — so a merely descheduled live writer
+  was recovered under it and two holders resulted (VERIFY 3.01, ``_publish_owner``).
 * **stale recovery** — on ``FileExistsError`` the metadata is read; a dead
   owner pid (``psutil.pid_exists``, never ``os.kill(pid, 0)``, which on Windows
   TERMINATES the process) means the file is removed and the open retried. An
@@ -79,6 +83,15 @@ RECOVER_SUFFIX = ".recover"
 # The byte of that file the OS lock is taken on — past the pid written at 0,
 # because a Windows lock makes its range unreadable to other processes.
 TURN_LOCK_OFFSET = 1024
+# A test-only barrier at the ONE moment an acquirer can be caught mid-flight:
+# its metadata is built but not yet published under the lock's name. Set the
+# env var to a path and the acquirer creates that file and waits (bounded)
+# until the file is removed, so a test can park a REAL second process exactly
+# there instead of hand-writing a file that merely looks like one
+# (test_machine_lock.py::test_a_paused_live_writer_is_never_robbed_of_its_lock).
+# Unset in every real run: no production path reads it.
+PUBLISH_BARRIER_ENV = "MRLN_MACHINE_LOCK_PUBLISH_BARRIER"
+PUBLISH_BARRIER_BOUND_S = 120.0
 
 _REPO_ROOT = Path(__file__).resolve().parents[3]  # backend/tests/support/x.py → repo
 
@@ -251,11 +264,56 @@ def _recover(path: Path, judged: str | None) -> None:
             pass
 
 
-def _write_owner(fd: int) -> None:
+_barrier_passed = False
+
+
+def _publish_barrier() -> None:
+    """Park here while a test holds us, or return at once (the normal case).
+
+    ONE-SHOT: acquisition retries, and a barrier that re-armed on every retry
+    would park the writer again the instant the test released it.
+    """
+    global _barrier_passed
+
+    marker = os.environ.get(PUBLISH_BARRIER_ENV)
+    if not marker or _barrier_passed:
+        return
+    _barrier_passed = True
+    flag = Path(marker)
+    flag.write_text(str(os.getpid()), encoding="utf-8")
+    deadline = time.monotonic() + PUBLISH_BARRIER_BOUND_S  # bounded: a dead
+    while flag.exists() and time.monotonic() < deadline:   # parent cannot wedge us
+        time.sleep(0.02)
+
+
+def _publish_owner(path: Path) -> None:
+    """Create *path* ALREADY carrying our metadata, or raise ``FileExistsError``.
+
+    The lock must never exist without its content. ``O_CREAT | O_EXCL`` followed
+    by a write leaves a window in which the file exists and parses as no holder,
+    so ``_inspect``'s unreadable branch judges a LIVE writer by mtime and, past
+    the grace, calls it stale; the identity re-check inside the recovery turn
+    cannot save it, because the bytes really are unchanged. The recoverer then
+    unlinks a live writer's file and a second process takes the replacement
+    (VERIFY 3.01). A LARGER grace only makes the window rarer, never absent —
+    the writer is descheduled for as long as the box decides.
+
+    So the metadata is written into a temp file beside the lock and hard-linked
+    into place: ``os.link`` fails when the name exists (NTFS and POSIX alike),
+    which is the same all-or-nothing create ``O_EXCL`` gave, with the bytes
+    already inside. It needs a filesystem with hard links; if the lock dir has
+    none the error surfaces here rather than degrading into the window above.
+    """
     holder = Holder(pid=os.getpid(), worker=current_worker(), tree=str(_REPO_ROOT),
                     since=datetime.now(timezone.utc).isoformat(timespec="seconds"))
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        json.dump(asdict(holder), f)
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=path.name + ".", suffix=".new")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(asdict(holder), f)
+        _publish_barrier()
+        os.link(tmp, path)  # FileExistsError: someone else owns the name
+    finally:
+        os.unlink(tmp)  # the lock keeps the content under its own name
 
 
 def acquire(path: Path, timeout_s: float, poll_s: float = POLL_S) -> None:
@@ -263,7 +321,7 @@ def acquire(path: Path, timeout_s: float, poll_s: float = POLL_S) -> None:
     deadline = time.monotonic() + timeout_s
     while True:
         try:
-            fd = os.open(path, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            _publish_owner(path)
         except FileExistsError:
             stale, judged = _inspect(path)
             if stale:
@@ -280,7 +338,6 @@ def acquire(path: Path, timeout_s: float, poll_s: float = POLL_S) -> None:
                     f"{path.name} held by {who}; gave up after {timeout_s:.1f}s")
             time.sleep(poll_s)
             continue
-        _write_owner(fd)
         return
 
 

@@ -22,11 +22,14 @@ import pytest
 from tests.support import machine_lock as machine_lock_mod
 from tests.support.machine_lock import (
     LOCK_DIR_ENV,
+    PUBLISH_BARRIER_ENV,
     MachineLockTimeout,
+    acquire,
     lock_dir,
     lock_path,
     machine_lock,
     read_holder,
+    release,
 )
 
 BACKEND = Path(__file__).resolve().parents[1]
@@ -37,8 +40,9 @@ TESTS = BACKEND / "tests"
 DEAD_PID = 2**31 - 1
 
 
-def _child(code: str, lock_dir_: Path, *, timeout: float = 60.0) -> subprocess.Popen:
-    env = dict(os.environ, **{LOCK_DIR_ENV: str(lock_dir_)})
+def _child(code: str, lock_dir_: Path, *, timeout: float = 60.0,
+           env_extra: dict | None = None) -> subprocess.Popen:
+    env = dict(os.environ, **{LOCK_DIR_ENV: str(lock_dir_)}, **(env_extra or {}))
     env.pop("PYTEST_XDIST_WORKER", None)
     return subprocess.Popen([sys.executable, "-c", code], cwd=str(BACKEND), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
@@ -156,6 +160,70 @@ def test_an_unreadable_lock_is_a_writer_in_flight_until_the_grace_runs_out(tmp_p
     os.utime(p, (old, old))
     with machine_lock("probe", path=p, timeout_s=0.5):
         assert read_holder(p).pid == os.getpid()
+
+
+_PAUSED_WRITER = """
+import sys
+from pathlib import Path
+from tests.support.machine_lock import acquire, MachineLockTimeout
+try:
+    acquire(Path(r'{lock}'), {timeout})
+except MachineLockTimeout:
+    sys.exit(9)          # blocked out: exactly one holder, which is the point
+Path(r'{acquired}').write_text("held")
+sys.exit(0)              # this process believes it owns the lock
+"""
+
+
+def test_a_paused_live_writer_is_never_robbed_of_its_lock(tmp_path, monkeypatch):
+    """VERIFY 3.01: a writer that is merely SLOW between creating the lock and
+    publishing its metadata must never be recovered under it.
+
+    The unreadable-file grace exists for a crashed writer, but an empty lock is
+    also what a live one looks like for the instant before it writes — and the
+    identity re-check inside the recovery turn cannot tell them apart, because
+    the bytes really are unchanged. So the recoverer unlinks a LIVE writer's
+    file, a second process takes the replacement, and the robbed writer goes on
+    to report success: two holders.
+
+    The writer here is a real child process parked at the module's publish
+    barrier, not a hand-written empty file (that case is the test above, and it
+    is precisely the case this one is NOT). The judging side's grace is shrunk
+    so the test need not idle ten seconds: the defect is the existence of the
+    window, not its length — which is why widening the grace is no fix.
+    """
+    p = tmp_path / ".probe.lock"
+    barrier, acquired = tmp_path / "writer.barrier", tmp_path / "writer.acquired"
+    writer = _child(_PAUSED_WRITER.format(lock=p, timeout=3.0, acquired=acquired),
+                    tmp_path, env_extra={PUBLISH_BARRIER_ENV: str(barrier)})
+    stolen = False
+    try:
+        _await(barrier, writer, "the writer never reached the publish barrier")
+        monkeypatch.setattr(machine_lock_mod, "UNREADABLE_GRACE_S", 0.2)
+        time.sleep(0.5)  # past the grace, with the writer still alive and paused
+        try:
+            # On POSIX this returns, having unlinked the writer's open file. On
+            # Windows the same unlink raises on the live writer's handle — a
+            # theft either way, and neither is a MachineLockTimeout.
+            acquire(p, 1.0)
+            stolen = True
+        except MachineLockTimeout:
+            pass
+        finally:
+            barrier.unlink(missing_ok=True)  # let the writer run to its end
+        _, err = writer.communicate(timeout=60)
+        writer_holds = writer.returncode == 0 and acquired.exists()
+        assert not (stolen and writer_holds), (
+            "two holders at once: the paused writer's lock was recovered under "
+            f"it and it still reported success (child rc={writer.returncode}, "
+            f"stderr={err[-500:]})")
+        assert stolen or writer_holds, "nobody holds the lock — the test proved nothing"
+    finally:
+        barrier.unlink(missing_ok=True)
+        writer.kill()
+        writer.communicate()
+        release(p)
+        p.unlink(missing_ok=True)
 
 
 def _live_owner(worker: str = "gwB") -> str:

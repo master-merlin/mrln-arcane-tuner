@@ -6,11 +6,12 @@ every Windows user who ran it.
 
 The mechanism is worth stating precisely, because it is invisible in a diff.
 Windows PowerShell reads a .ps1 with no BOM as **cp1252**, not UTF-8. A UTF-8
-em dash is `E2 80 94`; cp1252 decodes those three bytes as three characters, the
-last of which is U+201D, a right double quotation mark -- and PowerShell accepts
-smart quotes as STRING DELIMITERS. So a non-ASCII character sitting inside a
-string literal silently closes that string early, and everything after it is
-parsed as code. In `install.ps1` the trigger was a package emoji:
+em dash is `0xE2 0x80 0x94`; cp1252 decodes those three bytes as three
+characters, the last of which is U+201D, a right double quotation mark -- and
+PowerShell accepts smart quotes as STRING DELIMITERS. So a non-ASCII character
+sitting inside a string literal silently closes that string early, and
+everything after it is parsed as code. In `install.ps1` the trigger was a
+package emoji:
 
     Write-Host "<emoji> Installing $SD (--no-deps) ..." -ForegroundColor Cyan
 

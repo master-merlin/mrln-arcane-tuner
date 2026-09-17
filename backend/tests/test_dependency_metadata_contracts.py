@@ -323,8 +323,14 @@ ACCEPTED_CONSTRAINT_VIOLATIONS = {
         ">=5.29.6 -- 4.25.8 clears the other one and leaves that one open."
     ),
     ("hpsv2", "pytest"): (
-        "The leaked dev pin. Covered behaviourally by "
-        "test_hpsv2_imports_under_a_runner_its_metadata_forbids."
+        "The leaked dev pin: hpsv2 declares pytest==7.2.0 as an INSTALL "
+        "requirement because its dev dependencies leaked into its published "
+        "metadata, and pytest is a runner we choose, not a library hpsv2 "
+        "imports (it imports none anywhere in its package). The only way the "
+        "constraint could bite is hpsv2 breaking under a newer runner, and that "
+        "is checked rather than asserted: "
+        "test_hpsv2_imports_under_a_runner_its_metadata_forbids imports it in a "
+        "subprocess with no pytest imported at all."
     ),
     # ("sam3", "huggingface-hub") lived here from 0.1.2, whose stale <1.0
     # ceiling our hub pin crossed. sam3 0.1.4 declares `<2.0,>=0.30.0` and the

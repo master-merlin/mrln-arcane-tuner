@@ -28,6 +28,7 @@ import re
 from pathlib import Path
 from typing import Any
 
+import numpy as np
 import pytest
 import torch
 
@@ -297,3 +298,191 @@ def test_trainer_and_sampler_share_one_conversion_module():
         "the sigma<->t conversion must live in schedule.py and nowhere else in "
         f"the family (training and sampling would diverge): {sites}"
     )
+
+
+# ── Row 1.3: the packed layout (`packing.py`) ────────────────────────────
+#
+# Row order [text | keyframe conds | audio | video]; patch (1,2,2)
+# frame-major then row-major, features [c,pt,ph,pw]; rotary grids float64
+# from numpy `linspace(endpoint=False)` on the shared 40-units/s clock;
+# `media_origin = num_text + media_advance`. Reference: ai-toolkit@561a0236
+# `src/packing.py` (MIT, read-and-reimplement; no line copied), research
+# §3.3. The transformer checks STRUCTURE only (`transformer_minimax_h3.py`
+# `:585-591`) and embeds whatever `timestep` arrives (`:613`), so the
+# cardinality guard sits at the DRIVER boundary.
+
+
+def _geometry(**overrides):
+    from app.engine.models.families.minimax_h3.packing import H3Geometry
+
+    base = dict(
+        num_text=8,
+        latent_frames=2,
+        latent_height=6,
+        latent_width=4,
+        audio_latents=3,
+    )
+    base.update(overrides)
+    return H3Geometry(**base)
+
+
+class _RecordingTransformer:
+    """Stands in for the DiT: records the forward kwargs and returns its
+    video / audio rows unchanged (an identity transformer)."""
+
+    def __init__(self) -> None:
+        self.calls: list[dict[str, Any]] = []
+
+    def __call__(self, **kwargs: Any):
+        self.calls.append(kwargs)
+        return kwargs["hidden_states"], kwargs["audio_hidden_states"]
+
+
+def _ramp_inputs(layout, geometry):
+    from app.engine.models.families.minimax_h3.packing import (
+        pack_audio,
+        patchify_video,
+    )
+
+    c = 24
+    t, h, w = geometry.latent_frames, geometry.latent_height, geometry.latent_width
+    ramp = torch.arange(c * t * h * w, dtype=torch.float32).reshape(1, c, t, h, w)
+    video_rows = patchify_video(ramp, layout.patch_size)
+    audio = torch.arange(2 * 32 * geometry.audio_latents, dtype=torch.float32).reshape(
+        1, 2, 32, geometry.audio_latents
+    )
+    audio_rows = pack_audio(audio)
+    text = torch.randn(1, geometry.num_text, 16)
+    return ramp, video_rows, audio, audio_rows, text
+
+
+# ── 4. Timesteps at the transformer boundary are the distinct, unscaled set
+
+
+def test_timesteps_at_the_transformer_boundary_are_unscaled():
+    from app.engine.models.families.minimax_h3.packing import build_layout, packed_forward
+
+    geometry = _geometry()
+    layout = build_layout(geometry)
+    _, video_rows, _, audio_rows, text = _ramp_inputs(layout, geometry)
+    stub = _RecordingTransformer()
+    packed_forward(stub, layout, video_rows, audio_rows, text, torch.tensor([0.5, 0.3]))
+
+    (call,) = stub.calls
+    ts = call["timestep"]
+    assert ts.numel() <= 3, f"numel > 3: seq_len timesteps ({ts.numel()}) reached the transformer"
+    assert ts.dtype.is_floating_point
+    assert torch.all((ts >= 0) & (ts <= 1)), f"timestep outside [0, 1]: {ts}"
+    assert abs(float(ts[0]) - 0.5) < 1e-6, f"video timestep scaled: {float(ts[0])} (not 500 either way)"
+    assert call["timestep_indices"].shape == (layout.seq_len,)
+    assert int(call["timestep_indices"].max()) < ts.numel(), "a row points past the timestep set"
+    # Every target video row is at slot 0 (t_v), every target audio row at slot 1 (t_a).
+    assert torch.all(call["timestep_indices"][layout.video_indices] == 0)
+    assert torch.all(call["timestep_indices"][layout.audio_indices] == 1)
+
+
+def test_driver_rejects_seq_len_timesteps():
+    drv = _driver()
+    layout_len = 8 + 3 * 2 + 2 * (6 // 2) * (4 // 2)
+    with pytest.raises(ValueError, match="timestep"):
+        drv.assert_timestep_cardinality(torch.rand(layout_len))
+    with pytest.raises(ValueError, match="timestep"):
+        drv.assert_timestep_cardinality(torch.tensor([0.1, 0.2, 0.3, 0.4]))  # 4 on t2v
+    drv.assert_timestep_cardinality(torch.tensor([0.5, 0.3]))  # (t_v, t_a)
+    drv.assert_timestep_cardinality(torch.tensor([0.5, 0.3, 0.999]))  # + t_c
+    with pytest.raises(ValueError, match="timestep"):
+        drv.assert_timestep_cardinality(torch.tensor([0.5, 1.5]))  # outside [0, 1]
+    with pytest.raises(ValueError, match="timestep"):
+        drv.assert_timestep_cardinality(torch.tensor([1, 0]))  # not floating
+    # The reference mode packs a reference soundtrack at a fourth slot.
+    ref = _driver(dict(_ARCH, mode="reference"))
+    ref.assert_timestep_cardinality(torch.tensor([0.5, 0.3, 0.999, 1.0]))
+
+
+# ── E4. The ramp round-trips through pack → forward → unpatchify ─────────
+
+
+def test_ramp_round_trips_through_the_packed_forward():
+    from app.engine.models.families.minimax_h3.packing import (
+        build_layout,
+        packed_forward,
+        unpack_audio,
+        unpatchify_video,
+    )
+
+    geometry = _geometry()
+    layout = build_layout(geometry)
+    ramp, video_rows, audio, audio_rows, text = _ramp_inputs(layout, geometry)
+    video_out, audio_out = packed_forward(
+        _RecordingTransformer(), layout, video_rows, audio_rows, text, torch.tensor([0.5, 0.3])
+    )
+    assert torch.equal(unpatchify_video(video_out, layout), ramp)
+    assert torch.equal(unpack_audio(audio_out, geometry.audio_latents), audio)
+
+    # Row k of the video rows is the k-th patch frame-major then row-major, and
+    # its rotary coordinate says so: t ascends slowest, then h, then w.
+    pos = layout.position_ids[layout.video_indices]
+    t, h, w = pos.unbind(-1)
+    rows_per_frame = (geometry.latent_height // 2) * (geometry.latent_width // 2)
+    assert torch.all(t[:rows_per_frame] == t[0]) and torch.all(t[rows_per_frame:] > t[0])
+    key = (t * 1e6 + h * 1e3 + w).tolist()
+    assert key == sorted(key), "video rows are not in frame-major, row-major order"
+
+
+# ── The rotary grid is float64 numpy `linspace(endpoint=False)` ──────────
+
+
+def test_rotary_grid_is_float64_numpy():
+    from app.engine.models.families.minimax_h3.packing import build_layout
+
+    # 4 x 6 latents: on the WIDTH axis (dim 6, 3 patches) a torch.linspace
+    # build differs from numpy's endpoint=False build in the last ulp
+    # (probed over every even grid 4..64: 1538 such axes exist; this is one).
+    geometry = _geometry(latent_height=4, latent_width=6)
+    layout = build_layout(geometry)
+    assert layout.position_ids.dtype == torch.float64
+
+    # Independent numpy reference (research §3.3): per axis
+    #   ratio = dim / sqrt(H*W); left = (1 - ratio) / 2;
+    #   grid = linspace(left, left + ratio, dim // patch, endpoint=False) * 32
+    sqrt_area = np.sqrt(4 * 6)
+
+    def ref(dim: int, patch: int) -> np.ndarray:
+        ratio = dim / sqrt_area
+        left = (1.0 - ratio) / 2.0
+        return np.linspace(left, left + ratio, dim // patch, endpoint=False) * 32
+
+    h_ref, w_ref = ref(4, 2), ref(6, 2)
+    first_frame = layout.position_ids[layout.video_indices[: (4 // 2) * (6 // 2)]]
+    h_got = first_frame[:, 1].reshape(2, 3)[:, 0].numpy()
+    w_got = first_frame[:, 2].reshape(2, 3)[0, :].numpy()
+    assert np.array_equal(h_got, h_ref), f"h grid not bit-equal to numpy: {h_got - h_ref}"
+    assert np.array_equal(w_got, w_ref), f"w grid not bit-equal to numpy: {w_got - w_ref}"
+
+    # The torch.linspace build IS off in the last ulp here — the difference
+    # the released checkpoint's audio/video alignment depends on.
+    ratio = 6 / sqrt_area
+    left = (1.0 - ratio) / 2.0
+    torch_build = torch.linspace(left, left + ratio, 4, dtype=torch.float64)[:3] * 32
+    assert not np.array_equal(torch_build.numpy(), w_ref), "geometry no longer discriminates"
+
+
+# ── Prompt length shifts the whole media clock ───────────────────────────
+
+
+def test_prompt_length_shifts_media_origin():
+    from app.engine.models.families.minimax_h3.packing import build_layout
+
+    short = build_layout(_geometry(num_text=8))
+    long = build_layout(_geometry(num_text=12))
+    assert long.media_origin - short.media_origin == 4.0
+    assert short.media_origin == 8.0, "media_origin must be num_text + media_advance"
+    # Text rows sit at their own index on the time axis; media starts after.
+    assert torch.equal(short.position_ids[short.text_indices, 0], torch.arange(8, dtype=torch.float64))
+    t_video_short = short.position_ids[short.video_indices, 0]
+    t_video_long = long.position_ids[long.video_indices, 0]
+    assert torch.equal(t_video_long - t_video_short, torch.full_like(t_video_short, 4.0))
+    t_audio_short = short.position_ids[short.audio_indices, 0]
+    t_audio_long = long.position_ids[long.audio_indices, 0]
+    assert torch.equal(t_audio_long - t_audio_short, torch.full_like(t_audio_short, 4.0))
+    assert float(t_video_short[0]) == 8.0 and float(t_audio_short[0]) == 8.0

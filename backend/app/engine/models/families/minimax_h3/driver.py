@@ -228,6 +228,35 @@ class MiniMaxH3Driver(IModelDriver):
         (``noise − latents``) is the OPPOSITE sign on this family."""
         return latents - noise
 
+    def max_distinct_timesteps(self) -> int:
+        """How many DISTINCT timestep values one forward may carry: ``t_v``,
+        ``t_a`` and the keyframe ``t_c`` (3) for ``t2v`` / ``both``; the
+        reference mode adds clean reference soundtracks (4) — research §3.5."""
+        mode = str(self.definition.architecture_params.get("mode", "t2v"))
+        return 4 if mode == "reference" else 3
+
+    def assert_timestep_cardinality(self, timesteps: torch.Tensor) -> None:
+        """The DRIVER boundary check before ``packed_forward``: the transformer
+        embeds whatever ``timestep`` arrives (`transformer_minimax_h3.py:613`),
+        so a per-row ``(seq_len,)`` tensor — or ``timestep_indices`` handed
+        where ``timestep`` goes — would train silently on garbage. Raises
+        ``ValueError`` naming the defect."""
+        limit = self.max_distinct_timesteps()
+        if timesteps.ndim != 1 or timesteps.numel() > limit:
+            raise ValueError(
+                f"minimax_h3 expects the DISTINCT timestep set (<= {limit} values), got "
+                f"shape {tuple(timesteps.shape)} — per-row timesteps do not belong here"
+            )
+        if not timesteps.dtype.is_floating_point:
+            raise ValueError(
+                f"minimax_h3 timesteps must be floating t in [0, 1], got dtype {timesteps.dtype}"
+            )
+        if bool((timesteps < 0).any()) or bool((timesteps > 1).any()):
+            raise ValueError(
+                "minimax_h3 timesteps must lie in [0, 1] unscaled on H3's clock (1 = clean), "
+                f"got {timesteps.tolist()}"
+            )
+
     def forward_pass(
         self,
         noisy_input: torch.Tensor,

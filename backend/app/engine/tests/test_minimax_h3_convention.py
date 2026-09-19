@@ -575,3 +575,74 @@ def test_gradients_reach_only_the_targeted_modules(build_tiny_transformer):
         f"  adapter but not targeted: {sorted(adapted - matching_linears)}"
     )
     assert base.is_cache_enabled is False
+
+
+# ── 10. Gradient checkpointing arms BOTH sites (row 1.5, E3) ─────────────
+
+
+def _lora_wrapped(build_tiny_transformer):
+    from peft import LoraConfig, get_peft_model
+
+    model = get_peft_model(
+        build_tiny_transformer(), LoraConfig(r=2, lora_alpha=2, target_modules=_t2va_targets())
+    )
+    model.train()
+    return model
+
+
+def _lora_grads(model) -> dict[str, torch.Tensor]:
+    return {
+        n: p.grad.detach().clone()
+        for n, p in model.named_parameters()
+        if ".lora_" in n and p.grad is not None
+    }
+
+
+def test_checkpointing_arms_both_sites(build_tiny_transformer):
+    """ONE ``enable_gradient_checkpointing()`` must reach the token refiner
+    (``transformer_minimax_h3.py:312-313``) AND the block stack (``:648-649``):
+    diffusers walks ``named_modules()`` for every ``gradient_checkpointing``
+    attribute (``modeling_utils.py:2052-2057``, 0.40.0), and the PR0 scaffold
+    carried two such sites neither of which had ever executed. Counted per
+    site through the public ``gradient_checkpointing_func`` seam, and the
+    recomputed gradients must equal eager within ``atol=1e-5, rtol=1e-4``
+    (fp32) — a site that checkpoints the wrong callable is silent otherwise.
+    """
+    from app.engine.models.families.minimax_h3.packing import build_layout, packed_forward
+
+    geometry = _geometry()
+    layout = build_layout(geometry)
+    video_rows, audio_rows, text = _random_inputs(layout, geometry)
+    ts = torch.tensor([0.5, 0.3])
+
+    def run(model):
+        video_out, audio_out = packed_forward(model, layout, video_rows, audio_rows, text, ts)
+        (video_out.float().pow(2).mean() + audio_out.float().pow(2).mean()).backward()
+        return _lora_grads(model)
+
+    eager = _lora_wrapped(build_tiny_transformer)
+    eager_grads = run(eager)
+    assert eager_grads, "eager run produced no LoRA gradients"
+
+    ckpt = _lora_wrapped(build_tiny_transformer)
+    ckpt.load_state_dict(eager.state_dict())
+    calls: dict[str, int] = {}
+
+    def counting_checkpoint(module, *args):
+        calls[type(module).__name__] = calls.get(type(module).__name__, 0) + 1
+        return torch.utils.checkpoint.checkpoint(module.__call__, *args, use_reentrant=False)
+
+    base = ckpt.base_model.model
+    base.enable_gradient_checkpointing(counting_checkpoint)
+    assert base.token_refiner.gradient_checkpointing is True
+    assert base.gradient_checkpointing is True
+    ckpt_grads = run(ckpt)
+
+    assert calls.get("MiniMaxH3TokenRefinerBlock", 0) >= 1, f"refiner site never executed: {calls}"
+    assert calls.get("MiniMaxH3TransformerBlock", 0) >= 1, f"block-stack site never executed: {calls}"
+    assert calls["MiniMaxH3TokenRefinerBlock"] == len(base.token_refiner.refiner_blocks)
+    assert calls["MiniMaxH3TransformerBlock"] == len(base.transformer_blocks)
+
+    assert ckpt_grads.keys() == eager_grads.keys()
+    for name, g in eager_grads.items():
+        torch.testing.assert_close(ckpt_grads[name], g, atol=1e-5, rtol=1e-4, msg=lambda m: f"{name}: {m}")

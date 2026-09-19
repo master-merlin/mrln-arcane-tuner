@@ -486,3 +486,92 @@ def test_prompt_length_shifts_media_origin():
     t_audio_long = long.position_ids[long.audio_indices, 0]
     assert torch.equal(t_audio_long - t_audio_short, torch.full_like(t_audio_short, 4.0))
     assert float(t_video_short[0]) == 8.0 and float(t_audio_short[0]) == 8.0
+
+
+# ── 9. Gradients reach only the targeted modules (row 1.4, E2) ───────────
+
+
+def _t2va_targets() -> list[str]:
+    import yaml
+
+    path = (
+        _TESTS_DIR.parents[0] / "models" / "families" / "minimax_h3" / "definitions" / "minimax_h3_t2va.yaml"
+    )
+    with open(path, encoding="utf-8") as fh:
+        return list(yaml.safe_load(fh)["lora_targetable_modules"])
+
+
+def _random_inputs(layout, geometry):
+    from app.engine.models.families.minimax_h3.packing import pack_audio, patchify_video
+
+    g = torch.Generator().manual_seed(0)
+    t, h, w = geometry.latent_frames, geometry.latent_height, geometry.latent_width
+    video = torch.randn(1, 24, t, h, w, generator=g)
+    audio = torch.randn(1, 2, 32, geometry.audio_latents, generator=g)
+    text = torch.randn(1, geometry.num_text, 16, generator=g)
+    return patchify_video(video, layout.patch_size), pack_audio(audio), text
+
+
+def test_gradients_reach_only_the_targeted_modules(build_tiny_transformer):
+    """Tiny-arch forward + backward with a REAL PEFT wrap on the curated
+    ``t2va.yaml`` targets, driven through ``packed_forward``:
+
+    * every module the YAML names got an adapter and its ``lora_B`` receives a
+      finite, non-zero gradient — the adapter is on the path the loss sees;
+    * no base weight receives a gradient (``grad is None``);
+    * NO adapter sits on any ``adaln_proj.linear`` — the AdaLN table differs
+      between the full and the pruned checkpoint, so a LoRA touching it loads
+      into only one of them (research §3.6; diffusion-pipe's stated reason);
+    * no ``CacheMixin`` config is enabled on the transformer (A-4): a cache
+      skips blocks at inference and would silently skip them in training too.
+    """
+    from peft import LoraConfig, get_peft_model
+
+    from app.engine.models.families.minimax_h3.packing import build_layout, packed_forward
+
+    from app.engine.models.families.minimax_h3.driver import MiniMaxH3Driver
+
+    targets = _t2va_targets()
+    definition = _definition(dict(_ARCH)).model_copy(update={"lora_targetable_modules": targets})
+    driver = MiniMaxH3Driver(definition, torch.device("cpu"))
+    assert driver.get_lora_targets() == targets, "the driver must hand PEFT the YAML list verbatim"
+
+    base = build_tiny_transformer()
+    base.train()
+    assert base.is_cache_enabled is False, "a CacheMixin config is enabled on the transformer (A-4)"
+    matching_linears = {
+        name
+        for name, mod in base.named_modules()
+        if isinstance(mod, torch.nn.Linear) and any(name.endswith("." + t) for t in targets)
+    }
+    assert matching_linears, "no Linear matches the curated targets"
+
+    model = get_peft_model(base, LoraConfig(r=2, lora_alpha=2, target_modules=targets))
+    for name, mod in model.named_modules():
+        assert not ("adaln_proj" in name and hasattr(mod, "lora_A")), f"adapter on adaln_proj: {name}"
+
+    geometry = _geometry()
+    layout = build_layout(geometry)
+    video_rows, audio_rows, text = _random_inputs(layout, geometry)
+    video_out, audio_out = packed_forward(
+        model, layout, video_rows, audio_rows, text, torch.tensor([0.5, 0.3])
+    )
+    loss = video_out.float().pow(2).mean() + audio_out.float().pow(2).mean()
+    assert torch.isfinite(loss)
+    loss.backward()
+
+    adapted = set()
+    for name, param in model.named_parameters():
+        if ".lora_B." in name:
+            assert param.grad is not None, f"lora_B grad is None: {name}"
+            assert torch.isfinite(param.grad).all(), f"lora_B grad not finite: {name}"
+            assert param.grad.abs().sum() > 0, f"lora_B grad is all-zero: {name}"
+            adapted.add(name.split(".lora_B.")[0].removeprefix("base_model.model."))
+        elif ".lora_A." not in name:
+            assert param.grad is None, f"base weight received a gradient: {name}"
+    assert adapted == matching_linears, (
+        "adapter coverage drifted from the curated targets.\n"
+        f"  targeted but no adapter: {sorted(matching_linears - adapted)}\n"
+        f"  adapter but not targeted: {sorted(adapted - matching_linears)}"
+    )
+    assert base.is_cache_enabled is False

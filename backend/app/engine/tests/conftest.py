@@ -181,6 +181,49 @@ def force_update():
     return _force
 
 
+# Tiny, divisibility-respecting minimax_h3 config for the INSTALLED diffusers
+# class (0.40.0). Real checkpoint values live in the definition YAML; these only
+# exercise code paths on CPU. Relationships preserved from the real config:
+#   - rope: 2 * 3 * rope_freq_dim (12) <= attention_head_dim (16);
+#   - time-embedding funnel freq_dim -> time_embed_hidden_dim -> time_embed_dim
+#     shrinks at each stage as 256 -> 5376 -> 2688 does (hidden > final);
+#   - in_channels / audio_in_channels / patch_size are the REAL values (they
+#     must match the two VAEs' latent widths and the packing.py patchify).
+TINY_H3_TRANSFORMER_KWARGS: dict[str, Any] = {
+    "num_attention_heads": 2,
+    "attention_head_dim": 16,
+    "hidden_size": 16,
+    "num_layers": 2,
+    "num_refiner_layers": 1,
+    "ffn_dim": 32,
+    "in_channels": 24,
+    "audio_in_channels": 32,
+    "patch_size": (1, 2, 2),
+    "text_dim": 16,
+    "freq_dim": 16,
+    "time_embed_hidden_dim": 16,
+    "time_embed_dim": 8,
+    "rope_freq_dim": 2,
+    "rope_theta": 10000.0,
+}
+
+
+@pytest.fixture
+def build_tiny_transformer():
+    """Factory: ``() -> diffusers MiniMaxH3Transformer3DModel`` (tiny, fp32, CPU,
+    seeded). Plan row 1.4; shared by the convention suite's tests 9 and 10."""
+
+    def _build():
+        # Imported inside the fixture: this conftest is shared by every engine
+        # test, and a diffusers import failure must not break collection.
+        from diffusers import MiniMaxH3Transformer3DModel
+
+        torch.manual_seed(0)
+        return MiniMaxH3Transformer3DModel(**TINY_H3_TRANSFORMER_KWARGS)
+
+    return _build
+
+
 @pytest.fixture
 def lora_params():
     """Factory: ``(model, module_substr) -> list[Parameter]`` of LoRA params."""

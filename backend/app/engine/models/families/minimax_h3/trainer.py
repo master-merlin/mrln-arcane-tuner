@@ -23,6 +23,8 @@ missing loader/data path.
 
 from __future__ import annotations
 
+import torch
+
 from app.engine.core.pipeline import GenericTrainingPipeline
 
 from .driver import MiniMaxH3Driver
@@ -30,6 +32,31 @@ from .driver import MiniMaxH3Driver
 
 class MiniMaxH3Trainer(GenericTrainingPipeline):
     """MiniMax-H3 LoRA trainer — PR0 STUB. Real training lands in PR1."""
+
+    # ── Explicit delegations of the driver's CLOBBER hooks (plan row 1.2,
+    # ordering rule 1). The base pipeline WOULD auto-delegate these, but an
+    # explicit method keeps the family out of the reviewed auto-delegation
+    # allowlist (`test_autodelegated_family_hook_set_is_exactly_expected`)
+    # and makes the seam greppable.
+
+    def add_noise(
+        self, latents: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor
+    ) -> torch.Tensor:
+        return self.driver.add_noise(latents, noise, timesteps)
+
+    def compute_target(
+        self, latents: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor
+    ) -> torch.Tensor:
+        return self.driver.compute_target(latents, noise, timesteps)
+
+    def sample_timesteps(
+        self, batch_size: int, latents: torch.Tensor | None = None
+    ) -> torch.Tensor:
+        max_steps = getattr(self, "max_train_steps", 1)
+        progress = getattr(self, "global_step", 0) / max(max_steps, 1)
+        return self.driver.sample_timesteps(
+            batch_size, self.device, self.config, latents=latents, progress=progress
+        )
 
     def _setup_family(self) -> None:
         # Real assignment, so the trainer→driver seam is genuine (see the

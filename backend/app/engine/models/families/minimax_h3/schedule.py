@@ -29,6 +29,19 @@ import torch
 from .settings import H3EffectiveSettings
 
 
+def sigma_to_t(sigma: torch.Tensor) -> torch.Tensor:
+    """H3's clock: ``t = 1 − σ`` in ``[0, 1]``, ``t = 1`` clean, UNSCALED (no
+    ×1000 — the transformer's ``time_proj`` consumes ``[0, 1]`` directly;
+    diffusers ``scheduling_minimax_h3.py:170-171``). The ONE σ→t site in the
+    family; ``test_trainer_and_sampler_share_one_conversion_module`` pins it."""
+    return 1.0 - sigma
+
+
+def t_to_sigma(t: torch.Tensor) -> torch.Tensor:
+    """Inverse of :func:`sigma_to_t` (the noise weight of ``x_t``)."""
+    return 1.0 - t
+
+
 def shift_sigma(u: torch.Tensor, shift: float) -> torch.Tensor:
     """The exponential sigma shift ``s·u / (1 + (s−1)·u)``; fixes 0 and 1."""
     return (shift * u) / (1.0 + (shift - 1.0) * u)

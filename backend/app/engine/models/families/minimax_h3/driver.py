@@ -29,11 +29,12 @@ override* per ``driver_meaningfully_overrides``, which silently enrolls
 ``test_autodelegated_family_hook_set_is_exactly_expected``. The same guard
 covers every hook in the derived ``CLOBBER_HOOKS`` set (``add_noise``,
 ``build_batch_extra``, ``compute_target``, ``get_te_cache``,
-``sample_timesteps``, ``set_te_cache``, ``init_scheduler``) — this driver
-deliberately does not override ANY of them, even to raise, so they stay
-"dead but harmless" (unreachable: ``forward_pass`` — and the trainer's
-``_setup_family``, even earlier — already raise first) instead of tripping
-the same trap.
+``sample_timesteps``, ``set_te_cache``, ``init_scheduler``). PR1 row 1.2
+overrides ``add_noise`` / ``compute_target`` / ``sample_timesteps`` here AND
+delegates each explicitly from ``MiniMaxH3Trainer`` in the same commit
+(plan ordering rule 1), so the family never relies on auto-delegation and
+the reviewed allowlist stays unchanged. Any further CLOBBER hook this driver
+grows must land with its trainer delegation the same way.
 """
 
 from __future__ import annotations
@@ -159,6 +160,73 @@ class MiniMaxH3Driver(IModelDriver):
         return []
 
     # --- Phase 5: Training Loop Hooks ---
+    #
+    # The INVERTED flow-match contract (concept §5.1, closed oracle against
+    # diffusers 0.40.0 `scheduling_minimax_h3.py`: `:170-171` t = 1 − σ,
+    # `:225` x_t = t·x₀ + (1−t)·noise, `:273` x̂₀ = x_t + σ·v):
+    #     x₀ = x_t + σ·v   ⇒   v = x₀ − noise   (unique; no scale, no sign freedom)
+    # Research §3.1: ai-toolkit `t_v = 1.0 − sigma_v`, `return -noise_pred`;
+    # diffusion-pipe `t_v = 1.0 − sigma_v`, `-video_out` — the same contract.
+    # These three are CLOBBER hooks: `MiniMaxH3Trainer` delegates each one
+    # explicitly (ordering rule 1) so `test_autodelegated_family_hook_set_is_
+    # exactly_expected` stays byte-identical.
+
+    def sample_timesteps(
+        self,
+        batch_size: int,
+        device: torch.device,
+        config: dict[str, Any],
+        latents: torch.Tensor | None = None,
+        progress: float = 0.0,
+    ) -> torch.Tensor:
+        """Draw ONE ``u`` per item, push it through the VIDEO shift and return
+        ``t_v = 1 − σ_v`` in ``[0, 1]`` (the audio clock is derived from σ_v
+        in the forward pass through ``H3SigmaSchedule`` — never a second draw).
+
+        Family default draw is ``uniform`` — with the definition's shift on top
+        it reproduces the inference grid (diffusion-pipe's recommendation,
+        research §4); a user-set ``timestep_sampling`` wins.
+        """
+        from app.engine.strategies.timestep_sampling import TimestepSampler  # noqa: PLC0415
+
+        from .schedule import H3SigmaSchedule, sigma_to_t
+        from .settings import resolve_h3_settings
+
+        mode = config.get("timestep_sampling", "uniform")
+        u = TimestepSampler.sample(
+            mode, batch_size, device, config, latents=latents, progress=progress,
+        )
+        schedule = H3SigmaSchedule.from_settings(resolve_h3_settings(self.definition, config))
+        sigma_v, _sigma_a = schedule.draw(u)
+        return sigma_to_t(sigma_v).clamp(0.0, 1.0)
+
+    def add_noise(
+        self,
+        latents: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """``x_t = t·x₀ + σ·noise`` with ``σ = 1 − t`` — H3's clock (``t = 1``
+        clean), identical to ``MiniMaxH3Scheduler.scale_noise``. Written with
+        the noise weight from ``schedule.t_to_sigma`` so the family keeps ONE
+        conversion site and both endpoints are exact."""
+        from .schedule import t_to_sigma
+
+        t = timesteps.to(device=latents.device, dtype=latents.dtype)
+        while t.ndim < latents.ndim:
+            t = t.unsqueeze(-1)
+        return t * latents + t_to_sigma(t) * noise
+
+    def compute_target(
+        self,
+        latents: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """The data-ward velocity ``v = x₀ − noise`` — the unique target the
+        reference scheduler's ``step`` inverts. The house default
+        (``noise − latents``) is the OPPOSITE sign on this family."""
+        return latents - noise
 
     def forward_pass(
         self,

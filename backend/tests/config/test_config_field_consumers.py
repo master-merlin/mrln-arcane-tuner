@@ -103,10 +103,6 @@ ALLOWED_STUBS: dict[str, str] = {
         "declared + gated(is_video) + tested i2v conditioning-dropout stub; no "
         "runtime consumer wired yet (video-training backlog)"
     ),
-    "audio_loss_weight": (
-        "declared + gated(has_audio) + tested audio loss-weight stub; no "
-        "runtime consumer wired yet (video/audio-training backlog)"
-    ),
 }
 
 

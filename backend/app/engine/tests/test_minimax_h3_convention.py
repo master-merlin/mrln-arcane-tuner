@@ -745,3 +745,133 @@ def test_params_differ_only_in_allowlist():
             f"{name} vs {base_name}: architecture_params differ outside the allowlist "
             f"{sorted(_PARAMS_ALLOWED_TO_DIFFER)}: {stray}"
         )
+
+
+# ── Row 2.2: stereo audio latents — mono VAE twice, channel-major along time
+#
+# A-5 CONFIRMED by ai-toolkit `pack_audio_latents` (research §3.3):
+# `(B, 2, C, T) → (B, 2·T, C)`, all T latents of L then all of R. The reference
+# below is written as explicit loops, INDEPENDENT of `packing.py` (ASTRA
+# MAJOR-9), so the module and the layout are checked against arithmetic, not
+# against each other.
+
+_STEREO_CLICK_WAV = _TESTS_DIR / "fixtures" / "h3_stereo_click.wav"
+
+
+def test_stereo_packing_reference():
+    from app.engine.models.families.minimax_h3 import audio_latents as al
+    from app.engine.models.families.minimax_h3.packing import build_layout
+
+    t2va = _definition_yamls()["minimax_h3_t2va.yaml"]["architecture_params"]
+    latent_channels = int(t2va["audio_vae.latent_channels"])
+    audio_in = int(t2va["transformer.audio_in_channels"])
+    T = 5
+    latents = torch.arange(2 * latent_channels * T, dtype=torch.float32).reshape(
+        1, 2, latent_channels, T
+    )
+
+    rows = al.stereo_to_rows(latents)
+    assert rows.shape == (1, 2 * T, audio_in), (
+        f"audio rows must be {audio_in}-wide (transformer.audio_in_channels), got {tuple(rows.shape)}"
+    )
+    # Independent reference: row k = channel k // T, time k % T.
+    for k in range(2 * T):
+        ch, t = k // T, k % T
+        expected = latents[0, ch, :, t]
+        assert torch.equal(rows[0, k], expected), (
+            f"channel order: row {k} should be channel {ch} ({'L' if ch == 0 else 'R'}) "
+            f"time {t}, got channel {int(rows[0, k, 0].item()) // (latent_channels * T)}"
+        )
+    assert torch.equal(al.rows_to_stereo(rows, T), latents)
+
+    # The layout agrees with the reference: 2·T audio rows, [L 0..T−1 | R 0..T−1],
+    # the clock strictly monotone inside each block and identical across them.
+    layout = build_layout(_geometry(audio_latents=T))
+    assert layout.audio_indices.numel() == 2 * T
+    times = layout.position_ids[layout.audio_indices, 0]
+    left, right = times[:T], times[T:]
+    assert torch.all(left[1:] > left[:-1]) and torch.all(right[1:] > right[:-1]), (
+        "audio position_ids are not monotone in time inside a channel block"
+    )
+    assert torch.equal(left, right), "L and R blocks must share one clock"
+    assert torch.all(left[1:] - left[:-1] == 1.0), "one rotary unit per audio latent"
+
+
+def _local_audio_vae_dir() -> str | None:
+    """The `audio_vae/` folder of the MiniMax-H3 snapshot in the LOCAL HF
+    cache (`huggingface_hub.constants.HF_HUB_CACHE`, the one facade) — never
+    a download."""
+    try:
+        from huggingface_hub import snapshot_download
+
+        root = snapshot_download(
+            "MiniMaxAI/MiniMax-H3", allow_patterns=["audio_vae/*"], local_files_only=True
+        )
+    except Exception:  # noqa: BLE001 — absent / offline == skip, reported with -rs
+        return None
+    path = Path(root) / "audio_vae"
+    return str(path) if (path / "config.json").exists() else None
+
+
+def test_stereo_round_trip_real_vae():
+    """Encode → pack → unpack → decode through the INSTALLED diffusers audio
+    VAE with the real weights: an asymmetric fixture (L = 440 Hz sine,
+    R = one burst at 0.5 s) proves the channels never cross."""
+    vae_dir = _local_audio_vae_dir()
+    if vae_dir is None:
+        pytest.skip("MiniMax-H3 audio_vae weights are not in the local HF cache")
+    import soundfile as sf
+    from diffusers import AutoencoderKLMiniMaxH3Audio
+
+    from app.engine.models.families.minimax_h3 import audio_latents as al
+
+    t2va = _definition_yamls()["minimax_h3_t2va.yaml"]["architecture_params"]
+    sr = int(t2va["audio.sampling_rate"])
+    latent_rate = int(t2va["audio.latent_rate"])
+
+    data, file_sr = sf.read(str(_STEREO_CLICK_WAV), dtype="float32", always_2d=True)
+    assert file_sr == sr and data.shape[1] == 2
+    wave = torch.from_numpy(data.T).unsqueeze(0)  # (1, 2, N)
+    n = wave.shape[-1]
+
+    vae = AutoencoderKLMiniMaxH3Audio.from_pretrained(vae_dir, torch_dtype=torch.float32).eval()
+    with torch.no_grad():
+        latents = al.encode_stereo(vae, wave)
+        assert latents.shape == (1, 2, int(t2va["audio_vae.latent_channels"]), n * latent_rate // sr)
+        rows = al.stereo_to_rows(latents)
+        assert rows.shape[-1] == int(t2va["transformer.audio_in_channels"])
+        back = al.rows_to_stereo(rows, latents.shape[-1])
+        assert torch.equal(back, latents)
+        out = al.decode_stereo(vae, back)[..., :n]  # (1, 2, N)
+
+    left_in, right_in = wave[0, 0], wave[0, 1]
+    left_out, right_out = out[0, 0], out[0, 1]
+    one_frame = sr // latent_rate  # 800 samples = 25 ms
+    click = n // 2
+
+    # The burst is in R only, at 0.5 s ± one latent frame.
+    peak = int(torch.argmax(right_out.abs()))
+    assert abs(peak - click) <= one_frame, (
+        f"channel order: the burst decoded at {peak / sr:.3f} s in R, expected 0.5 s ± 25 ms"
+    )
+    window = slice(click - one_frame, click + one_frame)
+    # L inside the window is still just the 0.5-amplitude sine: a 0.9 burst
+    # leaking across would lift its peak well above 1.5x the sine's.
+    assert left_out[window].abs().max() <= 1.5 * left_in.abs().max(), "the burst leaked into L"
+    # L-energy in R (outside the burst window) < -30 dB relative to L.
+    outside = torch.ones(n, dtype=torch.bool)
+    outside[window] = False
+    leak_db = 10 * torch.log10(
+        right_out[outside].pow(2).mean() / left_out[outside].pow(2).mean()
+    )
+    assert leak_db < -30, f"L energy leaked into R: {leak_db:.1f} dB"
+    # Per-channel correlation with the input.
+    def _corr(a: torch.Tensor, b: torch.Tensor) -> float:
+        a = a - a.mean()
+        b = b - b.mean()
+        return float((a * b).sum() / (a.norm() * b.norm() + 1e-12))
+
+    assert _corr(left_in, left_out) >= 0.95, f"L correlation {_corr(left_in, left_out):.3f}"
+    assert _corr(right_in[window], right_out[window]) >= 0.95, (
+        f"R burst correlation {_corr(right_in[window], right_out[window]):.3f}"
+    )

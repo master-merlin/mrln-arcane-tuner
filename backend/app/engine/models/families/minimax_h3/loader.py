@@ -29,6 +29,8 @@ subfolder comes from the definition's ``architecture_params["transformer.subfold
 (Task 4) so t2va/fl2va never download it.
 """
 
+from typing import Any
+
 from app.engine.core.pipeline.loader_base import (
     ComponentSpec,
     GenericComponentLoader,
@@ -55,6 +57,14 @@ def diffusers_ships_native_h3(class_name: str = "MiniMaxH3Transformer3DModel") -
 class MiniMaxH3Loader(GenericComponentLoader):
     """Load MiniMax-H3 components — tokenizer, TE, both VAEs, transformer."""
 
+    @staticmethod
+    def _post_load_vae(model: Any, definition: ModelDefinition) -> Any:
+        """The ONE place the visual VAE is wrapped in ``H3PixelAdaptedVAE``
+        (``[-1, 1]`` <-> ImageNet space). The audio VAE has no such hook."""
+        from app.engine.models.families.minimax_h3.pixel_adapter import H3PixelAdaptedVAE
+
+        return H3PixelAdaptedVAE(model)
+
     def get_component_manifest(
         self,
         definition: ModelDefinition,
@@ -80,11 +90,14 @@ class MiniMaxH3Loader(GenericComponentLoader):
                 hf_class="transformers.Qwen3VLForConditionalGeneration",
                 subfolder="text_encoder",
             ),
-            # -- Visual VAE (diffusers; casts inputs to its fp32 modules) --
+            # -- Visual VAE (diffusers; casts inputs to its fp32 modules).
+            #    Wrapped ONCE in the H3 pixel adapter after loading so every
+            #    consumer sees the engine's [-1, 1] pixels (row 2.0). --
             ComponentSpec(
                 key="vae",
                 hf_class="diffusers.AutoencoderKLMiniMaxH3",
                 subfolder="vae",
+                post_load_hook="_post_load_vae",
             ),
             # -- Audio VAE (diffusers, MONO — run once per channel; no
             #    group offloading, see the module docstring) --

@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import ast
+from pathlib import Path
+
 from app.engine.models.registry import ModelRegistry
 
 
@@ -99,14 +102,6 @@ def test_get_saver_refuses_loudly_in_pr0():
         _driver().get_saver()
 
 
-def test_encode_text_refuses_loudly_in_pr0():
-    import pytest
-    import torch
-
-    with pytest.raises(NotImplementedError, match="PR1"):
-        _driver().encode_text([], torch.bfloat16)
-
-
 def test_resolve_loading_dtype_is_bf16():
     import torch
 
@@ -130,3 +125,169 @@ def test_assign_components_wires_the_five_manifest_keys():
     assert driver.get_components() is components
     assert driver.get_primary_model() is components["transformer"]
     assert driver.get_text_encoders() == {"text_encoder": components["text_encoder"]}
+
+
+# ---------------------------------------------------------------------------
+# Plan row 2.1: text encoding (Qwen3-VL layer tap), the TE cache key, the
+# release-before-DiT check, and the INCREMENTAL PR0-refusal guard.
+# ---------------------------------------------------------------------------
+
+def _text_driver(def_id: str = "minimax-h3-t2va", *, tokenizer=None, num_layers: int = 64):
+    """A driver with a stub Qwen3-VL + processor assigned, no weights."""
+    from app.engine.tests.h3_text_stubs import StubProcessor, StubQwen3VL
+
+    driver = _driver(def_id)
+    te = StubQwen3VL(num_hidden_layers=num_layers)
+    components = {
+        "tokenizer": StubProcessor(tokenizer),
+        "text_encoder": te,
+        "vae": object(),
+        "audio_vae": object(),
+    }
+    driver.assign_components(components)
+    return driver, te
+
+
+def test_encode_text_returns_the_layer_tap_embedding():
+    """The embedding IS ``hidden_states[te.hidden_state_tap_index]`` (50 for the
+    shipped definitions: MiniMax README "hidden states from its 50th layer";
+    ai-toolkit ``text_encoder.py`` "unnormalized hidden_states[50]") — read off
+    the returned tensor, whose every element equals the tap index by the stub's
+    construction. Raw tokens (no chat template), the caption trimmed to
+    ``te.max_length`` (512, ai-toolkit's evidenced default), the empty prompt
+    encoded as ONE pad token, per-caption masks re-padded to the batch max."""
+    import torch
+
+    driver, te = _text_driver()
+    arch = driver.definition.architecture_params
+    assert arch["te.hidden_state_tap_index"] == 50
+    assert arch["te.max_length"] == 512
+
+    long_caption = " ".join(["word"] * 600)  # 600 tokens under the stub tokenizer
+    out = driver.encode_text(["a cat sits", "", long_caption], torch.bfloat16)
+
+    emb, mask = out.embeddings, out.attention_mask
+    assert emb.dtype is torch.bfloat16
+    assert emb.shape == (3, 512, te.hidden_size), emb.shape
+    assert mask.shape == (3, 512)
+    # Every real token row carries the tap index, not the last layer (64).
+    assert torch.all(emb[mask.bool()].float() == 50.0), "not the layer-50 tap"
+    # Lengths: 3 tokens, 1 pad token for the empty prompt, 512 after the trim.
+    assert mask.sum(dim=1).tolist() == [3, 1, 512]
+    # Padding rows are zero, not the tap value.
+    assert torch.all(emb[0, 3:] == 0)
+    # Raw, per-caption encodes: 3 ids, 1 pad id, 512 after the trim (never 600).
+    assert sorted(t.shape[1] for t in te.seen_input_ids) == [1, 3, 512]
+
+
+def test_te_cache_key_includes_tap_and_tokenizer():
+    """Two encoders that differ ONLY in the tap index, or ONLY in the tokenizer
+    vocabulary, must never share a cached embedding (key-collision test)."""
+    from app.engine.tests.h3_text_stubs import StubTokenizer
+
+    base, _ = _text_driver()
+    same, _ = _text_driver()
+    other_tap, _ = _text_driver()
+    other_tap.definition = other_tap.definition.model_copy(
+        update={
+            "architecture_params": {
+                **other_tap.definition.architecture_params,
+                "te.hidden_state_tap_index": 49,
+            }
+        }
+    )
+    other_tok, _ = _text_driver(tokenizer=StubTokenizer(vocab_tag="v2"))
+
+    prompt = "a cat sits"
+    assert base.te_cache_key(prompt) == same.te_cache_key(prompt)
+    assert base.te_cache_key(prompt) != base.te_cache_key("a dog sits")
+    assert base.te_cache_key(prompt) != other_tap.te_cache_key(prompt), (
+        "tap index missing from the key: layer-49 and layer-50 embeddings collide"
+    )
+    assert base.te_cache_key(prompt) != other_tok.te_cache_key(prompt), (
+        "tokenizer fingerprint missing from the key"
+    )
+    assert "tap=50" in base.te_cache_key(prompt)
+
+
+def test_text_encoder_released_before_dit_load():
+    """The DiT never loads while the 63 GB encoder is resident: the check
+    names the bytes; after ``release_text_encoders()`` the driver reports no
+    encoder and the check passes."""
+    import pytest
+
+    driver, te = _text_driver()
+    with pytest.raises(RuntimeError, match=r"text encoder still resident \(.* GB\) at DiT load"):
+        driver.assert_text_encoder_released()
+    assert driver.text_encoder_weight_bytes() == te.weight.numel() * te.weight.element_size()
+
+    driver.release_text_encoders()
+    assert driver.get_text_encoders() == {}
+    assert driver.text_encoder is None
+    driver.assert_text_encoder_released()  # no raise
+
+
+# ── The INCREMENTAL PR0-refusal guard ─────────────────────────────────────
+#
+# Rows 2.4 (forward_pass), 2.5 (_setup_family) and 2.8 (get_saver) each remove
+# their entry; 2.8 asserts the set is EMPTY and deletes the constant.
+REMAINING_PR0_REFUSALS: set[tuple[str, str]] = {
+    ("driver.py", "forward_pass"),
+    ("driver.py", "get_saver"),
+    ("trainer.py", "_setup_family"),
+    ("DRV", "test_forward_pass_refuses_loudly_in_pr0"),
+    ("DRV", "test_get_saver_refuses_loudly_in_pr0"),
+}
+
+_FAMILY_DIR = Path(__file__).resolve().parents[1] / "models" / "families" / "minimax_h3"
+_REFUSAL_CONTROL = Path(__file__).resolve().parent / "fixtures" / "h3_refusal_control.py"
+
+
+def _refusal_sites(path: Path, label: str) -> set[tuple[str, str]]:
+    """Every function in ``path`` that RAISES a ``NotImplementedError`` (directly
+    or through the ``_lands_in_pr1`` helper) — code only; docstrings and
+    comments are never scanned (the row 1.2 lesson)."""
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    found: set[tuple[str, str]] = set()
+    for fn in ast.walk(tree):
+        if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.Raise) or node.exc is None:
+                continue
+            src = ast.unparse(node.exc)
+            if "NotImplementedError" in src or "_lands_in_pr1" in src:
+                found.add((label, fn.name))
+    return found
+
+
+def _refusal_tests(path: Path) -> set[tuple[str, str]]:
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    return {
+        ("DRV", fn.name)
+        for fn in tree.body
+        if isinstance(fn, ast.FunctionDef) and "refuses_loudly_in_pr0" in fn.name
+    }
+
+
+def test_no_unlisted_pr0_refusal_remains():
+    found = (
+        _refusal_sites(_FAMILY_DIR / "driver.py", "driver.py")
+        | _refusal_sites(_FAMILY_DIR / "trainer.py", "trainer.py")
+        | _refusal_tests(Path(__file__))
+    )
+    unlisted = sorted(found - REMAINING_PR0_REFUSALS)
+    gone = sorted(REMAINING_PR0_REFUSALS - found)
+    assert not unlisted, "unlisted refusal " + ", ".join(f"{f}:{n}" for f, n in unlisted)
+    assert not gone, "retire it by name: " + ", ".join(f"{f}:{n}" for f, n in gone)
+
+
+def test_refusal_scanner_flags_the_positive_control():
+    """The scanner must SEE a refusal: the control fixture raises one directly,
+    one through the helper shape, and one inside a method; prose is ignored."""
+    found = _refusal_sites(_REFUSAL_CONTROL, "h3_refusal_control.py")
+    assert found == {
+        ("h3_refusal_control.py", "direct_refusal"),
+        ("h3_refusal_control.py", "helper_refusal"),
+        ("h3_refusal_control.py", "still_refuses"),
+    }, found

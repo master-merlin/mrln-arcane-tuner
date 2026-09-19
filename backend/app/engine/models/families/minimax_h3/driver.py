@@ -3,10 +3,10 @@
 Implements the ``IModelDriver`` methods that do NOT require the real training
 forward pass: component wiring, the curated LoRA target list, block topology,
 and loading dtype — all sourced from the ``ModelDefinition`` (Task 4), the
-single source of truth. Everything that belongs to the packed joint
-audio+video forward, the ``t = 1 - sigma`` / ``v = x0 - noise`` INVERTED
-flow-match contract (see ``family.py``'s module docstring), and LoRA saving
-lands in PR1 and raises ``NotImplementedError`` naming it explicitly — per
+single source of truth. Text encoding (the Qwen3-VL layer-50 tap, plan row
+2.1) and the flow-match convention (row 1.2) are real; what still belongs to
+the packed joint audio+video forward and LoRA saving lands in later PR1 rows
+and raises ``NotImplementedError`` naming it explicitly — per
 the "failure is never silent" invariant, a job that somehow reaches those
 methods must fail loudly, not silently train on wrong data or produce a
 plausible-looking empty/None default.
@@ -39,6 +39,7 @@ grows must land with its trainer delegation the same way.
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 import torch
@@ -138,12 +139,136 @@ class MiniMaxH3Driver(IModelDriver):
         ``detected_precision``: text_encoder/vae/unet all ``torch.bfloat16``)."""
         return torch.bfloat16
 
-    # --- Phase 2: Text Encoding ---
+    # --- Phase 2: Text Encoding (plan row 2.1) ---
+    #
+    # Evidence for the tap: MiniMax-H3 README "The H3-Encoder uses the full
+    # pretrained weights of Qwen3-VL-32B and provides the hidden states from
+    # its 50th layer" (research §4); ai-toolkit `text_encoder.py` "the
+    # **unnormalized** hidden_states[50] … hidden_states[0] is the embedding
+    # output". transformers 5.14.1 (installed; probed on a tiny Qwen3-VL,
+    # `.agent/workdir/minimax-pr1/hs_probe.py`): `hidden_states` has
+    # `num_hidden_layers + 1` entries, `[0]` == the input embeddings, only
+    # `[-1]` carries the final RMSNorm — so `[50]` on the 64-layer stack is
+    # decoder layer 49's raw output, exactly the conditioning H3 was trained on.
+    # Presentation: raw tokens, no chat template, no special tokens
+    # (ai-toolkit, same file); the caption is capped at `te.max_length`.
+
+    def _tokenizer_only(self) -> Any:
+        """The tokenizer under the ``AutoProcessor`` (or a bare tokenizer)."""
+        tok = self.tokenizer
+        return getattr(tok, "tokenizer", tok)
+
+    def _tap_index(self) -> int:
+        return int((self.definition.architecture_params or {})["te.hidden_state_tap_index"])
+
+    def _prompt_max_tokens(self) -> int:
+        return int((self.definition.architecture_params or {})["te.max_length"])
+
+    def tokenizer_fingerprint(self) -> str:
+        """SHA-256 over the tokenizer class + its full vocabulary — a
+        different vocabulary yields different ids for the same caption, hence
+        a different embedding; the cache key must carry it."""
+        cached = getattr(self, "_tokenizer_fp", None)
+        if cached is not None:
+            return cached
+        tok = self._tokenizer_only()
+        vocab = tok.get_vocab()
+        digest = hashlib.sha256()
+        digest.update(type(tok).__name__.encode("utf-8"))
+        for token, idx in sorted(vocab.items(), key=lambda kv: (kv[1], kv[0])):
+            digest.update(f"{idx}:{token}\n".encode("utf-8"))
+        self._tokenizer_fp = digest.hexdigest()
+        return self._tokenizer_fp
+
+    def te_cache_scope(self) -> str:
+        """Path segment the disk cache lives under: tap index + tokenizer."""
+        return f"tap{self._tap_index()}-{self.tokenizer_fingerprint()[:16]}"
+
+    def te_cache_key(self, prompt: str) -> str:
+        """The string a cached embedding is keyed on — every input the
+        embedding is a function of: definition, tap index, tokenizer, prompt.
+        Human-readable; ``TextEmbeddingCache`` hashes it for the filename."""
+        return (
+            f"minimax_h3|{self.definition.id}|tap={self._tap_index()}"
+            f"|tok={self.tokenizer_fingerprint()[:16]}|{prompt}"
+        )
+
+    def _encode_one(self, caption: str) -> torch.Tensor:
+        """``[L, D]`` layer-tap hidden states for ONE caption, no padding."""
+        tok = self._tokenizer_only()
+        ids = list(tok(caption, add_special_tokens=False)["input_ids"])[: self._prompt_max_tokens()]
+        if not ids:
+            # Empty (dropout / unconditional) prompt: one pad token keeps the
+            # sequence non-degenerate (ai-toolkit's fallback).
+            ids = [getattr(tok, "pad_token_id", None) or 0]
+        input_ids = torch.tensor([ids], dtype=torch.long, device=self.device)
+        te = self.text_encoder
+        inner = getattr(te, "model", te)  # skip the LM head — dead weight here
+        tap = self._tap_index()
+        with torch.no_grad():
+            out = inner(
+                input_ids=input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                output_hidden_states=True,
+                use_cache=False,
+            )
+        hidden_states = out.hidden_states
+        if tap >= len(hidden_states):
+            raise ValueError(
+                f"te.hidden_state_tap_index={tap} but the encoder returned "
+                f"{len(hidden_states)} hidden states (num_hidden_layers + 1)"
+            )
+        return hidden_states[tap][0]
 
     def encode_text(self, captions: list[str], dtype: torch.dtype) -> Any:
-        raise _lands_in_pr1(
-            "text encoding (Qwen3-VL, hidden_state_tap_index=50)"
-        )
+        """Qwen3-VL layer-tap conditioning, batched by right-padding.
+
+        Each caption is encoded ALONE (no padding inside the encoder, so the
+        result is byte-identical to the single-prompt reference path) and the
+        batch is assembled by zero-padding to the longest — ``attention_mask``
+        marks the real rows.
+        """
+        from app.engine.core.text_encoding import TextEncoderOutput
+
+        if self.text_encoder is None or self.tokenizer is None:
+            raise RuntimeError(
+                "minimax_h3 encode_text: text_encoder/tokenizer not assigned — "
+                "the encoder was released or assign_components() never ran"
+            )
+        rows = [self._encode_one(cap) for cap in captions]
+        max_len = max(r.shape[0] for r in rows)
+        emb = rows[0].new_zeros((len(rows), max_len, rows[0].shape[-1]))
+        mask = torch.zeros((len(rows), max_len), dtype=torch.long, device=rows[0].device)
+        for i, r in enumerate(rows):
+            emb[i, : r.shape[0]] = r
+            mask[i, : r.shape[0]] = 1
+        return TextEncoderOutput(embeddings=emb.to(dtype=dtype), attention_mask=mask)
+
+    # --- Text-encoder lifecycle: released BEFORE the DiT loads ---
+
+    def text_encoder_weight_bytes(self) -> int:
+        te = self.text_encoder
+        if te is None or not hasattr(te, "parameters"):
+            return 0
+        return sum(p.numel() * p.element_size() for p in te.parameters())
+
+    def release_text_encoders(self) -> None:
+        """Drop EVERY reference the driver holds: the attribute
+        ``get_text_encoders()`` reads AND the entry in the shared component
+        dict (the base offload pops the trainer's copy — the same dict — but
+        the driver owns component state, so it drops its own view too)."""
+        self.text_encoder = None
+        self._components.pop("text_encoder", None)
+
+    def assert_text_encoder_released(self) -> None:
+        """The 63 GB encoder and the 62 GB DiT never coexist: refuse the DiT
+        load while the encoder is still held anywhere the driver can see."""
+        if self.text_encoder is not None or "text_encoder" in self._components:
+            gb = self.text_encoder_weight_bytes() / 1e9
+            raise RuntimeError(
+                f"text encoder still resident ({gb:.2f} GB) at DiT load — "
+                "release it (cache the embeddings) before materialising the transformer"
+            )
 
     # --- Phase 4: Precision, LoRA Targets & Layer Manifest ---
 

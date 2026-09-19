@@ -155,6 +155,10 @@ architecture_params:
   te.hidden_size: 5120
   # Hidden states are tapped at layer 50, NOT the last layer.
   te.hidden_state_tap_index: 50
+  # Prompt tokens are capped at 512 (raw tokens, no chat template) —
+  # ai-toolkit's evidenced default (research §5, `d20a17c1`); vision
+  # blocks (PR1b keyframes) are never cut, only the caption tail.
+  te.max_length: 512
   # Generic activation-estimate hints
   hidden_size: 5376
   depth: 52

@@ -31,6 +31,8 @@ subfolder comes from the definition's ``architecture_params["transformer.subfold
 
 from typing import Any
 
+import torch
+
 from app.engine.core.pipeline.loader_base import (
     ComponentSpec,
     GenericComponentLoader,
@@ -65,15 +67,51 @@ class MiniMaxH3Loader(GenericComponentLoader):
 
         return H3PixelAdaptedVAE(model)
 
+    def __init__(self, device, *, defer_transformer: bool = False) -> None:
+        super().__init__(device)
+        # Host-RAM / VRAM sequencing (plan row 2.1): the 63 GB Qwen3-VL and
+        # the 62 GB DiT never coexist. With ``defer_transformer`` the
+        # transformer is OMITTED from the Phase-A manifest and materialised by
+        # :meth:`load_transformer` once the trainer has cached the embeddings
+        # and released the encoder (the WAN 2.2 ``defer_second_expert`` shape).
+        self.defer_transformer = bool(defer_transformer)
+
+    @staticmethod
+    def _transformer_spec(definition: ModelDefinition) -> ComponentSpec:
+        arch = definition.architecture_params or {}
+        # ref2va reads transformer_ref/; t2va and fl2va read transformer/.
+        # -- Transformer (diffusers). Subfolder comes from the definition so
+        #    ref2va's second 33B checkpoint is never downloaded by t2va/fl2va.
+        return ComponentSpec(
+            key="transformer",
+            hf_class="diffusers.models.transformers.transformer_minimax_h3"
+            ".MiniMaxH3Transformer3DModel",
+            subfolder=arch.get("transformer.subfolder", "transformer"),
+        )
+
+    def load_transformer(
+        self,
+        definition: ModelDefinition,
+        torch_dtype: torch.dtype,
+        initial_device: str = "cpu",
+    ) -> Any:
+        """Materialise the deferred DiT through the SAME single-spec path the
+        batch load uses (root resolution, ``from_pretrained``, placement)."""
+        spec = self._transformer_spec(definition)
+        root_path = getattr(self, "_root_path", None) or self._resolve_root(definition)
+        self.logger.info(
+            "minimax_h3_deferred_transformer_materializing",
+            subfolder=spec.subfolder,
+            dtype=str(torch_dtype),
+            device=str(initial_device),
+        )
+        return self._load_single_spec(spec, definition, root_path, torch_dtype, initial_device)
+
     def get_component_manifest(
         self,
         definition: ModelDefinition,
     ) -> list[ComponentSpec]:
-        arch = definition.architecture_params or {}
-        # ref2va reads transformer_ref/; t2va and fl2va read transformer/.
-        transformer_subfolder = arch.get("transformer.subfolder", "transformer")
-
-        return [
+        manifest = [
             # -- Processor (AutoProcessor is not moved to device — no
             #    .to(device).eval() on a tokenizer/processor object). --
             ComponentSpec(
@@ -106,13 +144,9 @@ class MiniMaxH3Loader(GenericComponentLoader):
                 hf_class="diffusers.AutoencoderKLMiniMaxH3Audio",
                 subfolder="audio_vae",
             ),
-            # -- Transformer (diffusers). Subfolder comes from the
-            #    definition so ref2va's second 33B checkpoint is never
-            #    downloaded by t2va/fl2va. --
-            ComponentSpec(
-                key="transformer",
-                hf_class="diffusers.models.transformers.transformer_minimax_h3"
-                ".MiniMaxH3Transformer3DModel",
-                subfolder=transformer_subfolder,
-            ),
         ]
+        # A ``__new__``-constructed loader (the manifest tests) has no flag:
+        # eager is the default there too.
+        if not getattr(self, "defer_transformer", False):
+            manifest.append(self._transformer_spec(definition))
+        return manifest

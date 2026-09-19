@@ -646,3 +646,102 @@ def test_checkpointing_arms_both_sites(build_tiny_transformer):
     assert ckpt_grads.keys() == eager_grads.keys()
     for name, g in eager_grads.items():
         torch.testing.assert_close(ckpt_grads[name], g, atol=1e-5, rtol=1e-4, msg=lambda m: f"{name}: {m}")
+
+
+# ── Research §6's free assertions (row 1.7) ─────────────────────────────
+
+_DEFINITIONS_DIR = _TESTS_DIR.parents[0] / "models" / "families" / "minimax_h3" / "definitions"
+
+# The ONLY architecture_params the three definitions may differ in: t2va vs
+# fl2va is `mode` (t2v / both); ref2va reads the second checkpoint.
+_PARAMS_ALLOWED_TO_DIFFER = frozenset({"mode", "transformer.subfolder"})
+
+
+def _definition_yamls() -> dict[str, dict[str, Any]]:
+    import yaml
+
+    out = {}
+    for path in sorted(_DEFINITIONS_DIR.glob("*.yaml")):
+        with open(path, encoding="utf-8") as fh:
+            out[path.name] = yaml.safe_load(fh)
+    assert len(out) >= 3, f"expected the three minimax_h3 definitions, found {sorted(out)}"
+    return out
+
+
+def test_conditioning_rows_need_no_new_module(build_tiny_transformer):
+    """(a) fl2v conditioning is a LAYOUT feature: N clean keyframe rows at a
+    third timestep slot (`t_c`), tagged video, addressed through the SAME
+    AdaLN table (`adaln_indices = slot * MODALITY_NUM + tag`, so every tag
+    must stay below `MINIMAX_H3_MODALITY_NUM`); the tiny forward runs on it
+    unchanged — no new module (research §3.4 / §6)."""
+    from diffusers.models.transformers.transformer_minimax_h3 import MINIMAX_H3_MODALITY_NUM
+
+    from app.engine.models.families.minimax_h3.packing import (
+        SLOT_CONDITION_VIDEO,
+        VIDEO_TAG,
+        build_layout,
+        num_distinct_timesteps,
+        packed_forward,
+        patchify_video,
+    )
+
+    geometry = _geometry(keyframe_anchors=("first", "last"))
+    layout = build_layout(geometry)
+    rows_per_frame = (geometry.latent_height // 2) * (geometry.latent_width // 2)
+    assert layout.num_condition_video_rows == 2 * rows_per_frame
+    cond = layout.video_indices[: layout.num_condition_video_rows]
+    # The AdaLN table has `num_timesteps * MODALITY_NUM` rows; a tag outside
+    # 0..2 or a fourth slot indexes past it — checked FIRST, it is the failure
+    # the other assertions would only describe indirectly.
+    assert int(layout.token_tags.max()) < MINIMAX_H3_MODALITY_NUM, (
+        f"adaln_indices out of range: token tag {int(layout.token_tags.max())} "
+        f">= MINIMAX_H3_MODALITY_NUM ({MINIMAX_H3_MODALITY_NUM})"
+    )
+    adaln_indices = layout.timestep_slot * MINIMAX_H3_MODALITY_NUM + layout.token_tags
+    assert int(adaln_indices.max()) < 3 * MINIMAX_H3_MODALITY_NUM, "adaln_indices out of range"
+    assert torch.all(layout.timestep_slot[cond] == SLOT_CONDITION_VIDEO)
+    assert torch.all(layout.token_tags[cond] == VIDEO_TAG)
+    assert num_distinct_timesteps(layout) == 3
+
+    target_rows, audio_rows, text = _random_inputs(layout, geometry)
+    g = torch.Generator().manual_seed(1)
+    keyframes = torch.randn(1, 24, 2, geometry.latent_height, geometry.latent_width, generator=g)
+    video_rows = torch.cat([patchify_video(keyframes, layout.patch_size), target_rows], dim=1)
+    assert video_rows.shape[1] == layout.video_indices.numel()
+    model = build_tiny_transformer()
+    model.eval()
+    with torch.no_grad():
+        video_out, audio_out = packed_forward(
+            model, layout, video_rows, audio_rows, text, torch.tensor([0.5, 0.3, 0.0])
+        )
+    assert video_out.shape == video_rows.shape and torch.isfinite(video_out).all()
+    assert audio_out.shape == audio_rows.shape and torch.isfinite(audio_out).all()
+
+
+def test_adaln_excluded_in_all_definitions():
+    """(b) no definition targets `adaln_proj`: the AdaLN table differs between
+    the full and the pruned checkpoint, so a LoRA touching it is portable to
+    neither (research §3.6)."""
+    for name, data in _definition_yamls().items():
+        targets = data["lora_targetable_modules"]
+        assert targets, f"{name}: empty target list"
+        offenders = [t for t in targets if "adaln" in t]
+        assert not offenders, f"{name} targets adaln modules: {offenders}"
+
+
+def test_params_differ_only_in_allowlist():
+    """(c) the three definitions describe ONE architecture: their
+    `architecture_params` differ only in the named allowlist. A stray
+    per-definition value (a second `audio.loss_weight`, a private shift) is
+    exactly how "one graph, three fine-tunes" would silently stop being true."""
+    yamls = _definition_yamls()
+    names = sorted(yamls)
+    base_name, base = names[0], yamls[names[0]]["architecture_params"]
+    for name in names[1:]:
+        params = yamls[name]["architecture_params"]
+        differing = sorted(k for k in set(base) | set(params) if base.get(k) != params.get(k))
+        stray = [k for k in differing if k not in _PARAMS_ALLOWED_TO_DIFFER]
+        assert not stray, (
+            f"{name} vs {base_name}: architecture_params differ outside the allowlist "
+            f"{sorted(_PARAMS_ALLOWED_TO_DIFFER)}: {stray}"
+        )

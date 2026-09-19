@@ -1,8 +1,8 @@
 # MiniMax-H3 — 33B dense single-stream omni-modal DiT (video + stereo audio
 # denoised JOINTLY in one pass). MiniMax H3 Community License (NOT Apache-2.0).
 #
-# Model classes are VENDORED (vendor/, pinned diffusers SHA 245d78fb) — H3 is
-# NOT in any diffusers release; the installed 0.39.0 has zero MiniMax code.
+# Model classes are the INSTALLED diffusers ones (0.40.0 ships the whole H3
+# stack; the earlier vendored fork was retired in plan row 1.8 of PR1).
 #
 # All architecture_params verified against the live HF repo
 # (MiniMaxAI/MiniMax-H3, 2026-08-05): transformer/config.json, vae/config.json,
@@ -17,7 +17,7 @@ version: '1.0'
 # of the other two — deleting this key here offers this definition again and
 # changes nothing for its siblings. Do NOT collapse the three into one shared
 # family-level string; `test_definition_availability_gate.py` pins that they
-# stay distinct. The code, tests, vendored transformer and this file stay in
+# stay distinct. The code, tests and this file stay in
 # the tree meanwhile, and the registry-wide coverage sweeps keep enumerating
 # the family.
 #
@@ -72,7 +72,7 @@ architecture_params:
   audio.latent_rate: 40
   audio.channels: 2
   # Two COUPLED sigma schedules, not one. Verified in ai-toolkit packing.py
-  # (VIDEO_SIGMA_SHIFT / AUDIO_SIGMA_SHIFT) and in the vendored H3 scheduler.
+  # (VIDEO_SIGMA_SHIFT / AUDIO_SIGMA_SHIFT) and in diffusers' H3 scheduler.
   # One u is sampled per step and mapped through BOTH curves.
   audio.sigma_shift: 3.0
   video.sigma_shift: 12.0

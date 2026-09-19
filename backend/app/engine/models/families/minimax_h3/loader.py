@@ -2,13 +2,19 @@
 
 Component sourcing differs per component, and the split matters:
 
-- Transformer / both VAEs / scheduler are VENDORED (vendor/, pinned diffusers
-  SHA 245d78fb). H3 is NOT in any diffusers release — the installed 0.39.0
-  contains zero MiniMax code, so a ``diffusers.MiniMaxH3*`` class path would
-  ImportError. When upstream ships H3 natively these paths become the only
-  thing that changes.
-- Text encoder is Qwen3-VL via stock ``transformers`` — no vendoring, the same
-  pattern ``nucleus_image`` already proves. Confirmed importable in THIS venv
+- Transformer / both VAEs / scheduler are the INSTALLED diffusers classes
+  (``MiniMaxH3Transformer3DModel``, ``AutoencoderKLMiniMaxH3``,
+  ``AutoencoderKLMiniMaxH3Audio``, ``MiniMaxH3Scheduler``): diffusers 0.40.0,
+  the ``requirements.txt`` floor, ships the whole H3 stack. The family's
+  earlier ``vendor/`` fork (pre-release SHA 245d78fb) was retired in plan row
+  1.8 once its forward proved bit-exact with upstream on the tiny arch
+  (``tests/fixtures/h3_vendor_parity.npz``). Two upstream behaviours the data
+  path must respect: the video VAE casts its inputs to the encoder/decoder
+  parameter dtype (``_keep_in_fp32_modules``), and the audio VAE declares
+  ``_supports_group_offloading = False`` — never group-offload it.
+  ``diffusers_ships_native_h3()`` probes the installed package for the class.
+- Text encoder is Qwen3-VL via stock ``transformers``, the same pattern
+  ``nucleus_image`` already proves. Confirmed importable in THIS venv
   (``transformers`` 4.57.0): ``from transformers import
   Qwen3VLForConditionalGeneration, AutoProcessor`` succeeds. The definitions'
   ``architecture_params`` (Task 4) also record ``te.type: qwen3_vl``.
@@ -29,7 +35,21 @@ from app.engine.core.pipeline.loader_base import (
 )
 from app.engine.core.definitions import ModelDefinition
 
-_VENDOR = "app.engine.models.families.minimax_h3.vendor."
+
+def diffusers_ships_native_h3(class_name: str = "MiniMaxH3Transformer3DModel") -> bool:
+    """``True`` when the installed ``diffusers`` exports ``class_name``.
+
+    A real lookup against the installed package (imported here, not at module
+    import — nothing imported at startup may raise, ARCHITECTURE D1), so a
+    downgrade below the 0.40.0 floor answers ``False`` instead of failing at
+    ``from_pretrained`` after the download.
+    """
+    try:
+        import diffusers
+
+        return getattr(diffusers, class_name, None) is not None
+    except Exception:  # noqa: BLE001 — a broken install is "does not ship it"
+        return False
 
 
 class MiniMaxH3Loader(GenericComponentLoader):
@@ -60,26 +80,26 @@ class MiniMaxH3Loader(GenericComponentLoader):
                 hf_class="transformers.Qwen3VLForConditionalGeneration",
                 subfolder="text_encoder",
             ),
-            # -- Visual VAE (vendored) --
+            # -- Visual VAE (diffusers; casts inputs to its fp32 modules) --
             ComponentSpec(
                 key="vae",
-                hf_class=_VENDOR + "autoencoder_kl_minimax_h3.AutoencoderKLMiniMaxH3",
+                hf_class="diffusers.AutoencoderKLMiniMaxH3",
                 subfolder="vae",
             ),
-            # -- Audio VAE (vendored, MONO — run once per channel) --
+            # -- Audio VAE (diffusers, MONO — run once per channel; no
+            #    group offloading, see the module docstring) --
             ComponentSpec(
                 key="audio_vae",
-                hf_class=_VENDOR
-                + "autoencoder_kl_minimax_h3_audio.AutoencoderKLMiniMaxH3Audio",
+                hf_class="diffusers.AutoencoderKLMiniMaxH3Audio",
                 subfolder="audio_vae",
             ),
-            # -- Transformer (vendored). Subfolder comes from the
+            # -- Transformer (diffusers). Subfolder comes from the
             #    definition so ref2va's second 33B checkpoint is never
             #    downloaded by t2va/fl2va. --
             ComponentSpec(
                 key="transformer",
-                hf_class=_VENDOR
-                + "transformer_minimax_h3.MiniMaxH3Transformer3DModel",
+                hf_class="diffusers.models.transformers.transformer_minimax_h3"
+                ".MiniMaxH3Transformer3DModel",
                 subfolder=transformer_subfolder,
             ),
         ]

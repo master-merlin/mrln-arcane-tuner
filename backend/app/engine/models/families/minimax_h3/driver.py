@@ -60,7 +60,7 @@ class MiniMaxH3Driver(IModelDriver):
 
     Handles:
     - Component wiring (tokenizer/processor, Qwen3-VL text encoder, visual
-      VAE, audio VAE, vendored transformer) per the loader manifest (Task 5).
+      VAE, audio VAE, diffusers transformer) per the loader manifest (Task 5).
     - LoRA target list and block topology, both read VERBATIM from the
       definition (Task 4) so the YAML stays the single source of truth —
       pinned by ``test_definition_ships_curated_target_list_matching_driver``.
@@ -93,7 +93,7 @@ class MiniMaxH3Driver(IModelDriver):
         (processor, never moved to device), ``text_encoder`` (Qwen3-VL-32B,
         cached then unloaded before the DiT loads), ``vae`` (visual),
         ``audio_vae`` (MONO — run once per stereo channel), ``transformer``
-        (vendored; ``transformer`` or ``transformer_ref`` subfolder per
+        (diffusers' class; ``transformer`` or ``transformer_ref`` subfolder per
         definition).
         """
         self._components = components

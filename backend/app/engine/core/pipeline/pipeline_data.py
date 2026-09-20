@@ -510,6 +510,9 @@ class PipelineDataMixin:
         _parsed_rule = _RuleBM._parse_frame_step(self._video_frame_rule)
         video_frame_floor = _parsed_rule[1] if _parsed_rule else 1
         skipped_short_clips = 0
+        # Clips the frame rule rounded DOWN (97 -> 90 under `17n+5`): each is
+        # logged where it happens and counted on the `data_prepared` summary.
+        snapped_clips = 0
 
         # ── Global augmentation config ──
         self._aug_h_flip = bool(self.config.get("h_flip", False))
@@ -790,6 +793,31 @@ class PipelineDataMixin:
                                 )
                                 buckets = [vbucket]
                                 vid_target_frames = vbucket["frames"]
+                                # The frame RULE rounded this clip down: it
+                                # could supply more frames under the cap than
+                                # the ladder hands back. A cut by the cap alone
+                                # (the run's / dataset's frame setting) is the
+                                # user's own choice and is not reported here.
+                                _suppliable = min(
+                                    available_frames,
+                                    max(ds_bucket_manager.frame_buckets),
+                                )
+                                if vid_target_frames < _suppliable:
+                                    snapped_clips += 1
+                                    self.logger.info(
+                                        "clip_frames_snapped",
+                                        dataset=name,
+                                        media=img_rel,
+                                        source_frames=available_frames,
+                                        used_frames=vid_target_frames,
+                                        frame_rule=self._video_frame_rule,
+                                        message=(
+                                            f"clip has {available_frames} frames; "
+                                            f"{vid_target_frames} are used, the "
+                                            "largest length the frame rule "
+                                            f"({self._video_frame_rule}) allows"
+                                        ),
+                                    )
                             else:
                                 sbucket = self.bucket_manager.get_bucket(w, h)
                                 vid_target_frames = max(
@@ -993,6 +1021,7 @@ class PipelineDataMixin:
             "data_prepared",
             total_items=len(inventory),
             skipped_short_clips=skipped_short_clips,
+            snapped_clips=snapped_clips,
         )
 
         # Initialize LatentManager early — needed by _validate_latent_cache()

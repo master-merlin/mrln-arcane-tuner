@@ -591,7 +591,7 @@ This table is generated from `backend/app/engine/models/families/` and pinned by
 | `hunyuan_video15` | HunyuanVideo 1.5 480p I2V · HunyuanVideo 1.5 480p T2V |
 | `kandinsky5` | Kandinsky 5.0 I2V Pro SFT 5s · Kandinsky 5.0 T2V Lite SFT 5s |
 | `ltx2` | LTX 2.3 (Lightricks) · LTX 2.5 (Lightricks) |
-| `minimax_h3` | MiniMax H3 (text → video+audio) · MiniMax H3 (first/last frame → video+audio) · MiniMax H3 (reference → video+audio) — **not selectable in this release:** the family ships as a scaffold (loader, video contract, vendored model classes) and training lands in a later one, so the three definitions are gated out of the model pickers |
+| `minimax_h3` | MiniMax H3 (text → video+audio), `minimax-h3-t2va`: trains a LoRA on video clips with their audio track; clip lengths follow the `17n+5` frame rule. On a 96 GB card use int8 quantization or bf16 with at least 12 blocks swapped. **Still unavailable** (gated out of the model pickers, each for its own stated reason): MiniMax H3 (first/last frame → video+audio), `minimax-h3-fl2va` · MiniMax H3 (reference → video+audio), `minimax-h3-ref2va` |
 | `wan21` | WAN 2.1 I2V 14B 720P · WAN 2.1 I2V 14B 480P · WAN 2.1 T2V 14B · WAN 2.1 T2V 1.3B |
 | `wan22` | WAN 2.2 I2V A14B (MoE) · WAN 2.2 T2V A14B (MoE) |
 | `wan22_ti2v_5b` | WAN 2.2 TI2V 5B (Dense) |

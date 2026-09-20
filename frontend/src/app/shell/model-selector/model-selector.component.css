@@ -1,0 +1,37 @@
+/*
+ * A native <select> sizes itself to its WIDEST option, not the selected one, so
+ * one long definition name widens the whole control. Inside the workspace
+ * actions row (a flex row that is right-aligned in a grid track) that extra
+ * width has nowhere to go but out of the track's left edge, over the mode tabs.
+ *
+ * Invariant: this control never demands more than its bounded width, and it may
+ * shrink below that — every box from the host down carries `min-width: 0`, or
+ * the default `min-width: auto` pins the chain at max-content and the ellipsis
+ * can never engage. The full label is carried by the select's `title`.
+ */
+:host {
+    display: block;
+    min-width: 0;
+}
+
+.ms-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    min-width: 0;
+}
+
+/* Only the selects are elastic: the label must not break at its hyphen. */
+.ms-label {
+    flex-shrink: 0;
+    white-space: nowrap;
+}
+
+.ms-select {
+    /* A floor, never `auto` (= the widest option): still readable when squeezed. */
+    min-width: 4.5rem;
+    max-width: 9rem;
+    overflow: hidden;
+    white-space: nowrap;
+    text-overflow: ellipsis;
+}

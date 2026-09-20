@@ -24,6 +24,7 @@ import { ModelContextStore, type DefinitionRef } from '../../state/model-context
     imports: [FormsModule],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './model-selector.component.html',
+    styleUrl: './model-selector.component.css',
 })
 export class ModelSelectorComponent {
     protected ctx = inject(ModelContextStore);

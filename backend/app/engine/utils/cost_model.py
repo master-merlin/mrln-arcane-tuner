@@ -84,7 +84,18 @@ def resolution_of(config: dict[str, Any]) -> int:
             return int(max(int(r) for r in res))
         except (TypeError, ValueError):
             pass
-    return int(_num(_first(config, "resolution", "width", default=REF_RESOLUTION), REF_RESOLUTION))
+    return scalar_resolution_of(config) or int(REF_RESOLUTION)
+
+
+def scalar_resolution_of(config: dict[str, Any]) -> int | None:
+    """The scalar ``resolution`` / ``width`` a config STATES, or None when it states neither."""
+    n = _num(_first(config, "resolution", "width"), 0)
+    return int(n) if n > 0 else None
+
+
+def optimizer_of(config: dict[str, Any]) -> str:
+    """Lower-cased optimizer name; a run config says ``optimizer_type``, older callers ``optimizer``."""
+    return str(_first(config, "optimizer_type", "optimizer", default="adamw")).strip().lower()
 
 
 def batch_of(config: dict[str, Any]) -> float:

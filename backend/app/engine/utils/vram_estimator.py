@@ -19,6 +19,8 @@ from typing import Any
 
 import structlog
 
+from app.engine.utils.cost_model import batch_of, optimizer_of, rank_of, scalar_resolution_of
+
 logger = structlog.get_logger(__name__)
 
 
@@ -402,7 +404,12 @@ _CALIB_MAX = 4.0
 #: v2 — removed the phantom ``depth_single_blocks`` default of 38 from the
 #: activation term (42 of 50 definitions have no single blocks and were being
 #: charged for 38 of them).
-VRAM_FORMULA_VERSION = 2
+#: v3 — the rank / batch / optimizer / size rows read the names a RUN CONFIG
+#: carries (``network_rank``, ``train_batch_size``, ``optimizer_type``, a
+#: ``resolutions`` list without a scalar). Calibration is derived against a
+#: job's run config, so every v2 coefficient was taken against rows budgeted at
+#: rank 16 / batch 1 / AdamW / 1024 px whatever the job stated.
+VRAM_FORMULA_VERSION = 3
 
 
 # ---------------------------------------------------------------------------
@@ -551,7 +558,10 @@ class VRAMEstimator:
             report.model_weights_mb += expert_weights_mb
 
         # ── 2. LoRA adapters ─────────────────────────────────────────────
-        lora_rank = config.get("lora_rank", config.get("rank", 16))
+        # Names go through cost_model's ONE alias reader: a run config says
+        # ``network_rank`` / ``train_batch_size`` / ``optimizer_type``, and the
+        # /jobs/estimate-vram route hands the payload through untouched.
+        lora_rank = rank_of(config)
         # Rough estimate: each target module gets rank×in + rank×out params
         # Typical ratio: ~1-3% of model params at rank 16
         lora_ratio = min(lora_rank / 16 * 0.015, 0.10)  # cap at 10%
@@ -566,7 +576,7 @@ class VRAMEstimator:
             te_params_b = _get_te_params(family)
             trainable_params += te_params_b * 1e9
 
-        optimizer = config.get("optimizer", "adamw")
+        optimizer = optimizer_of(config)
         if optimizer in ("adamw", "adam", "adam8bit", "adamw8bit"):
             # 2 moments × fp32 (4 bytes) = 8 bytes per trainable param
             # 8-bit optimizers halve this
@@ -590,21 +600,23 @@ class VRAMEstimator:
         # resolution LISTS. Phase 3: F=1 stills mixed into a video job bucket at
         # ``still_resolutions`` and can exceed the video ``resolutions`` — fold
         # them in via the shared resolver (single source of truth) so a
-        # high-res still isn't silently under-budgeted. Monotonic: this can only
-        # RAISE the (already conservative) scalar default, never lower it, so
-        # every existing estimate is unchanged unless a real bucket edge is
-        # genuinely larger. Image families inherit ``resolutions`` (the field is
+        # high-res still isn't silently under-budgeted. The largest STATED size
+        # wins (scalar or edge). Image families inherit ``resolutions`` (the field is
         # is_video-gated), so a stale ``still_resolutions`` can't affect them.
         is_video = bool(_is_video_definition(definition))
-        resolution = config.get("resolution", config.get("width", 1024))
+        # The 1024 default stands in ONLY for a config that states no size at
+        # all: a job that states ``resolutions: [768]`` and no scalar is
+        # budgeted at 768, not at max(1024, 768).
+        stated_scalar = scalar_resolution_of(config)
+        resolution = stated_scalar or 1024
         from app.engine.core.pipeline.pipeline_data import resolve_still_resolutions
 
         bucket_edges = [
             int(r) for r in (config.get("resolutions") or []) if int(r) > 0
         ] + [int(r) for r in resolve_still_resolutions(config, is_video) if int(r) > 0]
         if bucket_edges:
-            resolution = max(int(resolution), max(bucket_edges))
-        batch_size = config.get("batch_size", 1)
+            resolution = max([*bucket_edges, *([stated_scalar] if stated_scalar else [])])
+        batch_size = batch_of(config)
         grad_checkpointing = config.get("gradient_checkpointing", True)
         # gradient_accumulation_steps doesn't affect peak VRAM (same batch in memory)
 

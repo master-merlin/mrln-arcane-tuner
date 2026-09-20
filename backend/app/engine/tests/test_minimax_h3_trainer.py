@@ -11,6 +11,10 @@ the base caption-hint builder, the disk cache) are REAL.
 
 from __future__ import annotations
 
+import asyncio
+import os
+from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 import pytest
@@ -181,6 +185,9 @@ def test_transformer_is_materialised_only_after_the_release(tmp_path):
 
     assert seen == [("transformer", "transformer", torch.bfloat16, "cpu")]
     assert t.components["transformer"] is dit
+    # The base pipeline's primary key (`_move_component_to_gpu("unet")`, the
+    # PEFT wrap, the saver) — aliased, or the DiT never reaches the GPU.
+    assert t.components["unet"] is dit
     assert t.driver.get_primary_model() is dit
     assert t.transformer is dit
 
@@ -190,6 +197,220 @@ def test_transformer_is_materialised_only_after_the_release(tmp_path):
     released = next(c for c in t.logger.info.call_args_list if c.args[0] == "text_encoder released")
     assert released.kwargs["weight_bytes"] == 1024 * 4
     assert "host_peak_bytes" in released.kwargs and "cuda_peak_bytes" in released.kwargs
+
+
+# ── Row 2.5: trainer setup + lifecycle ───────────────────────────────────
+
+_SLIDING_MSG = (
+    "minimax_h3: temporal_coverage='sliding' is not supported in this release "
+    "(its latent window assumes (F-1)/t+1 frames; H3 chunks 17n+5 -> 5n+2) — "
+    "use 'first' or 'tiled'"
+)
+
+
+def _setup_shell(tmp_path, **config) -> MiniMaxH3Trainer:
+    t = _trainer(tmp_path)
+    t.config.update(config)
+    return t
+
+
+def test_setup_family_no_longer_raises(tmp_path):
+    t = _setup_shell(tmp_path)
+    assert t._setup_family() is None
+
+
+def test_setup_family_wires_driver_and_loader(tmp_path):
+    from app.engine.core.video_contract import resolve_video_profile
+    from app.engine.models.families.minimax_h3.loader import MiniMaxH3Loader
+
+    t = _setup_shell(tmp_path, train_audio=True)
+    t._setup_family()
+    assert isinstance(t.driver, MiniMaxH3Driver)
+    assert isinstance(t.loader, MiniMaxH3Loader) and t.loader.defer_transformer is True
+    assert t.driver.settings is not None, "driver.settings is None"
+    assert t.driver.settings.train_audio is True
+    assert t._resolve_train_audio() is True
+    assert t._resolve_loading_dtype() is torch.bfloat16
+    # First step of the row (round 15 MAJOR 15.02): a VIDEO family with a
+    # soundtrack, not an audio-primary family.
+    assert t.is_video_family is True
+    assert resolve_video_profile(t.definition).has_audio is True
+    assert t.is_audio_family is False
+
+
+def test_setup_family_refuses_sliding_before_any_weight_loads(tmp_path, monkeypatch):
+    from app.engine.models.families.minimax_h3 import loader as loader_mod
+
+    constructed: list[tuple] = []
+    real_init = loader_mod.MiniMaxH3Loader.__init__
+
+    def _recording_init(self, device, **kwargs):
+        constructed.append((device, kwargs))
+        real_init(self, device, **kwargs)
+
+    monkeypatch.setattr(loader_mod.MiniMaxH3Loader, "__init__", _recording_init)
+
+    t = _setup_shell(tmp_path, temporal_coverage="sliding")
+    with pytest.raises(ValueError) as exc:
+        t._setup_family()
+    msg = str(exc.value)
+    assert msg == _SLIDING_MSG
+    assert "sliding" in msg and "'first'" in msg and "'tiled'" in msg
+    assert constructed == [], "the loader was built before the refusal"
+
+    # Positive control: the two supported coverages reach the loader.
+    for coverage in ("first", "tiled"):
+        _setup_shell(tmp_path, temporal_coverage=coverage)._setup_family()
+    assert len(constructed) == 2 and all(kw == {"defer_transformer": True} for _, kw in constructed)
+
+
+class _StubAudioVAE(torch.nn.Module):
+    """A mono audio VAE by shape: 800-sample hop, 32 latent channels, the
+    posterior mean = per-hop channel-wise projection of the waveform."""
+
+    hop = 800
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.config = SimpleNamespace(
+            latents_mean=[0.1] * 32, latents_std=[2.0] * 32, sampling_rate=32000
+        )
+        self.proj = torch.nn.Parameter(torch.linspace(-1, 1, 32).view(32, 1), requires_grad=False)
+
+    def encode(self, sample: torch.Tensor):
+        b, one, n = sample.shape
+        assert one == 1
+        frames = sample.reshape(b, 1, n // self.hop, self.hop).abs().mean(dim=-1)  # (b, 1, T)
+        mean = self.proj * frames  # (b, 32, T)
+        return SimpleNamespace(latent_dist=SimpleNamespace(mode=lambda: mean))
+
+    def decode(self, latents: torch.Tensor):  # pragma: no cover - not decoded here
+        raise AssertionError("never decoded in the trainer tests")
+
+
+def _audio_shell(tmp_path) -> tuple[MiniMaxH3Trainer, dict]:
+    from app.engine.components.latents import LatentManager
+    from app.engine.models.families.minimax_h3.pixel_adapter import H3PixelAdaptedVAE
+    from app.engine.tests.h3_text_stubs import StubVisualVAE
+
+    t = _setup_shell(tmp_path, train_audio=True, cache_latents=True)
+    t._setup_family()
+    t.components = {
+        "vae": H3PixelAdaptedVAE(StubVisualVAE()),
+        "audio_vae": _StubAudioVAE(),
+        "tokenizer": StubProcessor(),
+        "text_encoder": StubQwen3VL(hidden_size=8),
+    }
+    t._assign_components()
+    t.latent_manager = LatentManager(t.components["vae"], device=t.device)
+    clip = str(_STEREO_CLICK_WAV)
+    item = {
+        "id": "click",
+        "path": clip,
+        "caption": "a click",
+        "cache_dir": str(tmp_path / "ds" / ".cache" / "m" / "1.0.0" / "latents" / "original" / "64x64x24f24.0-h3x"),
+        "is_video": True,
+        "target_frames": 24,
+        "target_fps": 24.0,
+        "trim_start_s": 0.0,
+        "prefix": "",
+    }
+    still = {"id": "still", "path": clip, "caption": "a still", "cache_dir": item["cache_dir"], "is_video": False, "prefix": ""}
+    t.inventory = [item, still]
+    return t, item
+
+
+_STEREO_CLICK_WAV = Path(__file__).resolve().parent / "fixtures" / "h3_stereo_click.wav"
+
+
+def test_pre_cache_aux_writes_audio_latents_via_the_family_module(tmp_path):
+    from safetensors.torch import load_file
+
+    from app.engine.components.audio_io import load_audio_waveform
+    from app.engine.models.families.minimax_h3 import audio_latents as al
+
+    t, item = _audio_shell(tmp_path)
+    t._pre_cache_aux()
+
+    adir = t._audio_cache_dir(item["cache_dir"])
+    assert os.path.basename(os.path.dirname(adir)) == "audio"
+    files = os.listdir(adir)
+    assert len(files) == 1, files  # the still wrote nothing
+    cached = load_file(os.path.join(adir, files[0]))["audio_latents"]
+
+    wav, sr = load_audio_waveform(item["path"], trim_start_s=0.0, duration_s=1.0, target_sr=32000)
+    assert wav.shape == (2, 32000) and sr == 32000
+    expected = al.encode_stereo(t.components["audio_vae"], wav.unsqueeze(0))[0]
+    assert cached.shape == (2, 32, 40)
+    assert torch.allclose(cached, expected), "the cached latent did not come from audio_latents.encode_stereo"
+
+    # A second pass is a no-op (content-addressed skip), and the version
+    # segment moves with the audio VAE identity.
+    before = os.path.getmtime(os.path.join(adir, files[0]))
+    t._pre_cache_aux()
+    assert os.path.getmtime(os.path.join(adir, files[0])) == before
+    t.components["audio_vae"].config.latents_std = [3.0] * 32
+    assert t._audio_cache_dir(item["cache_dir"]) != adir
+
+
+def test_build_batch_extra_carries_audio_latents(tmp_path):
+    t, item = _audio_shell(tmp_path)
+    t._pre_cache_aux()
+    still = t.inventory[1]
+    extra = t.build_batch_extra([item, still])
+    assert "audio_clean" in extra, "no audio_clean key: the cached audio latents never reached the batch"
+    assert extra["audio_clean"].shape == (2, 2, 32, 40)
+    assert extra["audio_mask"].tolist() == [1.0, 0.0]
+    assert "audio_latents" not in item, "inventory items must not retain tensors"
+
+
+def test_latent_manager_vae_is_the_pixel_adapter(tmp_path, monkeypatch):
+    """The loader's post-load hook is the ONE wrap site; `prepare_data`
+    builds the LatentManager on `components["vae"]`, so the manager must see
+    the adapter — through the real single-spec load path, weights stubbed."""
+    import httpx
+
+    from app.engine.models.families.minimax_h3.pixel_adapter import H3PixelAdaptedVAE
+    from app.engine.tests.h3_text_stubs import StubVisualVAE
+    from app.engine.tests.test_minimax_h3_cache_integration import _dataset, _fake_api
+
+    t = _setup_shell(tmp_path, resolutions=[64], datasets=[{"dataset_name": "ds"}], cache_latents=True)
+    t._setup_family()
+    spec = {s.key: s for s in t.loader.get_component_manifest(t.definition)}["vae"]
+    monkeypatch.setattr(t.loader, "_resolve_component_path", lambda *a, **k: str(tmp_path))
+    monkeypatch.setattr(t.loader, "_load_component", lambda *a, **k: StubVisualVAE())
+    vae = t.loader._load_single_spec(spec, t.definition, str(tmp_path), torch.bfloat16, "cpu")
+    t.components = {"vae": vae}
+    t._assign_components()
+    _fake_api(monkeypatch, _dataset(tmp_path))
+    assert httpx.AsyncClient.get is not None
+    asyncio.run(t.prepare_data())
+    assert isinstance(t.latent_manager.vae, H3PixelAdaptedVAE)
+    assert t.latent_manager.vae is t.components["vae"]
+
+
+def test_update_primary_model_keeps_driver_in_sync(tmp_path):
+    t = _setup_shell(tmp_path)
+    t._setup_family()
+    loaded = torch.nn.Linear(2, 2)
+    t.components = {"transformer": loaded, "unet": loaded}
+    t._assign_components()
+    wrapped = torch.nn.Linear(2, 2)
+    t._update_primary_model(wrapped)
+    # The driver first: its forward runs whatever it holds.
+    assert t.driver.transformer is wrapped, "the driver still holds the unwrapped model"
+    assert t._get_primary_model() is wrapped
+    assert t.transformer is wrapped
+    assert t.components["unet"] is wrapped and t.components["transformer"] is wrapped
+
+
+def test_text_encoders_empty_after_release(tmp_path):
+    t = _trainer(tmp_path)
+    te = t.components["text_encoder"]
+    assert t._get_text_encoders() == {"text_encoder": te}
+    t._pre_cache_text_embeddings()
+    t._offload_text_encoders()
+    assert t._get_text_encoders() == {}
 
 
 def test_ref2va_materialises_the_ref_checkpoint(tmp_path):

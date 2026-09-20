@@ -430,7 +430,6 @@ def test_train_audio_off_gives_video_loss_only():
 # their entry; 2.8 asserts the set is EMPTY and deletes the constant.
 REMAINING_PR0_REFUSALS: set[tuple[str, str]] = {
     ("driver.py", "get_saver"),
-    ("trainer.py", "_setup_family"),
     ("DRV", "test_get_saver_refuses_loudly_in_pr0"),
 }
 

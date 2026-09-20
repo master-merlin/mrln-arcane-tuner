@@ -1,32 +1,24 @@
 """MiniMax-H3 Trainer — PR1 in progress.
 
-Landed: the inverted flow-match delegations (row 1.2) and the text-embedding
+Landed: the inverted flow-match delegations (row 1.2), the text-embedding
 lifecycle — pre-cache, unconditional encoder release, cache-serving
-``encode_text``, deferred DiT materialisation (row 2.1). Still to land: the
-real ``_setup_family`` (loader/saver, row 2.5), the packed-sequence forward
-and the joint audio+video loss (2.4/2.6). Until 2.5, ``_setup_family`` raises
-so ``MiniMaxH3Family.get_trainer_class()`` returns a real class
-instead of raising — the registry-wide guard
-(``tests/engine/test_hook_wiring_meta.py::test_every_family_resolves_a_trainer_and_driver``)
-requires every registered family to resolve BOTH a trainer and a driver, and
-a family whose trainer resolution raises is indistinguishable from a broken
-one.
+``encode_text``, deferred DiT materialisation (row 2.1) — the latent-cache
+fingerprint seam (2.3), the batch-extra delegation (2.4), and the real
+setup + audio-latent lifecycle (2.5). Still to land: the step loss and the
+trainer's ``forward_pass`` delegation (2.6).
 
-``_setup_family`` is the only method the base ``GenericTrainingPipeline``
-requires a subclass to implement, and it is the first family hook the real
-pipeline calls (via ``setup()``). Wiring ``self.driver = MiniMaxH3Driver(...)``
-here — even though the next line always raises — keeps the trainer→driver
-seam real and source-greppable (see
-``tests/engine/test_hook_wiring_meta.py::_driver_for_trainer``, which
+``_setup_family`` is the first family hook the pipeline calls (via
+``setup()``); ``self.driver = MiniMaxH3Driver(...)`` is written literally
+here because ``tests/engine/test_hook_wiring_meta.py::_driver_for_trainer``
 resolves a family's driver by regex-searching the trainer's MRO source for
-exactly this assignment shape) instead of a fabricated shortcut. A job that
-somehow reaches this trainer must fail loudly here, not limp through with a
-missing loader/data path.
+exactly this assignment shape.
 """
 
 from __future__ import annotations
 
 import gc
+import hashlib
+import json
 import os
 from typing import Any
 
@@ -36,6 +28,7 @@ from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.core.text_encoding import TextEncoderOutput
 
 from .driver import MiniMaxH3Driver
+from .settings import H3EffectiveSettings
 
 
 def _host_peak_bytes() -> int | None:
@@ -52,7 +45,9 @@ def _host_peak_bytes() -> int | None:
 
 
 class MiniMaxH3Trainer(GenericTrainingPipeline):
-    """MiniMax-H3 LoRA trainer — PR0 STUB. Real training lands in PR1."""
+    """MiniMax-H3 LoRA trainer (PR1)."""
+
+    settings: H3EffectiveSettings | None = None
 
     # ── Explicit delegations of the driver's CLOBBER hooks (plan row 1.2,
     # ordering rule 1). The base pipeline WOULD auto-delegate these, but an
@@ -81,8 +76,14 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
 
     def build_batch_extra(self, items: list[dict]) -> dict[str, Any]:
         # CLOBBER hook (plan row 2.4, ordering rule 1): the driver stacks the
-        # items' clean audio latents; row 2.5 loads them from the audio cache
-        # into `item["audio_latents"]` before this delegation.
+        # items' clean audio latents; this override (row 2.5) loads them from
+        # the audio cache into a per-step COPY of each item (the inventory
+        # never retains tensors) before the explicit delegation.
+        if self.settings is not None and self.settings.train_audio and self.config.get("cache_latents", True):
+            items = [
+                {**item, "audio_latents": lat} if (lat := self._load_cached_audio(item)) is not None else item
+                for item in items
+            ]
         return self.driver.build_batch_extra(items)
 
     # ── Text-embedding lifecycle (plan row 2.1; DECISION-68 (a)) ──────────
@@ -291,6 +292,7 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
             self.definition, self.driver.resolve_loading_dtype(), initial_device="cpu"
         )
         self.components["transformer"] = model
+        self.components["unet"] = model  # the base pipeline's primary key
         self.driver.assign_components(self.components)
         self.transformer = model
         self.logger.info("transformer loaded", subfolder=self.loader._transformer_spec(self.definition).subfolder)
@@ -303,11 +305,191 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
             self._materialise_transformer()
         await super().prepare_for_training()
 
+    # ── Setup + lifecycle (plan row 2.5) ───────────────────────────────────
+
     def _setup_family(self) -> None:
-        # Real assignment, so the trainer→driver seam is genuine (see the
-        # module docstring): the resolution guard's regex finds this line,
-        # not a decoy. No loader exists yet (PR1 scope), so setup stops here.
+        """Refuse what this release cannot train FIRST, then resolve the ONE
+        settings object, build the driver (the assignment shape
+        `test_hook_wiring_meta._driver_for_trainer` greps for) and the loader
+        with the DiT deferred out of Phase A (row 2.1)."""
+        coverage = str(self.config.get("temporal_coverage", "first") or "first")
+        if coverage == "sliding":
+            # PR1 bound (§ Scope): the sliding window assumes (F-1)/t+1 latent
+            # frames per window; H3 chunks 17n+5 pixel frames -> 5n+2 latents.
+            raise ValueError(
+                "minimax_h3: temporal_coverage='sliding' is not supported in this "
+                "release (its latent window assumes (F-1)/t+1 frames; H3 chunks "
+                "17n+5 -> 5n+2) — use 'first' or 'tiled'"
+            )
+        from .loader import MiniMaxH3Loader
+        from .settings import resolve_h3_settings
+
+        self.settings = resolve_h3_settings(self.definition, self.config)
         self.driver = MiniMaxH3Driver(self.definition, self.device)
-        raise NotImplementedError(
-            "minimax_h3 training lands in PR1; PR0 ships the scaffold only."
+        self.driver.apply_settings(self.settings)
+        self.loader = MiniMaxH3Loader(self.device, defer_transformer=True)
+        self.logger.info(
+            "minimax_h3_settings",
+            train_audio=self.settings.train_audio,
+            audio_loss_weight=self.settings.audio_loss_weight,
+            sigma_shift_video=self.settings.sigma_shift_video,
+            sigma_shift_audio=self.settings.sigma_shift_audio,
+            cfg_augment_scale=self.settings.cfg_augment_scale,
+            sources=self.settings.sources,
         )
+
+    def _resolve_train_audio(self) -> bool:
+        """`H3EffectiveSettings.train_audio` — the one resolver (row 1.0)."""
+        return bool(self.driver._require_settings("_resolve_train_audio").train_audio)
+
+    def _resolve_loading_dtype(self) -> torch.dtype:
+        """bf16 from the definition's `detected_precision` (every H3 component
+        ships bf16); the driver's answer is the same and is the fallback."""
+        prec = (getattr(self.definition, "detected_precision", None) or {}).get("unet")
+        if isinstance(prec, str) and prec.startswith("torch."):
+            dtype = getattr(torch, prec.split(".", 1)[1], None)
+            if isinstance(dtype, torch.dtype):
+                return dtype
+        return self.driver.resolve_loading_dtype()
+
+    def _get_primary_model(self) -> torch.nn.Module:
+        # The loader keys the DiT `transformer`; the base pipeline's primary
+        # key is `unet` (`_move_component_to_gpu("unet")`, the PEFT wrap, the
+        # saver) — `_materialise_transformer` / `_update_primary_model` keep
+        # both entries pointing at the one model the driver holds.
+        return self.driver.get_primary_model()
+
+    def _get_text_encoders(self) -> dict[str, torch.nn.Module]:
+        # `{"text_encoder": Qwen3-VL}` while resident, `{}` after row 2.1's
+        # release — which is what makes the cache-serving `encode_text` load-bearing.
+        return self.driver.get_text_encoders()
+
+    def _update_primary_model(self, new_model: torch.nn.Module) -> None:
+        """Keep every alias in sync after the PEFT wrap: the trainer's, both
+        component keys, and the driver's (its forward runs THIS model)."""
+        self.transformer = new_model
+        self.components["unet"] = new_model
+        self.components["transformer"] = new_model
+        self.driver.transformer = new_model
+
+    # ── Audio latents: the second cached modality (rows 2.2 + 2.5) ────────
+
+    def _audio_cache_dir(self, video_cache_dir: str) -> str:
+        """`audio/<version>/` sibling of the video latent dir — enabling audio
+        never disturbs a video-only cache, coverage is checked independently."""
+        return os.path.join(video_cache_dir, "audio", self._audio_cache_version())
+
+    def _audio_cache_version(self) -> str:
+        """Fingerprint of everything the audio encode depends on: the family
+        module's version, the sample/latent rates and the audio VAE's identity
+        (class + its per-channel normalisation stats)."""
+        from .audio_latents import AUDIO_LATENT_VERSION
+
+        arch = self.definition.architecture_params or {}
+        audio_vae = getattr(self.driver, "audio_vae", None)
+        cfg = getattr(audio_vae, "config", None)
+        stats = json.dumps(
+            {
+                "mean": list(getattr(cfg, "latents_mean", None) or []),
+                "std": list(getattr(cfg, "latents_std", None) or []),
+            },
+            default=str,
+        )
+        parts = [
+            f"al{AUDIO_LATENT_VERSION}",
+            str(arch.get("audio.sampling_rate", "")),
+            str(arch.get("audio.latent_rate", "")),
+            type(audio_vae).__name__ if audio_vae is not None else "none",
+            hashlib.sha256(stats.encode("utf-8")).hexdigest()[:12],
+        ]
+        return "v" + hashlib.sha1("|".join(parts).encode("utf-8")).hexdigest()[:10]
+
+    def _pre_cache_aux(self) -> None:
+        """Encode every inventory clip's soundtrack through `audio_latents`
+        while the audio VAE is resident (run_trainer calls this right after
+        the video pre-cache, before the VAEs are offloaded). Stills carry no
+        soundtrack (masked at train time); a clip without an audio stream is
+        skipped the same way. No-op unless this run trains audio."""
+        if not self._resolve_train_audio():
+            return
+        audio_vae = getattr(self.driver, "audio_vae", None)
+        if audio_vae is None or not self.config.get("cache_latents", True):
+            return
+
+        from app.engine.components.audio_io import load_audio_waveform
+        from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+        from app.engine.utils.safe_save import safe_save_file
+
+        from .audio_latents import encode_stereo
+
+        arch = self.definition.architecture_params or {}
+        sr = int(arch["audio.sampling_rate"])
+        encoded = skipped = absent = failed = 0
+        for item in self.inventory:
+            if not item.get("is_video"):
+                continue
+            adir = self._audio_cache_dir(item["cache_dir"])
+            fname = self.latent_manager.latent_filename(
+                item["id"], item["path"], video_trim_extra_key(item)
+            )
+            path = os.path.join(adir, fname)
+            if os.path.exists(path):
+                skipped += 1
+                continue
+            frames = int(item.get("target_frames", 1) or 1)
+            fps = float(item.get("target_fps") or 0.0)
+            duration = frames / fps if fps > 0 else 0.0
+            wav = load_audio_waveform(
+                item["path"],
+                trim_start_s=float(item.get("trim_start_s") or 0.0),
+                duration_s=duration,
+                target_sr=sr,
+            )
+            if wav is None:
+                absent += 1
+                continue
+            waveform, _sr = wav
+            try:
+                with torch.no_grad():
+                    latent = encode_stereo(audio_vae, waveform.unsqueeze(0).to(self.device))
+                os.makedirs(adir, exist_ok=True)
+                safe_save_file({"audio_latents": latent[0].detach().cpu()}, path)
+                encoded += 1
+            except Exception as e:  # noqa: BLE001 — one bad clip must not kill the run
+                failed += 1
+                self.logger.warning(
+                    "minimax_h3_audio_encode_failed", path=item.get("path"), error=str(e)
+                )
+        self.logger.info(
+            "minimax_h3_audio_precache_done",
+            encoded=encoded, skipped=skipped, absent=absent, failed=failed,
+        )
+        if failed and not encoded and not skipped:
+            raise RuntimeError(
+                f"minimax_h3 audio precache produced ZERO audio latents: all {failed} "
+                "clip(s) failed to encode — audio-on training with no audio latents "
+                "is misconfigured, refusing to proceed"
+            )
+        if hasattr(audio_vae, "to"):
+            audio_vae.to("cpu")
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+
+    def _load_cached_audio(self, item: dict) -> torch.Tensor | None:
+        if not item.get("is_video"):
+            return None
+        from safetensors.torch import load_file
+
+        from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
+
+        path = os.path.join(
+            self._audio_cache_dir(item["cache_dir"]),
+            self.latent_manager.latent_filename(item["id"], item["path"], video_trim_extra_key(item)),
+        )
+        if not os.path.exists(path):
+            return None
+        try:
+            return load_file(path)["audio_latents"]
+        except Exception as e:  # noqa: BLE001 — a corrupt file degrades to absent (mask 0)
+            self.logger.warning("minimax_h3_audio_cache_load_failed", path=path, error=str(e))
+            return None

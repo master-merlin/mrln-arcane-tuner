@@ -21,24 +21,25 @@ version: '1.0'
 # the tree meanwhile, and the registry-wide coverage sweeps keep enumerating
 # the family.
 #
-# fl2va carries the base case PLUS a defect of its own, and this is the one
+# fl2va has a defect of its own (the base case, an unbuilt trainer, is gone
+# since LANE-92), and this is the one
 # DECISION-26 turned on: IT IS NOT A FIRST/LAST-FRAME MODEL YET. Per the
 # PR1 MARKER on `mode: both` below, "both" is the ONLY thing that
 # differentiates this definition from minimax-h3-t2va — same transformer
 # subfolder, same control_inputs: 0, otherwise byte-identical
 # architecture_params, and NO first/last-frame conditioning mechanism wired
 # anywhere (no conditioning-frame injection into the packed sequence, no
-# dedicated parameters). So this definition must NOT clear when the trainer
-# lands: it clears only once real first/last-frame conditioning exists AND a
+# dedicated parameters). So this definition did NOT clear when the trainer
+# landed (t2va did, LANE-92): it clears only once real first/last-frame conditioning exists AND a
 # test pins it, or it does not clear at all. Offering it earlier would promise
 # conditioning the model silently ignores, which is worse than not shipping it.
 unavailable_reason: >-
-  This is not a first/last-frame model yet, only a name for one: no
-  first/last-frame conditioning is wired up anywhere, and today the ONLY thing
-  separating this definition from the plain text-to-video one is a flag. It
-  would accept your first and last frames and quietly ignore them. Training
-  for this family is not built yet either. It returns when the conditioning is
-  real, not before.
+  This is not a first/last-frame model yet, only a name for one: the
+  first/last-frame conditioning rows are not wired (It6), and today the ONLY
+  thing separating this definition from the plain text-to-video one is a flag.
+  It would accept your first and last frames and quietly ignore them -- use
+  minimax-h3-t2va for text-to-video meanwhile. It returns when the
+  conditioning is real and measured, not before.
 # Run-config surfaces (plan row 3.3): the two sigma shifts and the CFG
 # augmentation scale are gated by these flags in archetypes._FIELD_RULES.
 capability_overrides:
@@ -198,6 +199,181 @@ architecture_params:
   in_channels: 24
   context_dim: 5120
   num_heads: 56
+  te.architectures:
+  - Qwen3VLForConditionalGeneration
+  te.image_token_id: 151655
+  te.model_type: qwen3_vl
+  te.text_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    bos_token_id: 151643
+    dtype: bfloat16
+    eos_token_id: 151645
+    head_dim: 128
+    hidden_act: silu
+    hidden_size: 5120
+    initializer_range: 0.02
+    intermediate_size: 25600
+    max_position_embeddings: 262144
+    model_type: qwen3_vl_text
+    num_attention_heads: 64
+    num_hidden_layers: 64
+    num_key_value_heads: 8
+    rms_norm_eps: 1.0e-06
+    rope_scaling:
+      mrope_interleaved: true
+      mrope_section:
+      - 24
+      - 20
+      - 20
+      rope_type: default
+    rope_theta: 5000000
+    use_cache: true
+    vocab_size: 151936
+  te.text_config.attention_bias: false
+  te.text_config.attention_dropout: 0.0
+  te.text_config.bos_token_id: 151643
+  te.text_config.dtype: bfloat16
+  te.text_config.eos_token_id: 151645
+  te.text_config.head_dim: 128
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 5120
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 25600
+  te.text_config.max_position_embeddings: 262144
+  te.text_config.model_type: qwen3_vl_text
+  te.text_config.num_attention_heads: 64
+  te.text_config.num_hidden_layers: 64
+  te.text_config.num_key_value_heads: 8
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_scaling:
+    mrope_interleaved: true
+    mrope_section:
+    - 24
+    - 20
+    - 20
+    rope_type: default
+  te.text_config.rope_scaling.mrope_interleaved: true
+  te.text_config.rope_scaling.mrope_section:
+  - 24
+  - 20
+  - 20
+  te.text_config.rope_scaling.rope_type: default
+  te.text_config.rope_theta: 5000000
+  te.text_config.use_cache: true
+  te.text_config.vocab_size: 151936
+  te.tie_word_embeddings: false
+  te.video_token_id: 151656
+  te.vision_config:
+    deepstack_visual_indexes:
+    - 8
+    - 16
+    - 24
+    depth: 27
+    hidden_act: gelu_pytorch_tanh
+    hidden_size: 1152
+    in_channels: 3
+    initializer_range: 0.02
+    intermediate_size: 4304
+    model_type: qwen3_vl
+    num_heads: 16
+    num_position_embeddings: 2304
+    out_hidden_size: 5120
+    patch_size: 16
+    spatial_merge_size: 2
+    temporal_patch_size: 2
+  te.vision_config.deepstack_visual_indexes:
+  - 8
+  - 16
+  - 24
+  te.vision_config.depth: 27
+  te.vision_config.hidden_act: gelu_pytorch_tanh
+  te.vision_config.hidden_size: 1152
+  te.vision_config.in_channels: 3
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 4304
+  te.vision_config.model_type: qwen3_vl
+  te.vision_config.num_heads: 16
+  te.vision_config.num_position_embeddings: 2304
+  te.vision_config.out_hidden_size: 5120
+  te.vision_config.patch_size: 16
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.temporal_patch_size: 2
+  te.vision_end_token_id: 151653
+  te.vision_start_token_id: 151652
+  scheduler._class_name: MiniMaxH3Scheduler
+  scheduler.shift: 12.0
+  vae.in_channels: 3
+  vae.out_channels: 3
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 256
+  - 512
+  - 512
+  - 1024
+  vae.layers_per_block: 2
+  vae.norm_num_groups: 32
+  vae.norm_eps: 1.0e-06
+  vae.spatial_padding_mode: reflect
+  vae.decoder_num_layers: 36
+  vae.decoder_num_attention_heads: 32
+  vae.decoder_attention_head_dim: 64
+  vae.decoder_num_register_tokens: 4
+  vae.decoder_ffn_mult: 4
+  vae.decoder_rope_theta: 100.0
+  vae.decoder_rope_dim_ratio: 0.75
+  vae.decoder_norm_eps: 1.0e-05
+  vae.latents_mean:
+  - 0.858090341091156
+  - -0.9606591463088989
+  - 1.0661640167236328
+  - -0.5090325474739075
+  - -0.2727581858634949
+  - -1.3675414323806763
+  - -0.2553254961967468
+  - -0.26907554268836975
+  - -0.5376840829849243
+  - -0.0464097298681736
+  - 0.6657370328903198
+  - 0.19690127670764923
+  - -0.5460608005523682
+  - -0.4035342037677765
+  - -0.23683024942874908
+  - 0.25928452610969543
+  - -0.30133944749832153
+  - 0.211341992020607
+  - -1.1206848621368408
+  - 0.3581933379173279
+  - -0.04225143790245056
+  - 0.2604829967021942
+  - 0.22864092886447906
+  - 0.7056031823158264
+  vae.latents_std:
+  - 1.2223774194717407
+  - 1.2767263650894165
+  - 1.6831774711608887
+  - 1.7549455165863037
+  - 1.5636216402053833
+  - 2.194143533706665
+  - 0.9653137922286987
+  - 1.0569885969161987
+  - 0.841948926448822
+  - 0.7729952931404114
+  - 1.8955937623977661
+  - 0.946841835975647
+  - 0.7996809482574463
+  - 0.44988900423049927
+  - 0.7197399735450745
+  - 0.6936293244361877
+  - 2.961095094680786
+  - 2.7694199085235596
+  - 3.0496184825897217
+  - 2.1088054180145264
+  - 3.276226282119751
+  - 3.1627357006073
+  - 2.2816812992095947
+  - 2.6127843856811523
 # On-disk component sizes (MiB — bytes / 1024^2), fetched from the HF repo's
 # per-component safetensors index `metadata.total_size` via the raw
 # endpoints (no download needed), MiniMaxAI/MiniMax-H3, 2026-08-10. The

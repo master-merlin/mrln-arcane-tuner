@@ -47,6 +47,11 @@ def test_definitions_carry_frame_rule(client):
     # families serve null (never a defaulted string).
     assert {"4n+1", "8n+1"} <= served_rules
     assert any(d["frame_rule"] is None for d in body)
+    # LANE-92 row 5.1 / REQUEST-15: this route excludes definitions carrying an
+    # `unavailable_reason`, so the ungated H3 definition is served here — with
+    # its own rule, from the real route (row 4.3 could only inject it).
+    h3 = {d["id"]: d["frame_rule"] for d in body if d["id"].startswith("minimax-h3-")}
+    assert h3 == {"minimax-h3-t2va": "17n+5"}, h3
 
 
 def test_list_definitions_serves_caption_format_for_selector(client):

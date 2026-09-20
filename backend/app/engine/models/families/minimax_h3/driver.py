@@ -580,15 +580,19 @@ class MiniMaxH3Driver(IModelDriver):
         per item ``(B,)``; ``batch["audio_noisy"]``: audio ``x_t`` ``(B, 2, Ca, Ta)``
         (absent → video-only sequence). Returns ``(video_velocity, audio_velocity)``
         in the raw latent shapes; the trainer's step loss (row 2.6) consumes both.
-        """
-        from .packing import pack_audio, packed_forward, patchify_video, unpack_audio, unpatchify_video
 
+        CFG augmentation (row 3.1; research §3.7 re-implemented): with
+        ``cfg_augment_scale = s > 1`` a SECOND forward on the empty-prompt TE
+        row (``batch["text_embeddings_uncond"]``, served by the trainer from
+        the text cache — the encoder is released before the DiT loads) runs
+        under ``torch.no_grad()`` and the MODEL OUTPUT is rearranged, before
+        any sign convention, as ``(out + (s − 1) · out_uncond) / s`` for video
+        and audio; the uncond arm is stashed as ``batch["video_pred_uncond"]``
+        / ``batch["audio_pred_uncond"]``. ``s == 1.0`` is one forward.
+        """
         if self.transformer is None:
             raise RuntimeError("minimax_h3 forward_pass: transformer not assigned")
-        emb = getattr(text_embeddings, "embeddings", None)
-        mask = getattr(text_embeddings, "attention_mask", None)
-        if emb is None:
-            emb, mask = text_embeddings  # (embeddings, mask) tuple form
+        emb, mask = self._text_rows(text_embeddings)
         audio_noisy = batch.get("audio_noisy")
         t_v = timesteps.to(device=noisy_input.device, dtype=torch.float32).reshape(-1)
         if t_v.numel() != noisy_input.shape[0]:
@@ -596,6 +600,54 @@ class MiniMaxH3Driver(IModelDriver):
                 f"minimax_h3 forward_pass: {t_v.numel()} timesteps for a batch of {noisy_input.shape[0]}"
             )
         t_a = self.audio_timestep(t_v)
+
+        video_velocity, audio_velocity = self._packed_batch_forward(
+            noisy_input, t_v, t_a, emb, mask, audio_noisy
+        )
+        scale = float(self._require_settings("forward_pass").cfg_augment_scale)
+        if scale == 1.0:
+            return video_velocity, audio_velocity
+        uncond = batch.get("text_embeddings_uncond")
+        if uncond is None:
+            raise ValueError(
+                f"minimax_h3 forward_pass: cfg_augment_scale={scale} needs the empty-prompt "
+                "row in batch['text_embeddings_uncond'] — the trainer must serve it from the text cache"
+            )
+        emb_u, mask_u = self._text_rows(uncond)
+        if emb_u.shape[0] == 1 and noisy_input.shape[0] > 1:
+            emb_u = emb_u.expand(noisy_input.shape[0], -1, -1)
+            mask_u = mask_u.expand(noisy_input.shape[0], -1) if mask_u is not None else None
+        with torch.no_grad():
+            video_uncond, audio_uncond = self._packed_batch_forward(
+                noisy_input, t_v, t_a, emb_u, mask_u, audio_noisy
+            )
+        batch["video_pred_uncond"] = video_uncond
+        batch["audio_pred_uncond"] = audio_uncond
+        video_velocity = (video_velocity + (scale - 1.0) * video_uncond) / scale
+        if audio_velocity is not None and audio_uncond is not None:
+            audio_velocity = (audio_velocity + (scale - 1.0) * audio_uncond) / scale
+        return video_velocity, audio_velocity
+
+    @staticmethod
+    def _text_rows(text_embeddings: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
+        emb = getattr(text_embeddings, "embeddings", None)
+        mask = getattr(text_embeddings, "attention_mask", None)
+        if emb is None:
+            emb, mask = text_embeddings  # (embeddings, mask) tuple form
+        return emb, mask
+
+    def _packed_batch_forward(
+        self,
+        noisy_input: torch.Tensor,
+        t_v: torch.Tensor,
+        t_a: torch.Tensor,
+        emb: torch.Tensor,
+        mask: torch.Tensor | None,
+        audio_noisy: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """One packed sequence per item on the given text rows (the cond OR
+        the uncond arm); returns the raw-shape velocities."""
+        from .packing import pack_audio, packed_forward, patchify_video, unpack_audio, unpatchify_video
 
         video_out = []
         audio_out = []

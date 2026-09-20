@@ -344,6 +344,106 @@ def test_forward_pass_returns_video_and_audio_velocities(build_tiny_transformer)
     )
 
 
+# ── CFG augmentation (plan row 3.1; research §3.7, re-implemented) ────────
+#
+# `out_aug = (out + (s − 1) · out_uncond) / s` on the MODEL OUTPUT (video and
+# audio alike), the uncond forward on the empty-prompt TE row under
+# `torch.no_grad()`; `s == 1.0` runs ONE forward. The uncond row is served
+# by the trainer through `batch["text_embeddings_uncond"]` (the encoder is
+# released before the DiT loads, so the driver cannot encode it itself).
+
+
+class _CountingTransformer:
+    """Wraps the tiny diffusers DiT and counts forwards (kwargs-only call,
+    exactly the way `packing.packed_forward` invokes it)."""
+
+    def __init__(self, inner):
+        self.inner = inner
+        self.calls = 0
+
+    def __call__(self, **kwargs):
+        self.calls += 1
+        return self.inner(**kwargs)
+
+    def __getattr__(self, name):
+        return getattr(self.inner, name)
+
+
+def _cfg_driver(build_tiny_transformer, scale: float):
+    driver = _driver()
+    driver.assign_components({"transformer": _CountingTransformer(build_tiny_transformer().eval())})
+    driver.apply_settings(_settings({"cfg_augment_scale": scale}))
+    return driver
+
+
+def _cfg_inputs():
+    import torch
+
+    g = torch.Generator().manual_seed(11)
+    video = torch.randn(1, 24, 2, 6, 4, generator=g)
+    audio = torch.randn(1, 2, 32, 3, generator=g)
+    t_v = torch.tensor([0.6])
+    cond = _text([6])
+    uncond = _text([2])  # a DIFFERENT row, so a swapped branch is visible
+    return video, audio, t_v, cond, uncond
+
+
+def test_cfg_augment_scale_one_runs_single_forward(build_tiny_transformer):
+    import torch
+
+    driver = _cfg_driver(build_tiny_transformer, 1.0)
+    video, audio, t_v, cond, uncond = _cfg_inputs()
+    with torch.no_grad():
+        driver.forward_pass(video, t_v, cond, {"audio_noisy": audio, "text_embeddings_uncond": uncond})
+    assert driver.transformer.calls == 1, f"{driver.transformer.calls} forwards at scale 1.0"
+
+
+def test_cfg_augment_scale_four_runs_two_forwards_and_rearranges_output(build_tiny_transformer):
+    import torch
+
+    video, audio, t_v, cond, uncond = _cfg_inputs()
+    plain = _cfg_driver(build_tiny_transformer, 1.0)
+    with torch.no_grad():
+        v_cond, a_cond = plain.forward_pass(video, t_v, cond, {"audio_noisy": audio})
+        v_unc, a_unc = plain.forward_pass(video, t_v, uncond, {"audio_noisy": audio})
+    assert not torch.allclose(v_cond, v_unc), "cond and uncond rows give the same output; the check is vacuous"
+
+    driver = _cfg_driver(build_tiny_transformer, 4.0)
+    batch = {"audio_noisy": audio, "text_embeddings_uncond": uncond}
+    with torch.no_grad():
+        v_aug, a_aug = driver.forward_pass(video, t_v, cond, batch)
+    assert driver.transformer.calls == 2, f"{driver.transformer.calls} forwards at scale 4.0"
+    assert torch.allclose(v_aug, (v_cond + 3.0 * v_unc) / 4.0, atol=1e-5), "video output is not (out + 3·uncond)/4"
+    assert torch.allclose(a_aug, (a_cond + 3.0 * a_unc) / 4.0, atol=1e-5), "audio output is not (out + 3·uncond)/4"
+    assert torch.allclose(batch["video_pred_uncond"], v_unc, atol=1e-5)
+    assert torch.allclose(batch["audio_pred_uncond"], a_unc, atol=1e-5)
+
+
+def test_uncond_branch_does_not_participate_in_autograd(build_tiny_transformer):
+    import torch
+
+    driver = _cfg_driver(build_tiny_transformer, 4.0)
+    video, audio, t_v, cond, uncond = _cfg_inputs()
+    batch = {"audio_noisy": audio, "text_embeddings_uncond": uncond}
+    v_aug, a_aug = driver.forward_pass(video, t_v, cond, batch)  # grad ENABLED, as in training
+    assert batch["video_pred_uncond"].grad_fn is None, "uncond video branch is under grad"
+    assert batch["audio_pred_uncond"].grad_fn is None, "uncond audio branch is under grad"
+    assert v_aug.grad_fn is not None and a_aug.grad_fn is not None, "the cond branch lost its graph"
+    noise = torch.randn_like(video)
+    target = driver.compute_target(video, noise, t_v)
+    assert target.requires_grad is False
+
+
+def test_cfg_augment_without_uncond_row_refuses(build_tiny_transformer):
+    import pytest
+    import torch
+
+    driver = _cfg_driver(build_tiny_transformer, 4.0)
+    video, audio, t_v, cond, _ = _cfg_inputs()
+    with pytest.raises(ValueError, match="text_embeddings_uncond"), torch.no_grad():
+        driver.forward_pass(video, t_v, cond, {"audio_noisy": audio})
+
+
 def test_build_batch_extra_stacks_audio_with_a_presence_mask():
     import torch
 

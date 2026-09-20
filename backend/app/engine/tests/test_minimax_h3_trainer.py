@@ -507,6 +507,136 @@ def test_step_loss_scales_by_grad_accum(tmp_path, build_tiny_transformer):
     )
 
 
+# ── Production sampling path (plan row 2.10; round 13 MAJOR 13.01, DECISION-67 (a)) ──
+#
+# `pipeline_base.py:_create_sampler` returns None, so `pipeline_optimization.py`
+# sets `self.sampler = None` and the loop never samples — 28 families override
+# it, this one did not. The test drives the REAL `train()` coroutine (the
+# `tests/engine/test_nan_window_skip.py` shape: every hook the loop touches
+# stubbed to trivial CPU tensors, the DB patched away) with the family's own
+# `_create_sampler`, and counts the `generate_samples` calls.
+
+
+class _LoopShell(MiniMaxH3Trainer):
+    """MiniMaxH3Trainer with only the loop's data/forward/loss hooks stubbed;
+    `_create_sampler` is the family's REAL override."""
+
+    def __init__(self, tmp_path):  # noqa: D107 - never calls the heavy base __init__
+        import time
+
+        self.logger = MagicMock()
+        self.definition = _definition()
+        self.config = {
+            "max_train_steps": 2,
+            "train_batch_size": 1,
+            "gradient_accumulation_steps": 1,
+            "cache_latents": False,
+            "save_every_n_steps": 0,
+            "sample_before_training": False,
+            "sample_every_n_steps": 2,
+            "sample_prompts": [{"prompt": "a [triggerword] clip"}],
+            "noise_offset": 0.0,
+        }
+        self.inventory = [{"id": 0}]
+        self.device = torch.device("cpu")
+        self.autocast_dtype = torch.float32
+        self.use_amp = False
+        self.scaler = MagicMock()
+        self.scaler.is_enabled.return_value = False
+        self.optimizer = MagicMock()
+        self.optimizer.param_groups = [{"lr": 1e-4}]
+        self.lr_scheduler = MagicMock()
+        self.ema_handler = None
+        self.global_step = 0
+        self._log_writer = None
+        self._aug_h_flip = False
+        self._aug_v_flip = False
+        self.checkpoint_manager = MagicMock()
+        self.checkpoint_manager.output_dir = str(tmp_path)
+        self.logger_component = MagicMock()
+        self.logger_component.last_step_time = time.time()
+        self.latent_manager = MagicMock()
+        self.latent_manager.encode_and_cache_batch.return_value = torch.randn(1, 4)
+        self.driver = MiniMaxH3Driver(self.definition, self.device)
+        self.transformer = torch.nn.Linear(4, 4)
+        self.components = {"unet": self.transformer, "transformer": self.transformer, "vae": object()}
+        self._model = self.transformer
+
+    def _get_primary_model(self):
+        return self._model
+
+    def _iter_training_batches(self, batch_size):
+        while True:
+            yield [{"id": 0}]
+
+    def _get_batch(self, batch_items, decode_pixels=True):
+        return {"images": torch.randn(1, 3, 8, 8), "ids": [0], "paths": ["dummy.mp4"], "captions": ["a cat"]}
+
+    def _load_control_latents(self, batch):
+        pass
+
+    def _attach_conditioning(self, batch, latents):
+        pass
+
+    def build_batch_extra(self, items):
+        return {}
+
+    def encode_text(self, captions, dtype, batch=None):
+        return torch.zeros(1, 4)
+
+    def prepare_latents_for_training(self, latents):
+        return latents
+
+    def prepare_noise_for_training(self, noise):
+        return noise
+
+    def sample_timesteps(self, batch_size, latents=None):
+        return torch.zeros(batch_size)
+
+    def add_noise(self, latents, noise, timesteps):
+        return latents
+
+    def forward_pass(self, noisy_input, timesteps, text_embeddings, batch):
+        return self._model(noisy_input)
+
+    def compute_target(self, latents, noise, timesteps):
+        return torch.zeros_like(latents)
+
+    def _compute_step_loss(self, pred, target, timesteps, batch, grad_accum):
+        return (pred - target).pow(2).mean()
+
+    def _build_trainable_components(self):
+        return {}
+
+    def get_te_cache(self):
+        return None
+
+    def _build_cache_manifest(self):
+        return None
+
+
+def test_production_sampling_path_invokes_the_family_sampler(tmp_path):
+    from unittest.mock import patch
+
+    from app.engine.models.families.minimax_h3.sampler import MiniMaxH3Sampler
+
+    t = _LoopShell(tmp_path)
+    # What `pipeline_optimization.py` does last: `self.sampler = self._create_sampler()`.
+    t.sampler = t._create_sampler()
+    assert isinstance(t.sampler, MiniMaxH3Sampler), f"trainer.sampler is {t.sampler!r}"
+    calls: list[tuple] = []
+    t.sampler.generate_samples = lambda step, final=False: calls.append((step, final)) or []
+    with patch("app.core.db.DatabaseEngine.get_instance", side_effect=RuntimeError("no db in test")):
+        asyncio.run(t.train())
+    assert calls == [(1, False)], f"generate_samples calls: {calls} (expected exactly once, at the configured step)"
+
+
+def test_create_sampler_is_off_when_sampling_is_off(tmp_path):
+    t = _LoopShell(tmp_path)
+    t.config["sample_every_n_steps"] = 0
+    assert t._create_sampler() is None
+
+
 def test_component_losses_logged(tmp_path, build_tiny_transformer):
     t = _loss_shell(tmp_path, build_tiny_transformer)
     loss, pred, target, batch = _run_step_hooks(t, grad_accum=4)

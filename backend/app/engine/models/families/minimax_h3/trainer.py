@@ -144,6 +144,20 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         )
         return out.loss / grad_accum
 
+    # ── Sampling (plan row 2.10; round 13 MAJOR 13.01, DECISION-67 (a)) ──
+    #
+    # Production caller: `pipeline_optimization.py` ends its setup with
+    # `self.sampler = self._create_sampler()`; the base returns None, which
+    # makes `pipeline_train.py` never sample. 28 families override this —
+    # without it an H3 run trains blind.
+
+    def _create_sampler(self):
+        if int(self.config.get("sample_every_n_steps", 0) or 0) > 0:
+            from .sampler import MiniMaxH3Sampler
+
+            return MiniMaxH3Sampler(self)
+        return None
+
     # ── Text-embedding lifecycle (plan row 2.1; DECISION-68 (a)) ──────────
     #
     # Production caller: `run_trainer.py:159` runs `_pre_cache_text_embeddings`

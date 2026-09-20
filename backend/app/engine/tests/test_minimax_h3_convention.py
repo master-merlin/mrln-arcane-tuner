@@ -918,3 +918,142 @@ def test_too_short_clip_refused():
     assert d.assert_clip_frames(5) is None
     # Long enough but off the ladder: not this check's business (snapping is).
     assert d.assert_clip_frames(6) is None
+
+
+# ── 13. Row 2.10: the sampler's precision contract (memory
+#        `autocast-sampler-collapse-gotcha`; ASTRA MAJOR-8, three parts) ────
+#
+# (a) a SCOPED source guard over sampler.py: every `torch.autocast(` /
+#     `torch.amp.` / `torch.cuda.amp.` CALL carries `enabled=False`; prose is
+#     never scanned (AST), the control fixture proves the scanner sees a bare
+#     call; (b) at runtime the DiT is called with autocast OFF even when the
+#     sampler is ENTERED from inside an enabling `torch.autocast`; (c) the
+#     trajectory is fp32: per-step increments of 1e-3 near 1.0 (below bf16's
+#     ~7.8e-3 resolution) survive 24 steps to the closed form within 1e-5.
+
+_SAMPLER_PY = _TESTS_DIR.parents[0] / "models" / "families" / "minimax_h3" / "sampler.py"
+_AUTOCAST_CONTROL = _TESTS_DIR / "fixtures" / "h3_autocast_control.py"
+_AUTOCAST_CALLS = ("torch.autocast", "torch.amp.autocast", "torch.cuda.amp.autocast", "torch.cpu.amp.autocast")
+
+
+def _autocast_offenders(path: Path) -> list[int]:
+    """Line numbers of autocast CALLS in ``path`` that are not entered with
+    ``enabled=False`` (code only — comments and docstrings are not calls)."""
+    import ast
+
+    tree = ast.parse(path.read_text(encoding="utf-8"))
+    offenders: list[int] = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call):
+            continue
+        func = ast.unparse(node.func)
+        if func not in _AUTOCAST_CALLS and not func.startswith(("torch.amp.", "torch.cuda.amp.")):
+            continue
+        disabled = any(
+            kw.arg == "enabled" and isinstance(kw.value, ast.Constant) and kw.value.value is False
+            for kw in node.keywords
+        )
+        if not disabled:
+            offenders.append(node.lineno)
+    return offenders
+
+
+def test_sampler_source_has_no_autocast():
+    offenders = _autocast_offenders(_SAMPLER_PY)
+    assert not offenders, f"sampler.py enters autocast without enabled=False at line(s) {offenders}"
+    # The scanner SEES a bare call: the control fixture's two offenders, and
+    # only those (the enabled=False call and the prose mentions are clean).
+    control = _autocast_offenders(_AUTOCAST_CONTROL)
+    assert len(control) == 2, f"control fixture: expected 2 offending lines, got {control}"
+    lines = _AUTOCAST_CONTROL.read_text(encoding="utf-8").splitlines()
+    assert all("enabled=False" not in lines[n - 1] for n in control), control
+
+
+class _AutocastProbeTransformer:
+    """Identity DiT that records the autocast state at every call."""
+
+    def __init__(self) -> None:
+        self.flags: list[tuple[bool, bool]] = []
+
+    def __call__(self, **kwargs: Any):
+        self.flags.append((torch.is_autocast_enabled(), torch.is_autocast_enabled("cpu")))
+        return kwargs["hidden_states"], kwargs["audio_hidden_states"]
+
+
+def _sampler_shell(transformer: Any):
+    """A sampler on a stub pipeline: a REAL driver on the t2va definition with
+    settings applied, the given transformer, no weights."""
+    from unittest.mock import MagicMock
+
+    from app.engine.models.families.minimax_h3.driver import MiniMaxH3Driver
+    from app.engine.models.families.minimax_h3.sampler import MiniMaxH3Sampler
+    from app.engine.models.registry import ModelRegistry
+
+    ModelRegistry._definitions_loaded = False
+    ModelRegistry._definitions = {}
+    ModelRegistry.initialize()
+    definition = ModelRegistry._definitions["minimax-h3-t2va"]
+    driver = MiniMaxH3Driver(definition, torch.device("cpu"))
+    driver.apply_settings(resolve_h3_settings(definition, {"train_audio": True}))
+    driver.assign_components({"transformer": transformer})
+
+    pipeline = MagicMock()
+    pipeline.device = torch.device("cpu")
+    pipeline.definition = definition
+    pipeline.driver = driver
+    pipeline.transformer = transformer
+    pipeline.settings = driver.settings
+    pipeline.config = {"sample_every_n_steps": 1}
+    return MiniMaxH3Sampler(pipeline)
+
+
+def _prompt_output(num_text: int = 8, dim: int = 16):
+    from app.engine.core.text_encoding import TextEncoderOutput
+
+    g = torch.Generator().manual_seed(4)
+    return TextEncoderOutput(
+        embeddings=torch.randn(1, num_text, dim, generator=g),
+        attention_mask=torch.ones(1, num_text, dtype=torch.long),
+    )
+
+
+def test_dit_called_with_autocast_disabled_inside_enclosing_autocast():
+    probe = _AutocastProbeTransformer()
+    sampler = _sampler_shell(probe)
+    noise = torch.randn(1, 24, 2, 6, 4, generator=torch.Generator().manual_seed(1))
+    device_type = "cuda" if torch.cuda.is_available() else "cpu"
+    slot = 0 if device_type == "cuda" else 1
+    with torch.autocast(device_type, dtype=torch.bfloat16):
+        assert torch.is_autocast_enabled(device_type), "control: the enclosing autocast is not active"
+        out = sampler.denoise(noise, _prompt_output(), num_steps=3, guidance_scale=1.0, seed=0)
+    assert probe.flags, "the DiT was never called"
+    assert out.dtype is torch.float32 and torch.isfinite(out).all()
+    assert all(f[slot] is False for f in probe.flags), (
+        f"the DiT saw autocast ON at {sum(f[slot] for f in probe.flags)} of {len(probe.flags)} calls"
+    )
+
+
+def test_fp32_trajectory_keeps_sub_bf16_increments():
+    """Constant oracle velocity c = 0.024 on a uniform 24-step sigma grid:
+    every step adds Δσ·c = 1e-3 to a sample sitting at 1.0 — an increment
+    bf16 cannot represent (its spacing near 1.0 is 2^-7 ≈ 7.8e-3). The
+    closed form is x0 + σ0·c = 1.024; a bf16 trajectory stays at 1.0."""
+    from app.engine.models.families.minimax_h3.sampler import MiniMaxH3Sampler
+
+    scheduler = _scheduler(12.0)
+    scheduler.set_timesteps(sigmas=torch.linspace(1.0, 0.0, 25))
+    assert scheduler.timesteps.numel() == 24
+    x = torch.ones(4)
+    velocity = torch.full((4,), 0.024)
+    for t in scheduler.timesteps:
+        x = MiniMaxH3Sampler._advance(scheduler, x, velocity, t)
+    assert x.dtype is torch.float32
+    assert torch.allclose(x, torch.full((4,), 1.024), atol=1e-5), f"fp32 trajectory endpoint {x[0].item():.6f} != 1.024"
+    # The negative: the same loop with the sample rounded to bf16 each step
+    # never leaves 1.0 — so this test can tell an fp32 trajectory from one
+    # that is not.
+    scheduler.set_timesteps(sigmas=torch.linspace(1.0, 0.0, 25))
+    y = torch.ones(4)
+    for t in scheduler.timesteps:
+        y = MiniMaxH3Sampler._advance(scheduler, y, velocity, t).to(torch.bfloat16).float()
+    assert torch.allclose(y, torch.ones(4)), "bf16 control drifted: the increment is not sub-resolution"

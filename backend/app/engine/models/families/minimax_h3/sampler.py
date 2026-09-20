@@ -169,7 +169,9 @@ class MiniMaxH3Sampler(GenericSamplingPipeline):
                 torch.autocast("cuda", enabled=False),
                 torch.autocast("cpu", enabled=False),
             ):
-                v_v, v_a = driver.forward_pass(x_v.to(model_dtype), t_v.reshape(1), prompt_embedding, batch)
+                v_v, v_a = driver.forward_pass(
+                    x_v.to(model_dtype), t_v.reshape(1), prompt_embedding, batch, cfg_augment=False
+                )
             x_v = self._advance(sched_v, x_v, v_v, t_v)
             if x_a is not None and v_a is not None:
                 x_a = self._advance(sched_a, x_a, v_a, sched_a.timesteps[i])

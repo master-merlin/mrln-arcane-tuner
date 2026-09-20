@@ -31,6 +31,11 @@ unavailable_reason: >-
   MiniMax-H3 training is not built yet: this release ships the scaffold only
   (loader, video contract and model classes), so a run would fail
   during setup. The definition stays in the tree and returns with the trainer.
+# Run-config surfaces (plan row 3.3): the two sigma shifts and the CFG
+# augmentation scale are gated by these flags in archetypes._FIELD_RULES.
+capability_overrides:
+  supports_dual_sigma_shift: true
+  supports_cfg_augmentation: true
 defaults:
   resolution: 768
   scheduler: flow_match
@@ -64,6 +69,11 @@ architecture_params:
   # The ONLY lever separating the modalities: H3 is single-stream, so audio
   # and video traverse the same attn/FFN and cannot be targeted separately.
   audio.loss_weight: 0.1
+  # CFG-augmented training (research §3.7): the loss is taken on
+  # (out + (s-1)*out_uncond)/s so the LoRA learns the guided output the
+  # sampler actually produces; 4.0 is the evidenced value, 1.0 = off. The
+  # run-config key `cfg_augment_scale` overrides it (None = this value).
+  cfg_augment.scale: 4.0
   audio.sampling_rate: 32000
   audio.latent_rate: 40
   audio.channels: 2
@@ -178,7 +188,10 @@ model_size_mb:
 # CONTROLLER-PINNED scope: attention + FFN nn.Linear modules across the 50 main
 # blocks and 2 refiner blocks. The AdaLN / time-embedding branch (~13B params)
 # is deliberately EXCLUDED — it is timestep-conditioned rather than
-# content-conditioned, so adapting it is expensive and off-objective (spec 8.1).
+# content-conditioned, so adapting it is expensive and off-objective (spec 8.1),
+# and, decisively, PORTABILITY: the full and the pruned H3 checkpoints share the
+# attention/FFN weights but not the AdaLN branch, so a LoRA touching adaln
+# would load on only one of them (research §3.6).
 # This list MUST match MiniMaxH3Driver.get_lora_targets() exactly, enforced by
 # test_definition_ships_curated_target_list_matching_driver.
 lora_targetable_modules:

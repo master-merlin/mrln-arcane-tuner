@@ -41,6 +41,15 @@ class Archetype:
     # resolution/bucketing fields (audio has no spatial dimension).
     is_audio_family: bool = False
     supports_spatial_resolution: bool = True
+    # ── Dual-clock flow matching / CFG-augmented training ────────────────
+    # ``supports_dual_sigma_shift``: the family maps ONE timestep draw through
+    # two coupled sigma schedules (video + audio) and exposes both shifts as
+    # run-config keys (minimax_h3). ``supports_cfg_augmentation``: the family
+    # trains on the guidance-rearranged output ``cfg_augment_scale`` selects
+    # (ECOSYSTEM §6 reserved names). Both default False on every archetype so
+    # only a definition's ``capability_overrides`` flips them.
+    supports_dual_sigma_shift: bool = False
+    supports_cfg_augmentation: bool = False
     config_defaults: dict = field(default_factory=dict)
 
 
@@ -168,6 +177,22 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
     ),
     ("train_audio", "has_audio", "this model has no audio modality"),
     ("audio_loss_weight", "has_audio", "this model has no audio modality"),
+    # ── Dual-clock flow matching + CFG augmentation (minimax_h3) ──────────
+    (
+        "sigma_shift_video",
+        "supports_dual_sigma_shift",
+        "this model has a single flow-matching clock — no per-stream sigma shift",
+    ),
+    (
+        "sigma_shift_audio",
+        "supports_dual_sigma_shift",
+        "this model has a single flow-matching clock — no per-stream sigma shift",
+    ),
+    (
+        "cfg_augment_scale",
+        "supports_cfg_augmentation",
+        "this model does not train on the guidance-rearranged output",
+    ),
     (
         "expert_mode",
         "dual_expert",

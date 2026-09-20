@@ -1144,6 +1144,56 @@ class BaseTrainingConfig(BaseModel):
             "step": 0.1,
         },
     )
+    # ── Dual-clock flow-matching + CFG-augmented training (minimax_h3) ──
+    # ``None`` = "use the definition's value" (architecture_params
+    # ``video.sigma_shift`` / ``audio.sigma_shift`` / ``cfg_augment.scale``);
+    # the ONE resolver is families/minimax_h3/settings.py (RULE-21). Gated by
+    # ``supports_dual_sigma_shift`` / ``supports_cfg_augmentation`` in
+    # archetypes._FIELD_RULES, so image and single-clock video families never
+    # show them.
+    sigma_shift_video: float | None = Field(
+        None,
+        description=(
+            "Video sigma shift of the flow-matching schedule (empty = the "
+            "model's own value, e.g. 12.0 for MiniMax-H3)"
+        ),
+        json_schema_extra={
+            "group": "VIDEO",
+            "min": 0.1,
+            "max": 50.0,
+            "step": 0.5,
+        },
+    )
+    sigma_shift_audio: float | None = Field(
+        None,
+        description=(
+            "Audio sigma shift of the flow-matching schedule, coupled to the "
+            "video clock through one shared draw (empty = the model's own "
+            "value, e.g. 3.0 for MiniMax-H3)"
+        ),
+        json_schema_extra={
+            "group": "VIDEO",
+            "depends_on": "train_audio",
+            "min": 0.1,
+            "max": 50.0,
+            "step": 0.5,
+        },
+    )
+    cfg_augment_scale: float | None = Field(
+        None,
+        description=(
+            "CFG-augmented training scale: the loss is taken on "
+            "(out + (s-1)*out_uncond)/s so the LoRA learns what the model "
+            "produces UNDER guidance at sampling time; 1.0 = off, empty = the "
+            "model's own value (4.0 for MiniMax-H3)"
+        ),
+        json_schema_extra={
+            "group": "VIDEO",
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.5,
+        },
+    )
     expert_mode: Literal["both", "high", "low"] = Field(
         "both",
         description=(

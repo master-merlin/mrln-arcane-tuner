@@ -980,7 +980,7 @@ class _AutocastProbeTransformer:
         return kwargs["hidden_states"], kwargs["audio_hidden_states"]
 
 
-def _sampler_shell(transformer: Any):
+def _sampler_shell(transformer: Any, config: dict[str, Any] | None = None):
     """A sampler on a stub pipeline: a REAL driver on the t2va definition with
     settings applied, the given transformer, no weights."""
     from unittest.mock import MagicMock
@@ -994,7 +994,7 @@ def _sampler_shell(transformer: Any):
     ModelRegistry.initialize()
     definition = ModelRegistry._definitions["minimax-h3-t2va"]
     driver = MiniMaxH3Driver(definition, torch.device("cpu"))
-    driver.apply_settings(resolve_h3_settings(definition, {"train_audio": True}))
+    driver.apply_settings(resolve_h3_settings(definition, {"train_audio": True, **(config or {})}))
     driver.assign_components({"transformer": transformer})
 
     pipeline = MagicMock()
@@ -1031,6 +1031,21 @@ def test_dit_called_with_autocast_disabled_inside_enclosing_autocast():
     assert all(f[slot] is False for f in probe.flags), (
         f"the DiT saw autocast ON at {sum(f[slot] for f in probe.flags)} of {len(probe.flags)} calls"
     )
+
+
+def test_sampler_never_applies_the_training_cfg_augmentation():
+    """`cfg_augment_scale` rearranges the TRAINING output; the preview loop is
+    CFG = 1 on the conditional arm. With the definition's 4.0 in force the
+    sampler runs ONE DiT call per step and needs no empty-prompt row (the
+    defect: `denoise` went through the augmented `forward_pass`, which refused
+    every preview by name once the YAML default became 4.0)."""
+    probe = _AutocastProbeTransformer()
+    sampler = _sampler_shell(probe, {"cfg_augment_scale": 4.0})
+    assert sampler.pipeline.driver.settings.cfg_augment_scale == 4.0
+    noise = torch.randn(1, 24, 2, 6, 4, generator=torch.Generator().manual_seed(1))
+    out = sampler.denoise(noise, _prompt_output(), num_steps=3, guidance_scale=1.0, seed=0)
+    assert torch.isfinite(out).all()
+    assert len(probe.flags) == 3, f"{len(probe.flags)} DiT calls for 3 steps: the sampler ran the uncond arm"
 
 
 def test_fp32_trajectory_keeps_sub_bf16_increments():

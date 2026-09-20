@@ -518,6 +518,10 @@ def _loss_shell(tmp_path, build_tiny_transformer, **config) -> MiniMaxH3Trainer:
     t = _setup_shell(tmp_path, **{"train_audio": True, "audio_loss_weight": 0.1, **config})
     t._setup_family()
     t.driver.assign_components({"transformer": build_tiny_transformer().eval()})
+    # The production state at step time: the caption-dropout entry "" is always
+    # pre-cached, and the definition's cfg_augment.scale (4.0) reads it as the
+    # uncond row. The refusal on a MISSING "" stays pinned by its own test.
+    t.text_cache[""] = (torch.randn(2, 16, generator=torch.Generator().manual_seed(5)), torch.ones(2, dtype=torch.long))
     return t
 
 
@@ -603,6 +607,16 @@ def test_trainer_serves_the_uncond_row_when_cfg_augment_is_on(tmp_path, build_ti
     off.text_cache[""] = t.text_cache[""]
     _loss, _pred, _target, batch_off = _run_step_hooks(off, grad_accum=1)
     assert "text_embeddings_uncond" not in batch_off and "video_pred_uncond" not in batch_off
+
+
+def test_cfg_augment_without_a_cached_empty_prompt_refuses_by_name(tmp_path, build_tiny_transformer):
+    """The definition default (4.0) with NO `""` entry in the text cache: the
+    step refuses loudly instead of training un-augmented."""
+    t = _loss_shell(tmp_path, build_tiny_transformer)
+    assert float(t.settings.cfg_augment_scale) == 4.0, "the definition default no longer reaches the trainer"
+    del t.text_cache[""]
+    with pytest.raises(RuntimeError, match="not pre-cached: ''"):
+        _run_step_hooks(t, grad_accum=1)
 
 
 def test_step_loss_scales_by_grad_accum(tmp_path, build_tiny_transformer):

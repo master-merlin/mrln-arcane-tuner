@@ -581,6 +581,8 @@ class MiniMaxH3Driver(IModelDriver):
         timesteps: torch.Tensor,
         text_embeddings: Any,
         batch: dict[str, Any],
+        *,
+        cfg_augment: bool = True,
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         """The joint audio+video forward on the packed ``[text | audio | video]``
         sequence — ONE sequence per item, built with that item's TRUE text
@@ -600,6 +602,9 @@ class MiniMaxH3Driver(IModelDriver):
         any sign convention, as ``(out + (s − 1) · out_uncond) / s`` for video
         and audio; the uncond arm is stashed as ``batch["video_pred_uncond"]``
         / ``batch["audio_pred_uncond"]``. ``s == 1.0`` is one forward.
+        ``cfg_augment=False`` is the INFERENCE call (the sampler): the
+        conditional arm only, whatever the training scale — the augmentation
+        rearranges what the loss sees, never what a preview denoises with.
         """
         if self.transformer is None:
             raise RuntimeError("minimax_h3 forward_pass: transformer not assigned")
@@ -616,7 +621,7 @@ class MiniMaxH3Driver(IModelDriver):
             noisy_input, t_v, t_a, emb, mask, audio_noisy
         )
         scale = float(self._require_settings("forward_pass").cfg_augment_scale)
-        if scale == 1.0:
+        if scale == 1.0 or not cfg_augment:
             return video_velocity, audio_velocity
         uncond = batch.get("text_embeddings_uncond")
         if uncond is None:

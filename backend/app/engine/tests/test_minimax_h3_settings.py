@@ -10,7 +10,8 @@ run-config keys (``audio_loss_weight``, ``sigma_shift_video``,
 Three guards:
 
 * ``settings_precedence_matrix`` — 4 keys x {omitted, explicit,
-  explicit-equals-schema-default, definition-absent}, each case asserting the
+  explicit-equals-schema-default, definition-absent} x {plain mapping, the
+  REAL ``BaseTrainingConfig`` object (row 3.3)}, each case asserting the
   resolved VALUE and its ``sources`` entry (plan § Configuration contract).
 * ``settings_reject_out_of_range`` — validation raises ``ValueError`` naming
   the key.
@@ -85,13 +86,24 @@ _DEFINITION_ABSENT: dict[str, tuple[Any, str] | type[Exception]] = {
 }
 
 
+def _typed(config: dict[str, Any]) -> Any:
+    """The REAL schema object (row 3.3: the config route is typed) — what the
+    trainer holds once the job config has been validated."""
+    from app.engine.models.base import BaseTrainingConfig
+
+    return BaseTrainingConfig.model_validate(
+        {**config, "datasets": [{"dataset_name": "ds"}]}
+    )
+
+
+@pytest.mark.parametrize("route", ["mapping", "schema"])
 @pytest.mark.parametrize(
     "case", ["omitted", "explicit", "explicit_equals_schema_default", "definition_absent"]
 )
 @pytest.mark.parametrize("field,def_key,explicit,schema_default", _KEYS)
-def test_settings_precedence_matrix(field, def_key, explicit, schema_default, case):
+def test_settings_precedence_matrix(field, def_key, explicit, schema_default, case, route):
     definition = _definition()
-    config: dict[str, Any] = {"train_audio": True}
+    config: Any = {"train_audio": True}
     if case == "omitted":
         expected = (_ARCH_FULL[def_key], "definition")
     elif case == "explicit":
@@ -106,6 +118,9 @@ def test_settings_precedence_matrix(field, def_key, explicit, schema_default, ca
     else:
         definition = _definition(arch=_arch_without(def_key))
         expected = _DEFINITION_ABSENT[field]
+
+    if route == "schema":
+        config = _typed(config)
 
     if isinstance(expected, type):
         with pytest.raises(expected, match=field):

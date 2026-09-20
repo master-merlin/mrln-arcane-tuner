@@ -109,6 +109,17 @@ class MiniMaxH3Driver(IModelDriver):
 
     # --- Phase 1: Loading & Component Access ---
 
+    def step0_banner(self, u_seed: int | None) -> str:
+        """The ONE line that tells a log reader what this run trains under
+        (row 3.2): every effective setting WITH the producer that won it
+        (``config`` / ``definition`` / ``schema_default`` / ``family_default``
+        / ``train_audio_off``) and the seed of the ``u`` draw (``unseeded``
+        when the run carries none). Printed by the trainer before step 0."""
+        items = self._require_settings("step0_banner").banner_items()
+        parts = [f"{label}={value} ({source})" for label, value, source in items]
+        parts.append(f"u_seed={'unseeded' if u_seed is None else int(u_seed)}")
+        return "h3_settings " + " ".join(parts)
+
     def assign_components(self, components: dict[str, Any]) -> None:
         """Wire loaded MiniMax-H3 components into driver state.
 
@@ -508,15 +519,15 @@ class MiniMaxH3Driver(IModelDriver):
         """Stack the items' clean audio latents ``(2, C, T)`` into
         ``{"audio_clean": (B, 2, C, T), "audio_mask": (B,)}``. An item without
         audio gets zeros shaped like a present sibling and ``mask = 0``; a
-        batch with NO audio (or ``train_audio`` off) returns ``{}`` so the
-        forward stays video-only. The trainer (row 2.5) loads the cached
-        latents into ``item["audio_latents"]`` before delegating here."""
+        batch with NO audio returns ``{}`` so the forward stays video-only.
+        ``train_audio`` does NOT gate this (row 3.2): H3 is single-stream and
+        the rows stay packed; audio off only zeroes ``audio_loss_weight``.
+        The trainer (row 2.5) loads the cached latents into
+        ``item["audio_latents"]`` before delegating here."""
         from .packing import audio_latent_num_frames, fit_audio_latents
 
         present = [item.get("audio_latents") for item in items]
         if not any(a is not None for a in present):
-            return {}
-        if not self._require_settings("build_batch_extra").train_audio:
             return {}
         # The VAE pads a clip up to whole latents; the reference trains on
         # round(frames / fps · rate) — fit each item's rows to ITS frame count

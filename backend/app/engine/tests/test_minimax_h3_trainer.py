@@ -407,6 +407,38 @@ def test_build_batch_extra_carries_audio_latents(tmp_path):
     assert "audio_latents" not in item, "inventory items must not retain tensors"
 
 
+# ── Row 3.2 on the trainer: audio off keeps the rows packed end to end ──────
+
+
+def test_train_audio_off_still_caches_and_packs_audio(tmp_path):
+    """`train_audio=false` on the TRAINER: the audio cache is still written
+    and the cached rows still reach the batch (H3 is single-stream; only
+    `audio_loss_weight` goes to 0.0)."""
+    t, item = _audio_shell(tmp_path)
+    t.config["train_audio"] = False
+    t._setup_family()  # rebuilds the driver: re-wire the stub components to it
+    t._assign_components()
+    assert t.driver.settings.train_audio is False
+    t._pre_cache_aux()
+    adir = t._audio_cache_dir(item["cache_dir"])
+    assert os.path.isdir(adir) and len(os.listdir(adir)) == 1, (
+        "audio_rows == 0; H3 is single-stream — train_audio=false skipped the audio cache"
+    )
+    extra = t.build_batch_extra([item])
+    assert "audio_clean" in extra, "audio_rows == 0; H3 is single-stream — the trainer dropped the rows"
+    assert extra["audio_clean"].shape == (1, 2, 32, 40)
+
+
+def test_step0_banner_is_logged_at_setup(tmp_path):
+    t = _setup_shell(tmp_path, train_audio=True, seed=77)
+    t._setup_family()
+    lines = [c.args[0] for c in t.logger.info.call_args_list if c.args and isinstance(c.args[0], str)]
+    banners = [line for line in lines if line.startswith("h3_settings ")]
+    assert len(banners) == 1, f"expected ONE step-0 banner, got {banners}"
+    assert banners[0] == t.driver.step0_banner(u_seed=77)
+    assert "train_audio=true (config)" in banners[0] and banners[0].endswith("u_seed=77")
+
+
 def test_latent_manager_vae_is_the_pixel_adapter(tmp_path, monkeypatch):
     """The loader's post-load hook is the ONE wrap site; `prepare_data`
     builds the LatentManager on `components["vae"]`, so the manager must see
@@ -483,7 +515,7 @@ def _text_output(lengths: list[int], dim: int = 16) -> TextEncoderOutput:
 
 def _loss_shell(tmp_path, build_tiny_transformer, **config) -> MiniMaxH3Trainer:
     """The real trainer setup on the tiny diffusers arch, audio ON."""
-    t = _setup_shell(tmp_path, train_audio=True, audio_loss_weight=0.1, **config)
+    t = _setup_shell(tmp_path, **{"train_audio": True, "audio_loss_weight": 0.1, **config})
     t._setup_family()
     t.driver.assign_components({"transformer": build_tiny_transformer().eval()})
     return t
@@ -539,6 +571,38 @@ def test_step_loss_routes_through_driver(tmp_path, build_tiny_transformer):
     assert audio_noisy.shape == batch["audio_clean"].shape
     assert not torch.allclose(audio_noisy, batch["audio_clean"]), "audio was fed clean"
     assert torch.allclose(batch["audio_target"], batch["audio_clean"] - batch["audio_noise"])
+
+
+def test_train_audio_off_noises_the_packed_audio_and_costs_nothing(tmp_path, build_tiny_transformer):
+    """Audio off on the production hooks: the rows are still noised on the
+    audio clock and forwarded (an audio velocity comes back), and the step
+    loss is exactly the video term."""
+    t = _loss_shell(tmp_path, build_tiny_transformer, train_audio=False)
+    assert t.driver.settings.audio_loss_weight == 0.0
+    loss, pred, target, batch = _run_step_hooks(t, grad_accum=1)
+    assert pred[1] is not None, "audio_rows == 0; H3 is single-stream"
+    assert "audio_noisy" in batch and not torch.allclose(batch["audio_noisy"], batch["audio_clean"]), "audio was fed clean"
+    loss_video = torch.nn.functional.mse_loss(pred[0].float(), target.float())
+    assert torch.allclose(loss, loss_video, atol=1e-6)
+
+
+def test_trainer_serves_the_uncond_row_when_cfg_augment_is_on(tmp_path, build_tiny_transformer):
+    """Row 3.1's owed wiring: with `cfg_augment_scale > 1` the trainer puts the
+    EMPTY-prompt embedding (always pre-cached — the caption-dropout entry)
+    into `batch["text_embeddings_uncond"]` before the driver forward; at
+    scale 1.0 no row is served and no uncond forward runs."""
+    t = _loss_shell(tmp_path, build_tiny_transformer, cfg_augment_scale=4.0)
+    t.text_cache[""] = (torch.randn(2, 16), torch.ones(2, dtype=torch.long))
+    _loss, _pred, _target, batch = _run_step_hooks(t, grad_accum=1)
+    unc = batch["text_embeddings_uncond"]
+    assert torch.allclose(unc.embeddings[0].cpu(), t.text_cache[""][0]), "the uncond row is not the cached empty prompt"
+    assert int(unc.attention_mask.sum()) == 2
+    assert "video_pred_uncond" in batch, "the uncond forward never ran"
+
+    off = _loss_shell(tmp_path, build_tiny_transformer, cfg_augment_scale=1.0)
+    off.text_cache[""] = t.text_cache[""]
+    _loss, _pred, _target, batch_off = _run_step_hooks(off, grad_accum=1)
+    assert "text_embeddings_uncond" not in batch_off and "video_pred_uncond" not in batch_off
 
 
 def test_step_loss_scales_by_grad_accum(tmp_path, build_tiny_transformer):

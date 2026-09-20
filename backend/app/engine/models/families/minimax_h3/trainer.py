@@ -79,8 +79,10 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         # CLOBBER hook (plan row 2.4, ordering rule 1): the driver stacks the
         # items' clean audio latents; this override (row 2.5) loads them from
         # the audio cache into a per-step COPY of each item (the inventory
-        # never retains tensors) before the explicit delegation.
-        if self.settings is not None and self.settings.train_audio and self.config.get("cache_latents", True):
+        # never retains tensors) before the explicit delegation. `train_audio`
+        # does not gate it (row 3.2): the rows stay packed, audio off is a
+        # zero loss weight.
+        if self.config.get("cache_latents", True):
             items = [
                 {**item, "audio_latents": lat} if (lat := self._load_cached_audio(item)) is not None else item
                 for item in items
@@ -104,13 +106,21 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         batch: dict[str, Any],
     ) -> tuple[torch.Tensor, torch.Tensor | None]:
         audio_clean = batch.get("audio_clean")
-        if self.settings is not None and self.settings.train_audio and audio_clean is not None:
+        # Whenever audio rows are packed they are noised on the audio clock —
+        # with `train_audio` off too (row 3.2): the DiT always sees x_t rows,
+        # the loss just weights them 0.
+        if audio_clean is not None:
             audio_clean = audio_clean.to(device=noisy_input.device)
             audio_noise = torch.randn_like(audio_clean)
             t_a = self.driver.audio_timestep(timesteps.to(device=noisy_input.device, dtype=torch.float32))
             batch["audio_noise"] = audio_noise
             batch["audio_noisy"] = self.driver.add_noise(audio_clean, audio_noise, t_a)
             batch["audio_target"] = self.driver.compute_target(audio_clean, audio_noise, t_a)
+        # Row 3.1's uncond arm: the empty-prompt row comes from the text cache
+        # (the caption-dropout entry "" is always pre-cached; the encoder is
+        # released before the DiT loads, so a miss raises by name).
+        if self.settings is not None and float(self.settings.cfg_augment_scale) > 1.0:
+            batch["text_embeddings_uncond"] = self.encode_text([""], noisy_input.dtype)
         video_pred, audio_pred = self.driver.forward_pass(noisy_input, timesteps, text_embeddings, batch)
         batch["audio_pred"] = audio_pred
         return video_pred, audio_pred
@@ -400,15 +410,19 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         self.driver = MiniMaxH3Driver(self.definition, self.device)
         self.driver.apply_settings(self.settings)
         self.loader = MiniMaxH3Loader(self.device, defer_transformer=True)
-        self.logger.info(
-            "minimax_h3_settings",
-            train_audio=self.settings.train_audio,
-            audio_loss_weight=self.settings.audio_loss_weight,
-            sigma_shift_video=self.settings.sigma_shift_video,
-            sigma_shift_audio=self.settings.sigma_shift_audio,
-            cfg_augment_scale=self.settings.cfg_augment_scale,
-            sources=self.settings.sources,
-        )
+        # The step-0 banner (row 3.2): one greppable line, every setting with
+        # its source; the seed is the run seed `_apply_run_seed` reads (an
+        # uninterpretable one is "unseeded" there too).
+        self.logger.info(self.driver.step0_banner(u_seed=self._banner_seed()))
+
+    def _banner_seed(self) -> int | None:
+        seed = self.config.get("seed")
+        if seed in (None, ""):
+            return None
+        try:
+            return int(seed)
+        except (TypeError, ValueError):
+            return None
 
     def _resolve_train_audio(self) -> bool:
         """`H3EffectiveSettings.train_audio` — the one resolver (row 1.0)."""
@@ -481,9 +495,8 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         while the audio VAE is resident (run_trainer calls this right after
         the video pre-cache, before the VAEs are offloaded). Stills carry no
         soundtrack (masked at train time); a clip without an audio stream is
-        skipped the same way. No-op unless this run trains audio."""
-        if not self._resolve_train_audio():
-            return
+        skipped the same way. Runs with `train_audio` off too (row 3.2): the
+        rows are packed either way, only their loss weight is 0."""
         audio_vae = getattr(self.driver, "audio_vae", None)
         if audio_vae is None or not self.config.get("cache_latents", True):
             return

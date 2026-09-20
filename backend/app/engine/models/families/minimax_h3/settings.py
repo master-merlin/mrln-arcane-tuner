@@ -65,6 +65,26 @@ class H3EffectiveSettings:
     sources: dict[str, str] = field(default_factory=dict)
     version: int = SETTINGS_VERSION
 
+    def banner_items(self) -> list[tuple[str, str, str]]:
+        """``(label, value, source)`` per setting for the step-0 banner (row
+        3.2), in banner order. The key names live HERE (RULE-21: only this
+        module names them); a setting without a recorded source is refused,
+        never printed bare."""
+        rows = [
+            ("video_shift", "sigma_shift_video", str(self.sigma_shift_video)),
+            ("audio_shift", "sigma_shift_audio", str(self.sigma_shift_audio)),
+            ("audio_loss_weight", "audio_loss_weight", str(self.audio_loss_weight)),
+            ("cfg_augment_scale", "cfg_augment_scale", str(self.cfg_augment_scale)),
+            ("train_audio", "train_audio", "true" if self.train_audio else "false"),
+        ]
+        out = []
+        for label, key, value in rows:
+            source = self.sources.get(key)
+            if not source:
+                raise ValueError(f"minimax_h3 settings: {key} has no recorded source for the banner")
+            out.append((label, value, source))
+        return out
+
 
 def _config_value(config: Any, key: str) -> Any:
     if isinstance(config, Mapping):

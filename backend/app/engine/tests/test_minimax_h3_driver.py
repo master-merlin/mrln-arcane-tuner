@@ -444,6 +444,67 @@ def test_cfg_augment_without_uncond_row_refuses(build_tiny_transformer):
         driver.forward_pass(video, t_v, cond, {"audio_noisy": audio})
 
 
+# ── Row 3.2: the step-0 banner + `train_audio=false` keeps the rows packed ──
+#
+# H3 is SINGLE-stream: the DiT always sees `[text | audio | video]`. Turning
+# audio training off changes ONE number (`audio_loss_weight = 0.0`, source
+# `train_audio_off`), never the sequence — a video-only sequence would be a
+# layout the pretrained weights never saw.
+
+
+def test_step0_banner_names_every_setting_with_source():
+    driver = _driver()
+    settings = _settings({"train_audio": True})
+    driver.apply_settings(settings)
+    banner = driver.step0_banner(u_seed=1234)
+    src = settings.sources
+    expected = (
+        f"h3_settings video_shift={settings.sigma_shift_video} ({src['sigma_shift_video']}) "
+        f"audio_shift={settings.sigma_shift_audio} ({src['sigma_shift_audio']}) "
+        f"audio_loss_weight={settings.audio_loss_weight} ({src['audio_loss_weight']}) "
+        f"cfg_augment_scale={settings.cfg_augment_scale} ({src['cfg_augment_scale']}) "
+        f"train_audio={'true' if settings.train_audio else 'false'} ({src['train_audio']}) "
+        "u_seed=1234"
+    )
+    assert banner == expected, f"banner != expected:\n{banner}\n{expected}"
+    assert "train_audio=true (config)" in banner
+    # Every value is followed by its provenance; an unsourced value is refused.
+    for token in banner.split(" ")[1:-1]:
+        if "=" in token:
+            continue
+        assert token.startswith("(") and token.endswith(")"), f"unsourced value before {token!r}"
+    assert banner.count("(") == 5, "a value printed without its source"
+    # Audio off: the weight is 0.0 and says WHY; unseeded runs say so.
+    off = _driver()
+    off.apply_settings(_settings({"train_audio": False}))
+    banner_off = off.step0_banner(u_seed=None)
+    assert "audio_loss_weight=0.0 (train_audio_off)" in banner_off
+    assert "train_audio=false (config)" in banner_off
+    assert banner_off.endswith("u_seed=unseeded")
+
+
+def test_train_audio_off_keeps_audio_rows_packed(build_tiny_transformer):
+    import torch
+
+    driver = _cfg_driver(build_tiny_transformer, 1.0)
+    driver.apply_settings(_settings({"train_audio": False}))
+    assert driver.settings.audio_loss_weight == 0.0
+    assert driver.settings.sources["audio_loss_weight"] == "train_audio_off"
+    a = torch.randn(2, 32, 3)
+    extra = driver.build_batch_extra([{"id": "x", "audio_latents": a}])
+    assert "audio_clean" in extra and torch.equal(extra["audio_clean"][0], a), (
+        "audio_rows == 0; H3 is single-stream — train_audio=false dropped the audio rows at the batch seam"
+    )
+    video, audio, t_v, cond, _ = _cfg_inputs()
+    with torch.no_grad():
+        v, a_vel = driver.forward_pass(video, t_v, cond, {"audio_noisy": audio})
+    audio_rows = 0 if a_vel is None else int(a_vel.shape[-1])
+    assert audio_rows == audio.shape[-1], "audio_rows == 0; H3 is single-stream"
+    # The loss: the packed audio rows cost nothing — weight 0.0, loss == video.
+    out = driver.compute_loss(v, torch.zeros_like(v), {}, audio_pred=a_vel, audio_target=torch.zeros_like(a_vel))
+    assert torch.equal(out.loss, out.loss_video)
+
+
 def test_build_batch_extra_stacks_audio_with_a_presence_mask():
     import torch
 
@@ -456,8 +517,9 @@ def test_build_batch_extra_stacks_audio_with_a_presence_mask():
     assert torch.equal(extra["audio_clean"][0], a) and torch.all(extra["audio_clean"][1] == 0)
     assert extra["audio_mask"].tolist() == [1.0, 0.0]
     assert driver.build_batch_extra([{"id": "y"}]) == {}
+    # `train_audio=false` does NOT unpack the rows (row 3.2; H3 is single-stream).
     driver.apply_settings(_settings({"train_audio": False}))
-    assert driver.build_batch_extra(items) == {}
+    assert driver.build_batch_extra(items)["audio_mask"].tolist() == [1.0, 0.0]
 
 
 # ── Audio latent count: ONE formula, the diffusers reference (GATE-0 finding) ──

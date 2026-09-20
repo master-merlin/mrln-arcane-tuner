@@ -100,6 +100,16 @@ class LatentManager:
         td = arch.get("vae_temporal_downsample")
         self._temporal_downscale = int(td) if td else None
 
+        # CHUNKED video VAE: a definition that declares `vae.clip_length` states
+        # a VAE that encodes the clip in chunks of that many pixel frames, each
+        # by the definition's own `video.vae_temporal` factor (no class-name
+        # list can know it). Absent -> 0: the class-name inference below and
+        # the single `(F - 1) / t + 1` expectation are untouched.
+        self._vae_clip_length = int(arch.get("vae.clip_length") or 0)
+        if self._vae_clip_length and self._temporal_downscale is None:
+            chunk_td = arch.get("video.vae_temporal")
+            self._temporal_downscale = int(chunk_td) if chunk_td else None
+
         logger.debug(
             "latent_manager_init",
             scaling_factor=self.scaling_factor,
@@ -171,6 +181,23 @@ class LatentManager:
         if temporal_downscale <= 1:
             return max(int(num_frames), 1)
         return max((int(num_frames) - 1) // int(temporal_downscale) + 1, 1)
+
+    def expected_latent_frames(self, num_frames: int) -> int:
+        """Latent frames the VAE yields for ``num_frames`` pixel frames.
+
+        One ``(F - 1) / t + 1`` for a VAE that encodes the clip whole. A chunked
+        VAE (``vae.clip_length`` declared) encodes every full chunk and the
+        remainder separately, each by that same formula, and concatenates.
+        """
+        td = self.temporal_downscale()
+        clip = self._vae_clip_length
+        if not clip:
+            return self.latent_frames(num_frames, td)
+        full, rest = divmod(int(num_frames), clip)
+        expected = full * self.latent_frames(clip, td)
+        if rest:
+            expected += self.latent_frames(rest, td)
+        return max(expected, 1)
 
     @staticmethod
     def slice_latent_window(
@@ -694,7 +721,7 @@ class LatentManager:
         _, _, lf, h, w = latents.shape
         _, _, in_f, ih, iw = input_shape
         td = self.temporal_downscale()
-        expected_f = self.latent_frames(in_f, td)
+        expected_f = self.expected_latent_frames(in_f)
         expected_h = ih // self.spatial_downscale
         expected_w = iw // self.spatial_downscale
 

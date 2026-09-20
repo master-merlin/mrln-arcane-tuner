@@ -225,6 +225,10 @@ block_topology:
 - name: transformer_blocks
   attr_path: transformer_blocks
   count: 50
+  # approx_vram_mb = bf16 bytes of ONE block, summed from the safetensors headers of
+  # snapshot 42ed227e transformer/: every transformer_blocks.N is 1231.33 MiB, every
+  # token_refiner.refiner_blocks.N is 735.02 MiB (measured 2026-09-20, plan row 4.1).
+  approx_vram_mb: 1231
 # Refiners are NESTED under token_refiner — verified against the checkpoint's
 # safetensors index weight_map (token_refiner.refiner_blocks.{0,1}.*). A bare
 # "refiner_blocks" attr_path does NOT resolve and would silently leave these
@@ -232,3 +236,4 @@ block_topology:
 - name: token_refiner_blocks
   attr_path: token_refiner.refiner_blocks
   count: 2
+  approx_vram_mb: 735

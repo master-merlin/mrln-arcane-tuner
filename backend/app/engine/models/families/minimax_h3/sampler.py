@@ -67,10 +67,12 @@ class MiniMaxH3Sampler(GenericSamplingPipeline):
             return torch.float32
 
     def _audio_latents_for(self, pixel_frames: int) -> int:
+        from .packing import audio_latent_num_frames  # the trainer's count (build_batch_extra)
+
         arch = self._arch()
         fps = float(arch.get("video.frame_rate", 24.0) or 24.0)
         rate = float(arch.get("audio.latent_rate", 40) or 40)
-        return max(int(round(pixel_frames / fps * rate)), 1)
+        return audio_latent_num_frames(pixel_frames, fps, rate)
 
     # ── Abstract hooks ──────────────────────────────────────────────────
 

@@ -360,6 +360,68 @@ def test_build_batch_extra_stacks_audio_with_a_presence_mask():
     assert driver.build_batch_extra(items) == {}
 
 
+# ── Audio latent count: ONE formula, the diffusers reference (GATE-0 finding) ──
+#
+# The audio VAE pads a clip up to whole 800-sample latents (5 frames -> 6667
+# samples -> 9 latents) while the reference trains AND samples on
+# `round(frames / fps * 40)` (= 8): ai-toolkit `_fit_audio_rows`, diffusers
+# `modular_pipeline.audio_latent_num_frames`. The cached latents are fitted
+# to that count at the batch seam, and the sampler draws its noise from the
+# same function.
+
+
+def _frame_ladder(limit: int = 107) -> list[int]:
+    return [17 * n + 5 for n in range((limit - 5) // 17 + 1)]
+
+
+def test_audio_latent_num_frames_matches_the_diffusers_reference():
+    import pytest
+
+    reference = pytest.importorskip("diffusers.modular_pipelines.minimax_h3.modular_pipeline")
+    from app.engine.models.families.minimax_h3.packing import audio_latent_num_frames
+
+    for frames in [1, *_frame_ladder()]:
+        assert audio_latent_num_frames(frames) == reference.audio_latent_num_frames(frames), frames
+    assert audio_latent_num_frames(5) == 8  # the VAE returns 9 for the same clip
+
+
+def test_build_batch_extra_fits_audio_rows_to_the_reference_count():
+    import torch
+
+    driver = _driver()
+    driver.apply_settings(_settings())
+    long = torch.randn(2, 32, 9)  # what the audio VAE returns for 5 frames
+    short = torch.randn(2, 32, 6)
+    items = [
+        {"id": "long", "audio_latents": long, "target_frames": 5},
+        {"id": "short", "audio_latents": short, "target_frames": 5},
+    ]
+    extra = driver.build_batch_extra(items)
+    assert extra["audio_clean"].shape == (2, 2, 32, 8), "fitted to round(5/24*40) = 8, not the VAE's 9"
+    assert torch.equal(extra["audio_clean"][0], long[..., :8]), "the tail latent is cropped"
+    assert torch.equal(extra["audio_clean"][1, ..., :6], short) and torch.all(extra["audio_clean"][1, ..., 6:] == 0), (
+        "a short clip is zero-padded to the reference count"
+    )
+    assert extra["audio_mask"].tolist() == [1.0, 1.0]
+    # No frame count on the item (a still): nothing to fit against, rows kept.
+    assert driver.build_batch_extra([{"id": "raw", "audio_latents": long}])["audio_clean"].shape[-1] == 9
+
+
+def test_sampler_draws_audio_noise_from_the_same_formula(monkeypatch):
+    from types import SimpleNamespace
+
+    from app.engine.models.families.minimax_h3 import packing, sampler as sampler_mod
+    from app.engine.models.families.minimax_h3.sampler import MiniMaxH3Sampler
+
+    definition = _driver().definition
+    shell = MiniMaxH3Sampler.__new__(MiniMaxH3Sampler)
+    shell.pipeline = SimpleNamespace(definition=definition)
+    assert shell._audio_latents_for(5) == packing.audio_latent_num_frames(5) == 8
+    monkeypatch.setattr(sampler_mod, "audio_latent_num_frames", lambda *a, **k: 4242, raising=False)
+    monkeypatch.setattr(packing, "audio_latent_num_frames", lambda *a, **k: 4242)
+    assert shell._audio_latents_for(107) == 4242, "the sampler has its own copy of the formula"
+
+
 def _loss_inputs():
     import torch
 

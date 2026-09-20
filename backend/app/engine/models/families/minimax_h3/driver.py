@@ -511,11 +511,26 @@ class MiniMaxH3Driver(IModelDriver):
         batch with NO audio (or ``train_audio`` off) returns ``{}`` so the
         forward stays video-only. The trainer (row 2.5) loads the cached
         latents into ``item["audio_latents"]`` before delegating here."""
+        from .packing import audio_latent_num_frames, fit_audio_latents
+
         present = [item.get("audio_latents") for item in items]
         if not any(a is not None for a in present):
             return {}
         if not self._require_settings("build_batch_extra").train_audio:
             return {}
+        # The VAE pads a clip up to whole latents; the reference trains on
+        # round(frames / fps · rate) — fit each item's rows to ITS frame count
+        # (an item without one, a still, keeps what the cache holds).
+        arch = self.definition.architecture_params or {}
+        fps = float(arch.get("video.frame_rate", 24.0) or 24.0)
+        rate = float(arch.get("audio.latent_rate", 40) or 40)
+        fitted = []
+        for a, item in zip(present, items, strict=True):
+            frames = item.get("target_frames")
+            if a is not None and frames:
+                a = fit_audio_latents(a, audio_latent_num_frames(int(frames), fps, rate))
+            fitted.append(a)
+        present = fitted
         ref = next(a for a in present if a is not None)
         stacked = []
         mask = []

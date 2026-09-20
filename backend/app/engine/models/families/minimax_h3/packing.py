@@ -274,6 +274,27 @@ def build_layout(geometry: H3Geometry) -> H3PackedLayout:
     )
 
 
+def audio_latent_num_frames(num_frames: int, fps: float = 24.0, latents_per_second: float = 40.0) -> int:
+    """The number of audio latents that covers ``num_frames`` video frames —
+    ``round(num_frames / fps · 40)``, the ONE count the reference trains AND
+    samples on (diffusers 0.40 ``modular_pipelines/minimax_h3/modular_pipeline.py``
+    ``audio_latent_num_frames``; ai-toolkit ``_fit_audio_rows``). The audio VAE
+    itself pads a clip UP to whole latents (5 frames → 6667 samples → 9), so
+    cached latents are fitted to this count at the batch seam (GATE-0 finding)."""
+    return max(int(round(num_frames / fps * latents_per_second)), 1)
+
+
+def fit_audio_latents(latents: torch.Tensor, audio_latents: int) -> torch.Tensor:
+    """``(2, C, T)`` → ``(2, C, audio_latents)``: crop the tail or zero-pad it
+    (ai-toolkit ``_fit_audio_rows``, on the un-packed tensor)."""
+    t = int(latents.shape[-1])
+    if t > audio_latents:
+        return latents[..., :audio_latents]
+    if t < audio_latents:
+        return torch.nn.functional.pad(latents, (0, audio_latents - t))
+    return latents
+
+
 def num_distinct_timesteps(layout: H3PackedLayout) -> int:
     """How many distinct timestep values this layout addresses (``max slot + 1``)."""
     return int(layout.timestep_slot.max().item()) + 1

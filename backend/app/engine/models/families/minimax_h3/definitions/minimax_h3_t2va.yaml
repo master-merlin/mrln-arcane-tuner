@@ -21,12 +21,12 @@ version: '1.0'
 # the tree meanwhile, and the registry-wide coverage sweeps keep enumerating
 # the family.
 #
-# t2va's gate is the BASE CASE and nothing else: the family cannot train at
-# all. `driver.py:50` `_lands_in_pr1()` raises for `encode_text` (:143),
-# `forward_pass` (:170) and `get_saver` (:178), and `trainer.py:39`
-# `_setup_family` raises before any of them is reached. Nothing about this
-# definition's own architecture_params is wrong — `mode: t2v` (:42) is
-# accurate — so this is the one that clears the moment the trainer lands.
+# t2va's gate is the BASE CASE and nothing else. The PR0 refusals it was
+# written for are gone from driver, trainer and saver
+# (`test_minimax_h3_driver.py::test_no_pr0_refusal_remains`); the string below
+# is the PR0 one and stays only until PR1's ungating row clears it on the
+# GATE-0..3 evidence. Nothing about this definition's own
+# architecture_params is wrong — `mode: t2v` is accurate.
 unavailable_reason: >-
   MiniMax-H3 training is not built yet: this release ships the scaffold only
   (loader, video contract and model classes), so a run would fail

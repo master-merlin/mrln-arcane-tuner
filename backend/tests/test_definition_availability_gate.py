@@ -16,6 +16,8 @@ PR0 ships the scaffold only." (``families/minimax_h3/trainer.py:39``).
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 from fastapi.testclient import TestClient
 
@@ -30,6 +32,32 @@ GATED_IDS = frozenset(
     {"minimax-h3-t2va", "minimax-h3-fl2va", "minimax-h3-ref2va"}
 )
 GATED_FAMILY = "minimax_h3"
+
+# Row 4.4's `Verdict:` line, copied verbatim from
+# `_harness/research/minimax-h3-context-ir.md:19` (ONE producer of the fact).
+CONTEXT_IR_VERDICT = "NOT REQUIRED"
+
+H3_DEFINITIONS_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "app/engine/models/families/minimax_h3/definitions"
+)
+
+
+def ref2va_reason_rules(verdict: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(must mention, must not mention) for ref2va's reason under a Context-IR
+    verdict. The must-not list pins OUT the two claims the shipped PR0 string
+    made and the research report falsified: that a needed component is "not
+    publicly available", and (since It2) that training is "not built yet"."""
+    must = ("reference", "packing")
+    must_not = ("not publicly available", "not built yet either")
+    if verdict == "REQUIRED":
+        # A required separate component is NAMED; `encoder` is allowed.
+        return must + ("H3-Context-IR",), must_not
+    if verdict == "UNDETERMINED":
+        # The string says the question is open and claims nothing.
+        return must + ("not settled",), must_not + ("encoder",)
+    # NOT REQUIRED: a packing path over the same transformer, no encoder.
+    return must, must_not + ("encoder",)
 
 
 @pytest.fixture(scope="module")
@@ -98,8 +126,9 @@ def test_the_three_reasons_are_distinct_per_definition() -> None:
     The three definitions are gated for different reasons and clear on
     different events: t2va is the base case (the trainer is unbuilt) and clears
     with it; fl2va additionally is not a first/last-frame model at all; ref2va's
-    reference path is not merely unbuilt but unanswered (the reference encoder
-    is closed-source), so it may stay gated after the other two clear. A single
+    reference-block packing path is unbuilt and its own checkpoint ungated
+    (``test_ref2va_reason_is_true_today``), so it may stay gated after the
+    other two clear. A single
     shared string cannot express that and would have to be rewritten the moment
     one of them clears — so pin that they stay distinct.
     """
@@ -142,6 +171,41 @@ def test_each_reason_is_honest_about_its_own_definition() -> None:
         f"t2va's reason describes a defect it does not have: {t2va!r}"
     )
     assert "train" in t2va
+
+
+def test_ref2va_reason_is_true_today() -> None:
+    """REQUEST-13: ref2va's PR0 reason was FALSE (it blamed an unpublished
+    "reference encoder" and an unbuilt trainer). Pin the MEANING of the true
+    one: what is missing is the reference-block PACKING path in this app and a
+    gate for the ref2va checkpoint — nothing upstream withholds."""
+    registry.initialize()
+    reason = registry.get_definition("minimax-h3-ref2va").unavailable_reason
+    assert reason
+    lowered = " ".join(reason.lower().split())
+    must, must_not = ref2va_reason_rules(CONTEXT_IR_VERDICT)
+    # The falsified claims first, so a regression to the PR0 string is NAMED.
+    for token in must_not:
+        assert token.lower() not in lowered, (
+            f"ref2va's reason still makes the falsified claim {token!r}: {reason!r}"
+        )
+    for token in must:
+        assert token.lower() in lowered, f"ref2va's reason omits {token!r}: {reason!r}"
+    # WHAT is missing, and where: unbuilt HERE, not unpublished upstream.
+    assert "is not built" in lowered, reason
+    assert "published" in lowered, "must say the model components ARE published"
+    assert "has not been validated by a gate" in lowered, reason
+    # The honest alternative is named, and it is the one that trains.
+    assert "minimax-h3-t2va" in lowered, reason
+
+
+def test_ref2va_yaml_comments_point_at_the_reason_instead_of_claiming() -> None:
+    """RULE-21, ONE producer: the gating fact lives in ``unavailable_reason``
+    and the research report; the YAML comments point there. The two greps are
+    the shapes the four falsified comments had."""
+    text = (H3_DEFINITIONS_DIR / "minimax_h3_ref2va.yaml").read_text(encoding="utf-8")
+    assert text.count("closed-source") == 0
+    assert text.count("H3-Context-IR is") == 0
+    assert "minimax-h3-context-ir.md" in text, "the comments no longer point at the report"
 
 
 def test_gates_clear_independently_of_each_other() -> None:

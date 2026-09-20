@@ -21,20 +21,22 @@ version: '1.0'
 # the tree meanwhile, and the registry-wide coverage sweeps keep enumerating
 # the family.
 #
-# ref2va carries the base case PLUS a defect of its own, and unlike fl2va its
-# blocker is not merely unbuilt but UNANSWERED: reference conditioning is not
-# modelled because H3-Context-IR is closed-source (see the control_inputs and
-# transformer.subfolder comments below), which is why the tree homes that
-# question on PR4 rather than on the trainer's PR1. As with fl2va, `mode: both`
-# is the only thing separating this from plain text-to-video. This definition
-# may therefore stay gated after the other two clear, and must not be swept
-# back in alongside them.
+# ref2va has a defect of its own: reference conditioning is UNBUILT, not
+# unanswerable -- see `unavailable_reason` below and
+# `_harness/research/minimax-h3-context-ir.md` (Verdict: NOT REQUIRED); those
+# two are the ONE statement of why this definition is gated, and
+# `test_definition_availability_gate.py::test_ref2va_reason_is_true_today`
+# pins its meaning. As with fl2va, `mode: both` is the only thing separating
+# this from plain text-to-video. This definition may therefore stay gated
+# after the other two clear, and must not be swept back in alongside them.
 unavailable_reason: >-
-  Reference conditioning is not modelled: the reference encoder this
-  definition would need is not publicly available, so there is nothing behind
-  the reference input — today the only thing separating it from plain
-  text-to-video is a flag. Training for this family is not built yet either.
-  It returns if and when the reference path is settled.
+  Reference conditioning is not built: the reference-block packing path
+  (reference images, videos and audio on their own grids sharing the media
+  clock) is unwritten in this family and the ref2va checkpoint has not been
+  validated by a gate -- use minimax-h3-t2va (or fl2va once first/last-frame
+  conditioning lands). Every model component this path needs is published;
+  upstream's hosted H3-Context-IR service expands prompts and is not part of
+  the model. It returns when the reference packing path is built and measured.
 # Run-config surfaces (plan row 3.3): the two sigma shifts and the CFG
 # augmentation scale are gated by these flags in archetypes._FIELD_RULES.
 capability_overrides:
@@ -55,13 +57,14 @@ components:
     path: huggingface:MiniMaxAI/MiniMax-H3
     type: diffusers
     params: {}
-# Deliberately 0 in PR0, NOT an oversight. ref2va's reference-conditioning
-# mechanism is not yet modelled (H3-Context-IR is closed-source, see the
-# transformer.subfolder comment below). control_inputs > 0 activates the
+# Deliberately 0, NOT an oversight. ref2va's reference-conditioning
+# mechanism is not yet built -- reference-block packing, see
+# `unavailable_reason`. control_inputs > 0 activates the
 # paired-edit-dataset gating in pipeline_data.py, built for a mechanism this
 # definition does not implement; flipping it on here would silently route
-# training through a pipeline that does not match the model. PR4 owns
-# revisiting this once the Context-IR question is settled.
+# training through a pipeline that does not match the model. PR4 owns this
+# when the reference packing path lands; the Context-IR question is settled
+# (research `minimax-h3-context-ir.md`).
 control_inputs: 0
 detected_precision:
   text_encoder: torch.bfloat16
@@ -107,10 +110,10 @@ architecture_params:
   # -- Transformer (transformer/config.json) --
   transformer._class_name: MiniMaxH3Transformer3DModel
   # ref2va reads a SEPARATE 33B checkpoint — a second full download beyond
-  # transformer/. Upstream conditions this path through H3-Context-IR, which
-  # is NOT open-sourced (API-only). Whether it is load-bearing is determined
-  # empirically in PR4; until then this definition makes no claim about
-  # reference-conditioning fidelity.
+  # transformer/, with the same class, config and key set. Upstream's hosted
+  # H3-Context-IR service sits outside the conditioning path (research
+  # `minimax-h3-context-ir.md`, Verdict: NOT REQUIRED); this definition makes
+  # no claim about reference-conditioning fidelity.
   transformer.subfolder: transformer_ref
   transformer.num_attention_heads: 56
   transformer.attention_head_dim: 128

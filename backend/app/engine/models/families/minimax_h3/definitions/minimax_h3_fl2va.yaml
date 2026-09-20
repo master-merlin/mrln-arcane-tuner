@@ -128,6 +128,9 @@ architecture_params:
   transformer.num_layers: 50
   transformer.num_refiner_layers: 2
   transformer.ffn_dim: 14336
+  # float32 residual stream, MEASURED (gate5-memprofile.json, commit 7cabd483) - see
+  # minimax_h3_t2va.yaml. Reader: vram_estimator._token_inventory_activations_mb.
+  transformer.residual_stream_dtype: float32
   transformer.in_channels: 24
   transformer.audio_in_channels: 32
   transformer.patch_size:

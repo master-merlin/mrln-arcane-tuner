@@ -110,6 +110,13 @@ architecture_params:
   transformer.num_layers: 50
   transformer.num_refiner_layers: 2
   transformer.ffn_dim: 14336
+  # The residual stream runs in float32 although the weights are bf16: the fp32
+  # AdaLN tables promote it (diffusers 0.40 transformer_minimax_h3.py). MEASURED, not
+  # read off a config: .agent/output/h3-gates/gate5-memprofile.json (commit 7cabd483)
+  # holds 51 checkpoint boundaries of 404 382 720 B = 18 805 rows x 5 376 x 4 B.
+  # Reader: vram_estimator._token_inventory_activations_mb - stating this key is what
+  # engages the token-inventory activation estimate (plan row 4.2).
+  transformer.residual_stream_dtype: float32
   transformer.in_channels: 24
   transformer.audio_in_channels: 32
   transformer.patch_size:

@@ -409,7 +409,11 @@ _CALIB_MAX = 4.0
 #: ``resolutions`` list without a scalar). Calibration is derived against a
 #: job's run config, so every v2 coefficient was taken against rows budgeted at
 #: rank 16 / batch 1 / AdamW / 1024 px whatever the job stated.
-VRAM_FORMULA_VERSION = 3
+#: v4 — swapped blocks (``block_swap_config``) leave the weights row, and a
+#: definition that states ``transformer.residual_stream_dtype`` gets its
+#: activation row from the token inventory instead of the rough term (H3: the
+#: rough term budgeted 43.8 GB where 29.5 GB was traced).
+VRAM_FORMULA_VERSION = 4
 
 
 # ---------------------------------------------------------------------------
@@ -557,6 +561,13 @@ class VRAMEstimator:
                 expert_weights_mb = report.model_weights_mb
             report.model_weights_mb += expert_weights_mb
 
+        # ── 1c. Block swap: swapped blocks live in host RAM ──────────────
+        # Additive: a config that swaps nothing subtracts exactly 0.0.
+        report.model_weights_mb -= min(
+            _block_swap_credit_mb(definition, config, effective_bpp / native_bpp),
+            report.model_weights_mb,
+        )
+
         # ── 2. LoRA adapters ─────────────────────────────────────────────
         # Names go through cost_model's ONE alias reader: a run config says
         # ``network_rank`` / ``train_batch_size`` / ``optimizer_type``, and the
@@ -667,6 +678,15 @@ class VRAMEstimator:
         # latent_frames=1 → identical caps to before).
         max_act_mb = (8192 if not grad_checkpointing else 4096) * latent_frames
         report.activations_mb = min(report.activations_mb, max_act_mb)
+
+        # ── 5b. Token-inventory activations (a MEASURED block shape) ─────
+        # Replaces the rough term above ONLY for a definition that states
+        # ``transformer.residual_stream_dtype``; every other family keeps 5/5a.
+        token_act_mb = _token_inventory_activations_mb(
+            arch, config, resolution, batch_size, bool(grad_checkpointing), report
+        )
+        if token_act_mb is not None:
+            report.activations_mb = token_act_mb
 
         # ── 6. Training peak ─────────────────────────────────────────────
         report.training_peak_mb = (
@@ -821,6 +841,142 @@ class VRAMEstimator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _block_swap_credit_mb(definition: Any, config: dict[str, Any], quant_ratio: float) -> float:
+    """MB of backbone weights that ``block_swap_config`` moves off the device.
+
+    ``block_swap_config`` maps a ``block_topology`` group name to a PERCENT of
+    that group's blocks; the count is ``round(count * pct / 100)`` — the same
+    expression ``PipelineOptimization._configure_block_swapping`` swaps by.
+    ``approx_vram_mb`` is the group's stated size of ONE block at the native
+    dtype, so a quantized backbone is credited at ``quant_ratio`` of it.
+    """
+    swap_config = config.get("block_swap_config") or {}
+    if not isinstance(swap_config, dict) or not swap_config:
+        return 0.0
+    credit = 0.0
+    for group in getattr(definition, "block_topology", None) or []:
+        if not isinstance(group, dict):
+            group = getattr(group, "__dict__", {})
+        try:
+            pct = int(swap_config.get(group.get("name"), 0) or 0)
+            count = int(group.get("count", 0) or 0)
+            block_mb = float(group.get("approx_vram_mb", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if pct <= 0 or count <= 0 or block_mb <= 0:
+            continue
+        credit += min(round(count * pct / 100), count) * block_mb * quant_ratio
+    return credit
+
+
+def _latent_frames_for_rule(num_frames: int, rule: str | None, temporal_ratio: int) -> int:
+    """Latent frames of a clip under the definition's ``Nn+M`` frame rule.
+
+    The VAE encodes a head of ``M`` pixel frames and then chunks of ``N``; each
+    piece costs ``ceil(piece / t)`` latent frames. ``4n+1`` at t=4 gives
+    ``n + 1`` (the familiar ``(F-1)//4 + 1``); ``17n+5`` at t=4 gives
+    ``5n + 2`` — 32 latent frames at 107, where ``(F-1)//4 + 1`` says 27.
+    """
+    t = max(int(temporal_ratio or 1), 1)
+    frames = max(int(num_frames or 1), 1)
+    from app.engine.components.bucketing import BucketManager
+
+    parsed = BucketManager._parse_frame_step(rule)
+    if parsed is None or frames < parsed[1]:
+        return max((frames - 1) // t + 1, 1)
+    step, offset = parsed
+    return (frames - offset) // step * -(-step // t) + -(-offset // t)
+
+
+def _token_inventory_activations_mb(
+    arch: dict,
+    config: dict[str, Any],
+    resolution: int,
+    batch_size: int,
+    grad_checkpointing: bool,
+    report: VRAMReport,
+) -> float | None:
+    """Activation MB from the sequence the transformer really sees, or ``None``
+    when the definition does not state ``transformer.residual_stream_dtype``.
+
+    Every factor is stated by the definition or the run config:
+
+    * rows = latent frames (``video.frame_rule`` / ``video.vae_temporal``) x
+      ``(resolution / video.vae_spatial / patch)²`` + audio rows
+      (``num_frames / video.frame_rate x audio.latent_rate``, the trainer's
+      ``packing.audio_latent_num_frames``) + ``te.max_length`` text rows — the
+      stated CEILING; a short caption packs fewer.
+    * checkpointing ON keeps one residual-stream boundary per layer
+      (``depth x rows x hidden x stream bytes``) plus ONE block's working set
+      for the recompute; OFF keeps every block's working set.
+
+    The working set is an INVENTORY, not a fitted scalar: the tensors one H3
+    block keeps for backward, counted per width class off the allocator
+    snapshot of the measured step (``gate5-memprofile.json``, artifact of commit
+    7cabd483: 18 805 rows; 2 x 1028.4 MB, 5 x 514.2, 2 x 385.6, 5 x 257.1,
+    11 x 192.8). 514.2 MB is both ``2 B x ffn_dim`` and ``4 B x heads x
+    head_dim`` on H3 (28 672 either way) — the snapshot cannot tell them apart
+    and the class is booked as FFN-wide. The rope tables of that snapshot
+    (~735 MB) have no stated derivation and are left out.
+    """
+    stated = arch.get("transformer.residual_stream_dtype")
+    if not stated:
+        return None
+    dtype_key = str(stated) if str(stated).startswith("torch.") else f"torch.{stated}"
+    stream_bytes = _DTYPE_BYTES.get(dtype_key)
+    if stream_bytes is None:
+        report.warnings.append(
+            f"Unknown transformer.residual_stream_dtype '{stated}' — activation estimate "
+            f"falls back to the generic term."
+        )
+        return None
+
+    hidden = int(arch.get("transformer.hidden_size") or arch.get("hidden_size") or 0)
+    depth = int(arch.get("depth") or 0)
+    ffn = int(arch.get("transformer.ffn_dim") or 0)
+    attn = int(arch.get("transformer.num_attention_heads") or 0) * int(
+        arch.get("transformer.attention_head_dim") or 0
+    )
+    if min(hidden, depth, ffn, attn) <= 0:
+        report.warnings.append(
+            "transformer.residual_stream_dtype is stated without hidden_size / depth / "
+            "ffn_dim / attention dims — activation estimate falls back to the generic term."
+        )
+        return None
+
+    patch = [*list(arch.get("transformer.patch_size") or []), 1, 1, 1][:3]
+    pt, ph, pw = (max(int(v), 1) for v in patch)
+    vae_spatial = max(int(arch.get("video.vae_spatial", 8) or 8), 1)
+    num_frames = int(config.get("num_frames", 1) or 1)
+    latent_frames = _latent_frames_for_rule(
+        num_frames, arch.get("video.frame_rule"), int(arch.get("video.vae_temporal", 1) or 1)
+    )
+    rows = (
+        max(latent_frames // pt, 1)
+        * (resolution // vae_spatial // ph)
+        * (resolution // vae_spatial // pw)
+    )
+    fps = float(arch.get("video.frame_rate") or 0)
+    audio_rate = float(arch.get("audio.latent_rate") or 0)
+    if arch.get("has_audio") and fps > 0 and audio_rate > 0:
+        rows += max(int(round(num_frames / fps * audio_rate)), 1)
+    rows += int(arch.get("te.max_length") or 0)
+
+    block_bytes_per_row = (
+        2 * 4 * ffn  # fp32, FFN-wide
+        + 5 * 2 * ffn  # bf16, FFN-wide (see the docstring on this class)
+        + 2 * stream_bytes * hidden  # residual-stream copies
+        + 5 * 2 * attn  # bf16 q / k / v / attention output
+        + 11 * 2 * hidden  # bf16, hidden-wide
+    )
+    boundary_bytes_per_row = stream_bytes * hidden
+    if grad_checkpointing:
+        per_row = depth * boundary_bytes_per_row + block_bytes_per_row
+    else:
+        per_row = depth * block_bytes_per_row
+    return rows * per_row * max(int(batch_size), 1) / (1024 * 1024)
 
 
 def _resolve_caps(definition: Any) -> dict:

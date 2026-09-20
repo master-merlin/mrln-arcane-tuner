@@ -41,6 +41,7 @@ async def list_definitions() -> list[DefinitionRef]:
                     family=defn.family,
                     name=defn.name,
                     caption_format=get_caption_format_for_definition(defn.id).id,
+                    frame_rule=(defn.architecture_params or {}).get("video.frame_rule"),
                 )
             )
     return out

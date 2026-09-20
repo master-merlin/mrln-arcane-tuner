@@ -1,7 +1,8 @@
-import { ChangeDetectionStrategy, Component, computed, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input, output } from '@angular/core';
 import { IcoComponent } from '../../../icons/ico.component';
 import type { VideoSegment } from '../../../services/dataset';
-import { FRAME_FAMILIES, estimateFrames, passesFamily } from './frame-rules';
+import { ModelContextStore } from '../../../state/model-context.store';
+import { estimateFrames, frameRulesFor, passesRule } from './frame-rules';
 
 /** One rendered row — the segment plus its derived duration / est-frame view. */
 interface SegmentRow {
@@ -9,7 +10,7 @@ interface SegmentRow {
     index: number;
     duration: number;
     frames: number;
-    /** Per-family pass flags, in {@link FRAME_FAMILIES} order. */
+    /** Per-rule pass flags, in `families()` order. */
     family: boolean[];
 }
 
@@ -57,8 +58,9 @@ interface SegmentRow {
                                     <span class="mono" data-testid="spt-frames">{{ r.frames || '—' }}</span>
                                     @if (r.frames > 0) {
                                         <span class="chips">
-                                            @for (f of families; track f.label; let i = $index) {
+                                            @for (f of families(); track f.label; let i = $index) {
                                                 <span class="chip"
+                                                      data-testid="spt-chip"
                                                       [class.pass]="r.family[i]"
                                                       [class.fail]="!r.family[i]"
                                                       [title]="f.label + (r.family[i] ? ' OK' : ' fails')">
@@ -155,7 +157,10 @@ export class SegmentPreviewTableComponent {
     /** Re-emitted full segment list after a delete / merge edit. */
     segmentsChange = output<VideoSegment[]>();
 
-    protected readonly families = FRAME_FAMILIES;
+    private readonly modelContext = inject(ModelContextStore);
+
+    /** One row for the active definition's rule; the generic rows without one. */
+    protected readonly families = computed(() => frameRulesFor(this.modelContext.activeFrameRule()));
 
     /** Frames column is shown only when a usable fps was provided. */
     protected showFrames = computed<boolean>(() => {
@@ -165,6 +170,7 @@ export class SegmentPreviewTableComponent {
 
     protected rows = computed<SegmentRow[]>(() => {
         const fps = this.fps();
+        const families = this.families();
         return this.segments().map((seg, index) => {
             const frames = estimateFrames(seg.start_s, seg.end_s, fps);
             return {
@@ -172,7 +178,7 @@ export class SegmentPreviewTableComponent {
                 index,
                 duration: Math.max(0, seg.end_s - seg.start_s),
                 frames,
-                family: this.families.map(f => passesFamily(frames, f)),
+                family: families.map(f => passesRule(frames, f)),
             };
         });
     });

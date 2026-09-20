@@ -4,12 +4,14 @@
  */
 import { TestBed } from '@angular/core/testing';
 import { VideoTrimEditorComponent, type TrimChange } from './video-trim-editor';
+import { ModelContextStore } from '../../../state/model-context.store';
 
 describe('VideoTrimEditorComponent', () => {
     let fixture: ReturnType<typeof TestBed.createComponent<VideoTrimEditorComponent>> | null = null;
 
     beforeEach(() => {
         fixture = null;
+        localStorage.clear();
         TestBed.configureTestingModule({});
     });
 
@@ -102,5 +104,52 @@ describe('VideoTrimEditorComponent', () => {
         expect((comp as any).start()).toBe(4);
         expect(spy).toHaveBeenCalledTimes(1);
         expect(spy.mock.lastCall![0].start).toBe(4);
+    });
+
+    function chips(root: HTMLElement): { label: string; pass: boolean }[] {
+        return Array.from(root.querySelectorAll<HTMLElement>('[data-testid^="vte-chip-"]')).map(el => ({
+            label: el.textContent!.trim(),
+            pass: el.classList.contains('pass'),
+        }));
+    }
+
+    function activate(frameRule: string | undefined): void {
+        const store = TestBed.inject(ModelContextStore);
+        store.setModelAware(true);
+        // The rule is the FIXTURE's: 19n+5 belongs to no shipped family, so a
+        // rule literal baked into the component cannot satisfy these tests.
+        store.setDefinition({ id: 'probe-def', family: 'probe', name: 'Probe', frame_rule: frameRule });
+    }
+
+    it('trim_editor_shows_the_active_definition_rule', () => {
+        activate('19n+5');
+        // 24 frames = 19*1+5: on the 19n+5 ladder, NOT on 17n+5 / 4n+1 / 8n+1.
+        const { fixture } = make({ duration: 10, fps: 24, trimStartS: 0, trimEndS: 1 });
+        expect(chips(fixture.nativeElement)).toEqual([{ label: '19n+5', pass: true }]);
+        const chip = fixture.nativeElement.querySelector('[data-testid="vte-chip-19"]') as HTMLElement;
+        expect(chip.getAttribute('title')).toBe('19n+5 OK');
+    });
+
+    it('the active rule chip fails off-ladder and follows a definition switch', () => {
+        activate('19n+5');
+        // 22 frames: on the 17n+5 ladder, off the 19n+5 one.
+        const { fixture } = make({ duration: 10, fps: 22, trimStartS: 0, trimEndS: 1 });
+        expect(chips(fixture.nativeElement)).toEqual([{ label: '19n+5', pass: false }]);
+        activate('17n+5');
+        fixture.detectChanges();
+        expect(chips(fixture.nativeElement)).toEqual([{ label: '17n+5', pass: true }]);
+    });
+
+    it('trim_editor_falls_back_without_a_model (and for a definition with no rule)', () => {
+        const agnostic = make({ duration: 10, fps: 27, trimStartS: 0, trimEndS: 3 });
+        expect(chips(agnostic.fixture.nativeElement)).toEqual([
+            { label: '4n+1', pass: true },
+            { label: '8n+1', pass: true },
+        ]);
+        agnostic.fixture.destroy();
+
+        activate(undefined); // an image definition serves frame_rule: null
+        const noRule = make({ duration: 10, fps: 27, trimStartS: 0, trimEndS: 3 });
+        expect(chips(noRule.fixture.nativeElement).map(c => c.label)).toEqual(['4n+1', '8n+1']);
     });
 });

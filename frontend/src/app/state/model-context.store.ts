@@ -7,6 +7,12 @@ export interface DefinitionRef {
     name: string;
     /** Caption format key returned by the backend (e.g. 'plain', 'ideogram4_json'). Defaults to 'plain' when absent. */
     caption_format?: string;
+    /**
+     * The definition's `video.frame_rule` ("Nn+M") as served by the backend;
+     * null/absent for a family that states none (or a definition persisted
+     * before the field was served — the selector refreshes it on load).
+     */
+    frame_rule?: string | null;
 }
 
 interface PersistedState {
@@ -49,6 +55,11 @@ export class ModelContextStore {
     /** The caption format of the active definition, or 'plain' when none/unknown. */
     readonly activeCaptionFormat = computed<string>(
         () => this.activeDefinition()?.caption_format ?? 'plain',
+    );
+
+    /** The active definition's frame rule ("Nn+M"), or null when none is active or stated. */
+    readonly activeFrameRule = computed<string | null>(
+        () => this.activeDefinition()?.frame_rule ?? null,
     );
 
     private persist(): void {

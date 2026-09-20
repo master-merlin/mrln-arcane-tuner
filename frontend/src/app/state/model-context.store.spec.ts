@@ -41,6 +41,22 @@ describe('ModelContextStore', () => {
         expect(b.activeDefinition()).toEqual(DEF);
     });
 
+    it('activeFrameRule is the active definition\'s served frame_rule, null when off or absent', () => {
+        const store = new ModelContextStore();
+        store.setModelAware(true);
+        store.setDefinition({ ...DEF, frame_rule: '19n+5' });
+        expect(store.activeFrameRule()).toBe('19n+5');
+        // Survives a reload (the persisted definition carries it).
+        expect(new ModelContextStore().activeFrameRule()).toBe('19n+5');
+        store.setModelAware(false);
+        expect(store.activeFrameRule()).toBeNull(); // model-agnostic browsing
+        store.setModelAware(true);
+        store.setDefinition({ ...DEF, frame_rule: null }); // an image definition
+        expect(store.activeFrameRule()).toBeNull();
+        store.setDefinition(DEF); // persisted before the backend served the field
+        expect(store.activeFrameRule()).toBeNull();
+    });
+
     it('activeDefinitionId is null when model-aware is off even if a def was set', () => {
         const store = new ModelContextStore();
         store.setModelAware(true);

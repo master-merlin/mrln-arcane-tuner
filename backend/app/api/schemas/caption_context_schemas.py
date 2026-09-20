@@ -15,6 +15,11 @@ class DefinitionRef(BaseModel):
     # model-aware structured editor swap, so it MUST be served on this
     # selector route (not only the training definition list).
     caption_format: str = "plain"
+    # The definition's ``video.frame_rule`` ("Nn+M", e.g. "4n+1", "17n+5"), or
+    # None for a family that states none. The SPA derives its frame guidance
+    # from this string (video_contract.frame_predicate is the authority); a
+    # field not declared HERE is silently dropped by the response model.
+    frame_rule: str | None = None
 
 
 class TokenCountRequest(BaseModel):

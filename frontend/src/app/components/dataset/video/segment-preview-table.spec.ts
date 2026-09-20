@@ -6,6 +6,7 @@ import { TestBed } from '@angular/core/testing';
 import { signal } from '@angular/core';
 import { SegmentPreviewTableComponent } from './segment-preview-table';
 import type { VideoSegment } from '../../../services/dataset';
+import { ModelContextStore } from '../../../state/model-context.store';
 
 function seg(start: number, end: number, label: string | null = null): VideoSegment {
     return { start_s: start, end_s: end, label };
@@ -16,6 +17,7 @@ describe('SegmentPreviewTableComponent', () => {
 
     beforeEach(() => {
         fixture = null;
+        localStorage.clear();
         TestBed.configureTestingModule({});
     });
 
@@ -94,5 +96,36 @@ describe('SegmentPreviewTableComponent', () => {
     it('hides edit controls when not editable', () => {
         const { fixture } = make([seg(0, 1)]);
         expect(fixture.nativeElement.querySelector('[data-testid="spt-delete"]')).toBeFalsy();
+    });
+
+    function chipRows(root: HTMLElement): { label: string; pass: boolean }[][] {
+        return Array.from(root.querySelectorAll<HTMLElement>('[data-testid="spt-row"]')).map(row =>
+            Array.from(row.querySelectorAll<HTMLElement>('[data-testid="spt-chip"]')).map(el => ({
+                label: el.textContent!.trim(),
+                pass: el.classList.contains('pass'),
+            })),
+        );
+    }
+
+    it('segment_table_falls_back_without_a_model', () => {
+        // 1s @ 9fps = 9 frames: 4n+1 and 8n+1 both pass; 2s @ 9fps = 18: both fail.
+        const { fixture } = make([seg(0, 1), seg(1, 3)], { fps: 9 });
+        expect(chipRows(fixture.nativeElement)).toEqual([
+            [{ label: '4n+1', pass: true }, { label: '8n+1', pass: true }],
+            [{ label: '4n+1', pass: false }, { label: '8n+1', pass: false }],
+        ]);
+    });
+
+    it('segment_table_shows_the_active_definition_rule', () => {
+        const store = TestBed.inject(ModelContextStore);
+        store.setModelAware(true);
+        // 19n+5 belongs to no shipped family: only the definition can supply it.
+        store.setDefinition({ id: 'probe-def', family: 'probe', name: 'Probe', frame_rule: '19n+5' });
+        // 1s @ 24fps = 24 = 19+5 (pass); 1s..3s = 48 (fail).
+        const { fixture } = make([seg(0, 1), seg(1, 3)], { fps: 24 });
+        expect(chipRows(fixture.nativeElement)).toEqual([
+            [{ label: '19n+5', pass: true }],
+            [{ label: '19n+5', pass: false }],
+        ]);
     });
 });

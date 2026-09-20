@@ -694,3 +694,133 @@ def test_component_losses_logged(tmp_path, build_tiny_transformer):
     assert abs(kw["loss"] - float(unscaled)) < 1e-6, (
         f"logged loss {kw['loss']:.6f} != unscaled {float(unscaled):.6f} (scaled would be {float(loss):.6f})"
     )
+
+
+# ── Override ledger (plan § Override ledger; row 2.14; DECISION-68 (a)) ─────
+#
+# Every base hook with a default is owned by a row or `not needed` in the
+# plan's ledger. These literals are the ledger's three sets AFTER the set-C
+# entries were resolved by their owning rows (2.1: `_offload_text_encoders`
+# -> A, `get_te_cache` / `set_te_cache` -> B; 2.5: `_resolve_loading_dtype`
+# -> A; 1.2: `init_scheduler` -> B, the driver's trivial `None` baseline). An
+# override the ledger calls `not needed`, or a set-A row nobody implemented,
+# fails BY NAME below.
+
+LEDGER_BASE_HOOKS = frozenset({
+    # pipeline_base.py
+    "_reraise_resolver_failure", "is_video_family", "is_audio_family", "_driver_hook_override",
+    "init_scheduler", "get_lora_targets", "get_lora_exclude_modules", "get_te_lora_targets",
+    "encode_text", "forward_pass", "compute_target", "sample_timesteps", "add_noise",
+    "prepare_noise_for_training", "compute_loss_weight", "_compute_step_loss", "build_batch_extra",
+    "prepare_latents_for_training", "_attach_conditioning", "on_epoch_end", "_create_sampler",
+    "get_te_cache", "set_te_cache", "_apply_run_seed", "setup", "_setup_family",
+    "_resolve_loading_dtype", "_assign_components", "_get_primary_model", "_get_text_encoders",
+    "_freeze_all", "_apply_quantization", "_update_primary_model",
+    # pipeline_caching.py
+    "_pre_cache_text_embeddings", "_pre_cache_aux", "_build_caption_hints",
+    "_expand_wildcards_for_precache", "_resolve_te_cache_dirs", "_validate_latent_cache",
+    "_pre_cache_latents", "_build_cache_manifest",
+})
+LEDGER_LTX2_ONLY_HOOKS = frozenset({
+    "_resolve_train_audio", "_sample_prompt_texts", "_offload_text_encoders", "_slice_te_output",
+    "_audio_cache_dir", "_audio_cache_version",
+})
+LEDGER_HOOKS = LEDGER_BASE_HOOKS | LEDGER_LTX2_ONLY_HOOKS
+
+# Set A — required trainer overrides (the ledger's literal + the resolved set-C entries).
+LEDGER_SET_A = frozenset({
+    "_audio_cache_dir", "_audio_cache_version", "_compute_step_loss", "_create_sampler",
+    "_get_primary_model", "_get_text_encoders", "_pre_cache_aux", "_pre_cache_text_embeddings",
+    "_resolve_train_audio", "_sample_prompt_texts", "_setup_family", "_update_primary_model",
+    "add_noise", "build_batch_extra", "compute_target", "encode_text", "forward_pass",
+    "sample_timesteps",
+    "_offload_text_encoders",   # set C -> A (row 2.1: Qwen3-VL released whole, unconditionally)
+    "_resolve_loading_dtype",   # set C -> A (row 2.5: bf16 from the definition)
+})
+# Set B — inherited base delegations, NEVER overridden on the trainer.
+LEDGER_SET_B = frozenset({
+    "compute_loss_weight", "get_lora_exclude_modules", "get_lora_targets",
+    "prepare_latents_for_training", "prepare_noise_for_training",
+    "get_te_cache", "set_te_cache",   # set C -> B (row 2.1: the driver keeps the trivial baseline)
+    "init_scheduler",                 # set C -> B (row 1.2: driver `None`, base default runs)
+})
+
+
+def test_ledger_hook_names_exist_on_the_code():
+    """The ledger names are the CODE's names: every base hook is an attribute of
+    the base pipeline, every ltx2-only hook an override on ``Ltx2Trainer``.
+    A renamed or deleted hook makes the ledger (and this literal) stale by name."""
+    from app.engine.core.pipeline import GenericTrainingPipeline
+    from app.engine.models.families.ltx2.trainer import Ltx2Trainer
+
+    missing_base = sorted(n for n in LEDGER_BASE_HOOKS if not hasattr(GenericTrainingPipeline, n))
+    missing_ltx2 = sorted(n for n in LEDGER_LTX2_ONLY_HOOKS if n not in Ltx2Trainer.__dict__)
+    assert not missing_base, f"ledger base hooks not on the base pipeline: {missing_base}"
+    assert not missing_ltx2, f"ledger ltx2-only hooks not overridden on Ltx2Trainer: {missing_ltx2}"
+    assert not (LEDGER_SET_A & LEDGER_SET_B)
+    assert LEDGER_SET_A <= LEDGER_HOOKS and LEDGER_SET_B <= LEDGER_HOOKS
+
+
+def test_minimax_h3_trainer_overrides_match_the_ledger():
+    """(i) ``MiniMaxH3Trainer.__dict__ ∩ hooks`` equals set A exactly — an
+    unlisted override and an unimplemented set-A row each fail by name;
+    (ii) every set-B name is ABSENT from the trainer's own dict."""
+    overridden = set(MiniMaxH3Trainer.__dict__) & LEDGER_HOOKS
+    unlisted = sorted(overridden - LEDGER_SET_A)
+    unimplemented = sorted(LEDGER_SET_A - overridden)
+    assert not unlisted, f"MiniMaxH3Trainer overrides hooks the ledger does not own (set A): {unlisted}"
+    assert not unimplemented, f"set-A hooks the ledger owns but MiniMaxH3Trainer does not override: {unimplemented}"
+    present_b = sorted(LEDGER_SET_B & set(MiniMaxH3Trainer.__dict__))
+    assert not present_b, f"set-B delegations must stay inherited, but the trainer overrides: {present_b}"
+
+
+class _ProbeDriver(MiniMaxH3Driver):
+    """A stub driver: each set-B target answers with a marker, so the base's
+    route to the driver is observed at its OUTPUT."""
+
+    def __init__(self, definition, device):
+        super().__init__(definition, device)
+        self.calls: list[str] = []
+
+    def prepare_latents(self, latents):
+        self.calls.append("prepare_latents")
+        return latents * 2
+
+    def prepare_noise(self, noise):
+        self.calls.append("prepare_noise")
+        return noise + 1
+
+    def get_lora_targets(self):
+        self.calls.append("get_lora_targets")
+        return ["probe.target"]
+
+    def get_lora_exclude_modules(self):
+        self.calls.append("get_lora_exclude_modules")
+        return ["probe.exclude"]
+
+
+def test_set_b_delegations_reach_the_driver_through_the_base(tmp_path):
+    """The base still routes each set-B hook to the driver method the ledger
+    names (`pipeline_base.py` `get_lora_targets` / `get_lora_exclude_modules` /
+    `prepare_noise_for_training` -> `driver.prepare_noise` /
+    `prepare_latents_for_training` -> `driver.prepare_latents`); the CLOBBER
+    hooks `get_te_cache` / `set_te_cache` / `init_scheduler` run the base
+    default because the H3 driver keeps the trivial baseline; and
+    `compute_loss_weight` is the base's uniform ``None`` (H3's weighting lives
+    in `driver.compute_loss`, row 2.4)."""
+    t = _trainer(tmp_path)
+    t.driver = _ProbeDriver(t.definition, t.device)
+    x = torch.ones(2, 3)
+    assert torch.equal(t.prepare_latents_for_training(x), x * 2)
+    assert torch.equal(t.prepare_noise_for_training(x), x + 1)
+    assert t.get_lora_targets() == ["probe.target"]
+    assert t.get_lora_exclude_modules() == ["probe.exclude"]
+    assert t.driver.calls == ["prepare_latents", "prepare_noise", "get_lora_targets", "get_lora_exclude_modules"]
+    # CLOBBER hooks: the real driver's baseline is trivial -> the base default answers.
+    t.driver = MiniMaxH3Driver(t.definition, t.device)
+    t.text_cache = {"sks, a cat": object()}
+    assert t.get_te_cache() == {"te": t.text_cache}
+    t.set_te_cache({"te": {"restored": 1}})
+    assert t.text_cache == {"restored": 1}
+    assert t.init_scheduler() is None
+    assert t.compute_loss_weight(torch.tensor([0.5, 0.25])) is None

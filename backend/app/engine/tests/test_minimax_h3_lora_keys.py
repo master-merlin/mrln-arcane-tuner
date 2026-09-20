@@ -210,3 +210,213 @@ def test_alpha_folded_no_alpha_key(build_tiny_transformer):
     assert torch.equal(a, out.lora_A.float()), "lora_A must carry no scaling"
     assert torch.allclose(b, 2.0 * out.lora_B.float()), "alpha/r was not folded into lora_B"
     assert torch.allclose(b @ a, _delta(out), atol=1e-6), "a loader applying scale 1 does not reproduce the delta"
+
+
+# ── Row 2.9: LoRA interop PROOF, both directions ──────────────────────────────
+#
+# Outbound: an artifact written by the row-2.8 saver — adapter weights
+# NON-ZERO and `alpha/r != 1` (r=4, alpha=8) — is loaded through diffusers'
+# OWN path (the private converter, then `load_lora_adapter`, the fallback
+# DISABLED) onto a fresh copy of the base, and the upstream model's output on a
+# fixed packed batch equals our PEFT-wrapped model's within 1e-5. The
+# production fallback (our own inverse in `lora_keys.py`) is tested
+# SEPARATELY with the private symbol absent. Inbound: kohya and bare ComfyUI
+# layouts land on the model through `lora_keys.py` and reproduce the delta.
+
+_PRIVATE_CONVERTER = "_convert_non_diffusers_minimax_h3_lora_to_diffusers"
+
+
+def _fixed_batch():
+    from app.engine.models.families.minimax_h3.packing import H3Geometry, build_layout, pack_audio, patchify_video
+    import torch
+
+    geometry = H3Geometry(num_text=8, latent_frames=2, latent_height=6, latent_width=4, audio_latents=3)
+    layout = build_layout(geometry)
+    g = torch.Generator().manual_seed(0)
+    video = torch.randn(1, 24, 2, 6, 4, generator=g)
+    audio = torch.randn(1, 2, 32, 3, generator=g)
+    text = torch.randn(1, 8, 16, generator=g)
+    return layout, patchify_video(video, layout.patch_size), pack_audio(audio), text, torch.tensor([0.7, 0.4])
+
+
+def _forward(model):
+    import torch
+
+    from app.engine.models.families.minimax_h3.packing import packed_forward
+
+    layout, video_rows, audio_rows, text, timesteps = _fixed_batch()
+    with torch.no_grad():
+        v, a = packed_forward(model, layout, video_rows, audio_rows, text, timesteps)
+    return v.float(), a.float()
+
+
+def _outbound_artifact(tmp_path, build_tiny_transformer, *, r: int = 4, alpha: float = 8.0):
+    """Save the tiny PEFT model through the REAL driver saver; returns
+    (path, ours_video, ours_audio). The fixture guard refuses a LoRA whose
+    delta is zero — PEFT's zero-init `lora_B` would make any mapping pass."""
+    from app.engine.models.families.minimax_h3.lora_keys import adapters_from_peft_model
+    from app.engine.models.registry import ModelRegistry
+    from app.engine.models.families.minimax_h3.driver import MiniMaxH3Driver
+    import torch
+
+    model = _lora_model(build_tiny_transformer, r=r, alpha=alpha)
+    for module, adapter in adapters_from_peft_model(model).items():
+        assert float(_delta(adapter).abs().sum()) > 0, f"adapter delta is zero; the proof proves nothing ({module})"
+        assert adapter.scaling != 1.0, f"alpha/r == 1 on {module}: a missing fold would be invisible"
+    definition = ModelRegistry._definitions["minimax-h3-t2va"]
+    saver = MiniMaxH3Driver(definition, torch.device("cpu")).get_saver()
+    path = tmp_path / "h3_outbound.safetensors"
+    saver.save({"unet": model, "config": {"save_precision": "fp32"}}, path, metadata={})
+    ours_v, ours_a = _forward(model)
+    return path, ours_v, ours_a
+
+
+def test_outbound_artifact_loads_through_diffusers_converter_without_fallback(tmp_path, build_tiny_transformer):
+    from app.engine.models.families.minimax_h3.lora_keys import load_via_diffusers
+
+    path, _, _ = _outbound_artifact(tmp_path, build_tiny_transformer)
+    fresh = build_tiny_transformer().eval()
+    result = load_via_diffusers(fresh, path, allow_fallback=False)
+    assert result.fallback_used is False, "fallback_used is True"
+    assert getattr(fresh, "peft_config", None), "no adapter was injected by diffusers' path"
+    adapted = {n.removesuffix(".lora_A") for n, m in fresh.named_modules() if n.endswith(".lora_A")}
+    assert len(adapted) == 3 * 6, f"{len(adapted)} adapted modules, expected 3 blocks x 6 targets: {sorted(adapted)[:4]}"
+
+
+def test_outbound_forward_matches_ours(tmp_path, build_tiny_transformer):
+    import torch
+
+    from app.engine.models.families.minimax_h3.lora_keys import load_via_diffusers
+
+    path, ours_v, ours_a = _outbound_artifact(tmp_path, build_tiny_transformer)
+    fresh = build_tiny_transformer().eval()
+    base_v, base_a = _forward(fresh)
+    assert not torch.allclose(base_v, ours_v, atol=1e-5), "the LoRA has no effect on the output: the proof is vacuous"
+    result = load_via_diffusers(fresh, path, allow_fallback=False)
+    assert result.fallback_used is False
+    theirs_v, theirs_a = _forward(fresh)
+    assert torch.allclose(theirs_v, ours_v, atol=1e-5), (
+        f"video output mismatch through diffusers' path: max |diff| {float((theirs_v - ours_v).abs().max()):.3e}"
+    )
+    assert torch.allclose(theirs_a, ours_a, atol=1e-5), (
+        f"audio output mismatch through diffusers' path: max |diff| {float((theirs_a - ours_a).abs().max()):.3e}"
+    )
+
+
+def test_production_fallback_runs_when_private_symbol_absent(tmp_path, build_tiny_transformer, monkeypatch):
+    import torch
+    from diffusers.loaders import lora_conversion_utils
+
+    from app.engine.models.families.minimax_h3.lora_keys import load_via_diffusers
+
+    path, ours_v, ours_a = _outbound_artifact(tmp_path, build_tiny_transformer)
+
+    def _gone(*args, **kwargs):
+        raise ImportError("private converter removed in this diffusers")
+
+    monkeypatch.setattr(lora_conversion_utils, _PRIVATE_CONVERTER, _gone)
+    fresh = build_tiny_transformer().eval()
+    with pytest.raises(ImportError):
+        load_via_diffusers(fresh, path, allow_fallback=False)
+    fresh = build_tiny_transformer().eval()
+    result = load_via_diffusers(fresh, path)
+    assert result.fallback_used is True, "the lora_keys inverse did not run"
+    theirs_v, theirs_a = _forward(fresh)
+    assert torch.allclose(theirs_v, ours_v, atol=1e-5) and torch.allclose(theirs_a, ours_a, atol=1e-5), (
+        "the fallback path does not reproduce our output"
+    )
+
+
+def _injected_delta(model, module: str):
+    """scaling · B @ A of the adapter diffusers injected on `module`."""
+    layer = model.get_submodule(module)
+    a = layer.lora_A["default"].weight.float()
+    b = layer.lora_B["default"].weight.float()
+    return float(layer.scaling["default"]) * (b @ a)
+
+
+def _kohya_lora(*, r: int = 4, alpha: float = 2.0):
+    """A synthetic musubi/kohya-layout LoRA (flattened `lora_unet_` names,
+    `lora_down`/`lora_up`, a per-module `.alpha`) for block 0 + refiner 0."""
+    import torch
+
+    g = torch.Generator().manual_seed(21)
+    hidden, inner, ffn = 16, 32, 32  # tiny arch: 2 heads x 16 -> attention inner 32; ffn_dim 32
+    sd = {}
+    for mod, in_features, out_rows in (
+        ("lora_unet_blocks_0_attn_qkv_proj", hidden, 3 * inner),
+        ("lora_unet_blocks_0_mlp_fc1", hidden, 2 * ffn),
+        ("lora_unet_blocks_0_attn_out_proj", inner, hidden),
+        ("lora_unet_token_refiner_blocks_0_mlp_fc2", ffn, hidden),
+    ):
+        sd[f"{mod}.lora_down.weight"] = torch.randn(r, in_features, generator=g)
+        sd[f"{mod}.lora_up.weight"] = torch.randn(out_rows, r, generator=g)
+        sd[f"{mod}.alpha"] = torch.tensor(alpha)
+    return sd
+
+
+def test_inbound_kohya_layout_loads(build_tiny_transformer):
+    import torch
+
+    from app.engine.models.families.minimax_h3.lora_keys import load_via_lora_keys
+
+    r, alpha = 4, 2.0
+    sd = _kohya_lora(r=r, alpha=alpha)
+    model = build_tiny_transformer().eval()
+    result = load_via_lora_keys(model, sd)
+    assert result.modules == 4, f"{result.modules} native modules mapped (qkv_proj counts as one)"
+    scale = alpha / r
+    inner = 32
+    down, up = sd["lora_unet_blocks_0_attn_qkv_proj.lora_down.weight"], sd["lora_unet_blocks_0_attn_qkv_proj.lora_up.weight"]
+    for i, proj in enumerate(("to_q", "to_k", "to_v")):
+        expected = scale * (up[i * inner : (i + 1) * inner] @ down)
+        got = _injected_delta(model, f"transformer_blocks.0.attn.{proj}")
+        assert torch.allclose(got, expected, atol=1e-5), f"kohya qkv_proj third {i} did not land on {proj}"
+    down, up = sd["lora_unet_blocks_0_mlp_fc1.lora_down.weight"], sd["lora_unet_blocks_0_mlp_fc1.lora_up.weight"]
+    half = up.shape[0] // 2
+    expected = scale * (torch.cat([up[half:], up[:half]], dim=0) @ down)  # [gate; value] -> [value; gate]
+    assert torch.allclose(_injected_delta(model, "transformer_blocks.0.ff.net.0.proj"), expected, atol=1e-5), (
+        "kohya fc1 halves were not swapped into diffusers' [value; gate] order"
+    )
+    down, up = sd["lora_unet_blocks_0_attn_out_proj.lora_down.weight"], sd["lora_unet_blocks_0_attn_out_proj.lora_up.weight"]
+    assert torch.allclose(_injected_delta(model, "transformer_blocks.0.attn.to_out.0"), scale * (up @ down), atol=1e-5), (
+        "kohya alpha was not applied on out_proj"
+    )
+    down, up = (
+        sd["lora_unet_token_refiner_blocks_0_mlp_fc2.lora_down.weight"],
+        sd["lora_unet_token_refiner_blocks_0_mlp_fc2.lora_up.weight"],
+    )
+    assert torch.allclose(
+        _injected_delta(model, "token_refiner.refiner_blocks.0.ff.net.2"), scale * (up @ down), atol=1e-5
+    ), "the refiner block did not map"
+
+
+def test_inbound_comfy_layout_loads(build_tiny_transformer):
+    """Bare ComfyUI layout: native names, `lora_A`/`lora_B`, no alpha (scale 1),
+    with and without the `diffusion_model.` prefix."""
+    import torch
+
+    from app.engine.models.families.minimax_h3.lora_keys import load_via_lora_keys
+
+    g = torch.Generator().manual_seed(5)
+    r, hidden, inner = 3, 16, 32
+    a_qkv, b_qkv = torch.randn(r, hidden, generator=g), torch.randn(3 * inner, r, generator=g)
+    a_out, b_out = torch.randn(r, inner, generator=g), torch.randn(hidden, r, generator=g)  # out_proj: inner -> hidden
+    for prefix in ("", "diffusion_model."):
+        sd = {
+            f"{prefix}blocks.1.attn.qkv_proj.lora_A.weight": a_qkv,
+            f"{prefix}blocks.1.attn.qkv_proj.lora_B.weight": b_qkv,
+            f"{prefix}token_refiner.blocks.0.attn.out_proj.lora_A.weight": a_out,
+            f"{prefix}token_refiner.blocks.0.attn.out_proj.lora_B.weight": b_out,
+        }
+        model = build_tiny_transformer().eval()
+        result = load_via_lora_keys(model, sd)
+        assert result.modules == 2, f"prefix {prefix!r}: {result.modules} modules mapped"
+        for i, proj in enumerate(("to_q", "to_k", "to_v")):
+            expected = b_qkv[i * inner : (i + 1) * inner] @ a_qkv
+            assert torch.allclose(_injected_delta(model, f"transformer_blocks.1.attn.{proj}"), expected, atol=1e-5), (
+                f"prefix {prefix!r}: comfy qkv third {i} did not land on {proj}"
+            )
+        assert torch.allclose(
+            _injected_delta(model, "token_refiner.refiner_blocks.0.attn.to_out.0"), b_out @ a_out, atol=1e-5
+        ), f"prefix {prefix!r}: the refiner out_proj did not map"

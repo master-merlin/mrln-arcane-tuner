@@ -35,6 +35,10 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import Any
 
+import structlog
+
+_log = structlog.get_logger(__name__)
+
 DROPPED_NATIVE_KEYS: tuple[str, ...] = ("rope.inv_freq",)
 
 # (native regex, diffusers replacement templates, transform). ``\g<n>`` in a
@@ -288,3 +292,195 @@ def build_artifact(adapters: dict[str, Adapter]) -> dict[str, Any]:
         out[f"{ARTIFACT_PREFIX}{native}.lora_A.weight"] = a_fused.contiguous()
         out[f"{ARTIFACT_PREFIX}{native}.lora_B.weight"] = b_fused.contiguous()
     return out
+
+
+# ── Row 2.9: loading an artifact BACK (the interop proof, both directions) ───
+#
+# `load_via_diffusers` is the independent oracle: diffusers 0.40's own
+# converter (`loaders/lora_conversion_utils.py:3122`, a PRIVATE symbol) then
+# `PeftAdapterMixin.load_lora_adapter`. When that symbol is gone (a diffusers
+# bump), `artifact_to_diffusers` — OUR inverse of `build_artifact` — runs as
+# the production fallback and says so (`fallback_used`). A proof must run with
+# the fallback DISABLED: an exporter error and its own inverse cancel.
+#
+# `load_via_lora_keys` is the inbound path the sampler uses for a LoRA from
+# outside this app: kohya / musubi (`lora_unet_` flattened names,
+# `lora_down` / `lora_up`, per-module `.alpha`), bare ComfyUI (native names,
+# `lora_A` / `lora_B`, alpha-less) and DiffSynth (`.default.` infix), with or
+# without the `diffusion_model.` prefix — every layout the diffusers converter
+# accepts (`:3141-3182`), re-derived here so the two never disagree.
+
+_KOHYA_FLATTENED: tuple[tuple[re.Pattern[str], str], ...] = (
+    (re.compile(r"^blocks_(\d+)_attn_(qkv|out)_proj$"), r"blocks.\1.attn.\2_proj"),
+    (re.compile(r"^blocks_(\d+)_mlp_fc([12])$"), r"blocks.\1.mlp.fc\2"),
+    (re.compile(r"^blocks_(\d+)_adaln_proj_linear$"), r"blocks.\1.adaln_proj.linear"),
+    (re.compile(r"^token_refiner_blocks_(\d+)_attn_(qkv|out)_proj$"), r"token_refiner.blocks.\1.attn.\2_proj"),
+    (re.compile(r"^token_refiner_blocks_(\d+)_mlp_fc([12])$"), r"token_refiner.blocks.\1.mlp.fc\2"),
+)
+_NATIVE_BLOCK_MODULE = re.compile(
+    r"^(?P<p>|token_refiner\.)blocks\.(?P<n>\d+)\."
+    r"(?P<rest>attn\.qkv_proj|attn\.out_proj|mlp\.fc1|mlp\.fc2|adaln_proj\.linear)$"
+)
+_NATIVE_RENAMES = {
+    "attn.out_proj": "attn.to_out.0",
+    "mlp.fc2": "ff.net.2",
+    "adaln_proj.linear": "adaln_proj.linear",
+}
+_DIFFUSERS_CONVERTER = "_convert_non_diffusers_minimax_h3_lora_to_diffusers"
+
+
+@dataclass(frozen=True)
+class LoraLoadResult:
+    """What a load did: which path ran (`via`), whether the production
+    fallback was the one that ran, and how many NATIVE modules the file
+    carried (a fused `qkv_proj` counts once)."""
+
+    fallback_used: bool
+    modules: int
+    adapter_name: str
+    via: str  # "diffusers" | "lora_keys"
+
+
+def _native_pairs(state_dict: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
+    """Normalise ANY inbound layout to ``{native module: (down, up)}`` with the
+    per-module ``.alpha`` already folded into ``up`` (``alpha / r``)."""
+    sd = {k.removeprefix(ARTIFACT_PREFIX): v for k, v in state_dict.items()}
+    sd = {
+        k.replace(".lora_A.default.", ".lora_A.").replace(".lora_B.default.", ".lora_B."): v
+        for k, v in sd.items()
+    }
+    dotted_sd: dict[str, Any] = {}
+    for key, value in sd.items():
+        if key.startswith("lora_unet_"):
+            module, _, suffix = key.removeprefix("lora_unet_").partition(".")
+            for pattern, replacement in _KOHYA_FLATTENED:
+                if pattern.match(module):
+                    key = f"{pattern.sub(replacement, module)}.{suffix}"
+                    break
+            else:
+                raise KeyError(f"no row-2.9 rule unflattens kohya module {key!r}")
+        dotted_sd[key] = value
+
+    downs: dict[str, Any] = {}
+    ups: dict[str, Any] = {}
+    alphas: dict[str, Any] = {}
+    buckets = (
+        (".lora_down.weight", downs),
+        (".lora_A.weight", downs),
+        (".lora_up.weight", ups),
+        (".lora_B.weight", ups),
+        (".alpha", alphas),
+    )
+    for key, value in dotted_sd.items():
+        for suffix, bucket in buckets:
+            if key.endswith(suffix):
+                bucket[key[: -len(suffix)]] = value
+                break
+        else:
+            raise KeyError(f"unrecognised LoRA key {key!r}")
+    stray = sorted(set(ups) - set(downs))
+    if stray:
+        raise ValueError(f"lora_up/lora_B without a lora_down/lora_A: {stray}")
+
+    pairs: dict[str, tuple[Any, Any]] = {}
+    for module, down in downs.items():
+        if module not in ups:
+            raise ValueError(f"lora_down/lora_A without a lora_up/lora_B: {module!r}")
+        down = down.detach().float()
+        up = ups[module].detach().float()
+        alpha = alphas.get(module)
+        if alpha is not None:
+            up = up * (float(alpha) / down.shape[0])
+        pairs[module] = (down, up)
+    return pairs
+
+
+def artifact_to_diffusers(state_dict: dict[str, Any]) -> dict[str, Any]:
+    """The inverse of :func:`build_artifact`: any inbound layout →
+    ``{diffusers module}.lora_A|B.weight`` (no component prefix), scale 1."""
+    import torch
+
+    out: dict[str, Any] = {}
+    for module, (down, up) in _native_pairs(state_dict).items():
+        match = _NATIVE_BLOCK_MODULE.match(module)
+        if match is None:
+            raise KeyError(f"no row-2.9 rule maps native module {module!r}")
+        stack = "token_refiner.refiner_blocks" if match.group("p") else "transformer_blocks"
+        block = f"{stack}.{match.group('n')}"
+        rest = match.group("rest")
+        if rest == "attn.qkv_proj":
+            if up.shape[0] % 3:
+                raise ValueError(f"{module}: {up.shape[0]} output rows is not a fused qkv projection")
+            for proj, part in zip(("to_q", "to_k", "to_v"), up.chunk(3, dim=0)):
+                out[f"{block}.attn.{proj}.lora_A.weight"] = down.clone()
+                out[f"{block}.attn.{proj}.lora_B.weight"] = part.contiguous()
+        elif rest == "mlp.fc1":
+            if up.shape[0] % 2:
+                raise ValueError(f"{module}: {up.shape[0]} output rows is not a fused SwiGLU projection")
+            half = up.shape[0] // 2
+            out[f"{block}.ff.net.0.proj.lora_A.weight"] = down.contiguous()
+            out[f"{block}.ff.net.0.proj.lora_B.weight"] = torch.cat([up[half:], up[:half]], dim=0).contiguous()
+        else:
+            target = _NATIVE_RENAMES[rest]
+            out[f"{block}.{target}.lora_A.weight"] = down.contiguous()
+            out[f"{block}.{target}.lora_B.weight"] = up.contiguous()
+    return out
+
+
+def _read_artifact(artifact: Any) -> dict[str, Any]:
+    if isinstance(artifact, dict):
+        return dict(artifact)
+    from safetensors.torch import load_file
+
+    return load_file(str(artifact))
+
+
+def _inject(model: Any, diffusers_sd: dict[str, Any], adapter_name: str) -> None:
+    """Hand diffusers-named tensors to ``PeftAdapterMixin.load_lora_adapter``
+    under the ``transformer.`` prefix it strips by default."""
+    model.load_lora_adapter(
+        {f"transformer.{k}": v for k, v in diffusers_sd.items()},
+        prefix="transformer",
+        adapter_name=adapter_name,
+    )
+
+
+def load_via_diffusers(
+    model: Any,
+    artifact: Any,
+    *,
+    allow_fallback: bool = True,
+    adapter_name: str = "default",
+) -> LoraLoadResult:
+    """Load an artifact (a path or a state dict) onto a diffusers
+    ``MiniMaxH3Transformer3DModel`` through diffusers' OWN converter. With the
+    private symbol absent: raise when ``allow_fallback`` is False, otherwise
+    run :func:`artifact_to_diffusers` and report ``fallback_used=True``. A
+    converter that REJECTS the file (a ``ValueError``) is never papered over."""
+    sd = _read_artifact(artifact)
+    modules = len(_native_pairs(sd))
+    try:
+        from diffusers.loaders import lora_conversion_utils as _conversion
+
+        converter = getattr(_conversion, _DIFFUSERS_CONVERTER)
+        converted = converter(dict(sd))
+    except (ImportError, AttributeError) as exc:
+        if not allow_fallback:
+            raise ImportError(
+                f"diffusers' MiniMax-H3 LoRA converter is unavailable ({exc}) and the fallback is disabled"
+            ) from exc
+        _log.warning("minimax_h3_lora_converter_fallback", error=str(exc), modules=modules)
+        _inject(model, artifact_to_diffusers(sd), adapter_name)
+        return LoraLoadResult(fallback_used=True, modules=modules, adapter_name=adapter_name, via="lora_keys")
+    model.load_lora_adapter(converted, prefix="transformer", adapter_name=adapter_name)
+    return LoraLoadResult(fallback_used=False, modules=modules, adapter_name=adapter_name, via="diffusers")
+
+
+def load_via_lora_keys(model: Any, artifact: Any, *, adapter_name: str = "default") -> LoraLoadResult:
+    """The inbound path: any supported layout → OUR inverse → the model."""
+    sd = _read_artifact(artifact)
+    diffusers_sd = artifact_to_diffusers(sd)
+    _inject(model, diffusers_sd, adapter_name)
+    return LoraLoadResult(
+        fallback_used=False, modules=len(_native_pairs(sd)), adapter_name=adapter_name, via="lora_keys"
+    )

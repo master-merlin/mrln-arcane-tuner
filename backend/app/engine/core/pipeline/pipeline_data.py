@@ -501,6 +501,15 @@ class PipelineDataMixin:
         dataset_kinds: dict[str, str] = {}
         edit_candidates = 0
         edit_skipped = 0
+        # The frame rule's FLOOR — the smallest clip length the model can train
+        # on: 1 for `4n+1` / `8n+1` (a still), 5 for MiniMax H3's `17n+5`; no
+        # rule → 1, so nothing is ever skipped. Parsed by the one canonical
+        # `Nn+M` parser so this floor and the bucket ladder agree.
+        from app.engine.components.bucketing import BucketManager as _RuleBM
+
+        _parsed_rule = _RuleBM._parse_frame_step(self._video_frame_rule)
+        video_frame_floor = _parsed_rule[1] if _parsed_rule else 1
+        skipped_short_clips = 0
 
         # ── Global augmentation config ──
         self._aug_h_flip = bool(self.config.get("h_flip", False))
@@ -746,6 +755,27 @@ class PipelineDataMixin:
                                     pass
 
                         bucketing_mode = self.config.get("bucketing_mode", "kohya")
+                        # A clip shorter than the frame rule's FLOOR can never be
+                        # trained: `frame_bucket_for` would hand it the smallest
+                        # bucket anyway, and the loader would then pad an
+                        # untrimmed clip by repeating frames or abort the run on
+                        # a trimmed one (`VideoClipTooShort` -> RuntimeError).
+                        # Skip it here, where the frame count is still visible.
+                        # `4n+1` / `8n+1` floors are 1, so only a family whose
+                        # rule starts above a still (H3's `17n+5`) ever skips.
+                        if is_video and available_frames < video_frame_floor:
+                            skipped_short_clips += 1
+                            self.logger.warning(
+                                "short_clip_skipped",
+                                dataset=name,
+                                media=img_rel,
+                                message=(
+                                    f"clip has {available_frames} frames; the "
+                                    f"smallest legal length is {video_frame_floor} "
+                                    f"({self._video_frame_rule})"
+                                ),
+                            )
+                            continue
                         if is_video:
                             # Temporal bucket: pick the largest frame bucket that
                             # the trimmed clip can supply, capped at this dataset's
@@ -959,7 +989,11 @@ class PipelineDataMixin:
             )
 
         self.bucket_manager.log_distribution()
-        self.logger.info("data_prepared", total_items=len(inventory))
+        self.logger.info(
+            "data_prepared",
+            total_items=len(inventory),
+            skipped_short_clips=skipped_short_clips,
+        )
 
         # Initialize LatentManager early — needed by _validate_latent_cache()
         # and _pre_cache_latents() which run before prepare_for_training().

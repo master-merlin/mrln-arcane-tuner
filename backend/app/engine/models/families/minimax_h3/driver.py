@@ -337,6 +337,54 @@ class MiniMaxH3Driver(IModelDriver):
         )
         return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
 
+    # --- Frame rule (plan row 2.7) ---
+    #
+    # The visual VAE chunks 17 pixel frames into 5 latent frames behind a
+    # 5-frame head, so a legal clip length is ``17n+5`` (research §3.3) — read
+    # from the definition, never a literal (RULE-21), and snapped through the
+    # object every video family shares (`video_contract.snap_frames`) so the
+    # family's answer and the temporal bucketing ladder can never disagree.
+    # Ingestion (`pipeline_data.prepare_data`) is where a too-short clip is
+    # skipped; these are the family-side give-ups for callers that hold a
+    # frame count of their own (previews, the sampler's `num_frames`).
+
+    def frame_rule(self) -> str:
+        rule = self.definition.architecture_params.get("video.frame_rule")
+        if not rule:
+            raise ValueError(
+                f"minimax_h3 {self.definition.id}: architecture_params['video.frame_rule'] is missing"
+            )
+        return str(rule)
+
+    def _frame_floor(self) -> int:
+        from app.engine.components.bucketing import BucketManager
+
+        parsed = BucketManager._parse_frame_step(self.frame_rule())
+        if parsed is None:
+            raise ValueError(f"minimax_h3: unparseable video.frame_rule {self.frame_rule()!r}")
+        return parsed[1]
+
+    def frame_ladder(self, max_frames: int) -> list[int]:
+        from app.engine.components.bucketing import BucketManager
+
+        return BucketManager.frame_ladder(int(max_frames), self.frame_rule())
+
+    def snap_num_frames(self, num_frames: int) -> int:
+        """Snap DOWN to the nearest legal length (``97 → 90``); at or below the
+        floor the floor itself (there is no legal value under it)."""
+        from app.engine.core.video_contract import snap_frames
+
+        return snap_frames(int(num_frames), self.frame_rule())
+
+    def assert_clip_frames(self, num_frames: int) -> None:
+        """Refuse a clip shorter than the floor — loudly, never padded."""
+        floor = self._frame_floor()
+        if int(num_frames) < floor:
+            raise ValueError(
+                f"clip has {int(num_frames)} frames; the smallest legal H3 length is "
+                f"{floor} ({self.frame_rule()})"
+            )
+
     # --- Phase 4: Precision, LoRA Targets & Layer Manifest ---
 
     def get_te_lora_targets(self) -> list[str]:

@@ -875,3 +875,46 @@ def test_stereo_round_trip_real_vae():
     assert _corr(right_in[window], right_out[window]) >= 0.95, (
         f"R burst correlation {_corr(right_in[window], right_out[window]):.3f}"
     )
+
+
+# ── Row 2.7: the frame rule's give-ups through the SHARED object ─────────────
+#
+# Research §3.3, confirmed verbatim: the visual VAE chunks 17 pixel frames
+# into 5 latent frames with a 5-frame head, so a legal clip length is
+# ``17n+5`` (5, 22, 39, 56, 73, 90, 107, ...) and ``97 → 90``. DIVERGENCE
+# recorded: diffusion-pipe rounds to ``17n`` (no +5 head), which would call
+# 102 legal and snap 97 to 85 — the reference implementations (ai-toolkit,
+# musubi, DiffSynth) and the VAE's own arithmetic say ``17n+5``.
+# RULE-21: the family reads ``arch["video.frame_rule"]`` — never a literal —
+# and snaps through ``video_contract.snap_frames``, the object every video
+# family shares, so the ladder here and the temporal bucketing agree.
+
+_H3_RULE_ARCH: dict[str, Any] = {**_ARCH, "video.frame_rule": "17n+5"}
+
+
+def test_frame_ladder_snaps_down():
+    d = _driver(dict(_H3_RULE_ARCH))
+    assert d.frame_ladder(107) == [5, 22, 39, 56, 73, 90, 107]
+    assert d.snap_num_frames(97) == 90, f"97 → 90 (17·5+5), got {d.snap_num_frames(97)}"
+    assert d.snap_num_frames(107) == 107
+    assert d.snap_num_frames(120) == 107
+    assert d.snap_num_frames(22) == 22 and d.snap_num_frames(21) == 5
+    # Definition mutation: a copy with `19n+5` must move the whole ladder —
+    # a family literal `"17n+5"` would keep answering 90.
+    m = _driver({**_ARCH, "video.frame_rule": "19n+5"})
+    assert m.snap_num_frames(97) == 81, f"the rule is not read from the definition (got {m.snap_num_frames(97)})"
+    assert m.frame_ladder(107) == [5, 24, 43, 62, 81, 100]
+    # No rule in the definition: refused, never a silent default.
+    with pytest.raises((KeyError, ValueError)):
+        _driver(dict(_ARCH)).snap_num_frames(97)
+
+
+def test_too_short_clip_refused():
+    d = _driver(dict(_H3_RULE_ARCH))
+    with pytest.raises(ValueError, match=r"clip has 3 frames; the smallest legal H3 length is 5 \(17n\+5\)"):
+        d.assert_clip_frames(3)
+    with pytest.raises(ValueError, match=r"clip has 4 frames"):
+        d.assert_clip_frames(4)
+    assert d.assert_clip_frames(5) is None
+    # Long enough but off the ladder: not this check's business (snapping is).
+    assert d.assert_clip_frames(6) is None

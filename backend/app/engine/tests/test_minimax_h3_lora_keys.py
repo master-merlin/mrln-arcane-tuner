@@ -96,3 +96,117 @@ def test_f1_transforms_are_the_converters(index_keys):
 def test_f1_unknown_key_raises():
     with pytest.raises(KeyError, match="blocks.0.attn.mystery.weight"):
         map_native_key("blocks.0.attn.mystery.weight")
+
+
+# ── Row 2.8: the artifact layout (PEFT adapters -> the ORIGINAL checkpoint
+# names). Proven against the INSTALLED consumer: diffusers 0.40's
+# `_convert_non_diffusers_minimax_h3_lora_to_diffusers` must reach every
+# targeted module and reproduce every delta with no `.alpha` key present.
+
+
+def _lora_model(build_tiny_transformer, *, r: int = 2, alpha: float = 2.0):
+    import torch
+    from peft import LoraConfig, get_peft_model
+
+    from app.engine.models.registry import ModelRegistry
+
+    # The YAML is the single source of truth for the targets (Task 4).
+    ModelRegistry._definitions_loaded = False
+    ModelRegistry._definitions = {}
+    ModelRegistry.initialize()
+    targets = list(ModelRegistry._definitions["minimax-h3-t2va"].lora_targetable_modules)
+    model = get_peft_model(build_tiny_transformer(), LoraConfig(r=r, lora_alpha=alpha, target_modules=targets))
+    g = torch.Generator().manual_seed(9)
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if ".lora_B." in name:  # PEFT zero-inits B: randomise so every delta is non-zero
+                p.copy_(torch.randn(p.shape, generator=g))
+    return model.eval()
+
+
+def _adapters_and_artifact(build_tiny_transformer, **kw):
+    from app.engine.models.families.minimax_h3.lora_keys import adapters_from_peft_model, build_artifact
+
+    adapters = adapters_from_peft_model(_lora_model(build_tiny_transformer, **kw))
+    return adapters, build_artifact(adapters)
+
+
+def _delta(adapter):
+    return adapter.scaling * (adapter.lora_B.float() @ adapter.lora_A.float())
+
+
+def test_key_map_round_trips_every_targeted_module(build_tiny_transformer):
+    import torch
+    from diffusers.loaders.lora_conversion_utils import _convert_non_diffusers_minimax_h3_lora_to_diffusers
+
+    adapters, artifact = _adapters_and_artifact(build_tiny_transformer)
+    assert adapters, "no PEFT adapters found on the tiny model"
+    assert any(k.startswith("diffusion_model.blocks.") for k in artifact), "no key starts with diffusion_model.blocks."
+    assert all(
+        k.startswith(("diffusion_model.blocks.", "diffusion_model.token_refiner.blocks.")) for k in artifact
+    ), sorted(artifact)[:4]
+    # The installed consumer maps the artifact back onto EVERY diffusers
+    # module PEFT trained - and no other.
+    back = _convert_non_diffusers_minimax_h3_lora_to_diffusers(dict(artifact))
+    expected = {f"transformer.{m}.lora_{ab}.weight" for m in adapters for ab in ("A", "B")}
+    assert set(back) == expected, (
+        f"missing={sorted(expected - set(back))[:4]} extra={sorted(set(back) - expected)[:4]}"
+    )
+    for module, adapter in adapters.items():
+        got = back[f"transformer.{module}.lora_B.weight"].float() @ back[f"transformer.{module}.lora_A.weight"].float()
+        assert torch.allclose(got, _delta(adapter), atol=1e-5), f"delta mismatch after the round trip: {module}"
+
+
+def test_fused_qkv_delta_equals_split_deltas(build_tiny_transformer):
+    import torch
+
+    adapters, artifact = _adapters_and_artifact(build_tiny_transformer)
+    q, k, v = (adapters[f"transformer_blocks.0.attn.to_{p}"] for p in "qkv")
+    a_fused = artifact["diffusion_model.blocks.0.attn.qkv_proj.lora_A.weight"].float()
+    b_fused = artifact["diffusion_model.blocks.0.attn.qkv_proj.lora_B.weight"].float()
+    r, hidden = q.lora_A.shape
+    inner = q.lora_B.shape[0]
+    assert a_fused.shape == (3 * r, hidden), f"A_fused {tuple(a_fused.shape)} != (3r, hidden) {(3 * r, hidden)}"
+    assert b_fused.shape == (3 * inner, 3 * r), f"B_fused {tuple(b_fused.shape)} != (3*inner, 3r)"
+    delta = b_fused @ a_fused
+    for i, adapter in enumerate((q, k, v)):
+        assert torch.allclose(delta[i * inner : (i + 1) * inner], _delta(adapter), atol=1e-5), (
+            f"delta mismatch for projection {'qkv'[i]}: the fusion is not exact"
+        )
+    # Block-diagonal: the q rows touch only the q rank columns, etc.
+    for i in range(3):
+        for j in range(3):
+            block = b_fused[i * inner : (i + 1) * inner, j * r : (j + 1) * r]
+            assert bool(block.abs().sum() > 0) is (i == j), (
+                f"B_fused block ({i},{j}) is {'zero' if i == j else 'non-zero'}"
+            )
+
+
+def test_fc1_halves_swapped_back(build_tiny_transformer):
+    import torch
+
+    adapters, artifact = _adapters_and_artifact(build_tiny_transformer)
+    fc1 = adapters["transformer_blocks.0.ff.net.0.proj"]
+    b_native = artifact["diffusion_model.blocks.0.mlp.fc1.lora_B.weight"].float()
+    a_native = artifact["diffusion_model.blocks.0.mlp.fc1.lora_A.weight"].float()
+    half = fc1.lora_B.shape[0] // 2
+    b_peft = fc1.scaling * fc1.lora_B.float()
+    # diffusers SwiGLU rows are [value; gate]; the checkpoint fc1 is [gate; value].
+    assert torch.allclose(b_native[:half], b_peft[half:]) and torch.allclose(b_native[half:], b_peft[:half]), (
+        "fc1 lora_B halves were not swapped back to [gate; value]"
+    )
+    assert torch.equal(a_native, fc1.lora_A.float()), "fc1 lora_A must be untouched (the swap permutes OUTPUT rows)"
+
+
+def test_alpha_folded_no_alpha_key(build_tiny_transformer):
+    import torch
+
+    adapters, artifact = _adapters_and_artifact(build_tiny_transformer, r=2, alpha=4.0)
+    assert not any(k.endswith(".alpha") for k in artifact), "an .alpha key was written"
+    out = adapters["transformer_blocks.0.attn.to_out.0"]
+    assert out.scaling == 2.0, f"PEFT scaling alpha/r should be 2.0, got {out.scaling}"
+    a = artifact["diffusion_model.blocks.0.attn.out_proj.lora_A.weight"].float()
+    b = artifact["diffusion_model.blocks.0.attn.out_proj.lora_B.weight"].float()
+    assert torch.equal(a, out.lora_A.float()), "lora_A must carry no scaling"
+    assert torch.allclose(b, 2.0 * out.lora_B.float()), "alpha/r was not folded into lora_B"
+    assert torch.allclose(b @ a, _delta(out), atol=1e-6), "a loader applying scale 1 does not reproduce the delta"

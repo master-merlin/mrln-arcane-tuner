@@ -33,6 +33,7 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
+from typing import Any
 
 DROPPED_NATIVE_KEYS: tuple[str, ...] = ("rope.inv_freq",)
 
@@ -146,3 +147,144 @@ def native_to_diffusers(native_keys: Iterable[str]) -> dict[str, KeyMapping]:
 
 def unmapped_keys(plan: dict[str, KeyMapping]) -> list[str]:
     return sorted(k for k, m in plan.items() if m.transform == "unmapped")
+
+
+# ── Row 2.8: PEFT adapters → the ORIGINAL-checkpoint LoRA artifact ───────────
+#
+# The artifact every H3 producer emits and ComfyUI consumes, and what diffusers
+# 0.40 converts back (`loaders/lora_conversion_utils.py:3122`): native module
+# names under a `diffusion_model.` prefix, `lora_A` / `lora_B`, PEFT's
+# `alpha / r` scaling FOLDED into `lora_B`, no `.alpha` key — so a loader that
+# applies scale 1 reproduces our delta exactly. Reserved as a public id
+# (ECOSYSTEM §6, REQUEST-16); `ARTIFACT_LAYOUT_VERSION` is frozen once shipped.
+#
+# The three per-tensor transforms are the inverse of the F-1 rules above:
+#   * `qkv_fuse`   — three independent rank-r adapters on `to_q`/`to_k`/`to_v`
+#                    become ONE fused `attn.qkv_proj` adapter of rank 3r:
+#                    `A_fused = [A_q; A_k; A_v]` (3r × hidden) and `B_fused`
+#                    block-diagonal (3·inner × 3r) — exact, no approximation;
+#                    the consumer chunks `lora_B` in thirds and hands every
+#                    third the whole `lora_A`, so each third sees only its own
+#                    rank columns (the zero blocks kill the others).
+#   * `swiglu_swap` — `ff.net.0.proj` (diffusers rows `[value; gate]`) becomes
+#                    `mlp.fc1` (checkpoint rows `[gate; value]`): a permutation
+#                    of OUTPUT rows, so it touches `lora_B` alone.
+#   * `rename`     — everything else is a name change.
+
+ARTIFACT_LAYOUT_VERSION = 1
+ARTIFACT_PREFIX = "diffusion_model."
+
+_QKV_SLOT = {"to_q": 0, "to_k": 1, "to_v": 2}
+_BLOCK_MODULE = re.compile(
+    r"^(?:(?P<refiner>token_refiner\.)refiner_blocks|transformer_blocks)\.(?P<n>\d+)\.(?P<rest>.+)$"
+)
+_PLAIN_RENAMES = {
+    "attn.to_out.0": "attn.out_proj",
+    "ff.net.2": "mlp.fc2",
+    "adaln_proj.linear": "adaln_proj.linear",
+}
+
+
+@dataclass(frozen=True)
+class Adapter:
+    """One PEFT LoRA pair on a diffusers module, with the scaling PEFT applies
+    in its forward (`alpha / r`, or `alpha / sqrt(r)` under rsLoRA — read off
+    the layer, never recomputed)."""
+
+    lora_A: Any
+    lora_B: Any
+    scaling: float
+
+
+def native_module_for(diffusers_module: str) -> tuple[str, str]:
+    """A diffusers LoRA module path → ``(native module path, transform)`` with
+    transform one of ``"q"`` / ``"k"`` / ``"v"`` (a slot of the fused
+    ``qkv_proj``), ``"fc1"`` (the SwiGLU swap) or ``"rename"``. Raises
+    ``KeyError`` on a module no rule covers — never invent a name."""
+    match = _BLOCK_MODULE.match(diffusers_module)
+    if match is None:
+        raise KeyError(f"no row-2.8 rule maps diffusers module {diffusers_module!r}")
+    prefix = "token_refiner." if match.group("refiner") else ""
+    block = f"{prefix}blocks.{match.group('n')}"
+    rest = match.group("rest")
+    if rest.startswith("attn.to_") and rest.removeprefix("attn.") in _QKV_SLOT:
+        return f"{block}.attn.qkv_proj", rest.removeprefix("attn.")[-1]
+    if rest == "ff.net.0.proj":
+        return f"{block}.mlp.fc1", "fc1"
+    if rest in _PLAIN_RENAMES:
+        return f"{block}.{_PLAIN_RENAMES[rest]}", "rename"
+    raise KeyError(f"no row-2.8 rule maps diffusers module {diffusers_module!r}")
+
+
+def adapters_from_peft_model(model: Any, adapter_name: str = "default") -> dict[str, Adapter]:
+    """Every LoRA pair on a PEFT-wrapped transformer, keyed by the diffusers
+    module path (``base_model.model.`` stripped), with each layer's own
+    ``scaling``. Incomplete pairs and layers without a scaling are refused."""
+    import torch
+    from peft import get_peft_model_state_dict
+
+    scalings: dict[str, float] = {}
+    for name, module in model.named_modules():
+        scaling = getattr(module, "scaling", None)
+        if isinstance(scaling, dict) and adapter_name in scaling and hasattr(module, "lora_A"):
+            scalings[name.removeprefix("base_model.model.")] = float(scaling[adapter_name])
+
+    pairs: dict[str, dict[str, Any]] = {}
+    for key, value in get_peft_model_state_dict(model, adapter_name=adapter_name).items():
+        if not isinstance(value, torch.Tensor):
+            continue
+        clean = key.removeprefix("base_model.model.")
+        for suffix, slot in ((".lora_A.weight", "A"), (".lora_B.weight", "B")):
+            if clean.endswith(suffix):
+                pairs.setdefault(clean[: -len(suffix)], {})[slot] = value.detach()
+                break
+
+    adapters: dict[str, Adapter] = {}
+    for module, pair in pairs.items():
+        if "A" not in pair or "B" not in pair:
+            raise ValueError(f"minimax_h3 lora_keys: incomplete LoRA pair on {module!r}")
+        if module not in scalings:
+            raise ValueError(f"minimax_h3 lora_keys: no PEFT scaling found for {module!r}")
+        adapters[module] = Adapter(lora_A=pair["A"], lora_B=pair["B"], scaling=scalings[module])
+    return adapters
+
+
+def build_artifact(adapters: dict[str, Adapter]) -> dict[str, Any]:
+    """The artifact tensors (float32; the saver casts) in the ORIGINAL layout.
+    A projection missing from a fused triple (adaptive rebuild narrowed the
+    targets) contributes a zero block, so the fused delta stays exact."""
+    import torch
+
+    out: dict[str, Any] = {}
+    fused: dict[str, dict[int, tuple[Any, Any]]] = {}
+    for module, adapter in adapters.items():
+        native, transform = native_module_for(module)
+        a = adapter.lora_A.detach().float()
+        b = adapter.lora_B.detach().float() * float(adapter.scaling)  # the fold
+        if transform in ("q", "k", "v"):
+            fused.setdefault(native, {})[_QKV_SLOT[f"to_{transform}"]] = (a, b)
+            continue
+        if transform == "fc1":
+            half = b.shape[0] // 2
+            b = torch.cat([b[half:], b[:half]], dim=0)  # [value; gate] → [gate; value]
+        out[f"{ARTIFACT_PREFIX}{native}.lora_A.weight"] = a.contiguous()
+        out[f"{ARTIFACT_PREFIX}{native}.lora_B.weight"] = b.contiguous()
+
+    for native, slots in fused.items():
+        any_a, any_b = next(iter(slots.values()))
+        inner, hidden = any_b.shape[0], any_a.shape[1]
+        total_rank = sum(slots[i][0].shape[0] for i in range(3) if i in slots)
+        a_fused = torch.cat([slots[i][0] for i in range(3) if i in slots], dim=0)
+        b_fused = torch.zeros((3 * inner, total_rank), dtype=any_b.dtype)
+        col = 0
+        for i in range(3):
+            if i not in slots:
+                continue
+            a_i, b_i = slots[i]
+            r_i = a_i.shape[0]
+            b_fused[i * inner : (i + 1) * inner, col : col + r_i] = b_i
+            col += r_i
+        assert a_fused.shape == (total_rank, hidden)
+        out[f"{ARTIFACT_PREFIX}{native}.lora_A.weight"] = a_fused.contiguous()
+        out[f"{ARTIFACT_PREFIX}{native}.lora_B.weight"] = b_fused.contiguous()
+    return out

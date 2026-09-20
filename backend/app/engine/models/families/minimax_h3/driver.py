@@ -63,13 +63,6 @@ class H3StepLoss:
     loss_audio: torch.Tensor
 
 
-def _lands_in_pr1(what: str) -> NotImplementedError:
-    return NotImplementedError(
-        f"minimax_h3 {what} lands in PR1; PR0 (Task 6) ships the "
-        "non-training driver surface only."
-    )
-
-
 class MiniMaxH3Driver(IModelDriver):
     """MiniMax-H3 driver — non-training surface (Task 6).
 
@@ -650,7 +643,11 @@ class MiniMaxH3Driver(IModelDriver):
     # --- Phase 6: LoRA Output & Saver ---
 
     def get_saver(self) -> Any:
-        raise _lands_in_pr1("the LoRA saver")
+        """The ORIGINAL-layout saver (row 2.8): `CheckpointManager` calls its
+        `save(components, path, metadata)` on every periodic and final save."""
+        from .saver import MiniMaxH3Saver
+
+        return MiniMaxH3Saver()
 
     # --- Phase 9: Advanced Memory & Training Features ---
 

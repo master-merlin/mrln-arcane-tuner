@@ -88,13 +88,6 @@ def test_init_scheduler_still_returns_none():
     assert _driver().init_scheduler() is None
 
 
-def test_get_saver_refuses_loudly_in_pr0():
-    import pytest
-
-    with pytest.raises(NotImplementedError, match="PR1"):
-        _driver().get_saver()
-
-
 def test_resolve_loading_dtype_is_bf16():
     import torch
 
@@ -424,14 +417,13 @@ def test_train_audio_off_gives_video_loss_only():
         on.compute_loss(vp, vt, {})
 
 
-# ── The INCREMENTAL PR0-refusal guard ─────────────────────────────────────
+# ── The PR0-refusal guard, final shape (plan row 2.8) ──────────────────────
 #
-# Rows 2.4 (forward_pass), 2.5 (_setup_family) and 2.8 (get_saver) each remove
-# their entry; 2.8 asserts the set is EMPTY and deletes the constant.
-REMAINING_PR0_REFUSALS: set[tuple[str, str]] = {
-    ("driver.py", "get_saver"),
-    ("DRV", "test_get_saver_refuses_loudly_in_pr0"),
-}
+# Rows 2.4 (forward_pass), 2.5 (_setup_family) and 2.8 (get_saver) retired
+# their refusals one by one; nothing in driver.py / trainer.py may raise a
+# NotImplementedError (directly or through `_lands_in_pr1`) and no
+# `*refuses_loudly_in_pr0` test may remain in this file. The positive control
+# below proves the scanner still SEES a refusal.
 
 _FAMILY_DIR = Path(__file__).resolve().parents[1] / "models" / "families" / "minimax_h3"
 _REFUSAL_CONTROL = Path(__file__).resolve().parent / "fixtures" / "h3_refusal_control.py"
@@ -464,16 +456,13 @@ def _refusal_tests(path: Path) -> set[tuple[str, str]]:
     }
 
 
-def test_no_unlisted_pr0_refusal_remains():
-    found = (
+def test_no_pr0_refusal_remains():
+    found = sorted(
         _refusal_sites(_FAMILY_DIR / "driver.py", "driver.py")
         | _refusal_sites(_FAMILY_DIR / "trainer.py", "trainer.py")
         | _refusal_tests(Path(__file__))
     )
-    unlisted = sorted(found - REMAINING_PR0_REFUSALS)
-    gone = sorted(REMAINING_PR0_REFUSALS - found)
-    assert not unlisted, "unlisted refusal " + ", ".join(f"{f}:{n}" for f, n in unlisted)
-    assert not gone, "retire it by name: " + ", ".join(f"{f}:{n}" for f, n in gone)
+    assert not found, "PR0 refusal still present: " + ", ".join(f"{f}:{n}" for f, n in found)
 
 
 def test_refusal_scanner_flags_the_positive_control():
@@ -485,3 +474,115 @@ def test_refusal_scanner_flags_the_positive_control():
         ("h3_refusal_control.py", "helper_refusal"),
         ("h3_refusal_control.py", "still_refuses"),
     }, found
+
+
+# ── The LoRA saver (plan row 2.8): the ORIGINAL-checkpoint layout ──────────
+#
+# Production caller: `MiniMaxH3Driver.get_saver()` → `pipeline_optimization.py`
+# `CheckpointManager(saver_impl=…)` → `saver.save(components, path, metadata)`.
+# The artifact is what ComfyUI and ai-toolkit consume and what diffusers 0.40
+# converts (`lora_conversion_utils.py:3122`): `diffusion_model.` prefix,
+# native module names, `lora_A`/`lora_B`, PEFT scaling folded into `lora_B`,
+# no `.alpha` key. Reserved as a public id (ECOSYSTEM §6, REQUEST-16).
+
+_SAVER_PY = Path(__file__).resolve().parents[1] / "models" / "families" / "minimax_h3" / "saver.py"
+
+
+def _peft_model(build_tiny_transformer, *, r: int = 2, alpha: float = 2.0):
+    import torch
+    from peft import LoraConfig, get_peft_model
+
+    model = get_peft_model(
+        build_tiny_transformer(), LoraConfig(r=r, lora_alpha=alpha, target_modules=_driver().get_lora_targets())
+    )
+    g = torch.Generator().manual_seed(9)
+    with torch.no_grad():
+        for name, p in model.named_parameters():
+            if ".lora_B." in name:  # PEFT zero-inits B: randomise so every delta is non-zero
+                p.copy_(torch.randn(p.shape, generator=g))
+    return model.eval()
+
+
+def _read_artifact(path):
+    from safetensors import safe_open
+
+    with safe_open(str(path), framework="pt") as fh:
+        tensors = {k: fh.get_tensor(k) for k in fh.keys()}
+        meta = dict(fh.metadata() or {})
+    return tensors, meta
+
+
+def _assert_original_layout(tensors: dict) -> None:
+    assert tensors, "no artifact written"
+    bad = [k for k in tensors if not k.startswith("diffusion_model.")]
+    assert not bad, f"keys outside the diffusion_model. namespace: {bad[:3]}"
+    assert any(k.startswith("diffusion_model.blocks.") for k in tensors), "no key starts with diffusion_model.blocks."
+    assert not any(k.endswith(".alpha") for k in tensors), "an .alpha key was written (scaling must be folded)"
+    assert all(k.endswith((".lora_A.weight", ".lora_B.weight")) for k in tensors)
+
+
+def test_saver_writes_original_layout_with_shared_metadata(tmp_path, build_tiny_transformer):
+    import torch
+
+    saver = _driver().get_saver()
+    config = {
+        "global_triggerword": "sks",
+        "save_precision": "fp32",
+        "lora_name": "t",
+        "optimizer_type": "adamw",
+        "learning_rate": 1e-4,
+    }
+    out = tmp_path / "h3.safetensors"
+    saver.save({"unet": _peft_model(build_tiny_transformer), "config": config}, out, metadata={"step": 3})
+    tensors, meta = _read_artifact(out)
+    _assert_original_layout(tensors)
+    assert all(t.dtype is torch.float32 for t in tensors.values())
+    # Shared metadata: BOTH trigger keys from the one helper, the Kohya ss_*
+    # map, the rank, and the manager's own fields (stringified).
+    assert meta.get("ss_training_comment") == "sks" and meta.get("modelspec.trigger_phrase") == "sks", meta
+    assert meta.get("ss_optimizer") == "adamw" and meta.get("ss_learning_rate") == "0.0001"
+    assert meta.get("ss_network_dim") == "2" and meta.get("ss_network_alpha") == "2.0"
+    assert meta.get("step") == "3" and meta.get("modelspec.architecture")
+
+
+def test_saver_omits_trigger_key_without_trigger(tmp_path, build_tiny_transformer):
+    saver = _driver().get_saver()
+    out = tmp_path / "h3.safetensors"
+    saver.save({"unet": _peft_model(build_tiny_transformer), "config": {"save_precision": "fp32"}}, out, metadata={})
+    _, meta = _read_artifact(out)
+    assert "ss_training_comment" not in meta and "modelspec.trigger_phrase" not in meta, meta
+
+
+def test_saver_imports_lora_metadata_helper():
+    """The ss_* map and the trigger keys are IMPORTED from the shared helper,
+    never re-typed in the family (the ltx2 lesson: a copied map drifts)."""
+    tree = ast.parse(_SAVER_PY.read_text(encoding="utf-8"))
+    imported = {
+        alias.name
+        for node in ast.walk(tree)
+        if isinstance(node, ast.ImportFrom) and node.module == "app.engine.utils.lora_metadata"
+        for alias in node.names
+    }
+    assert {"trigger_metadata", "kohya_config_metadata"} <= imported, imported
+    local_ss = sorted(
+        node.value
+        for node in ast.walk(tree)
+        if isinstance(node, ast.Constant) and isinstance(node.value, str) and node.value.startswith("ss_")
+    )
+    assert not local_ss, f"saver.py re-types Kohya keys locally: {local_ss}"
+
+
+def test_checkpoint_manager_saves_through_the_family_saver(tmp_path, build_tiny_transformer):
+    """The production path: the manager built the way `pipeline_optimization.py`
+    builds it, one save, the file read back."""
+    from app.engine.components.checkpoints import CheckpointManager
+
+    manager = CheckpointManager(output_dir=str(tmp_path / "out"), saver_impl=_driver().get_saver())
+    manager.save_checkpoint(
+        step=1,
+        components={"unet": _peft_model(build_tiny_transformer)},
+        config={"lora_name": "t", "save_precision": "fp32"},
+    )
+    assert manager.last_lora_path, "no artifact written"
+    tensors, _ = _read_artifact(manager.last_lora_path)
+    _assert_original_layout(tensors)

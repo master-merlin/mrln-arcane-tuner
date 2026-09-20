@@ -227,6 +227,40 @@ def test_text_encoder_released_before_dit_load():
     driver.assert_text_encoder_released()  # no raise
 
 
+def test_cache_fingerprint_includes_pixel_adapter_and_vae_identity(monkeypatch):
+    """Row 2.3 (D10 "keyed on every input"): the RAW VAE latent depends on the
+    pixel convention (`PIXEL_ADAPTER_VERSION`), the VAE class and its config —
+    and on nothing else (a sigma shift or the packed-layout version must NOT
+    re-encode a dataset)."""
+    from app.engine.models.families.minimax_h3 import pixel_adapter
+    from app.engine.models.families.minimax_h3.pixel_adapter import H3PixelAdaptedVAE
+    from app.engine.tests.h3_text_stubs import StubVisualVAE
+
+    def _with_vae(inner):
+        driver = _driver()
+        driver.assign_components({"vae": H3PixelAdaptedVAE(inner)})
+        return driver
+
+    base = _with_vae(StubVisualVAE())
+    same = _with_vae(StubVisualVAE())
+    fp = base.latent_cache_fingerprint()
+    assert len(fp) == 8 and int(fp, 16) >= 0
+    assert fp == same.latent_cache_fingerprint()
+
+    other_config = _with_vae(StubVisualVAE(config={"latent_channels": 64}))
+    assert other_config.latent_cache_fingerprint() != fp, "VAE config not in the key"
+
+    class OtherVAE(StubVisualVAE):
+        pass
+
+    assert _with_vae(OtherVAE()).latent_cache_fingerprint() != fp, "VAE class not in the key"
+
+    monkeypatch.setattr(pixel_adapter, "PIXEL_ADAPTER_VERSION", pixel_adapter.PIXEL_ADAPTER_VERSION + 1)
+    assert _with_vae(StubVisualVAE()).latent_cache_fingerprint() != fp, (
+        "two pixel conventions share a key"
+    )
+
+
 # ── The INCREMENTAL PR0-refusal guard ─────────────────────────────────────
 #
 # Rows 2.4 (forward_pass), 2.5 (_setup_family) and 2.8 (get_saver) each remove

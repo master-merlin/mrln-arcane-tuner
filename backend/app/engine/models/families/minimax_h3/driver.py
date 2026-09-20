@@ -40,6 +40,7 @@ grows must land with its trainer delegation the same way.
 from __future__ import annotations
 
 import hashlib
+import json
 from typing import Any
 
 import torch
@@ -269,6 +270,44 @@ class MiniMaxH3Driver(IModelDriver):
                 f"text encoder still resident ({gb:.2f} GB) at DiT load — "
                 "release it (cache the embeddings) before materialising the transformer"
             )
+
+    # --- Latent-cache identity (plan row 2.3) ---
+
+    def latent_cache_fingerprint(self) -> str:
+        """Short hash of EVERY input the RAW VAE latent depends on — and no
+        other (D10): the pixel convention (`PIXEL_ADAPTER_VERSION`, read at
+        call time), the visual VAE's class and its config. NOT the packed
+        layout version and NOT the sigma shifts: those shape the sequence at
+        train time, and keying on them would re-encode a dataset on every
+        settings change. The frame rule already lives in the resolution
+        segment of the cache path (`tgt_f`).
+        """
+        from . import pixel_adapter
+
+        vae = self.vae
+        if vae is None:
+            raise RuntimeError(
+                "minimax_h3 latent_cache_fingerprint: no visual VAE assigned — "
+                "the cache key cannot be derived without the encoder identity"
+            )
+        inner = getattr(vae, "inner", vae)
+        config = getattr(inner, "config", None)
+        if config is None:
+            config_dict: dict[str, Any] = {}
+        elif hasattr(config, "items"):  # diffusers FrozenDict or a plain dict
+            config_dict = dict(config.items())
+        else:
+            config_dict = dict(vars(config))
+        payload = json.dumps(
+            {
+                "pixel_adapter": pixel_adapter.PIXEL_ADAPTER_VERSION,
+                "vae_class": type(inner).__name__,
+                "vae_config": config_dict,
+            },
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
 
     # --- Phase 4: Precision, LoRA Targets & Layer Manifest ---
 

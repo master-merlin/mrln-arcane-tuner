@@ -249,6 +249,34 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
 
+    # ── Latent-cache fingerprint — the production seam (plan row 2.3) ─────
+    #
+    # Production caller: `run_trainer.py` runs `prepare_data` → (TE phase) →
+    # `_validate_latent_cache` → `_pre_cache_latents` → training; coverage,
+    # pre-cache and `_get_batch` all read `item["cache_dir"]` from the
+    # inventory the base `prepare_data` wrote with the literal variant
+    # `"original"`. The fingerprint is real only because the rewrite happens
+    # HERE, before every consumer; a driver helper nobody applies is dead code.
+
+    async def prepare_data(self):
+        await super().prepare_data()
+        fingerprint = self.driver.latent_cache_fingerprint()
+        for item in self.inventory:
+            for key in ("cache_dir", "masked_cache_dir"):
+                path = item.get(key)
+                if path:
+                    item[key] = self._fingerprinted_cache_dir(path, fingerprint)
+        self.logger.info("minimax_h3_latent_cache_fingerprint", fingerprint=fingerprint)
+
+    @staticmethod
+    def _fingerprinted_cache_dir(cache_dir: str, fingerprint: str) -> str:
+        """`.../latents/<res>/<variant>` → `.../latents/<res>/<variant>-h3<fp>`:
+        INSIDE the last segment, same depth — `_resolve_te_cache_dirs` walks a
+        fixed number of levels up from `cache_dir`, and an extra level would
+        land its dataset-root lookup one directory too deep."""
+        head, tail = os.path.split(cache_dir.rstrip("/\\"))
+        return os.path.join(head, f"{tail}-h3{fingerprint}")
+
     def _materialise_transformer(self) -> None:
         """Load the deferred DiT — only once the encoder is gone."""
         self.driver.assert_text_encoder_released()

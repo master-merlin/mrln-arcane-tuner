@@ -86,3 +86,19 @@ class StubQwen3VL(nn.Module):
 
     def forward(self, *args: Any, **kwargs: Any):  # pragma: no cover - never used
         raise AssertionError("the driver must call .model, not the LM-head wrapper")
+
+
+class StubVisualVAE(nn.Module):
+    """The inner visual VAE as the latent-cache key sees it (row 2.3): a class
+    name and a ``config`` mapping. ``encode``/``decode`` never run here."""
+
+    def __init__(self, config: dict[str, Any] | None = None) -> None:
+        super().__init__()
+        self.config = {"latent_channels": 32, "spatial_compression_ratio": 32, **(config or {})}
+        self.p = nn.Linear(1, 1)
+
+    def encode(self, x: torch.Tensor, *a: Any, **k: Any):  # pragma: no cover
+        raise AssertionError("never encoded in the cache-key tests")
+
+    def decode(self, z: torch.Tensor, *a: Any, **k: Any):  # pragma: no cover
+        raise AssertionError("never decoded in the cache-key tests")

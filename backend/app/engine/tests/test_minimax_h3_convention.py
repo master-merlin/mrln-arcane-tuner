@@ -1048,6 +1048,28 @@ def test_sampler_never_applies_the_training_cfg_augmentation():
     assert len(probe.flags) == 3, f"{len(probe.flags)} DiT calls for 3 steps: the sampler ran the uncond arm"
 
 
+def test_preview_co_denoises_audio_with_train_audio_off():
+    """Plan row 3.5 decision: `train_audio=false` zeroes the audio LOSS, never
+    the audio ROWS (row 3.2 — H3 is single-stream), so the preview samples the
+    sequence the run trains on: video AND audio, whatever `train_audio` says.
+    The defect: `denoise` gated the audio arm on `train_audio`, so an audio-off
+    run trained packed and previewed video-only (a silent clip that could not
+    show what the run did to the audio)."""
+    off = _sampler_shell(_AutocastProbeTransformer(), {"train_audio": False})
+    assert off.pipeline.driver.settings.train_audio is False
+    noise = torch.randn(1, 24, 2, 6, 4, generator=torch.Generator().manual_seed(1))
+    off.denoise(noise, _prompt_output(), num_steps=3, guidance_scale=1.0, seed=0)
+    audio_off = off._last_audio_latents
+    assert audio_off is not None, "train_audio=false previewed video-only: no audio latents were denoised"
+    assert audio_off.dtype is torch.float32 and torch.isfinite(audio_off).all()
+
+    on = _sampler_shell(_AutocastProbeTransformer(), {"train_audio": True})
+    on.denoise(noise, _prompt_output(), num_steps=3, guidance_scale=1.0, seed=0)
+    assert torch.equal(audio_off, on._last_audio_latents), (
+        "the audio arm of the preview depends on train_audio: same seed, same model, different audio latents"
+    )
+
+
 def test_fp32_trajectory_keeps_sub_bf16_increments():
     """Constant oracle velocity c = 0.024 on a uniform 24-step sigma grid:
     every step adds Δσ·c = 1e-3 to a sample sitting at 1.0 — an increment

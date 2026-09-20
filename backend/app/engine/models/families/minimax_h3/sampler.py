@@ -137,22 +137,21 @@ class MiniMaxH3Sampler(GenericSamplingPipeline):
         forward through the driver (one packed sequence, ``[t_v, t_a]``),
         both streams stepped by their own scheduler in fp32."""
         driver = self.pipeline.driver
-        settings = driver._require_settings("sampler")
+        driver._require_settings("sampler")  # refuses an unconfigured driver by name
         model_dtype = self._model_dtype()
         sched_v, sched_a = self._schedulers(num_steps)
-        audio_on = bool(settings.train_audio)
-
         x_v = noise.to(device=self.device, dtype=torch.float32)
-        x_a: Tensor | None = None
-        if audio_on:
-            arch = self._arch()
-            frames = self._sample_frames or _DEFAULT_SAMPLE_FRAMES
-            channels = int(arch.get("audio_vae.latent_channels", 32) or 32)
-            gen = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
-            x_a = torch.randn(
-                (x_v.shape[0], 2, channels, self._audio_latents_for(frames)),
-                generator=gen, device=self.device, dtype=torch.float32,
-            )
+        # The audio arm is NOT gated on `train_audio` (plan row 3.5): that
+        # switch zeroes the audio loss, the rows stay packed (row 3.2), so
+        # the preview denoises the sequence the run trains on.
+        arch = self._arch()
+        frames = self._sample_frames or _DEFAULT_SAMPLE_FRAMES
+        channels = int(arch.get("audio_vae.latent_channels", 32) or 32)
+        gen = torch.Generator(device=self.device).manual_seed(int(seed) + 1)
+        x_a: Tensor | None = torch.randn(
+            (x_v.shape[0], 2, channels, self._audio_latents_for(frames)),
+            generator=gen, device=self.device, dtype=torch.float32,
+        )
 
         total = int(sched_v.timesteps.numel())
         for i in range(total):

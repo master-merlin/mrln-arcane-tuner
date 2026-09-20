@@ -496,6 +496,13 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
 
         arch = self.definition.architecture_params or {}
         sr = int(arch["audio.sampling_rate"])
+        # The orchestrator's VAE phase moves ONLY `vae` to the card
+        # (`run_trainer.py` `_move_component_to_gpu("vae")`); the audio VAE is
+        # still where Phase A left it (CPU) while the waveform below goes to
+        # `self.device` — GATE-1 (plan row 2.12) failed every clip on exactly
+        # that. Bring it over here; it goes back to the CPU at the end.
+        if hasattr(audio_vae, "to"):
+            audio_vae.to(self.device)
         encoded = skipped = absent = failed = 0
         for item in self.inventory:
             if not item.get("is_video"):

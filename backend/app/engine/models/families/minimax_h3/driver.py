@@ -650,7 +650,10 @@ class MiniMaxH3Driver(IModelDriver):
         if audio_mask is None:
             loss_audio = per_item.mean()
         else:
-            m = audio_mask.to(per_item.dtype).reshape(-1)
+            # The mask is built on the host (`build_batch_extra`, cached rows
+            # are CPU tensors) and only `audio_clean` travels to the card —
+            # GATE-1 (plan row 2.12) met a CUDA prediction with a CPU mask.
+            m = audio_mask.to(device=per_item.device, dtype=per_item.dtype).reshape(-1)
             loss_audio = (per_item * m).sum() / m.sum().clamp(min=1.0)
         loss = loss_video + float(settings.audio_loss_weight) * loss_audio
         return H3StepLoss(loss=loss, loss_video=loss_video, loss_audio=loss_audio)

@@ -353,6 +353,49 @@ def test_pre_cache_aux_writes_audio_latents_via_the_family_module(tmp_path):
     assert t._audio_cache_dir(item["cache_dir"]) != adir
 
 
+class _ResidencyAudioVAE(_StubAudioVAE):
+    """Tracks WHERE its weights live the way a real module does: it starts
+    resident wherever Phase A left it (`host`, i.e. NOT the trainer device —
+    `run_trainer.py` moves only `vae` to the GPU), moves on `to()`, and its
+    `encode` refuses a waveform on any other device — the exact failure
+    GATE-1 hit ("Input type torch.cuda.FloatTensor and weight type
+    torch.FloatTensor")."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.where = "host"
+        self.events: list[str] = []
+
+    def to(self, *args, **kwargs):  # noqa: D102 - nn.Module signature
+        dev = args[0] if args else kwargs.get("device")
+        self.where = str(dev)
+        self.events.append(f"to:{dev}")
+        return self
+
+    def encode(self, sample: torch.Tensor):
+        if self.where != str(sample.device):
+            raise RuntimeError(
+                f"Input type ({sample.device}) and weight type ({self.where}) should be the same"
+            )
+        self.events.append("encode")
+        return super().encode(sample)
+
+
+def test_pre_cache_aux_moves_the_audio_vae_to_the_trainer_device_first(tmp_path):
+    """GATE-1 finding (plan row 2.12): the orchestrator's VAE phase moves
+    `vae` to the GPU and nothing moved `audio_vae`, so every clip failed to
+    encode and the run refused. The precache must bring the audio VAE to the
+    trainer device itself, encode there, and send it back to the CPU."""
+    t, item = _audio_shell(tmp_path)
+    t.components["audio_vae"] = _ResidencyAudioVAE()
+    t._assign_components()
+    t._pre_cache_aux()
+    vae = t.components["audio_vae"]
+    assert vae.events[:2] == [f"to:{t.device}", "encode"], vae.events
+    assert vae.events[-1] == "to:cpu", vae.events
+    assert os.listdir(t._audio_cache_dir(item["cache_dir"])), "no audio latent was written"
+
+
 def test_build_batch_extra_carries_audio_latents(tmp_path):
     t, item = _audio_shell(tmp_path)
     t._pre_cache_aux()

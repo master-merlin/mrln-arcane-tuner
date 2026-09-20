@@ -445,6 +445,25 @@ def test_compute_loss_reports_three_numbers():
     assert torch.allclose(out.loss, out.loss_video + 0.1 * out.loss_audio)
 
 
+def test_compute_loss_takes_the_audio_mask_from_the_host():
+    """GATE-1 finding (plan row 2.12): `build_batch_extra` builds `audio_mask`
+    on the host (the cached rows are CPU tensors), `forward_pass` moves only
+    `audio_clean` to the card, and the loss met a CUDA prediction with a CPU
+    mask — "Expected all tensors to be on the same device". The loss owns the
+    mask's device. CUDA-only by nature: a CPU box cannot have two devices."""
+    import pytest
+    import torch
+
+    if not torch.cuda.is_available():
+        pytest.skip("needs a second device to reproduce the mismatch")
+    driver = _driver()
+    driver.apply_settings(_settings({"audio_loss_weight": 0.1}))
+    vp, vt, ap, at = (x.cuda() for x in _loss_inputs())
+    out = driver.compute_loss(vp, vt, {}, audio_pred=ap, audio_target=at, audio_mask=torch.ones(ap.shape[0]))
+    assert out.loss.device.type == "cuda"
+    assert torch.allclose(out.loss_audio.cpu(), torch.nn.functional.mse_loss(ap, at).cpu())
+
+
 def test_audio_loss_weight_scales_only_the_audio_term():
     import torch
 

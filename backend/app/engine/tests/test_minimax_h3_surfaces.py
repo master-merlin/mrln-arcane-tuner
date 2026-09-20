@@ -175,3 +175,40 @@ def test_key_on_surface(surface: str, key: str, registry):
     assert check(ABSENT_KEY, 1.0, registry) is not None, f"{surface}: blind to an absent key"
     reason = check(key, KEYS[key], registry)
     assert reason is None, f"surface={surface} key={key}: {reason}"
+
+
+# ── The SHIPPED default (plan row 3.4, revision 25) ──
+#
+# GATE-3 rejected CFG augmentation as a default: run B (scale 4.0) missed the
+# row's own loss line at its equal 4 x 300-step budget (logged blend loss
+# 0.2354 -> 0.0720, ratio 0.306 >= 0.20; `.agent/output/h3-gates/gate3.json`).
+# The feature stays available through the run-config key; every definition
+# ships it OFF, and no user-facing text may promise 4.0 as "the model's value".
+
+H3_DEFINITION_IDS = ("minimax-h3-t2va", "minimax-h3-ref2va", "minimax-h3-fl2va")
+
+
+@pytest.mark.parametrize("def_id", H3_DEFINITION_IDS)
+def test_shipped_definitions_default_cfg_augmentation_off(def_id: str, registry):
+    from app.engine.models.families.minimax_h3.settings import resolve_h3_settings
+
+    defn = _defn(registry, def_id)
+    shipped = defn.architecture_params.get("cfg_augment.scale")
+    assert shipped == 1.0, f"{def_id} ships cfg_augment.scale={shipped!r}; GATE-3 rejected the 4.0 default"
+    omitted = resolve_h3_settings(defn, {})
+    assert (omitted.cfg_augment_scale, omitted.sources["cfg_augment_scale"]) == (1.0, "definition")
+    explicit = resolve_h3_settings(defn, {"cfg_augment_scale": 4.0})
+    assert (explicit.cfg_augment_scale, explicit.sources["cfg_augment_scale"]) == (4.0, "config"), (
+        "the run-config key no longer switches augmentation on"
+    )
+
+
+def test_user_facing_text_does_not_promise_the_rejected_default():
+    description = BaseTrainingConfig.model_json_schema()["properties"]["cfg_augment_scale"]["description"]
+    assert "4.0 for MiniMax-H3" not in description, "the schema description still promises 4.0 as the model value"
+    entry = json.loads(_CONFIG_HELP.read_text(encoding="utf-8"))["cfg_augment_scale"]
+    for part in ("tip", "detail"):
+        assert "`4.0` for MiniMax-H3" not in entry[part] and "4.0 for MiniMax-H3" not in entry[part], (
+            f"config_help {part} still promises 4.0 as the MiniMax-H3 default"
+        )
+    assert "`1.0` for MiniMax-H3" in entry["detail"], "the help detail does not name the shipped default (off)"

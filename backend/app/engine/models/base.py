@@ -1185,7 +1185,7 @@ class BaseTrainingConfig(BaseModel):
             "CFG-augmented training scale: the loss is taken on "
             "(out + (s-1)*out_uncond)/s so the LoRA learns what the model "
             "produces UNDER guidance at sampling time; 1.0 = off, empty = the "
-            "model's own value (4.0 for MiniMax-H3)"
+            "model's own value (1.0 = off for MiniMax-H3)"
         ),
         json_schema_extra={
             "group": "VIDEO",

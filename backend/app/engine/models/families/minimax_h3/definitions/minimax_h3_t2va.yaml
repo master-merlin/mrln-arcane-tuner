@@ -71,9 +71,11 @@ architecture_params:
   audio.loss_weight: 0.1
   # CFG-augmented training (research §3.7): the loss is taken on
   # (out + (s-1)*out_uncond)/s so the LoRA learns the guided output the
-  # sampler actually produces; 4.0 is the evidenced value, 1.0 = off. The
-  # run-config key `cfg_augment_scale` overrides it (None = this value).
-  cfg_augment.scale: 4.0
+  # sampler actually produces. Ships OFF (1.0): GATE-3 (plan row 3.4,
+  # revision 25) rejected 4.0 as a default - at its equal 4 x 300-step budget
+  # the scale-4.0 run missed the row's loss line (ratio 0.306 >= 0.20). The
+  # run-config key `cfg_augment_scale` switches it on (None = this value).
+  cfg_augment.scale: 1.0
   audio.sampling_rate: 32000
   audio.latent_rate: 40
   audio.channels: 2

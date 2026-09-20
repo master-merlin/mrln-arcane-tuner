@@ -299,7 +299,7 @@ def test_forward_pass_returns_video_and_audio_velocities(build_tiny_transformer)
     from app.engine.models.families.minimax_h3.schedule import remap_sigma, sigma_to_t, t_to_sigma
 
     # Scale 1.0 pinned: this test compares against ONE reference forward; the
-    # definition's 4.0 rearrangement has its own tests (row 3.1) below.
+    # scale-4.0 rearrangement has its own tests (row 3.1) below.
     driver = _forward_driver(build_tiny_transformer, {"cfg_augment_scale": 1.0})
     g = torch.Generator().manual_seed(3)
     video = torch.randn(2, 24, 2, 6, 4, generator=g)

@@ -39,9 +39,10 @@ _TESTS_DIR = Path(__file__).resolve().parent
 _FAMILY_DIR = _TESTS_DIR.parents[0] / "models" / "families" / "minimax_h3"
 _CONTROL = _TESTS_DIR / "fixtures" / "h3_settings_control.py"
 
-# The shipped t2va values (minimax_h3_t2va.yaml:66,73-74) plus the
-# cfg_augment.scale row 3.3 adds; a fixture, not a YAML read, so this file
-# tests precedence and not the YAML.
+# The shipped t2va values (minimax_h3_t2va.yaml:66,73-74) plus a NON-default
+# cfg_augment.scale (the YAMLs ship 1.0 since plan row 3.4; 4.0 here keeps the
+# definition route distinguishable from the family default); a fixture, not a
+# YAML read, so this file tests precedence and not the YAML.
 _ARCH_FULL: dict[str, Any] = {
     "audio.loss_weight": 0.1,
     "video.sigma_shift": 12.0,

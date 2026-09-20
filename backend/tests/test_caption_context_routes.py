@@ -15,10 +15,9 @@ def test_list_definitions_returns_id_family_name_caption_format(client):
     resp = client.get("/api/caption-context/definitions")
     assert resp.status_code == 200
     body = resp.json()
-    assert isinstance(body, list)
-    if body:
-        first = body[0]
-        assert set(first.keys()) == {"id", "family", "name", "caption_format", "frame_rule"}
+    assert isinstance(body, list) and body, "no selectable definitions served"
+    for entry in body:
+        assert set(entry.keys()) == {"id", "family", "name", "caption_format", "frame_rule"}
 
 
 def test_definitions_carry_frame_rule(client):
@@ -53,7 +52,11 @@ def test_definitions_carry_frame_rule(client):
 def test_list_definitions_serves_caption_format_for_selector(client):
     """The selector route MUST carry caption_format — it drives the frontend
     structured-editor swap. ideogram4 → 'ideogram4_json'; others → 'plain'."""
+    from app.engine.models.registry import registry
+
+    registry.initialize()  # no lifespan under TestClient: `all()` over [] proves nothing
     body = client.get("/api/caption-context/definitions").json()
+    assert body, "no selectable definitions served"
     by_family: dict[str, str] = {d["family"]: d["caption_format"] for d in body}
     # Every entry has a non-empty format key.
     assert all(d["caption_format"] for d in body)

@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import gc
 import os
+from typing import Any
 
 import torch
 
@@ -77,6 +78,12 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         return self.driver.sample_timesteps(
             batch_size, self.device, self.config, latents=latents, progress=progress
         )
+
+    def build_batch_extra(self, items: list[dict]) -> dict[str, Any]:
+        # CLOBBER hook (plan row 2.4, ordering rule 1): the driver stacks the
+        # items' clean audio latents; row 2.5 loads them from the audio cache
+        # into `item["audio_latents"]` before this delegation.
+        return self.driver.build_batch_extra(items)
 
     # ── Text-embedding lifecycle (plan row 2.1; DECISION-68 (a)) ──────────
     #

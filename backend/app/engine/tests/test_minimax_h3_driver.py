@@ -88,13 +88,6 @@ def test_init_scheduler_still_returns_none():
     assert _driver().init_scheduler() is None
 
 
-def test_forward_pass_refuses_loudly_in_pr0():
-    import pytest
-
-    with pytest.raises(NotImplementedError, match="PR1"):
-        _driver().forward_pass(None, None, None, {})
-
-
 def test_get_saver_refuses_loudly_in_pr0():
     import pytest
 
@@ -261,15 +254,183 @@ def test_cache_fingerprint_includes_pixel_adapter_and_vae_identity(monkeypatch):
     )
 
 
+# ── Row 2.4: the joint forward + the three-number loss on the driver ──────
+
+
+def _settings(config: dict | None = None):
+    from app.engine.models.families.minimax_h3.settings import resolve_h3_settings
+
+    cfg = {"train_audio": True}
+    cfg.update(config or {})
+    return resolve_h3_settings(_driver().definition, cfg)
+
+
+def _forward_driver(build_tiny_transformer, config: dict | None = None):
+    driver = _driver()
+    driver.assign_components({"transformer": build_tiny_transformer().eval()})
+    driver.apply_settings(_settings(config))
+    return driver
+
+
+def _text(lengths: list[int], dim: int = 16):
+    import torch
+
+    from app.engine.core.text_encoding import TextEncoderOutput
+
+    g = torch.Generator().manual_seed(7)
+    L = max(lengths)
+    emb = torch.randn(len(lengths), L, dim, generator=g)
+    mask = torch.zeros(len(lengths), L, dtype=torch.long)
+    for i, n in enumerate(lengths):
+        mask[i, :n] = 1
+        emb[i, n:] = 0
+    return TextEncoderOutput(embeddings=emb, attention_mask=mask)
+
+
+def test_forward_pass_returns_video_and_audio_velocities(build_tiny_transformer):
+    """One packed sequence per item (its OWN text length — the batch padding
+    never enters the transformer), the distinct set `[t_v, t_a]` with `t_a`
+    derived from `t_v` through the dual-shift schedule, and the velocities
+    handed back in the raw latent shapes the training loop holds."""
+    import torch
+
+    from app.engine.models.families.minimax_h3.packing import (
+        H3Geometry,
+        build_layout,
+        pack_audio,
+        packed_forward,
+        patchify_video,
+        unpack_audio,
+        unpatchify_video,
+    )
+    from app.engine.models.families.minimax_h3.schedule import remap_sigma, sigma_to_t, t_to_sigma
+
+    driver = _forward_driver(build_tiny_transformer)
+    g = torch.Generator().manual_seed(3)
+    video = torch.randn(2, 24, 2, 6, 4, generator=g)
+    audio = torch.randn(2, 2, 32, 3, generator=g)
+    text = _text([5, 8])
+    t_v = torch.tensor([0.7, 0.2])
+
+    t_a = driver.audio_timestep(t_v)
+    expected_t_a = sigma_to_t(remap_sigma(t_to_sigma(t_v), 12.0, 3.0))
+    assert torch.allclose(t_a, expected_t_a), "t_a is not the remapped video clock"
+
+    with torch.no_grad():
+        video_v, audio_v = driver.forward_pass(video, t_v, text, {"audio_noisy": audio})
+    assert video_v.shape == video.shape and audio_v.shape == audio.shape
+    assert torch.isfinite(video_v).all() and torch.isfinite(audio_v).all()
+
+    # Reference: item 0 packed by hand with its 5 real text rows.
+    layout = build_layout(H3Geometry(num_text=5, latent_frames=2, latent_height=6, latent_width=4, audio_latents=3))
+    with torch.no_grad():
+        ref_v, ref_a = packed_forward(
+            driver.transformer,
+            layout,
+            patchify_video(video[:1], layout.patch_size),
+            pack_audio(audio[:1]),
+            text.embeddings[:1, :5],
+            torch.stack([t_v[0], t_a[0]]),
+        )
+    assert torch.allclose(unpatchify_video(ref_v, layout), video_v[:1], atol=1e-5)
+    assert torch.allclose(unpack_audio(ref_a, 3), audio_v[:1], atol=1e-5)
+
+    # A batch of 5-token text padded to 8 is NOT the same sequence as 8 rows.
+    layout8 = build_layout(H3Geometry(num_text=8, latent_frames=2, latent_height=6, latent_width=4, audio_latents=3))
+    with torch.no_grad():
+        padded_v, _ = packed_forward(
+            driver.transformer,
+            layout8,
+            patchify_video(video[:1], layout8.patch_size),
+            pack_audio(audio[:1]),
+            text.embeddings[:1],
+            torch.stack([t_v[0], t_a[0]]),
+        )
+    assert not torch.allclose(unpatchify_video(padded_v, layout8), video_v[:1], atol=1e-5), (
+        "padding rows leaked into item 0's sequence"
+    )
+
+
+def test_build_batch_extra_stacks_audio_with_a_presence_mask():
+    import torch
+
+    driver = _driver()
+    driver.apply_settings(_settings())
+    a = torch.randn(2, 32, 3)
+    items = [{"id": "x", "audio_latents": a}, {"id": "y"}]
+    extra = driver.build_batch_extra(items)
+    assert extra["audio_clean"].shape == (2, 2, 32, 3)
+    assert torch.equal(extra["audio_clean"][0], a) and torch.all(extra["audio_clean"][1] == 0)
+    assert extra["audio_mask"].tolist() == [1.0, 0.0]
+    assert driver.build_batch_extra([{"id": "y"}]) == {}
+    driver.apply_settings(_settings({"train_audio": False}))
+    assert driver.build_batch_extra(items) == {}
+
+
+def _loss_inputs():
+    import torch
+
+    g = torch.Generator().manual_seed(5)
+    vp, vt = torch.randn(2, 24, 2, 6, 4, generator=g), torch.randn(2, 24, 2, 6, 4, generator=g)
+    ap, at = torch.randn(2, 2, 32, 3, generator=g), torch.randn(2, 2, 32, 3, generator=g)
+    return vp, vt, ap, at
+
+
+def test_compute_loss_reports_three_numbers():
+    import torch
+
+    driver = _driver()
+    driver.apply_settings(_settings({"audio_loss_weight": 0.1}))
+    vp, vt, ap, at = _loss_inputs()
+    out = driver.compute_loss(vp, vt, {}, audio_pred=ap, audio_target=at)
+    assert hasattr(out, "loss_video") and hasattr(out, "loss_audio"), "loss_video/loss_audio missing"
+    assert out.loss_video.ndim == 0 and out.loss_audio.ndim == 0 and out.loss.ndim == 0
+    assert torch.allclose(out.loss_video, torch.nn.functional.mse_loss(vp, vt))
+    assert torch.allclose(out.loss_audio, torch.nn.functional.mse_loss(ap, at))
+    assert torch.allclose(out.loss, out.loss_video + 0.1 * out.loss_audio)
+
+
+def test_audio_loss_weight_scales_only_the_audio_term():
+    import torch
+
+    vp, vt, ap, at = _loss_inputs()
+    low = _driver()
+    low.apply_settings(_settings({"audio_loss_weight": 0.1}))
+    high = _driver()
+    high.apply_settings(_settings({"audio_loss_weight": 0.5}))
+    a = low.compute_loss(vp, vt, {}, audio_pred=ap, audio_target=at)
+    b = high.compute_loss(vp, vt, {}, audio_pred=ap, audio_target=at)
+    assert torch.allclose(a.loss_video, b.loss_video) and torch.allclose(a.loss_audio, b.loss_audio)
+    assert torch.allclose(b.loss - a.loss, 0.4 * a.loss_audio, atol=1e-6), (
+        f"delta loss {float(b.loss - a.loss):.6f} != 0.4 * loss_audio {float(0.4 * a.loss_audio):.6f}"
+    )
+
+
+def test_train_audio_off_gives_video_loss_only():
+    import torch
+
+    driver = _driver()
+    driver.apply_settings(_settings({"train_audio": False}))
+    vp, vt, ap, at = _loss_inputs()
+    out = driver.compute_loss(vp, vt, {}, audio_pred=ap, audio_target=at)
+    assert torch.equal(out.loss, out.loss_video)
+    assert float(out.loss_audio) == 0.0
+    # And absent audio tensors with audio ON are refused, never silently zero.
+    on = _driver()
+    on.apply_settings(_settings())
+    import pytest
+
+    with pytest.raises(ValueError, match="audio"):
+        on.compute_loss(vp, vt, {})
+
+
 # ── The INCREMENTAL PR0-refusal guard ─────────────────────────────────────
 #
 # Rows 2.4 (forward_pass), 2.5 (_setup_family) and 2.8 (get_saver) each remove
 # their entry; 2.8 asserts the set is EMPTY and deletes the constant.
 REMAINING_PR0_REFUSALS: set[tuple[str, str]] = {
-    ("driver.py", "forward_pass"),
     ("driver.py", "get_saver"),
     ("trainer.py", "_setup_family"),
-    ("DRV", "test_forward_pass_refuses_loudly_in_pr0"),
     ("DRV", "test_get_saver_refuses_loudly_in_pr0"),
 }
 

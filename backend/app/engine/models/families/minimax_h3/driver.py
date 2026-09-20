@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -48,6 +49,18 @@ import torch.nn as nn
 
 from app.engine.core.definitions import ModelDefinition
 from app.engine.core.interfaces import IModelDriver
+
+from .packing import H3PackedLayout
+from .settings import H3EffectiveSettings
+
+
+@dataclass(frozen=True)
+class H3StepLoss:
+    """The three numbers one training step reports (plan row 2.4)."""
+
+    loss: torch.Tensor
+    loss_video: torch.Tensor
+    loss_audio: torch.Tensor
 
 
 def _lands_in_pr1(what: str) -> NotImplementedError:
@@ -85,6 +98,21 @@ class MiniMaxH3Driver(IModelDriver):
         self.text_encoder: nn.Module | None = None
         self.tokenizer: Any = None
         self._components: dict[str, Any] = {}
+        # The ONE resolved settings object (row 1.0); the trainer applies it
+        # once at setup. Every consumer that needs it refuses to run without.
+        self.settings: H3EffectiveSettings | None = None
+        self._layouts: dict[tuple[Any, ...], H3PackedLayout] = {}
+
+    def apply_settings(self, settings: H3EffectiveSettings) -> None:
+        self.settings = settings
+
+    def _require_settings(self, what: str) -> H3EffectiveSettings:
+        if self.settings is None:
+            raise RuntimeError(
+                f"minimax_h3 {what}: H3EffectiveSettings not applied — the trainer "
+                "must call driver.apply_settings(resolve_h3_settings(...)) at setup"
+            )
+        return self.settings
 
     # --- Phase 1: Loading & Component Access ---
 
@@ -421,17 +449,155 @@ class MiniMaxH3Driver(IModelDriver):
                 f"got {timesteps.tolist()}"
             )
 
+    # --- Phase 5b: the joint forward + the three-number loss (plan row 2.4) ---
+
+    def audio_timestep(self, t_video: torch.Tensor) -> torch.Tensor:
+        """``t_a`` for a given ``t_v``: ONE ``u`` drives both clocks, so the
+        audio timestep is the video sigma un-shifted by the video shift and
+        re-shifted by the audio shift (research §3.2), never a second draw."""
+        from .schedule import H3SigmaSchedule, remap_sigma, sigma_to_t, t_to_sigma
+
+        schedule = H3SigmaSchedule.from_settings(self._require_settings("audio_timestep"))
+        sigma_a = remap_sigma(
+            t_to_sigma(t_video), schedule.sigma_shift_video, schedule.sigma_shift_audio
+        )
+        return sigma_to_t(sigma_a).clamp(0.0, 1.0)
+
+    def build_batch_extra(self, items: list[dict]) -> dict[str, Any]:
+        """Stack the items' clean audio latents ``(2, C, T)`` into
+        ``{"audio_clean": (B, 2, C, T), "audio_mask": (B,)}``. An item without
+        audio gets zeros shaped like a present sibling and ``mask = 0``; a
+        batch with NO audio (or ``train_audio`` off) returns ``{}`` so the
+        forward stays video-only. The trainer (row 2.5) loads the cached
+        latents into ``item["audio_latents"]`` before delegating here."""
+        present = [item.get("audio_latents") for item in items]
+        if not any(a is not None for a in present):
+            return {}
+        if not self._require_settings("build_batch_extra").train_audio:
+            return {}
+        ref = next(a for a in present if a is not None)
+        stacked = []
+        mask = []
+        for a in present:
+            if a is None or tuple(a.shape) != tuple(ref.shape):
+                stacked.append(torch.zeros_like(ref))
+                mask.append(0.0)
+            else:
+                stacked.append(a)
+                mask.append(1.0)
+        return {
+            "audio_clean": torch.stack(stacked, dim=0),
+            "audio_mask": torch.tensor(mask, dtype=ref.dtype),
+        }
+
+    def _layout_for(self, num_text: int, video: torch.Tensor, audio_latents: int) -> H3PackedLayout:
+        from .packing import H3Geometry, build_layout
+
+        key = (num_text, tuple(video.shape[2:]), audio_latents)
+        layout = self._layouts.get(key)
+        if layout is None:
+            layout = build_layout(
+                H3Geometry(
+                    num_text=num_text,
+                    latent_frames=int(video.shape[2]),
+                    latent_height=int(video.shape[3]),
+                    latent_width=int(video.shape[4]),
+                    audio_latents=audio_latents,
+                )
+            )
+            self._layouts[key] = layout
+        return layout
+
     def forward_pass(
         self,
         noisy_input: torch.Tensor,
         timesteps: torch.Tensor,
         text_embeddings: Any,
         batch: dict[str, Any],
-    ) -> torch.Tensor:
-        raise _lands_in_pr1(
-            "the joint audio+video forward pass (packed [text | conditions "
-            "| audio | video] sequence, inverted flow-match contract)"
-        )
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """The joint audio+video forward on the packed ``[text | audio | video]``
+        sequence — ONE sequence per item, built with that item's TRUE text
+        length (the batch's padding rows never enter the transformer) and its
+        own distinct timestep set ``[t_v, t_a]``.
+
+        ``noisy_input``: video ``x_t`` ``(B, C, T, H, W)``; ``timesteps``: ``t_v``
+        per item ``(B,)``; ``batch["audio_noisy"]``: audio ``x_t`` ``(B, 2, Ca, Ta)``
+        (absent → video-only sequence). Returns ``(video_velocity, audio_velocity)``
+        in the raw latent shapes; the trainer's step loss (row 2.6) consumes both.
+        """
+        from .packing import pack_audio, packed_forward, patchify_video, unpack_audio, unpatchify_video
+
+        if self.transformer is None:
+            raise RuntimeError("minimax_h3 forward_pass: transformer not assigned")
+        emb = getattr(text_embeddings, "embeddings", None)
+        mask = getattr(text_embeddings, "attention_mask", None)
+        if emb is None:
+            emb, mask = text_embeddings  # (embeddings, mask) tuple form
+        audio_noisy = batch.get("audio_noisy")
+        t_v = timesteps.to(device=noisy_input.device, dtype=torch.float32).reshape(-1)
+        if t_v.numel() != noisy_input.shape[0]:
+            raise ValueError(
+                f"minimax_h3 forward_pass: {t_v.numel()} timesteps for a batch of {noisy_input.shape[0]}"
+            )
+        t_a = self.audio_timestep(t_v)
+
+        video_out = []
+        audio_out = []
+        for i in range(noisy_input.shape[0]):
+            n_text = int(mask[i].sum()) if mask is not None else int(emb.shape[1])
+            text_rows = emb[i : i + 1, :n_text]
+            audio_latents = int(audio_noisy.shape[-1]) if audio_noisy is not None else 0
+            layout = self._layout_for(n_text, noisy_input, audio_latents)
+            video_rows = patchify_video(noisy_input[i : i + 1], layout.patch_size)
+            if audio_noisy is not None:
+                audio_rows = pack_audio(audio_noisy[i : i + 1])
+            else:
+                audio_rows = noisy_input.new_zeros((1, 0, int(self.definition.architecture_params["transformer.audio_in_channels"])))
+            distinct = torch.stack([t_v[i], t_a[i]])
+            self.assert_timestep_cardinality(distinct)
+            v_rows, a_rows = packed_forward(
+                self.transformer, layout, video_rows, audio_rows, text_rows, distinct
+            )
+            video_out.append(unpatchify_video(v_rows, layout))
+            if audio_noisy is not None:
+                audio_out.append(unpack_audio(a_rows, audio_latents))
+        video_velocity = torch.cat(video_out, dim=0)
+        audio_velocity = torch.cat(audio_out, dim=0) if audio_out else None
+        return video_velocity, audio_velocity
+
+    def compute_loss(
+        self,
+        video_pred: torch.Tensor,
+        video_target: torch.Tensor,
+        batch: dict[str, Any],
+        *,
+        audio_pred: torch.Tensor | None = None,
+        audio_target: torch.Tensor | None = None,
+        audio_mask: torch.Tensor | None = None,
+    ) -> H3StepLoss:
+        """``loss = loss_video + audio_loss_weight · loss_audio`` — the ONE lever
+        between the modalities (settings row 1.0), reported as three numbers.
+        The audio term is per-item masked (absent-audio items contribute 0);
+        with ``train_audio`` off it is 0 and ``loss == loss_video``. Audio ON
+        with no audio tensors is refused, never a silent video-only step."""
+        settings = self._require_settings("compute_loss")
+        loss_video = torch.nn.functional.mse_loss(video_pred.float(), video_target.float())
+        if not settings.train_audio:
+            zero = torch.zeros((), dtype=loss_video.dtype, device=loss_video.device)
+            return H3StepLoss(loss=loss_video, loss_video=loss_video, loss_audio=zero)
+        if audio_pred is None or audio_target is None:
+            raise ValueError(
+                "minimax_h3 compute_loss: train_audio is on but no audio pred/target "
+                "reached the loss — the audio stream was dropped somewhere upstream"
+            )
+        per_item = (audio_pred.float() - audio_target.float()).pow(2).flatten(1).mean(dim=1)
+        if audio_mask is None:
+            loss_audio = per_item.mean()
+        else:
+            m = audio_mask.to(per_item.dtype).reshape(-1)
+            loss_audio = (per_item * m).sum() / m.sum().clamp(min=1.0)
+        loss = loss_video + float(settings.audio_loss_weight) * loss_audio
+        return H3StepLoss(loss=loss, loss_video=loss_video, loss_audio=loss_audio)
 
     # --- Phase 6: LoRA Output & Saver ---
 

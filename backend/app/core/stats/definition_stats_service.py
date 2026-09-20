@@ -265,10 +265,15 @@ def _get_definition(definition_id: str):
 
 
 def _analytic_vram(defn, config: dict[str, Any]) -> dict[str, Any] | None:
-    """Uncalibrated analytic VRAM report (for computing calibration ratios)."""
+    """Uncalibrated analytic VRAM report (for computing calibration ratios).
+
+    ``check_fit=False``: this runs at the end of a job, in the process that
+    still holds the device, so a verdict against free memory would be about the
+    finishing job, not the config — only the breakdown is read here.
+    """
     try:
         from app.engine.utils.vram_estimator import VRAMEstimator
-        return VRAMEstimator.estimate(defn, config).to_dict()
+        return VRAMEstimator.estimate(defn, config, check_fit=False).to_dict()
     except Exception:
         return None
 

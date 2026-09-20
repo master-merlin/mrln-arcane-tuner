@@ -490,6 +490,8 @@ class VRAMEstimator:
         definition: Any,
         config: dict[str, Any],
         calibration: dict[str, float] | None = None,
+        *,
+        check_fit: bool = True,
     ) -> VRAMReport:
         """Build a VRAM report for the given model + training config.
 
@@ -501,6 +503,11 @@ class VRAMEstimator:
                         measured peaks, e.g. ``{"train": 0.9, "cache": 1.1}``.
                         When present, the analytic ``training_peak_mb`` /
                         ``caching_peak_mb`` are scaled toward observed reality.
+            check_fit:  ``False`` for a caller that wants the analytic breakdown
+                        only (the end-of-job calibration recompute, which runs
+                        while the finishing job still holds the device): the
+                        GPU is not queried, ``fit_known`` stays ``False`` and
+                        the log line states no verdict.
 
         Returns:
             ``VRAMReport`` with per-category breakdown and fit assessment.
@@ -772,11 +779,14 @@ class VRAMEstimator:
         # another training run) is already accounted for — our analytic peak
         # only models our own consumption, so the headroom must come from the
         # live device free figure, not the card's total capacity.
+        # ``check_fit=False``: the caller holds the device itself (or has none
+        # to ask about), so "free" says nothing about this config — no query,
+        # and the zeroed device rows keep the section-10 warnings silent.
         try:
             from app.core.system_monitor import system_monitor
 
-            snap = system_monitor.snapshot()
-            if snap.gpus:
+            snap = system_monitor.snapshot() if check_fit else None
+            if snap is not None and snap.gpus:
                 gpu = snap.gpus[0]
                 report.total_mb = gpu.vram_total_mb
                 report.used_mb = gpu.vram_used_mb
@@ -832,7 +842,7 @@ class VRAMEstimator:
             family=family,
             peak_mb=round(report.peak_mb),
             available_mb=round(report.available_mb),
-            fits=report.fits,
+            fits=report.fits if check_fit else None,
         )
 
         return report

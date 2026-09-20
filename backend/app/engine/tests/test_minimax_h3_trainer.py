@@ -5,7 +5,7 @@ Production caller (DECISION-68 (a)): ``run_trainer.py:159`` calls
 the base ``encode_text`` (``pipeline_base.py``) returns ``None`` once the driver
 reports no encoders. So the three trainer overrides this file pins are what
 keeps a job from training on ``None`` embeddings after the 63 GB Qwen3-VL is
-released. Stub encoder, no weights; the seams under test (the base offload,
+released. Stub encoder, no weights; the seams under test (the trainer's release,
 the base caption-hint builder, the disk cache) are REAL.
 """
 
@@ -79,7 +79,7 @@ def test_te_cache_serves_embeddings_after_release(tmp_path):
     warmed = dict(t.text_cache)
     calls_after_warm = te.calls
 
-    # ── release every encoder reference through the REAL base offload ──
+    # ── release every encoder reference through the trainer's REAL release ──
     t._offload_text_encoders()
     assert t.driver.get_text_encoders() == {}
     assert "text_encoder" not in t.components
@@ -197,6 +197,9 @@ def test_transformer_is_materialised_only_after_the_release(tmp_path):
     released = next(c for c in t.logger.info.call_args_list if c.args[0] == "text_encoder released")
     assert released.kwargs["weight_bytes"] == 1024 * 4
     assert "host_peak_bytes" in released.kwargs and "cuda_peak_bytes" in released.kwargs
+    # measured AFTER the references are dropped and the cache emptied — the
+    # number that says the release freed the device (None on a CPU host)
+    assert "cuda_allocated_after_bytes" in released.kwargs
 
 
 # ── Row 2.5: trainer setup + lifecycle ───────────────────────────────────
@@ -486,6 +489,56 @@ def test_text_encoders_empty_after_release(tmp_path):
     t._pre_cache_text_embeddings()
     t._offload_text_encoders()
     assert t._get_text_encoders() == {}
+
+
+class _MoveRecordingTE(StubQwen3VL):
+    """Records every ``.to(...)`` the release path makes on the encoder."""
+
+    def __init__(self) -> None:
+        super().__init__(hidden_size=8)
+        self.moves: list[tuple] = []
+
+    def to(self, *args, **kwargs):  # noqa: D102 - nn.Module signature
+        self.moves.append((args, kwargs))
+        return super().to(*args, **kwargs)
+
+
+@pytest.mark.parametrize("unload", [False, True])
+def test_release_never_copies_the_encoder_to_the_host(tmp_path, unload):
+    """Plan row 3.4 defect: ``te.to("cpu")`` on the 63 GB Qwen3-VL crashed the
+    process natively (0xC0000005, 4 of 12 runs) and the copy is pure waste —
+    the H3 trainer drops the encoder unconditionally right after."""
+    t = _trainer(tmp_path)
+    t.config["unload_text_encoder"] = unload
+    te = _MoveRecordingTE()
+    t.components["text_encoder"] = te
+    t._assign_components()
+    t._pre_cache_text_embeddings()
+    te.moves.clear()
+
+    t._offload_text_encoders()
+
+    assert te.moves == [], f"the release path moved the encoder: {te.moves}"
+    assert t._get_text_encoders() == {}
+    assert t._te_unloaded is True
+
+
+def test_release_drops_every_reference_to_the_encoder(tmp_path):
+    """Without the host copy, VRAM is freed only if NOTHING still holds the
+    module: trainer alias, component dict, driver attribute, driver dict."""
+    import gc
+    import weakref
+
+    t = _trainer(tmp_path)
+    t._pre_cache_text_embeddings()
+    ref = weakref.ref(t.components["text_encoder"])
+
+    t._offload_text_encoders()
+    gc.collect()
+
+    assert ref() is None, f"still held by: {gc.get_referrers(ref())[:3]}"
+    assert t.text_encoder is None and t.driver.text_encoder is None
+    assert "text_encoder" not in t.components
 
 
 def test_ref2va_materialises_the_ref_checkpoint(tmp_path):

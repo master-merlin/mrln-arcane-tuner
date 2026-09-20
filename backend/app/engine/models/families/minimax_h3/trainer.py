@@ -315,29 +315,36 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         """Release the encoder UNCONDITIONALLY (the base releases the driver's
         reference only under ``unload_text_encoder``; a CPU-offloaded 63 GB
         encoder is still 63 GB of host RAM beside the DiT) and record what the
-        plan asks for: weight bytes + the loading peaks."""
+        plan asks for: weight bytes + the loading peaks.
+
+        The base is NOT called and the encoder is NEVER moved to the host
+        first: the module is dropped right here, so a device→host copy of the
+        whole encoder buys nothing, and that copy crashed the process natively
+        (access violation inside ``Module.to("cpu")``, no Python exception).
+        VRAM is freed by dropping EVERY reference — trainer alias, component
+        dict, driver attribute + dict — before ``empty_cache()``; pinned by
+        ``test_release_drops_every_reference_to_the_encoder``."""
+        if self._te_unloaded:
+            return
         weight_bytes = self.driver.text_encoder_weight_bytes()
-        super()._offload_text_encoders()
-        te = self.driver.text_encoder
-        if te is not None:
-            if hasattr(te, "to"):
-                te.to("cpu")
-            self.components.pop("text_encoder", None)
-            self.driver.release_text_encoders()
-            self._te_unloaded = True
+        self.components.pop("text_encoder", None)
+        self.driver.release_text_encoders()
         if not isinstance(getattr(type(self), "text_encoder", None), property):
             self.text_encoder = None
+        self._te_unloaded = True
+        gc.collect()
+        cuda = torch.cuda.is_available()
+        if cuda:
+            torch.cuda.empty_cache()
+        # Logged AFTER the cleanup: `cuda_allocated_after_bytes` is the number
+        # that says whether dropping the references actually freed the device.
         self.logger.info(
             "text_encoder released",
             weight_bytes=weight_bytes,
             host_peak_bytes=_host_peak_bytes(),
-            cuda_peak_bytes=(
-                torch.cuda.max_memory_allocated() if torch.cuda.is_available() else None
-            ),
+            cuda_peak_bytes=torch.cuda.max_memory_allocated() if cuda else None,
+            cuda_allocated_after_bytes=torch.cuda.memory_allocated() if cuda else None,
         )
-        gc.collect()
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
 
     # ── Latent-cache fingerprint — the production seam (plan row 2.3) ─────
     #

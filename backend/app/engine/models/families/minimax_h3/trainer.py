@@ -3,9 +3,10 @@
 Landed: the inverted flow-match delegations (row 1.2), the text-embedding
 lifecycle — pre-cache, unconditional encoder release, cache-serving
 ``encode_text``, deferred DiT materialisation (row 2.1) — the latent-cache
-fingerprint seam (2.3), the batch-extra delegation (2.4), and the real
-setup + audio-latent lifecycle (2.5). Still to land: the step loss and the
-trainer's ``forward_pass`` delegation (2.6).
+fingerprint seam (2.3), the batch-extra delegation (2.4), the real
+setup + audio-latent lifecycle (2.5), and the joint forward + step loss
+(2.6: the audio stream noised on its own clock, ``driver.compute_loss``
+scaled by ``1/grad_accum``, the three numbers on the ``h3_step_loss`` line).
 
 ``_setup_family`` is the first family hook the pipeline calls (via
 ``setup()``); ``self.driver = MiniMaxH3Driver(...)`` is written literally
@@ -85,6 +86,63 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
                 for item in items
             ]
         return self.driver.build_batch_extra(items)
+
+    # ── The joint forward + step loss (plan row 2.6, ASTRA MAJOR-6) ────────
+    #
+    # `forward_pass` is NOT a CLOBBER hook (the base calls the driver directly,
+    # `pipeline_base.py:189`), so this override is behaviour, not a delegation:
+    # the audio stream is noised HERE, on its own clock (`t_a` derived from the
+    # batch's `t_v` through the dual-shift schedule — one `u`, two clocks), and
+    # its noise/target are stashed on the batch for the step loss — the
+    # training loop (`pipeline_train.py:547-584`) only knows the video tensors.
+
+    def forward_pass(
+        self,
+        noisy_input: torch.Tensor,
+        timesteps: torch.Tensor,
+        text_embeddings: Any,
+        batch: dict[str, Any],
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        audio_clean = batch.get("audio_clean")
+        if self.settings is not None and self.settings.train_audio and audio_clean is not None:
+            audio_clean = audio_clean.to(device=noisy_input.device)
+            audio_noise = torch.randn_like(audio_clean)
+            t_a = self.driver.audio_timestep(timesteps.to(device=noisy_input.device, dtype=torch.float32))
+            batch["audio_noise"] = audio_noise
+            batch["audio_noisy"] = self.driver.add_noise(audio_clean, audio_noise, t_a)
+            batch["audio_target"] = self.driver.compute_target(audio_clean, audio_noise, t_a)
+        video_pred, audio_pred = self.driver.forward_pass(noisy_input, timesteps, text_embeddings, batch)
+        batch["audio_pred"] = audio_pred
+        return video_pred, audio_pred
+
+    def _compute_step_loss(
+        self,
+        pred: Any,
+        target: torch.Tensor,
+        timesteps: torch.Tensor,
+        batch: dict[str, Any],
+        grad_accum: int,
+    ) -> torch.Tensor:
+        """``driver.compute_loss`` on the ``(video, audio)`` pair → the SCALAR
+        ``loss / grad_accum`` the loop backpropagates (`pipeline_train.py:578,603`);
+        the three UNSCALED numbers go to the per-step ``h3_step_loss`` line."""
+        video_pred, audio_pred = pred if isinstance(pred, tuple) else (pred, batch.get("audio_pred"))
+        out = self.driver.compute_loss(
+            video_pred,
+            target,
+            batch,
+            audio_pred=audio_pred,
+            audio_target=batch.get("audio_target"),
+            audio_mask=batch.get("audio_mask"),
+        )
+        self.last_step_losses = out
+        self.logger.info(
+            "h3_step_loss",
+            loss=float(out.loss.detach()),
+            loss_video=float(out.loss_video.detach()),
+            loss_audio=float(out.loss_audio.detach()),
+        )
+        return out.loss / grad_accum
 
     # ── Text-embedding lifecycle (plan row 2.1; DECISION-68 (a)) ──────────
     #

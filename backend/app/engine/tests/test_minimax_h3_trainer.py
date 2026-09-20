@@ -422,3 +422,102 @@ def test_ref2va_materialises_the_ref_checkpoint(tmp_path):
     loader._root_path = str(tmp_path)
     loader.load_transformer(_definition("minimax-h3-ref2va"), torch.bfloat16)
     assert seen == ["transformer_ref"]
+
+
+# ── Production loss integration (plan row 2.6, ASTRA MAJOR-6) ────────────────
+
+
+def _text_output(lengths: list[int], dim: int = 16) -> TextEncoderOutput:
+    g = torch.Generator().manual_seed(7)
+    L = max(lengths)
+    emb = torch.randn(len(lengths), L, dim, generator=g)
+    mask = torch.zeros(len(lengths), L, dtype=torch.long)
+    for i, n in enumerate(lengths):
+        mask[i, :n] = 1
+        emb[i, n:] = 0
+    return TextEncoderOutput(embeddings=emb, attention_mask=mask)
+
+
+def _loss_shell(tmp_path, build_tiny_transformer, **config) -> MiniMaxH3Trainer:
+    """The real trainer setup on the tiny diffusers arch, audio ON."""
+    t = _setup_shell(tmp_path, train_audio=True, audio_loss_weight=0.1, **config)
+    t._setup_family()
+    t.driver.assign_components({"transformer": build_tiny_transformer().eval()})
+    return t
+
+
+def _run_step_hooks(t: MiniMaxH3Trainer, grad_accum: int, seed: int = 11):
+    """Call the family hooks in the order of ``pipeline_train.py:547-584``
+    and return ``(loss, pred, target, batch)``."""
+    g = torch.Generator().manual_seed(seed)
+    latents = torch.randn(2, 24, 2, 6, 4, generator=g)
+    noise = torch.randn(2, 24, 2, 6, 4, generator=g)
+    batch = {
+        "audio_clean": torch.randn(2, 2, 32, 3, generator=g),
+        "audio_mask": torch.ones(2),
+    }
+    torch.manual_seed(seed)
+    prepared_latents = t.prepare_latents_for_training(latents)
+    prepared_noise = t.prepare_noise_for_training(noise)
+    timesteps = t.sample_timesteps(prepared_latents.shape[0], latents)
+    noisy_input = t.add_noise(prepared_latents, prepared_noise, timesteps)
+    with torch.no_grad():
+        pred = t.forward_pass(noisy_input, timesteps, _text_output([5, 8]), batch)
+    target = t.compute_target(prepared_latents, prepared_noise, timesteps)
+    loss = t._compute_step_loss(pred, target, timesteps, batch, grad_accum)
+    return loss, pred, target, batch
+
+
+def _expected_components(t: MiniMaxH3Trainer, pred, target, batch):
+    """The three numbers recomputed from the same tensors, outside the trainer."""
+    video_pred = pred[0] if isinstance(pred, tuple) else pred
+    loss_video = torch.nn.functional.mse_loss(video_pred.float(), target.float())
+    loss_audio = torch.nn.functional.mse_loss(batch["audio_pred"].float(), batch["audio_target"].float())
+    return loss_video, loss_audio, loss_video + 0.1 * loss_audio
+
+
+def test_step_loss_routes_through_driver(tmp_path, build_tiny_transformer):
+    from app.engine.core.pipeline.pipeline_base import PipelineBaseMixin
+
+    assert MiniMaxH3Trainer._compute_step_loss is not PipelineBaseMixin._compute_step_loss, (
+        "the base MSE would run on H3's (video, audio) pair"
+    )
+    t = _loss_shell(tmp_path, build_tiny_transformer)
+    loss, pred, target, batch = _run_step_hooks(t, grad_accum=1)
+    assert loss.ndim == 0 and torch.isfinite(loss)
+    loss_video, loss_audio, expected = _expected_components(t, pred, target, batch)
+    assert loss_audio > 0, "the audio term is zero: no audio reached the loss"
+    assert torch.allclose(loss, expected, atol=1e-6), (
+        f"loss {float(loss):.6f} != loss_video + 0.1 * loss_audio {float(expected):.6f}"
+    )
+    # The audio stream was NOISED on its own clock before the forward
+    # (report-back 2.4): x_t != x_0, and the target is the inverted velocity.
+    audio_noisy = batch["audio_noisy"]
+    assert audio_noisy.shape == batch["audio_clean"].shape
+    assert not torch.allclose(audio_noisy, batch["audio_clean"]), "audio was fed clean"
+    assert torch.allclose(batch["audio_target"], batch["audio_clean"] - batch["audio_noise"])
+
+
+def test_step_loss_scales_by_grad_accum(tmp_path, build_tiny_transformer):
+    t = _loss_shell(tmp_path, build_tiny_transformer)
+    loss1, pred, target, batch = _run_step_hooks(t, grad_accum=1)
+    loss4 = t._compute_step_loss(pred, target, torch.tensor([0.7, 0.2]), batch, 4)
+    assert torch.allclose(loss4 * 4, loss1, atol=1e-6), (
+        f"grad_accum=4 loss {float(loss4):.6f} is not loss/4 ({float(loss1) / 4:.6f})"
+    )
+
+
+def test_component_losses_logged(tmp_path, build_tiny_transformer):
+    t = _loss_shell(tmp_path, build_tiny_transformer)
+    loss, pred, target, batch = _run_step_hooks(t, grad_accum=4)
+    loss_video, loss_audio, unscaled = _expected_components(t, pred, target, batch)
+    lines = [c for c in t.logger.info.call_args_list if c.args and c.args[0] == "h3_step_loss"]
+    assert lines, "no h3_step_loss line was logged"
+    kw = lines[-1].kwargs
+    assert set(kw) >= {"loss", "loss_video", "loss_audio"}, f"line keys {sorted(kw)}"
+    # UNSCALED numbers (the /grad_accum is the optimiser's business, not the log's).
+    assert abs(kw["loss_video"] - float(loss_video)) < 1e-6
+    assert abs(kw["loss_audio"] - float(loss_audio)) < 1e-6
+    assert abs(kw["loss"] - float(unscaled)) < 1e-6, (
+        f"logged loss {kw['loss']:.6f} != unscaled {float(unscaled):.6f} (scaled would be {float(loss):.6f})"
+    )

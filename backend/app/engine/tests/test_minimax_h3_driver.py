@@ -519,7 +519,12 @@ def test_build_batch_extra_stacks_audio_with_a_presence_mask():
     assert extra["audio_clean"].shape == (2, 2, 32, 3)
     assert torch.equal(extra["audio_clean"][0], a) and torch.all(extra["audio_clean"][1] == 0)
     assert extra["audio_mask"].tolist() == [1.0, 0.0]
-    assert driver.build_batch_extra([{"id": "y"}]) == {}
+    # VERIFY 1.01: a batch with NO audio is explicit absence, never `{}` (this
+    # line pinned `== {}` — the video-only batch the loss then refused).
+    silent = driver.build_batch_extra([{"id": "y", "target_frames": 5}])
+    assert silent["audio_clean"].shape == (1, 2, 32, 8) and not silent["audio_clean"].any()
+    assert silent["audio_mask"].tolist() == [0.0]
+    assert driver.build_batch_extra([]) == {}
     # `train_audio=false` does NOT unpack the rows (row 3.2; H3 is single-stream).
     driver.apply_settings(_settings({"train_audio": False}))
     assert driver.build_batch_extra(items)["audio_mask"].tolist() == [1.0, 0.0]

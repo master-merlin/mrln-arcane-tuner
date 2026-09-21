@@ -527,23 +527,37 @@ class MiniMaxH3Driver(IModelDriver):
     def build_batch_extra(self, items: list[dict]) -> dict[str, Any]:
         """Stack the items' clean audio latents ``(2, C, T)`` into
         ``{"audio_clean": (B, 2, C, T), "audio_mask": (B,)}``. An item without
-        audio gets zeros shaped like a present sibling and ``mask = 0``; a
-        batch with NO audio returns ``{}`` so the forward stays video-only.
+        audio gets zeros shaped like a present sibling and ``mask = 0``. A
+        batch in which NO item has audio (silent clips, stills) is the same
+        thing with no sibling to copy: absence is EXPLICIT — zero rows of the
+        length the items' frame count implies and an all-zero mask — never
+        ``{}``, because the model has no audio-less forward (row 3.2) and the
+        loss refuses audio tensors that went missing.
         ``train_audio`` does NOT gate this (row 3.2): H3 is single-stream and
         the rows stay packed; audio off only zeroes ``audio_loss_weight``.
         The trainer (row 2.5) loads the cached latents into
         ``item["audio_latents"]`` before delegating here."""
-        from .packing import audio_latent_num_frames, fit_audio_latents
+        from .packing import AUDIO_CHANNELS, audio_latent_num_frames, fit_audio_latents
 
-        present = [item.get("audio_latents") for item in items]
-        if not any(a is not None for a in present):
+        if not items:
             return {}
+        present = [item.get("audio_latents") for item in items]
         # The VAE pads a clip up to whole latents; the reference trains on
         # round(frames / fps · rate) — fit each item's rows to ITS frame count
         # (an item without one, a still, keeps what the cache holds).
         arch = self.definition.architecture_params or {}
         fps = float(arch.get("video.frame_rate", 24.0) or 24.0)
         rate = float(arch.get("audio.latent_rate", 40) or 40)
+        if not any(a is not None for a in present):
+            # Items of a batch share one temporal bucket; a still counts 1 frame.
+            frames = max(int(item.get("target_frames") or 1) for item in items)
+            rows = torch.zeros(
+                len(items),
+                AUDIO_CHANNELS,
+                int(arch["transformer.audio_in_channels"]),
+                audio_latent_num_frames(frames, fps, rate),
+            )
+            return {"audio_clean": rows, "audio_mask": torch.zeros(len(items), dtype=rows.dtype)}
         fitted = []
         for a, item in zip(present, items, strict=True):
             frames = item.get("target_frames")

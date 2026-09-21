@@ -506,6 +506,7 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         rows are packed either way, only their loss weight is 0."""
         audio_vae = getattr(self.driver, "audio_vae", None)
         if audio_vae is None or not self.config.get("cache_latents", True):
+            self._log_audio_coverage()
             return
 
         from app.engine.components.audio_io import load_audio_waveform
@@ -563,6 +564,7 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
             "minimax_h3_audio_precache_done",
             encoded=encoded, skipped=skipped, absent=absent, failed=failed,
         )
+        self._log_audio_coverage()
         if failed and not encoded and not skipped:
             raise RuntimeError(
                 f"minimax_h3 audio precache produced ZERO audio latents: all {failed} "
@@ -574,19 +576,36 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 
-    def _load_cached_audio(self, item: dict) -> torch.Tensor | None:
+    def _log_audio_coverage(self) -> None:
+        """ONE line per job: how many inventory items train with explicitly
+        absent audio (zero rows, mask 0 — `driver.build_batch_extra`). Counted
+        on what the step will find, the audio cache on disk: a clip without a
+        soundtrack, a failed encode, a still and a run without the latent
+        cache all read the same way there."""
+        cached = bool(self.config.get("cache_latents", True))
+        without = sum(1 for item in self.inventory if not (cached and self._audio_cache_path(item)))
+        self.logger.info(
+            "minimax_h3_data_summary", total_items=len(self.inventory), clips_without_audio=without
+        )
+
+    def _audio_cache_path(self, item: dict) -> str | None:
+        """The item's cached audio latent file, or None when there is none."""
         if not item.get("is_video"):
             return None
-        from safetensors.torch import load_file
-
         from app.engine.core.pipeline.pipeline_data import video_trim_extra_key
 
         path = os.path.join(
             self._audio_cache_dir(item["cache_dir"]),
             self.latent_manager.latent_filename(item["id"], item["path"], video_trim_extra_key(item)),
         )
-        if not os.path.exists(path):
+        return path if os.path.exists(path) else None
+
+    def _load_cached_audio(self, item: dict) -> torch.Tensor | None:
+        path = self._audio_cache_path(item)
+        if path is None:
             return None
+        from safetensors.torch import load_file
+
         try:
             return load_file(path)["audio_latents"]
         except Exception as e:  # noqa: BLE001 — a corrupt file degrades to absent (mask 0)

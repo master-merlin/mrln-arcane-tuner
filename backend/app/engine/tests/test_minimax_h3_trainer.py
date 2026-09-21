@@ -958,3 +958,124 @@ def test_set_b_delegations_reach_the_driver_through_the_base(tmp_path):
     assert t.text_cache == {"restored": 1}
     assert t.init_scheduler() is None
     assert t.compute_loss_weight(torch.tensor([0.5, 0.25])) is None
+
+
+# ── VERIFY round 1, finding 1.01: a batch whose clips ALL lack audio ────────
+#
+# The seams are REAL: the trainer's `build_batch_extra` (audio cache lookup on
+# disk -> the driver's stacking), the trainer's `forward_pass` (audio noising
+# on its own clock -> the driver's packed forward on the tiny diffusers arch)
+# and `_compute_step_loss` -> `driver.compute_loss`. Nothing is handed a
+# pre-built `audio_clean`.
+
+
+def _absence_shell(tmp_path, build_tiny_transformer) -> tuple[MiniMaxH3Trainer, dict]:
+    """`_audio_shell` (real audio cache, one clip WITH a soundtrack cached)
+    plus the tiny transformer and the pre-cached empty prompt of `_loss_shell`."""
+    t, item = _audio_shell(tmp_path)
+    t.config["audio_loss_weight"] = 0.1
+    t._setup_family()
+    t._assign_components()
+    t.driver.assign_components({**t.components, "transformer": build_tiny_transformer().eval()})
+    t.text_cache[""] = (torch.randn(2, 16, generator=torch.Generator().manual_seed(5)), torch.ones(2, dtype=torch.long))
+    t._pre_cache_aux()
+    return t, item
+
+
+def _silent_clip(item: dict, ident: str) -> dict:
+    """A clip of the same bucket whose soundtrack was never cached (the
+    pre-cache counted it `absent`): same frames, no audio file on disk."""
+    return {**item, "id": ident}
+
+
+def _step_from_items(t: MiniMaxH3Trainer, items: list[dict], seed: int = 11):
+    """`pipeline_data._get_batch`'s last act (`batch.update(build_batch_extra)`)
+    then the hooks in the order of `pipeline_train.py:547-584`."""
+    g = torch.Generator().manual_seed(seed)
+    n = len(items)
+    latents = torch.randn(n, 24, 2, 6, 4, generator=g)
+    noise = torch.randn(n, 24, 2, 6, 4, generator=g)
+    batch: dict = {}
+    batch.update(t.build_batch_extra(items))
+    torch.manual_seed(seed)
+    prepared_latents = t.prepare_latents_for_training(latents)
+    prepared_noise = t.prepare_noise_for_training(noise)
+    timesteps = t.sample_timesteps(n, latents)
+    noisy_input = t.add_noise(prepared_latents, prepared_noise, timesteps)
+    with torch.no_grad():
+        pred = t.forward_pass(noisy_input, timesteps, _text_output([5, 8][:n]), batch)
+    target = t.compute_target(prepared_latents, prepared_noise, timesteps)
+    loss = t._compute_step_loss(pred, target, timesteps, batch, 1)
+    return loss, pred, target, batch
+
+
+@pytest.mark.parametrize("count", [1, 2])
+def test_a_batch_of_only_silent_clips_trains_with_zero_audio_loss(tmp_path, build_tiny_transformer, count):
+    t, item = _absence_shell(tmp_path, build_tiny_transformer)
+    items = [_silent_clip(item, f"silent{i}") for i in range(count)]
+    loss, pred, target, batch = _step_from_items(t, items)
+    # Absence is EXPLICIT: packed zero rows + an all-False valid mask.
+    assert batch["audio_clean"].shape == (count, 2, 32, 40)
+    assert not batch["audio_clean"].any(), "absent audio must be zero rows"
+    assert batch["audio_mask"].tolist() == [0.0] * count
+    assert pred[1] is not None and pred[1].shape == batch["audio_clean"].shape, (
+        "audio_rows == 0; H3 is single-stream — the model has no audio-less forward"
+    )
+    assert float(t.last_step_losses.loss_audio) == 0.0
+    loss_video = torch.nn.functional.mse_loss(pred[0].float(), target.float())
+    assert torch.equal(loss, loss_video), "an all-absent batch costs exactly the video term"
+    lines = [c for c in t.logger.info.call_args_list if c.args and c.args[0] == "h3_step_loss"]
+    assert lines and lines[-1].kwargs["loss_audio"] == 0.0, "the three-number loss line must still print"
+
+
+def test_a_still_image_batch_trains_with_zero_audio_loss(tmp_path, build_tiny_transformer):
+    """Nothing refuses a still for this family (`pipeline_data` skips only
+    `is_video` items under the frame floor), so it is the silent case too."""
+    t, _item = _absence_shell(tmp_path, build_tiny_transformer)
+    still = t.inventory[1]
+    assert still["is_video"] is False and "target_frames" not in still
+    loss, pred, target, batch = _step_from_items(t, [still])
+    assert batch["audio_mask"].tolist() == [0.0]
+    assert batch["audio_clean"].shape[:3] == (1, 2, 32) and not batch["audio_clean"].any()
+    assert float(t.last_step_losses.loss_audio) == 0.0 and torch.isfinite(loss)
+
+
+def test_a_mixed_presence_batch_still_trains_its_present_audio(tmp_path, build_tiny_transformer):
+    """Positive control: one clip with a cached soundtrack beside a silent one."""
+    t, item = _absence_shell(tmp_path, build_tiny_transformer)
+    loss, pred, target, batch = _step_from_items(t, [item, _silent_clip(item, "silent")])
+    assert batch["audio_mask"].tolist() == [1.0, 0.0]
+    assert batch["audio_clean"][0].any() and not batch["audio_clean"][1].any()
+    per_item = (pred[1].float() - batch["audio_target"].float()).pow(2).flatten(1).mean(dim=1)
+    assert float(t.last_step_losses.loss_audio) > 0
+    assert torch.allclose(t.last_step_losses.loss_audio, per_item[0], atol=1e-6), (
+        "the audio term must be the PRESENT item's alone"
+    )
+
+
+def test_audio_that_was_in_the_batch_and_got_lost_still_raises(tmp_path, build_tiny_transformer):
+    """The negative the explicit-absence representation must NOT loosen: a
+    batch that HAD audio rows and lost its prediction/target upstream is
+    refused — for a present soundtrack and for explicit absence alike."""
+    t, item = _absence_shell(tmp_path, build_tiny_transformer)
+    for items in ([item], [_silent_clip(item, "silent")]):
+        _loss, pred, target, batch = _step_from_items(t, items)
+        lost = {k: v for k, v in batch.items() if k not in ("audio_pred", "audio_target")}
+        with pytest.raises(ValueError, match="dropped somewhere upstream"):
+            t._compute_step_loss((pred[0], None), target, None, lost, 1)
+
+
+def test_the_job_says_once_how_many_clips_train_without_audio(tmp_path, monkeypatch):
+    import app.engine.components.audio_io as audio_io
+
+    t, item = _audio_shell(tmp_path)
+    t.inventory = [item, _silent_clip(item, "silent"), t.inventory[1]]
+    # Both clips point at the fixture WAV; the loader reports NO soundtrack
+    # for the second one (what `load_audio_waveform` returns for a mute clip).
+    real = audio_io.load_audio_waveform
+    answers = iter([real, lambda *a, **k: None])
+    monkeypatch.setattr(audio_io, "load_audio_waveform", lambda *a, **k: next(answers)(*a, **k))
+    t._pre_cache_aux()
+    lines = [c for c in t.logger.info.call_args_list if c.args and c.args[0] == "minimax_h3_data_summary"]
+    assert len(lines) == 1, f"one line per job, got {len(lines)}"
+    assert lines[0].kwargs == {"total_items": 3, "clips_without_audio": 2}

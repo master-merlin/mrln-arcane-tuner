@@ -92,5 +92,46 @@ describe('ModelSelectorComponent', () => {
         expect(store.activeCaptionFormat()).toBe('ideogram4_json');
     });
 
+    // LANE-92: a native <select> is as wide as its widest option, so one long
+    // definition name ("MiniMax H3 (text -> video+audio)") pushed the workspace
+    // actions cluster out of its grid track and over the mode tabs. The label
+    // is bounded and truncates; the full name stays reachable as the title.
+    const LONG = { id: 'minimax-h3-t2va', family: 'minimax_h3', name: 'MiniMax H3 (text -> video+audio)' };
+
+    function mountWithLongDefinition() {
+        const ctx = setup();
+        ctx.store.setModelAware(true);
+        ctx.store.setDefinition(LONG);
+        ctx.fixture.detectChanges();
+        ctx.http.expectOne('/api/caption-context/definitions').flush([LONG]);
+        ctx.fixture.detectChanges();
+        const root: HTMLElement = ctx.fixture.nativeElement;
+        return {
+            ...ctx,
+            family: root.querySelector<HTMLSelectElement>('[data-testid="family-select"]')!,
+            definition: root.querySelector<HTMLSelectElement>('[data-testid="definition-select"]')!,
+        };
+    }
+
+    it('exposes the full definition name as the select title (the label may truncate)', () => {
+        const { definition, family } = mountWithLongDefinition();
+        expect(definition.getAttribute('title')).toBe(LONG.name);
+        expect(family.getAttribute('title')).toBe('minimax_h3');
+    });
+
+    it('bounds both selects and lets them shrink with an ellipsis instead of growing to the widest option', () => {
+        const { definition, family, fixture } = mountWithLongDefinition();
+        for (const sel of [family, definition]) {
+            const cs = getComputedStyle(sel);
+            expect(cs.maxWidth).toBe('144px'); // 9rem, resolved
+            // a floor, not `auto`: `auto` pins a select at its widest option
+            expect(cs.minWidth).toBe('72px'); // 4.5rem, resolved
+            expect(cs.textOverflow).toBe('ellipsis');
+        }
+        // The host must be allowed to shrink inside the workspace flex row, or the
+        // selects' own min-width:0 never engages.
+        expect(getComputedStyle(fixture.nativeElement as HTMLElement).minWidth).toBe('0px');
+    });
+
     afterEach(() => TestBed.inject(HttpTestingController).verify());
 });

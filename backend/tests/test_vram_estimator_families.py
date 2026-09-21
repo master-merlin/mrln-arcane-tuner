@@ -510,6 +510,37 @@ def test_minimax_h3_estimate_is_sane_order_of_magnitude():
         assert math.isfinite(d["peak_mb"]) and d["peak_mb"] > 0, def_id
 
 
+# Plan row 4.2. COPIED from artifacts of commit 7cabd483, never read from them:
+# `.agent/output/h3-gates/gate5-runs/bf16-cfg1-swap0.json` `peak_vram_mb` (the
+# allocator peak of a training-only process: 107 frames @ 768, rank 4, batch 1,
+# AdamW, gradient checkpointing on, bf16, cfg 1.0, no block swap), and
+# `gate5-memprofile.json`'s traced activation live set at the peak. The int8 and
+# swap-12 cells, the warnings and the mutant pins are test_vram_estimator_minimax_h3.py.
+GATE5_BF16_CFG1_PEAK_MB = 92_400.9
+GATE5_TRACED_ACTIVATIONS_MB = 29_455.0
+
+
+def test_minimax_h3_estimate_matches_gate5_measurement(monkeypatch):
+    from types import SimpleNamespace
+
+    # No device query: the verdict rows are not asserted, the card is fabricated.
+    fake = SimpleNamespace(gpus=[SimpleNamespace(vram_total_mb=97_887, vram_used_mb=760)])
+    monkeypatch.setattr("app.core.system_monitor.system_monitor.snapshot", lambda: fake)
+
+    defn = registry.get_definition("minimax-h3-t2va")
+    assert defn is not None
+    report = VRAMEstimator.estimate(defn, {
+        "network_rank": 4, "train_batch_size": 1, "optimizer_type": "AdamW",
+        "resolutions": [768], "num_frames": 107, "gradient_checkpointing": True,
+        "quantization": "none",
+    })
+    est = report.training_peak_mb
+    assert abs(est - GATE5_BF16_CFG1_PEAK_MB) / GATE5_BF16_CFG1_PEAK_MB <= 0.15, est
+    # 63 GB of weights hide a 20 % error in the H3 activation term from the band
+    # above (+9 % overall), so the term is also held against its own measurement.
+    assert report.activations_mb == pytest.approx(GATE5_TRACED_ACTIVATIONS_MB, rel=0.05)
+
+
 @pytest.mark.xdist_group("gpu")  # one real NVML read (LANE-63: machine lock)
 def test_still_resolutions_ignored_for_image_family(frozen_gpu_snapshot):
     """The field is is_video-gated: a stale still_resolutions on an image job

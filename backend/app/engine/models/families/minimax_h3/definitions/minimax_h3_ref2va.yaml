@@ -1,8 +1,8 @@
 # MiniMax-H3 — 33B dense single-stream omni-modal DiT (video + stereo audio
 # denoised JOINTLY in one pass). MiniMax H3 Community License (NOT Apache-2.0).
 #
-# Model classes are VENDORED (vendor/, pinned diffusers SHA 245d78fb) — H3 is
-# NOT in any diffusers release; the installed 0.39.0 has zero MiniMax code.
+# Model classes are the INSTALLED diffusers ones (0.40.0 ships the whole H3
+# stack; the earlier vendored fork was retired in plan row 1.8 of PR1).
 #
 # All architecture_params verified against the live HF repo
 # (MiniMaxAI/MiniMax-H3, 2026-08-05): transformer/config.json, vae/config.json,
@@ -17,24 +17,31 @@ version: '1.0'
 # of the other two — deleting this key here offers this definition again and
 # changes nothing for its siblings. Do NOT collapse the three into one shared
 # family-level string; `test_definition_availability_gate.py` pins that they
-# stay distinct. The code, tests, vendored transformer and this file stay in
+# stay distinct. The code, tests and this file stay in
 # the tree meanwhile, and the registry-wide coverage sweeps keep enumerating
 # the family.
 #
-# ref2va carries the base case PLUS a defect of its own, and unlike fl2va its
-# blocker is not merely unbuilt but UNANSWERED: reference conditioning is not
-# modelled because H3-Context-IR is closed-source (see the control_inputs and
-# transformer.subfolder comments below), which is why the tree homes that
-# question on PR4 rather than on the trainer's PR1. As with fl2va, `mode: both`
-# is the only thing separating this from plain text-to-video. This definition
-# may therefore stay gated after the other two clear, and must not be swept
-# back in alongside them.
+# ref2va has a defect of its own: reference conditioning is UNBUILT, not
+# unanswerable -- see `unavailable_reason` below and
+# `_harness/research/minimax-h3-context-ir.md` (Verdict: NOT REQUIRED); those
+# two are the ONE statement of why this definition is gated, and
+# `test_definition_availability_gate.py::test_ref2va_reason_is_true_today`
+# pins its meaning. As with fl2va, `mode: both` is the only thing separating
+# this from plain text-to-video. This definition may therefore stay gated
+# after the other two clear, and must not be swept back in alongside them.
 unavailable_reason: >-
-  Reference conditioning is not modelled: the reference encoder this
-  definition would need is not publicly available, so there is nothing behind
-  the reference input — today the only thing separating it from plain
-  text-to-video is a flag. Training for this family is not built yet either.
-  It returns if and when the reference path is settled.
+  Reference conditioning is not built: the reference-block packing path
+  (reference images, videos and audio on their own grids sharing the media
+  clock) is unwritten in this family and the ref2va checkpoint has not been
+  validated by a gate -- use minimax-h3-t2va (or fl2va once first/last-frame
+  conditioning lands). Every model component this path needs is published;
+  upstream's hosted H3-Context-IR service expands prompts and is not part of
+  the model. It returns when the reference packing path is built and measured.
+# Run-config surfaces (plan row 3.3): the two sigma shifts and the CFG
+# augmentation scale are gated by these flags in archetypes._FIELD_RULES.
+capability_overrides:
+  supports_dual_sigma_shift: true
+  supports_cfg_augmentation: true
 defaults:
   resolution: 768
   scheduler: flow_match
@@ -45,18 +52,22 @@ defaults:
   # dense (sparse attention was not shipped with the weights), so 107 frames
   # is ~18.8K tokens where 345 is ~59.9K. See spec section 5.
   num_frames: 107
+  # Every H3 weight ships bf16 and the trainer refuses any other training
+  # precision at setup; the form starts on the one supported value.
+  mixed_precision: bf16
 components:
   repo:
     path: huggingface:MiniMaxAI/MiniMax-H3
     type: diffusers
     params: {}
-# Deliberately 0 in PR0, NOT an oversight. ref2va's reference-conditioning
-# mechanism is not yet modelled (H3-Context-IR is closed-source, see the
-# transformer.subfolder comment below). control_inputs > 0 activates the
+# Deliberately 0, NOT an oversight. ref2va's reference-conditioning
+# mechanism is not yet built -- reference-block packing, see
+# `unavailable_reason`. control_inputs > 0 activates the
 # paired-edit-dataset gating in pipeline_data.py, built for a mechanism this
 # definition does not implement; flipping it on here would silently route
-# training through a pipeline that does not match the model. PR4 owns
-# revisiting this once the Context-IR question is settled.
+# training through a pipeline that does not match the model. PR4 owns this
+# when the reference packing path lands; the Context-IR question is settled
+# (research `minimax-h3-context-ir.md`).
 control_inputs: 0
 detected_precision:
   text_encoder: torch.bfloat16
@@ -68,11 +79,18 @@ architecture_params:
   # The ONLY lever separating the modalities: H3 is single-stream, so audio
   # and video traverse the same attn/FFN and cannot be targeted separately.
   audio.loss_weight: 0.1
+  # CFG-augmented training (research §3.7): the loss is taken on
+  # (out + (s-1)*out_uncond)/s so the LoRA learns the guided output the
+  # sampler actually produces. Ships OFF (1.0): GATE-3 (plan row 3.4,
+  # revision 25) rejected 4.0 as a default - at its equal 4 x 300-step budget
+  # the scale-4.0 run missed the row's loss line (ratio 0.306 >= 0.20). The
+  # run-config key `cfg_augment_scale` switches it on (None = this value).
+  cfg_augment.scale: 1.0
   audio.sampling_rate: 32000
   audio.latent_rate: 40
   audio.channels: 2
   # Two COUPLED sigma schedules, not one. Verified in ai-toolkit packing.py
-  # (VIDEO_SIGMA_SHIFT / AUDIO_SIGMA_SHIFT) and in the vendored H3 scheduler.
+  # (VIDEO_SIGMA_SHIFT / AUDIO_SIGMA_SHIFT) and in diffusers' H3 scheduler.
   # One u is sampled per step and mapped through BOTH curves.
   audio.sigma_shift: 3.0
   video.sigma_shift: 12.0
@@ -90,15 +108,20 @@ architecture_params:
   # Requires the Nn+M frame-rule generalization from Task 3B.
   video.frame_rule: 17n+5
   video.frame_rate: 24.0
+  # The model has ONE clock: rotary positions and the soundtrack are laid out
+  # at video.frame_rate, so every clip is resampled to it at ingestion and the
+  # frame rule counts frames ON THAT CLOCK (a 30-fps clip of 90 frames is 72).
+  # Read by the shared ingestion and served to the SPA as ingest_fps.
+  video.ingest_at_native_fps: true
   video.short_edge: 768
   video.max_pixels: 1032192   # 768 * 1344 canvas cap
   # -- Transformer (transformer/config.json) --
   transformer._class_name: MiniMaxH3Transformer3DModel
   # ref2va reads a SEPARATE 33B checkpoint — a second full download beyond
-  # transformer/. Upstream conditions this path through H3-Context-IR, which
-  # is NOT open-sourced (API-only). Whether it is load-bearing is determined
-  # empirically in PR4; until then this definition makes no claim about
-  # reference-conditioning fidelity.
+  # transformer/, with the same class, config and key set. Upstream's hosted
+  # H3-Context-IR service sits outside the conditioning path (research
+  # `minimax-h3-context-ir.md`, Verdict: NOT REQUIRED); this definition makes
+  # no claim about reference-conditioning fidelity.
   transformer.subfolder: transformer_ref
   transformer.num_attention_heads: 56
   transformer.attention_head_dim: 128
@@ -107,6 +130,9 @@ architecture_params:
   transformer.num_layers: 50
   transformer.num_refiner_layers: 2
   transformer.ffn_dim: 14336
+  # float32 residual stream, MEASURED (gate5-memprofile.json, commit 7cabd483) - see
+  # minimax_h3_t2va.yaml. Reader: vram_estimator._token_inventory_activations_mb.
+  transformer.residual_stream_dtype: float32
   transformer.in_channels: 24
   transformer.audio_in_channels: 32
   transformer.patch_size:
@@ -164,12 +190,191 @@ architecture_params:
   te.hidden_size: 5120
   # Hidden states are tapped at layer 50, NOT the last layer.
   te.hidden_state_tap_index: 50
+  # Prompt tokens are capped at 512 (raw tokens, no chat template) —
+  # ai-toolkit's evidenced default (research §5, `d20a17c1`); vision
+  # blocks (PR1b keyframes) are never cut, only the caption tail.
+  te.max_length: 512
   # Generic activation-estimate hints
   hidden_size: 5376
   depth: 52
   in_channels: 24
   context_dim: 5120
   num_heads: 56
+  te.architectures:
+  - Qwen3VLForConditionalGeneration
+  te.image_token_id: 151655
+  te.model_type: qwen3_vl
+  te.text_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    bos_token_id: 151643
+    dtype: bfloat16
+    eos_token_id: 151645
+    head_dim: 128
+    hidden_act: silu
+    hidden_size: 5120
+    initializer_range: 0.02
+    intermediate_size: 25600
+    max_position_embeddings: 262144
+    model_type: qwen3_vl_text
+    num_attention_heads: 64
+    num_hidden_layers: 64
+    num_key_value_heads: 8
+    rms_norm_eps: 1.0e-06
+    rope_scaling:
+      mrope_interleaved: true
+      mrope_section:
+      - 24
+      - 20
+      - 20
+      rope_type: default
+    rope_theta: 5000000
+    use_cache: true
+    vocab_size: 151936
+  te.text_config.attention_bias: false
+  te.text_config.attention_dropout: 0.0
+  te.text_config.bos_token_id: 151643
+  te.text_config.dtype: bfloat16
+  te.text_config.eos_token_id: 151645
+  te.text_config.head_dim: 128
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 5120
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 25600
+  te.text_config.max_position_embeddings: 262144
+  te.text_config.model_type: qwen3_vl_text
+  te.text_config.num_attention_heads: 64
+  te.text_config.num_hidden_layers: 64
+  te.text_config.num_key_value_heads: 8
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_scaling:
+    mrope_interleaved: true
+    mrope_section:
+    - 24
+    - 20
+    - 20
+    rope_type: default
+  te.text_config.rope_scaling.mrope_interleaved: true
+  te.text_config.rope_scaling.mrope_section:
+  - 24
+  - 20
+  - 20
+  te.text_config.rope_scaling.rope_type: default
+  te.text_config.rope_theta: 5000000
+  te.text_config.use_cache: true
+  te.text_config.vocab_size: 151936
+  te.tie_word_embeddings: false
+  te.video_token_id: 151656
+  te.vision_config:
+    deepstack_visual_indexes:
+    - 8
+    - 16
+    - 24
+    depth: 27
+    hidden_act: gelu_pytorch_tanh
+    hidden_size: 1152
+    in_channels: 3
+    initializer_range: 0.02
+    intermediate_size: 4304
+    model_type: qwen3_vl
+    num_heads: 16
+    num_position_embeddings: 2304
+    out_hidden_size: 5120
+    patch_size: 16
+    spatial_merge_size: 2
+    temporal_patch_size: 2
+  te.vision_config.deepstack_visual_indexes:
+  - 8
+  - 16
+  - 24
+  te.vision_config.depth: 27
+  te.vision_config.hidden_act: gelu_pytorch_tanh
+  te.vision_config.hidden_size: 1152
+  te.vision_config.in_channels: 3
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 4304
+  te.vision_config.model_type: qwen3_vl
+  te.vision_config.num_heads: 16
+  te.vision_config.num_position_embeddings: 2304
+  te.vision_config.out_hidden_size: 5120
+  te.vision_config.patch_size: 16
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.temporal_patch_size: 2
+  te.vision_end_token_id: 151653
+  te.vision_start_token_id: 151652
+  scheduler._class_name: MiniMaxH3Scheduler
+  scheduler.shift: 12.0
+  vae.in_channels: 3
+  vae.out_channels: 3
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 256
+  - 512
+  - 512
+  - 1024
+  vae.layers_per_block: 2
+  vae.norm_num_groups: 32
+  vae.norm_eps: 1.0e-06
+  vae.spatial_padding_mode: reflect
+  vae.decoder_num_layers: 36
+  vae.decoder_num_attention_heads: 32
+  vae.decoder_attention_head_dim: 64
+  vae.decoder_num_register_tokens: 4
+  vae.decoder_ffn_mult: 4
+  vae.decoder_rope_theta: 100.0
+  vae.decoder_rope_dim_ratio: 0.75
+  vae.decoder_norm_eps: 1.0e-05
+  vae.latents_mean:
+  - 0.858090341091156
+  - -0.9606591463088989
+  - 1.0661640167236328
+  - -0.5090325474739075
+  - -0.2727581858634949
+  - -1.3675414323806763
+  - -0.2553254961967468
+  - -0.26907554268836975
+  - -0.5376840829849243
+  - -0.0464097298681736
+  - 0.6657370328903198
+  - 0.19690127670764923
+  - -0.5460608005523682
+  - -0.4035342037677765
+  - -0.23683024942874908
+  - 0.25928452610969543
+  - -0.30133944749832153
+  - 0.211341992020607
+  - -1.1206848621368408
+  - 0.3581933379173279
+  - -0.04225143790245056
+  - 0.2604829967021942
+  - 0.22864092886447906
+  - 0.7056031823158264
+  vae.latents_std:
+  - 1.2223774194717407
+  - 1.2767263650894165
+  - 1.6831774711608887
+  - 1.7549455165863037
+  - 1.5636216402053833
+  - 2.194143533706665
+  - 0.9653137922286987
+  - 1.0569885969161987
+  - 0.841948926448822
+  - 0.7729952931404114
+  - 1.8955937623977661
+  - 0.946841835975647
+  - 0.7996809482574463
+  - 0.44988900423049927
+  - 0.7197399735450745
+  - 0.6936293244361877
+  - 2.961095094680786
+  - 2.7694199085235596
+  - 3.0496184825897217
+  - 2.1088054180145264
+  - 3.276226282119751
+  - 3.1627357006073
+  - 2.2816812992095947
+  - 2.6127843856811523
 # On-disk component sizes (MiB — bytes / 1024^2), fetched from the HF repo's
 # per-component safetensors index `metadata.total_size` via the raw
 # endpoints (no download needed), MiniMaxAI/MiniMax-H3, 2026-08-10. The
@@ -185,7 +390,10 @@ model_size_mb:
 # CONTROLLER-PINNED scope: attention + FFN nn.Linear modules across the 50 main
 # blocks and 2 refiner blocks. The AdaLN / time-embedding branch (~13B params)
 # is deliberately EXCLUDED — it is timestep-conditioned rather than
-# content-conditioned, so adapting it is expensive and off-objective (spec 8.1).
+# content-conditioned, so adapting it is expensive and off-objective (spec 8.1),
+# and, decisively, PORTABILITY: the full and the pruned H3 checkpoints share the
+# attention/FFN weights but not the AdaLN branch, so a LoRA touching adaln
+# would load on only one of them (research §3.6).
 # This list MUST match MiniMaxH3Driver.get_lora_targets() exactly, enforced by
 # test_definition_ships_curated_target_list_matching_driver.
 lora_targetable_modules:
@@ -199,6 +407,10 @@ block_topology:
 - name: transformer_blocks
   attr_path: transformer_blocks
   count: 50
+  # approx_vram_mb = bf16 bytes of ONE block, summed from the safetensors headers of
+  # snapshot 42ed227e transformer/: every transformer_blocks.N is 1231.33 MiB, every
+  # token_refiner.refiner_blocks.N is 735.02 MiB (measured 2026-09-20, plan row 4.1).
+  approx_vram_mb: 1231
 # Refiners are NESTED under token_refiner — verified against the checkpoint's
 # safetensors index weight_map (token_refiner.refiner_blocks.{0,1}.*). A bare
 # "refiner_blocks" attr_path does NOT resolve and would silently leave these
@@ -206,3 +418,4 @@ block_topology:
 - name: token_refiner_blocks
   attr_path: token_refiner.refiner_blocks
   count: 2
+  approx_vram_mb: 735

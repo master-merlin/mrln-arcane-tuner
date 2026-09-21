@@ -19,6 +19,8 @@ from typing import Any
 
 import structlog
 
+from app.engine.utils.cost_model import batch_of, optimizer_of, rank_of, scalar_resolution_of
+
 logger = structlog.get_logger(__name__)
 
 
@@ -402,7 +404,16 @@ _CALIB_MAX = 4.0
 #: v2 — removed the phantom ``depth_single_blocks`` default of 38 from the
 #: activation term (42 of 50 definitions have no single blocks and were being
 #: charged for 38 of them).
-VRAM_FORMULA_VERSION = 2
+#: v3 — the rank / batch / optimizer / size rows read the names a RUN CONFIG
+#: carries (``network_rank``, ``train_batch_size``, ``optimizer_type``, a
+#: ``resolutions`` list without a scalar). Calibration is derived against a
+#: job's run config, so every v2 coefficient was taken against rows budgeted at
+#: rank 16 / batch 1 / AdamW / 1024 px whatever the job stated.
+#: v4 — swapped blocks (``block_swap_config``) leave the weights row, and a
+#: definition that states ``transformer.residual_stream_dtype`` gets its
+#: activation row from the token inventory instead of the rough term (H3: the
+#: rough term budgeted 43.8 GB where 29.5 GB was traced).
+VRAM_FORMULA_VERSION = 4
 
 
 # ---------------------------------------------------------------------------
@@ -479,6 +490,8 @@ class VRAMEstimator:
         definition: Any,
         config: dict[str, Any],
         calibration: dict[str, float] | None = None,
+        *,
+        check_fit: bool = True,
     ) -> VRAMReport:
         """Build a VRAM report for the given model + training config.
 
@@ -490,6 +503,11 @@ class VRAMEstimator:
                         measured peaks, e.g. ``{"train": 0.9, "cache": 1.1}``.
                         When present, the analytic ``training_peak_mb`` /
                         ``caching_peak_mb`` are scaled toward observed reality.
+            check_fit:  ``False`` for a caller that wants the analytic breakdown
+                        only (the end-of-job calibration recompute, which runs
+                        while the finishing job still holds the device): the
+                        GPU is not queried, ``fit_known`` stays ``False`` and
+                        the log line states no verdict.
 
         Returns:
             ``VRAMReport`` with per-category breakdown and fit assessment.
@@ -550,8 +568,18 @@ class VRAMEstimator:
                 expert_weights_mb = report.model_weights_mb
             report.model_weights_mb += expert_weights_mb
 
+        # ── 1c. Block swap: swapped blocks live in host RAM ──────────────
+        # Additive: a config that swaps nothing subtracts exactly 0.0.
+        report.model_weights_mb -= min(
+            _block_swap_credit_mb(definition, config, effective_bpp / native_bpp),
+            report.model_weights_mb,
+        )
+
         # ── 2. LoRA adapters ─────────────────────────────────────────────
-        lora_rank = config.get("lora_rank", config.get("rank", 16))
+        # Names go through cost_model's ONE alias reader: a run config says
+        # ``network_rank`` / ``train_batch_size`` / ``optimizer_type``, and the
+        # /jobs/estimate-vram route hands the payload through untouched.
+        lora_rank = rank_of(config)
         # Rough estimate: each target module gets rank×in + rank×out params
         # Typical ratio: ~1-3% of model params at rank 16
         lora_ratio = min(lora_rank / 16 * 0.015, 0.10)  # cap at 10%
@@ -566,7 +594,7 @@ class VRAMEstimator:
             te_params_b = _get_te_params(family)
             trainable_params += te_params_b * 1e9
 
-        optimizer = config.get("optimizer", "adamw")
+        optimizer = optimizer_of(config)
         if optimizer in ("adamw", "adam", "adam8bit", "adamw8bit"):
             # 2 moments × fp32 (4 bytes) = 8 bytes per trainable param
             # 8-bit optimizers halve this
@@ -590,21 +618,23 @@ class VRAMEstimator:
         # resolution LISTS. Phase 3: F=1 stills mixed into a video job bucket at
         # ``still_resolutions`` and can exceed the video ``resolutions`` — fold
         # them in via the shared resolver (single source of truth) so a
-        # high-res still isn't silently under-budgeted. Monotonic: this can only
-        # RAISE the (already conservative) scalar default, never lower it, so
-        # every existing estimate is unchanged unless a real bucket edge is
-        # genuinely larger. Image families inherit ``resolutions`` (the field is
+        # high-res still isn't silently under-budgeted. The largest STATED size
+        # wins (scalar or edge). Image families inherit ``resolutions`` (the field is
         # is_video-gated), so a stale ``still_resolutions`` can't affect them.
         is_video = bool(_is_video_definition(definition))
-        resolution = config.get("resolution", config.get("width", 1024))
+        # The 1024 default stands in ONLY for a config that states no size at
+        # all: a job that states ``resolutions: [768]`` and no scalar is
+        # budgeted at 768, not at max(1024, 768).
+        stated_scalar = scalar_resolution_of(config)
+        resolution = stated_scalar or 1024
         from app.engine.core.pipeline.pipeline_data import resolve_still_resolutions
 
         bucket_edges = [
             int(r) for r in (config.get("resolutions") or []) if int(r) > 0
         ] + [int(r) for r in resolve_still_resolutions(config, is_video) if int(r) > 0]
         if bucket_edges:
-            resolution = max(int(resolution), max(bucket_edges))
-        batch_size = config.get("batch_size", 1)
+            resolution = max([*bucket_edges, *([stated_scalar] if stated_scalar else [])])
+        batch_size = batch_of(config)
         grad_checkpointing = config.get("gradient_checkpointing", True)
         # gradient_accumulation_steps doesn't affect peak VRAM (same batch in memory)
 
@@ -655,6 +685,15 @@ class VRAMEstimator:
         # latent_frames=1 → identical caps to before).
         max_act_mb = (8192 if not grad_checkpointing else 4096) * latent_frames
         report.activations_mb = min(report.activations_mb, max_act_mb)
+
+        # ── 5b. Token-inventory activations (a MEASURED block shape) ─────
+        # Replaces the rough term above ONLY for a definition that states
+        # ``transformer.residual_stream_dtype``; every other family keeps 5/5a.
+        token_act_mb = _token_inventory_activations_mb(
+            arch, config, resolution, batch_size, bool(grad_checkpointing), report
+        )
+        if token_act_mb is not None:
+            report.activations_mb = token_act_mb
 
         # ── 6. Training peak ─────────────────────────────────────────────
         report.training_peak_mb = (
@@ -740,11 +779,14 @@ class VRAMEstimator:
         # another training run) is already accounted for — our analytic peak
         # only models our own consumption, so the headroom must come from the
         # live device free figure, not the card's total capacity.
+        # ``check_fit=False``: the caller holds the device itself (or has none
+        # to ask about), so "free" says nothing about this config — no query,
+        # and the zeroed device rows keep the section-10 warnings silent.
         try:
             from app.core.system_monitor import system_monitor
 
-            snap = system_monitor.snapshot()
-            if snap.gpus:
+            snap = system_monitor.snapshot() if check_fit else None
+            if snap is not None and snap.gpus:
                 gpu = snap.gpus[0]
                 report.total_mb = gpu.vram_total_mb
                 report.used_mb = gpu.vram_used_mb
@@ -800,7 +842,7 @@ class VRAMEstimator:
             family=family,
             peak_mb=round(report.peak_mb),
             available_mb=round(report.available_mb),
-            fits=report.fits,
+            fits=report.fits if check_fit else None,
         )
 
         return report
@@ -809,6 +851,142 @@ class VRAMEstimator:
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _block_swap_credit_mb(definition: Any, config: dict[str, Any], quant_ratio: float) -> float:
+    """MB of backbone weights that ``block_swap_config`` moves off the device.
+
+    ``block_swap_config`` maps a ``block_topology`` group name to a PERCENT of
+    that group's blocks; the count is ``round(count * pct / 100)`` — the same
+    expression ``PipelineOptimization._configure_block_swapping`` swaps by.
+    ``approx_vram_mb`` is the group's stated size of ONE block at the native
+    dtype, so a quantized backbone is credited at ``quant_ratio`` of it.
+    """
+    swap_config = config.get("block_swap_config") or {}
+    if not isinstance(swap_config, dict) or not swap_config:
+        return 0.0
+    credit = 0.0
+    for group in getattr(definition, "block_topology", None) or []:
+        if not isinstance(group, dict):
+            group = getattr(group, "__dict__", {})
+        try:
+            pct = int(swap_config.get(group.get("name"), 0) or 0)
+            count = int(group.get("count", 0) or 0)
+            block_mb = float(group.get("approx_vram_mb", 0) or 0)
+        except (TypeError, ValueError):
+            continue
+        if pct <= 0 or count <= 0 or block_mb <= 0:
+            continue
+        credit += min(round(count * pct / 100), count) * block_mb * quant_ratio
+    return credit
+
+
+def _latent_frames_for_rule(num_frames: int, rule: str | None, temporal_ratio: int) -> int:
+    """Latent frames of a clip under the definition's ``Nn+M`` frame rule.
+
+    The VAE encodes a head of ``M`` pixel frames and then chunks of ``N``; each
+    piece costs ``ceil(piece / t)`` latent frames. ``4n+1`` at t=4 gives
+    ``n + 1`` (the familiar ``(F-1)//4 + 1``); ``17n+5`` at t=4 gives
+    ``5n + 2`` — 32 latent frames at 107, where ``(F-1)//4 + 1`` says 27.
+    """
+    t = max(int(temporal_ratio or 1), 1)
+    frames = max(int(num_frames or 1), 1)
+    from app.engine.components.bucketing import BucketManager
+
+    parsed = BucketManager._parse_frame_step(rule)
+    if parsed is None or frames < parsed[1]:
+        return max((frames - 1) // t + 1, 1)
+    step, offset = parsed
+    return (frames - offset) // step * -(-step // t) + -(-offset // t)
+
+
+def _token_inventory_activations_mb(
+    arch: dict,
+    config: dict[str, Any],
+    resolution: int,
+    batch_size: int,
+    grad_checkpointing: bool,
+    report: VRAMReport,
+) -> float | None:
+    """Activation MB from the sequence the transformer really sees, or ``None``
+    when the definition does not state ``transformer.residual_stream_dtype``.
+
+    Every factor is stated by the definition or the run config:
+
+    * rows = latent frames (``video.frame_rule`` / ``video.vae_temporal``) x
+      ``(resolution / video.vae_spatial / patch)²`` + audio rows
+      (``num_frames / video.frame_rate x audio.latent_rate``, the trainer's
+      ``packing.audio_latent_num_frames``) + ``te.max_length`` text rows — the
+      stated CEILING; a short caption packs fewer.
+    * checkpointing ON keeps one residual-stream boundary per layer
+      (``depth x rows x hidden x stream bytes``) plus ONE block's working set
+      for the recompute; OFF keeps every block's working set.
+
+    The working set is an INVENTORY, not a fitted scalar: the tensors one H3
+    block keeps for backward, counted per width class off the allocator
+    snapshot of the measured step (``gate5-memprofile.json``, artifact of commit
+    7cabd483: 18 805 rows; 2 x 1028.4 MB, 5 x 514.2, 2 x 385.6, 5 x 257.1,
+    11 x 192.8). 514.2 MB is both ``2 B x ffn_dim`` and ``4 B x heads x
+    head_dim`` on H3 (28 672 either way) — the snapshot cannot tell them apart
+    and the class is booked as FFN-wide. The rope tables of that snapshot
+    (~735 MB) have no stated derivation and are left out.
+    """
+    stated = arch.get("transformer.residual_stream_dtype")
+    if not stated:
+        return None
+    dtype_key = str(stated) if str(stated).startswith("torch.") else f"torch.{stated}"
+    stream_bytes = _DTYPE_BYTES.get(dtype_key)
+    if stream_bytes is None:
+        report.warnings.append(
+            f"Unknown transformer.residual_stream_dtype '{stated}' — activation estimate "
+            f"falls back to the generic term."
+        )
+        return None
+
+    hidden = int(arch.get("transformer.hidden_size") or arch.get("hidden_size") or 0)
+    depth = int(arch.get("depth") or 0)
+    ffn = int(arch.get("transformer.ffn_dim") or 0)
+    attn = int(arch.get("transformer.num_attention_heads") or 0) * int(
+        arch.get("transformer.attention_head_dim") or 0
+    )
+    if min(hidden, depth, ffn, attn) <= 0:
+        report.warnings.append(
+            "transformer.residual_stream_dtype is stated without hidden_size / depth / "
+            "ffn_dim / attention dims — activation estimate falls back to the generic term."
+        )
+        return None
+
+    patch = [*list(arch.get("transformer.patch_size") or []), 1, 1, 1][:3]
+    pt, ph, pw = (max(int(v), 1) for v in patch)
+    vae_spatial = max(int(arch.get("video.vae_spatial", 8) or 8), 1)
+    num_frames = int(config.get("num_frames", 1) or 1)
+    latent_frames = _latent_frames_for_rule(
+        num_frames, arch.get("video.frame_rule"), int(arch.get("video.vae_temporal", 1) or 1)
+    )
+    rows = (
+        max(latent_frames // pt, 1)
+        * (resolution // vae_spatial // ph)
+        * (resolution // vae_spatial // pw)
+    )
+    fps = float(arch.get("video.frame_rate") or 0)
+    audio_rate = float(arch.get("audio.latent_rate") or 0)
+    if arch.get("has_audio") and fps > 0 and audio_rate > 0:
+        rows += max(int(round(num_frames / fps * audio_rate)), 1)
+    rows += int(arch.get("te.max_length") or 0)
+
+    block_bytes_per_row = (
+        2 * 4 * ffn  # fp32, FFN-wide
+        + 5 * 2 * ffn  # bf16, FFN-wide (see the docstring on this class)
+        + 2 * stream_bytes * hidden  # residual-stream copies
+        + 5 * 2 * attn  # bf16 q / k / v / attention output
+        + 11 * 2 * hidden  # bf16, hidden-wide
+    )
+    boundary_bytes_per_row = stream_bytes * hidden
+    if grad_checkpointing:
+        per_row = depth * boundary_bytes_per_row + block_bytes_per_row
+    else:
+        per_row = depth * block_bytes_per_row
+    return rows * per_row * max(int(batch_size), 1) / (1024 * 1024)
 
 
 def _resolve_caps(definition: Any) -> dict:

@@ -11,10 +11,17 @@ IS present, so a broken enumerator that returns nothing cannot pass.
 
 Origin: job ``5677403c`` was created, queued and started against
 ``minimax-h3-t2va`` and failed 90s in with "minimax_h3 training lands in PR1;
-PR0 ships the scaffold only." (``families/minimax_h3/trainer.py:39``).
+PR0 ships the scaffold only." (the PR0 ``families/minimax_h3/trainer.py``).
+
+LANE-92 rows 5.0/5.1: the PR0 world ("all three gated") is replaced by the
+EXPLICIT MATRIX below. Every test is parameterised from the matrix's two sets;
+nothing else in this file names an id as "the gated one" or "the available
+one", so flipping one cell leaves no contradicting literal behind.
 """
 
 from __future__ import annotations
+
+from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
@@ -23,33 +30,100 @@ from app.core.job_manager import job_manager
 from app.engine.core.definitions import ModelDefinition
 from app.engine.models.registry import registry
 
-# The three PR0 scaffold definitions gated for this release (ECOSYSTEM §6:
-# family `minimax_h3`; definitions `minimax-h3-t2va`, `minimax-h3-fl2va`,
-# `minimax-h3-ref2va`).
-GATED_IDS = frozenset(
-    {"minimax-h3-t2va", "minimax-h3-fl2va", "minimax-h3-ref2va"}
+H3_FAMILY = "minimax_h3"
+
+# The three FROZEN ids (ECOSYSTEM §6) — a literal, never derived.
+H3_ALL_IDS = frozenset({"minimax-h3-t2va", "minimax-h3-fl2va", "minimax-h3-ref2va"})
+
+# The matrix. ``None`` = available; a string = gated, the gist of why (the
+# shipped wording lives in the YAML and is pinned by REASON_MUST_MENTION).
+EXPECTED_AVAILABILITY: dict[str, str | None] = {
+    # available: GATE-0..3 `status=pass`, the LoRA trains and saves (LANE-92 It2-It4)
+    "minimax-h3-t2va": None,
+    # gated: first/last-frame conditioning rows not yet wired (It6 -> PR1b / LANE-99)
+    "minimax-h3-fl2va": "first/last-frame conditioning rows not yet wired (It6)",
+    # gated: reference packing path unbuilt + its own fine-tune ungated
+    "minimax-h3-ref2va": "reference-block packing path unbuilt; checkpoint ungated",
+}
+assert set(EXPECTED_AVAILABILITY) == H3_ALL_IDS  # every frozen id, no more, no fewer
+GATED_IDS = frozenset(k for k, v in EXPECTED_AVAILABILITY.items() if v)
+AVAILABLE_H3_IDS = H3_ALL_IDS - GATED_IDS
+
+# Row 4.4's `Verdict:` line, copied verbatim from
+# `_harness/research/minimax-h3-context-ir.md:19` (ONE producer of the fact).
+CONTEXT_IR_VERDICT = "NOT REQUIRED"
+CONTEXT_IR_VERDICTS = ("REQUIRED", "NOT REQUIRED", "UNDETERMINED")
+
+H3_DEFINITIONS_DIR = (
+    Path(__file__).resolve().parents[1]
+    / "app/engine/models/families/minimax_h3/definitions"
 )
-GATED_FAMILY = "minimax_h3"
+
+
+def ref2va_reason_rules(verdict: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """(must mention, must not mention) for ref2va's reason under a Context-IR
+    verdict. The must-not list pins OUT the two claims the shipped PR0 string
+    made and the research report falsified: that a needed component is "not
+    publicly available", and (since It2) that training is "not built yet"."""
+    must = ("reference", "packing")
+    must_not = ("not publicly available", "not built yet either")
+    if verdict == "REQUIRED":
+        # A required separate component is NAMED; `encoder` is allowed.
+        return must + ("H3-Context-IR",), must_not
+    if verdict == "UNDETERMINED":
+        # The string says the question is open and claims nothing.
+        return must + ("not settled",), must_not + ("encoder",)
+    # NOT REQUIRED: a packing path over the same transformer, no encoder.
+    return must, must_not + ("encoder",)
+
+
+REASON_MUST_MENTION: dict[str, tuple[str, ...]] = {
+    # "ignore": DECISION-26 — the string must say the frames would be IGNORED,
+    # not merely that something is unfinished.
+    "minimax-h3-fl2va": ("first", "last", "It6", "ignore"),
+    "minimax-h3-ref2va": ref2va_reason_rules(CONTEXT_IR_VERDICT)[0],
+}
+REASON_MUST_NOT_MENTION: dict[str, tuple[str, ...]] = {
+    # Training IS built since It2 — the PR0 clause is false for every sibling.
+    "minimax-h3-fl2va": ("not built yet either",),
+    "minimax-h3-ref2va": ref2va_reason_rules(CONTEXT_IR_VERDICT)[1],
+}
+# A stale entry for an id that became available fails at collection.
+assert set(REASON_MUST_MENTION) == GATED_IDS
+assert set(REASON_MUST_NOT_MENTION) <= GATED_IDS
+
+
+def _flat(text: str) -> str:
+    return " ".join(text.lower().split())
+
+
+def _check_reason(reason: str, must: tuple[str, ...], must_not: tuple[str, ...]) -> None:
+    lowered = _flat(reason)
+    # The falsified claims first, so a regression to a PR0 string is NAMED.
+    for token in must_not:
+        assert token.lower() not in lowered, (
+            f"the reason still makes the falsified claim {token!r}: {reason!r}"
+        )
+    for token in must:
+        assert token.lower() in lowered, f"the reason omits {token!r}: {reason!r}"
 
 
 @pytest.fixture(scope="module")
 def control_id() -> str:
-    """A real, shipped, NON-gated definition id — the positive control.
+    """A real, shipped, NON-gated, non-H3 definition id — the positive control.
 
     Derived from the registry rather than hardcoded so the control cannot rot
-    when a definition is renamed; asserted non-gated so it can never silently
-    become a second gated id and turn the control into a tautology.
+    when a definition is renamed; asserted outside the matrix so it can never
+    silently become one of the ids under test and turn into a tautology.
     """
     registry.initialize()
     available = sorted(
         did
         for did, defn in registry._definitions.items()
-        if not getattr(defn, "unavailable_reason", None)
+        if not getattr(defn, "unavailable_reason", None) and did not in H3_ALL_IDS
     )
     assert available, "no available definitions at all — registry did not load"
-    control = available[0]
-    assert control not in GATED_IDS
-    return control
+    return available[0]
 
 
 @pytest.fixture(scope="module")
@@ -69,6 +143,7 @@ def discovered_plugins() -> None:
 def control_family(control_id: str) -> str:
     defn = registry.get_definition(control_id)
     assert defn is not None
+    assert defn.family != H3_FAMILY
     return defn.family
 
 
@@ -81,88 +156,145 @@ def test_unavailable_reason_defaults_to_available() -> None:
     assert defn.unavailable_reason is None
 
 
-def test_all_three_minimax_definitions_carry_a_reason() -> None:
+def test_the_matrix_is_not_vacuous() -> None:
+    """Both arms of every parameterised test below must have a population at
+    It5: one available id and two gated ones. (Row 6.3 flips fl2va and edits
+    this count in the same change.)"""
+    assert len(AVAILABLE_H3_IDS) == 1 and len(GATED_IDS) == 2
+
+
+@pytest.mark.parametrize("did", sorted(GATED_IDS))
+def test_gated_definition_carries_a_reason(did: str) -> None:
     """The gate is declarative and states WHY — an empty gate is not a gate."""
     registry.initialize()
-    for did in sorted(GATED_IDS):
-        defn = registry.get_definition(did)
-        assert defn is not None, f"{did} vanished from the registry entirely"
-        reason = defn.unavailable_reason
-        assert reason, f"{did} is not gated (unavailable_reason={reason!r})"
-        assert len(reason) > 20, f"{did}'s reason is not an honest message: {reason!r}"
+    defn = registry.get_definition(did)
+    assert defn is not None, f"{did} vanished from the registry entirely"
+    reason = defn.unavailable_reason
+    assert reason, f"{did} is not gated (unavailable_reason={reason!r})"
+    assert len(reason) > 20, f"{did}'s reason is not an honest message: {reason!r}"
 
 
-def test_the_three_reasons_are_distinct_per_definition() -> None:
-    """PER-DEFINITION, not one family-level string.
-
-    The three definitions are gated for different reasons and clear on
-    different events: t2va is the base case (the trainer is unbuilt) and clears
-    with it; fl2va additionally is not a first/last-frame model at all; ref2va's
-    reference path is not merely unbuilt but unanswered (the reference encoder
-    is closed-source), so it may stay gated after the other two clear. A single
-    shared string cannot express that and would have to be rewritten the moment
-    one of them clears — so pin that they stay distinct.
-    """
+@pytest.mark.parametrize("did", sorted(AVAILABLE_H3_IDS))
+def test_available_definition_carries_no_reason(did: str) -> None:
+    """The POSITIVE arm: the ungating happened, per available id."""
     registry.initialize()
+    defn = registry.get_definition(did)
+    assert defn is not None, f"{did} vanished from the registry entirely"
+    assert not defn.unavailable_reason, (
+        f"{did} is still gated: {defn.unavailable_reason!r}"
+    )
+
+
+def test_the_reasons_are_distinct_per_definition() -> None:
+    """PER-DEFINITION, not one family-level string: the gated definitions are
+    gated for different reasons and clear on different events (fl2va on its
+    first/last-frame conditioning rows, ref2va on its reference-block packing
+    path and its own checkpoint's gate). A single shared string cannot express
+    that and would have to be rewritten the moment one of them clears."""
+    registry.initialize()
+    if len(GATED_IDS) < 2:
+        pytest.skip("one gated id left — distinctness has no population")
     reasons = {
         did: registry.get_definition(did).unavailable_reason for did in GATED_IDS
     }
-    assert len(set(reasons.values())) == 3, (
-        "the three gate strings collapsed into a shared family-level message: "
-        f"{reasons}"
+    assert len(set(reasons.values())) == len(GATED_IDS), (
+        f"the gate strings collapsed into a shared family-level message: {reasons}"
     )
 
 
-def test_each_reason_is_honest_about_its_own_definition() -> None:
+@pytest.mark.parametrize("did", sorted(GATED_IDS))
+def test_each_reason_is_honest_about_its_own_definition(did: str) -> None:
     """DECISION-26's finding: presenting fl2va as a first/last-frame model is
-    worse than not shipping it. ``minimax_h3_fl2va.yaml`` declares
-    ``mode: both`` with a PR1 marker and NOTHING behind it — no conditioning-
-    frame injection, no dedicated parameters — while ``minimax_h3_t2va.yaml:42``
-    honestly declares ``mode: t2v``. The user-visible string must say so.
-    """
+    worse than not shipping it, and REQUEST-13's: a false reason is worse than
+    none. Honesty is asserted only for definitions that still carry a reason."""
     registry.initialize()
-
-    fl2va = registry.get_definition("minimax-h3-fl2va").unavailable_reason.lower()
-    assert "first" in fl2va and "last" in fl2va, (
-        "fl2va's reason must name first/last-frame conditioning as the missing "
-        f"thing: {fl2va!r}"
-    )
-    assert "ignore" in fl2va or "not a first" in fl2va, (
-        "fl2va's reason must say the frames would be IGNORED, not merely that "
-        f"something is unfinished: {fl2va!r}"
-    )
-
-    ref2va = registry.get_definition("minimax-h3-ref2va").unavailable_reason.lower()
-    assert "reference" in ref2va, f"ref2va's reason must name it: {ref2va!r}"
-
-    # The base case must NOT claim a conditioning defect it does not have:
-    # t2va's `mode: t2v` is accurate, so its only blocker is the trainer.
-    t2va = registry.get_definition("minimax-h3-t2va").unavailable_reason.lower()
-    assert "first" not in t2va and "reference" not in t2va, (
-        f"t2va's reason describes a defect it does not have: {t2va!r}"
-    )
-    assert "train" in t2va
+    reason = registry.get_definition(did).unavailable_reason
+    assert reason
+    _check_reason(reason, REASON_MUST_MENTION[did], REASON_MUST_NOT_MENTION.get(did, ()))
 
 
-def test_gates_clear_independently_of_each_other() -> None:
-    """Ungating one definition must not ungate its siblings — the PR1 concept
-    clears t2va ALONE while fl2va and ref2va may stay gated permanently."""
+def test_ref2va_reason_is_true_today() -> None:
+    """REQUEST-13: ref2va's PR0 reason was FALSE (it blamed an unpublished
+    "reference encoder" and an unbuilt trainer). Pin the MEANING of the true
+    one: what is missing is the reference-block PACKING path in this app and a
+    gate for the ref2va checkpoint — nothing upstream withholds."""
     registry.initialize()
-    t2va = registry.get_definition("minimax-h3-t2va")
-    original = t2va.unavailable_reason
+    reason = registry.get_definition("minimax-h3-ref2va").unavailable_reason
+    assert reason
+    _check_reason(reason, *ref2va_reason_rules(CONTEXT_IR_VERDICT))
+    lowered = _flat(reason)
+    # WHAT is missing, and where: unbuilt HERE, not unpublished upstream.
+    assert "is not built" in lowered, reason
+    assert "published" in lowered, "must say the model components ARE published"
+    assert "has not been validated by a gate" in lowered, reason
+    # The honest alternative is named, and it is the one that trains.
+    assert "minimax-h3-t2va" in lowered, reason
+
+
+def test_context_ir_verdict_is_one_of_three() -> None:
+    assert CONTEXT_IR_VERDICT in CONTEXT_IR_VERDICTS
+
+
+@pytest.mark.parametrize("verdict", CONTEXT_IR_VERDICTS)
+def test_ref2va_reason_rules_over_every_verdict(verdict: str) -> None:
+    """The rule itself, over all three verdicts — so a reason row 5.0 permits
+    can never fail row 5.1, whichever way row 4.4 had come out."""
+    must, must_not = ref2va_reason_rules(verdict)
+    assert {"reference", "packing"} <= set(must)
+    assert {"not publicly available", "not built yet either"} <= set(must_not)
+    if verdict == "REQUIRED":
+        assert "H3-Context-IR" in must
+        assert "encoder" not in must_not
+    else:
+        assert "H3-Context-IR" not in must
+        assert "encoder" in must_not
+    assert ("not settled" in must) == (verdict == "UNDETERMINED")
+
+
+def test_ref2va_yaml_comments_point_at_the_reason_instead_of_claiming() -> None:
+    """RULE-21, ONE producer: the gating fact lives in ``unavailable_reason``
+    and the research report; the YAML comments point there. The two greps are
+    the shapes the four falsified comments had."""
+    text = (H3_DEFINITIONS_DIR / "minimax_h3_ref2va.yaml").read_text(encoding="utf-8")
+    assert text.count("closed-source") == 0
+    assert text.count("H3-Context-IR is") == 0
+    assert "minimax-h3-context-ir.md" in text, "the comments no longer point at the report"
+
+
+@pytest.mark.parametrize("did", sorted(AVAILABLE_H3_IDS))
+def test_available_definition_promises_no_conditioning_it_lacks(did: str) -> None:
+    """The UI-facing texts of an offered definition (its name, its description
+    when it has one) must not promise reference or first/last-frame
+    conditioning: only plain text-to-video(+audio) went through the gates."""
+    registry.initialize()
+    defn = registry.get_definition(did)
+    shown = _flat(f"{defn.name} {getattr(defn, 'description', '') or ''}")
+    for promise in ("reference", "first", "last frame", "image"):
+        assert promise not in shown, f"{did} promises {promise!r}: {shown!r}"
+    assert defn.architecture_params.get("mode") == "t2v"
+
+
+@pytest.mark.parametrize("did", sorted(GATED_IDS))
+def test_gates_clear_independently_of_each_other(did: str) -> None:
+    """Clearing ONE gate must take effect for that id and change nothing for
+    any other: every OTHER gated id stays gated, every available id stays
+    available."""
+    registry.initialize()
+    defn = registry.get_definition(did)
+    original = defn.unavailable_reason
     try:
-        t2va.unavailable_reason = None
+        defn.unavailable_reason = None
         available = set(registry.list_available_models())
-        assert "minimax-h3-t2va" in available, "clearing one gate did not take effect"
-        assert "minimax-h3-fl2va" not in available, "clearing t2va leaked fl2va"
-        assert "minimax-h3-ref2va" not in available, "clearing t2va leaked ref2va"
+        assert did in available, "clearing one gate did not take effect"
+        assert not (available & (GATED_IDS - {did})), "clearing one gate leaked a sibling"
+        assert AVAILABLE_H3_IDS <= available
     finally:
-        t2va.unavailable_reason = original
+        defn.unavailable_reason = original
     assert set(registry.list_available_models()) & GATED_IDS == set()
 
 
 def test_no_other_shipped_definition_is_gated(control_id: str) -> None:
-    """Blast radius: exactly the three, nothing else."""
+    """Blast radius: exactly the matrix's gated set, nothing else."""
     registry.initialize()
     gated = {
         did
@@ -175,148 +307,210 @@ def test_no_other_shipped_definition_is_gated(control_id: str) -> None:
 # ── Internal registries stay complete (the coverage sweeps must keep passing) ──
 
 
-def test_registry_internals_still_enumerate_the_gated_family() -> None:
+def test_registry_internals_still_enumerate_the_whole_family() -> None:
     """``_definitions`` / ``list_models()`` are the INTERNAL view and must keep
     every definition: the registry-wide coverage tables enumerate them to catch
-    a family that misses a surface. A gate that empties those tables destroys
-    the guard that makes ungating safe."""
+    a family that misses a surface. All three FROZEN ids, regardless of the
+    matrix — shrinking ``GATED_IDS`` must not delete this coverage."""
     registry.initialize()
     all_ids = set(registry.list_models())
-    assert GATED_IDS <= all_ids, f"gate leaked into the registry: {GATED_IDS - all_ids}"
-    assert GATED_IDS <= set(registry._definitions)
+    assert H3_ALL_IDS <= all_ids, f"gate leaked into the registry: {H3_ALL_IDS - all_ids}"
+    assert H3_ALL_IDS <= set(registry._definitions)
     # The family class is still registered and constructible.
-    assert registry.get_family_class(GATED_FAMILY) is not None
+    assert registry.get_family_class(H3_FAMILY) is not None
 
 
 def test_available_accessors_are_the_gated_view(control_id: str) -> None:
     registry.initialize()
     available = set(registry.list_available_models())
     assert not (available & GATED_IDS), "gated ids leaked into list_available_models"
+    assert AVAILABLE_H3_IDS <= available, (
+        f"ungated ids missing: {AVAILABLE_H3_IDS - available}"
+    )
     assert control_id in available, "positive control missing — accessor returns nothing?"
     assert set(registry.available_definitions()) == available
     assert registry.is_definition_available(control_id) is True
     for did in GATED_IDS:
         assert registry.is_definition_available(did) is False
+    for did in AVAILABLE_H3_IDS:
+        assert registry.is_definition_available(did) is True
 
 
 # ── User-facing enumeration surface 1: GET /api/models/definitions ────────
 
 
-def test_models_definitions_route_hides_gated(
+def _assert_surface(ids: set[str], control_id: str, surface: str) -> None:
+    assert control_id in ids, f"{surface}: positive control absent — enumerator returned nothing"
+    assert not (ids & GATED_IDS), f"{surface}: gated definitions leaked: {ids & GATED_IDS}"
+    assert AVAILABLE_H3_IDS <= ids, (
+        f"{surface}: ungated definitions missing: {AVAILABLE_H3_IDS - ids}"
+    )
+
+
+def test_models_definitions_route_serves_exactly_the_available(
     client: TestClient, control_id: str
 ) -> None:
+    registry.initialize()
     resp = client.get("/api/models/definitions")
     assert resp.status_code == 200
-    ids = {d["id"] for d in resp.json()}
-    assert control_id in ids, "positive control absent — enumerator returned nothing"
-    assert not (ids & GATED_IDS), f"gated definitions leaked: {ids & GATED_IDS}"
+    _assert_surface({d["id"] for d in resp.json()}, control_id, "models/definitions")
 
 
 # ── User-facing enumeration surface 2: GET /api/caption-context/definitions ──
 
 
-def test_caption_context_definitions_route_hides_gated(
+def test_caption_context_definitions_route_serves_exactly_the_available(
     client: TestClient, control_id: str
 ) -> None:
+    registry.initialize()
     resp = client.get("/api/caption-context/definitions")
     assert resp.status_code == 200
-    ids = {d["id"] for d in resp.json()}
-    assert control_id in ids, "positive control absent — enumerator returned nothing"
-    assert not (ids & GATED_IDS), f"gated definitions leaked: {ids & GATED_IDS}"
+    _assert_surface(
+        {d["id"] for d in resp.json()}, control_id, "caption-context/definitions"
+    )
 
 
 # ── User-facing enumeration surface 3: the training form's schema enums ───
 
 
-def test_plugin_schema_enums_hide_gated(
+def test_plugin_schema_enums_serve_exactly_the_available(
     client: TestClient, control_id: str, control_family: str, discovered_plugins: None
 ) -> None:
     """``TrainingPlugin.enrich_schema`` builds the model picker: the
     ``definition_id`` enum, its ``enum_labels``, its ``backend_map`` (family ->
     definitions) and ``edit_map``, plus the ``model_family`` enum."""
+    registry.initialize()
     resp = client.get("/api/plugins/standard/schema")
     assert resp.status_code == 200
     props = resp.json()["properties"]
 
     defs_prop = props["definition_id"]
     enum = defs_prop["enum"]
-    assert control_id in enum, "positive control absent — enricher returned nothing"
-    assert not (set(enum) & GATED_IDS), f"gated ids in definition_id enum: {enum}"
+    _assert_surface(set(enum), control_id, "definition_id enum")
     # enum_labels is positional: a filter applied to one list and not the other
     # would mislabel every entry after the first gated one.
     assert len(defs_prop["enum_labels"]) == len(enum)
     assert not (set(defs_prop["edit_map"]) & GATED_IDS)
     backend_map = defs_prop["backend_map"]
-    assert GATED_FAMILY not in backend_map, "gated family in the picker's backend_map"
+    # The family reached the picker with EXACTLY the available ids (derived,
+    # no ordering claim) — or not at all when none is available.
+    h3_in_map = backend_map.get(H3_FAMILY, [])
+    assert set(h3_in_map) == AVAILABLE_H3_IDS
+    assert len(h3_in_map) == len(AVAILABLE_H3_IDS)
+    assert (H3_FAMILY in backend_map) == bool(AVAILABLE_H3_IDS)
     assert control_family in backend_map
     assert control_id in backend_map[control_family]
     assert defs_prop["default"] not in GATED_IDS
 
     fam_prop = props["model_family"]
     assert control_family in fam_prop["enum"], "positive control family absent"
-    assert GATED_FAMILY not in fam_prop["enum"], "gated family in model_family enum"
+    assert (H3_FAMILY in fam_prop["enum"]) == bool(AVAILABLE_H3_IDS)
     assert len(fam_prop["enum_labels"]) == len(fam_prop["enum"])
-    assert fam_prop["default"] != GATED_FAMILY
 
 
 # ── Belt and braces: the job seam refuses, it is not merely hidden ────────
 
 
-def test_job_guard_refuses_gated_and_passes_control(control_id: str) -> None:
-    """The shared guard: raises for a gated id, silent for a normal one."""
+def test_job_guard_passes_control_and_unknown(control_id: str) -> None:
     registry.initialize()
     assert job_manager._require_available_definition(control_id) is None
     assert job_manager._require_available_definition(None) is None
     assert job_manager._require_available_definition("__no_such_definition__") is None
-    for did in sorted(GATED_IDS):
-        with pytest.raises(ValueError) as exc:
-            job_manager._require_available_definition(did)
-        assert did in str(exc.value)
-        assert "PR1" in str(exc.value) or "cannot be trained" in str(exc.value)
 
 
-def test_create_job_route_refuses_gated_definition(client: TestClient) -> None:
+@pytest.mark.parametrize("did", sorted(GATED_IDS))
+def test_job_guard_refuses_gated(did: str) -> None:
+    registry.initialize()
+    with pytest.raises(ValueError) as exc:
+        job_manager._require_available_definition(did)
+    assert did in str(exc.value)
+    assert "cannot be trained" in str(exc.value)
+
+
+@pytest.mark.parametrize("did", sorted(AVAILABLE_H3_IDS))
+def test_job_guard_admits_available(did: str) -> None:
+    registry.initialize()
+    assert job_manager._require_available_definition(did) is None
+
+
+@pytest.mark.parametrize("did", sorted(GATED_IDS))
+def test_create_job_route_refuses_gated_definition(client: TestClient, did: str) -> None:
     """A hidden-but-reachable endpoint is how this comes back: POST /api/jobs
     must answer 400 with an honest message, not queue a job that cannot run."""
+    registry.initialize()
+    before = len(job_manager._jobs)
+    resp = client.post(
+        "/api/jobs",
+        json={
+            "plugin_id": "standard",
+            "config": {"definition_id": did, "lora_name": "__gate_probe"},
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert did in detail
+    assert "cannot be trained" in detail
+    assert len(job_manager._jobs) == before, "a refused job was still registered"
+
+
+@pytest.mark.parametrize("did", sorted(AVAILABLE_H3_IDS))
+def test_create_job_route_admits_available_definition(client: TestClient, did: str) -> None:
+    """Admission, proven without leaving a job behind: the request carries a
+    frame count that breaks the family's ``17n+5`` rule, so it is refused by
+    the VIDEO CONTRACT — the step right after the availability guard in
+    ``create_job``. Whatever fails, fails later than the gate."""
+    registry.initialize()
     before = len(job_manager._jobs)
     resp = client.post(
         "/api/jobs",
         json={
             "plugin_id": "standard",
             "config": {
-                "definition_id": "minimax-h3-t2va",
+                "definition_id": did,
                 "lora_name": "__gate_probe",
+                "num_frames": 98,  # 98 % 17 == 13, not 5
             },
         },
     )
     assert resp.status_code == 400, resp.text
     detail = resp.json()["detail"]
-    assert "minimax-h3-t2va" in detail
-    assert "PR1" in detail or "cannot be trained" in detail
-    assert len(job_manager._jobs) == before, "a refused job was still registered"
+    assert "cannot be trained" not in detail, detail
+    assert "17n+5" in detail, f"not the video contract's refusal: {detail!r}"
+    assert len(job_manager._jobs) == before, "the probe left a job behind"
 
 
-def test_start_job_refuses_gated_definition(control_id: str) -> None:
+def _start_with_bogus_plugin(did: str) -> pytest.ExceptionInfo:
+    from app.core.job_manager import Job
+
+    job = Job.create("__no_such_plugin__", {"definition_id": did})
+    job_manager._jobs[job.id] = job
+    try:
+        with pytest.raises(ValueError) as exc:
+            job_manager.start_job(job.id)
+    finally:
+        job_manager._jobs.pop(job.id, None)
+    return exc
+
+
+@pytest.mark.parametrize("did", sorted(GATED_IDS))
+def test_start_job_refuses_gated_definition(did: str, control_id: str) -> None:
     """``start_job`` is the seam every auto-start path funnels through
     (``advance_queue``, ``restart_job``, crash recovery), and the one that
     triggers the multi-hundred-GB preflight download."""
-    from app.core.job_manager import Job
+    registry.initialize()
+    message = str(_start_with_bogus_plugin(did).value)
+    assert did in message and "cannot be trained" in message
 
-    gated = Job.create("__no_such_plugin__", {"definition_id": "minimax-h3-t2va"})
-    control = Job.create("__no_such_plugin__", {"definition_id": control_id})
-    job_manager._jobs[gated.id] = gated
-    job_manager._jobs[control.id] = control
-    try:
-        with pytest.raises(ValueError) as exc:
-            job_manager.start_job(gated.id)
-        assert "minimax-h3-t2va" in str(exc.value)
+    # Positive control: the SAME call for a normal definition gets past the
+    # availability guard and dies at the next gate (the bogus plugin),
+    # proving the guard is a filter and not a blanket refusal.
+    assert "__no_such_plugin__" in str(_start_with_bogus_plugin(control_id).value)
 
-        # Positive control: the SAME call for a normal definition gets past the
-        # availability guard and dies at the next gate (the bogus plugin),
-        # proving the guard is a filter and not a blanket refusal.
-        with pytest.raises(ValueError) as exc2:
-            job_manager.start_job(control.id)
-        assert "__no_such_plugin__" in str(exc2.value)
-    finally:
-        job_manager._jobs.pop(gated.id, None)
-        job_manager._jobs.pop(control.id, None)
+
+@pytest.mark.parametrize("did", sorted(AVAILABLE_H3_IDS))
+def test_start_job_admits_available_definition(did: str) -> None:
+    """An available H3 id dies at the bogus plugin exactly like the control."""
+    registry.initialize()
+    message = str(_start_with_bogus_plugin(did).value)
+    assert "cannot be trained" not in message
+    assert "__no_such_plugin__" in message

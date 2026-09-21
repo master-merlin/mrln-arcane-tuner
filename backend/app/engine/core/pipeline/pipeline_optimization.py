@@ -331,8 +331,21 @@ class PipelineOptimizationMixin:
             if pct <= 0:
                 continue
 
-            attr = getattr(model, group["attr_path"], None)
+            # attr_path may be DOTTED (a nested group such as
+            # token_refiner.refiner_blocks); a requested group that does not
+            # resolve is said out loud, never skipped in silence.
+            attr = model
+            for part in str(group["attr_path"]).split("."):
+                attr = getattr(attr, part, None)
+                if attr is None:
+                    break
             if attr is None:
+                self.logger.warning(
+                    "block_swap_group_unresolved",
+                    group=group["name"],
+                    attr_path=group["attr_path"],
+                    pct=pct,
+                )
                 continue
 
             total_blocks = len(list(attr))
@@ -356,7 +369,8 @@ class PipelineOptimizationMixin:
                 pct=pct,
                 swapped=count,
                 total=total_blocks,
-                approx_vram_saved_mb=count * group["approx_vram_mb"],
+                # A log line never ends a run: the blocks above are already swapped.
+                approx_vram_saved_mb=count * int(group.get("approx_vram_mb") or 0),
             )
 
     # ── Targeted Layer Training ──────────────────────────────────────────

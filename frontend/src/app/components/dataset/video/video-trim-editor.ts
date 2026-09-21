@@ -1,6 +1,7 @@
-import { ChangeDetectionStrategy, Component, computed, effect, input, output, signal } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, effect, inject, input, output, signal } from '@angular/core';
 import { IcoComponent } from '../../../icons/ico.component';
-import { FRAME_FAMILIES, estimateFrames, passesFamily } from './frame-rules';
+import { ModelContextStore } from '../../../state/model-context.store';
+import { type ClipFrames, clipFrames, fpsLabel, frameRulesFor, parseFrameRule, passesRule, ruleOutcome } from './frame-rules';
 
 /** Committed trim window (seconds); nulls mean "no bound on that side". */
 export interface TrimChange { start: number | null; end: number | null }
@@ -9,8 +10,8 @@ export interface TrimChange { start: number | null; end: number | null }
  * Dual-thumb trim editor for a single video clip.
  *
  * Two range inputs select the effective [start, end] window inside the clip's
- * duration. The editor shows the effective frame count and per-family pass/fail
- * chips (4n+1 / 8n+1) computed inline from the window, plus "set from playhead"
+ * duration. The editor shows the effective frame count and per-rule pass/fail
+ * chips (the active definition's `Nn+M` rule, or the generic rows without one) computed inline from the window, plus "set from playhead"
  * buttons that snap a bound to the supplied `currentTime`.
  *
  * Commit discipline: {@link trimChanged} fires ONLY on commit (pointerup / blur),
@@ -78,17 +79,23 @@ export interface TrimChange { start: number | null; end: number | null }
                     <span class="mono" data-testid="vte-frames">{{ effectiveFrames() || '—' }}</span>
                 </div>
                 <div class="vte-chips">
-                    @for (f of families; track f.label; let i = $index) {
+                    @for (f of families(); track f.label; let i = $index) {
                         <span class="chip"
                               [class.pass]="familyPass()[i]"
                               [class.fail]="!familyPass()[i]"
-                              [attr.data-testid]="'vte-chip-' + f.modulus"
+                              [attr.data-testid]="'vte-chip-' + f.step"
                               [title]="f.label + (familyPass()[i] ? ' OK' : ' fails')">
                             {{ f.label }}
                         </span>
                     }
                 </div>
             </div>
+            @if (clockNote(); as note) {
+                <div class="vte-note" data-testid="vte-clock-note">{{ note }}</div>
+            }
+            @if (outcome(); as o) {
+                <div class="vte-note warn" data-testid="vte-outcome">{{ o }}</div>
+            }
         </div>
     `,
     styles: [`
@@ -141,12 +148,15 @@ export interface TrimChange { start: number | null; end: number | null }
             border-color: color-mix(in oklab, var(--color-success) 35%, transparent);
         }
         .chip.fail { color: var(--color-text-muted); background: var(--color-surface-mid); }
+        .vte-note { font-size: 11px; line-height: 1.35; color: var(--color-text-muted); }
+        .vte-note.warn { color: var(--color-warning); }
     `],
 })
 export class VideoTrimEditorComponent {
     /** Clip duration in seconds — the slider extent. */
     duration = input.required<number>();
-    /** Source fps — drives the effective frame count + family verdicts. */
+    /** The FILE's fps. The verdicts are on training frames: counted on the
+     *  active definition's ingestion clock when it states one, else on this. */
     fps = input<number | undefined>(undefined);
     /** Stored trim bounds (seconds); null = no bound (full clip on that side). */
     trimStartS = input<number | null>(null);
@@ -158,7 +168,10 @@ export class VideoTrimEditorComponent {
     /** Fires ONLY on commit (pointerup / Enter / blur / button click). */
     trimChanged = output<TrimChange>();
 
-    protected readonly families = FRAME_FAMILIES;
+    private readonly modelContext = inject(ModelContextStore);
+
+    /** One row for the active definition's rule; the generic rows without one. */
+    protected readonly families = computed(() => frameRulesFor(this.modelContext.activeFrameRule()));
 
     /** Live (drag) window — initialized from the inputs, updated per-input,
      *  committed on pointerup. */
@@ -177,13 +190,36 @@ export class VideoTrimEditorComponent {
         });
     }
 
-    protected effectiveFrames = computed<number>(() =>
-        estimateFrames(this.start(), this.end(), this.fps()),
+    /** Both counts over the live window: what trains, and what the file holds. */
+    protected frames = computed<ClipFrames>(() =>
+        clipFrames(this.start(), this.end(), this.fps(), this.modelContext.activeIngestFps()),
     );
+
+    /** TRAINING frames — the number the rule chips judge. */
+    protected effectiveFrames = computed<number>(() => this.frames().training);
 
     protected familyPass = computed<boolean[]>(() => {
         const frames = this.effectiveFrames();
-        return this.families.map(f => passesFamily(frames, f));
+        return this.families().map(f => passesRule(frames, f));
+    });
+
+    /** Which count is which, shown only when the two clocks differ. */
+    protected clockNote = computed<string | null>(() => {
+        const f = this.frames();
+        if (!f.resampled || f.training <= 0) return null;
+        return `${f.training} frames at ${fpsLabel(f.clockFps)} fps, the model's clock `
+            + `(file: ${f.source} at ${fpsLabel(f.sourceFps)} fps)`;
+    });
+
+    /** What training does with an off-ladder window under the ACTIVE rule. */
+    protected outcome = computed<string | null>(() => {
+        const rule = parseFrameRule(this.modelContext.activeFrameRule());
+        const frames = this.effectiveFrames();
+        if (!rule || frames <= 0) return null;
+        const o = ruleOutcome(frames, rule);
+        if (o.skipped) return `Skipped in training: shorter than ${rule.offset}, the smallest ${rule.label} length`;
+        if (o.cut) return `${o.used} of ${frames} used: the largest ${rule.label} length`;
+        return null;
     });
 
     protected fmt(s: number): string {

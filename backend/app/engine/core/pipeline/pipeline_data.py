@@ -501,6 +501,34 @@ class PipelineDataMixin:
         dataset_kinds: dict[str, str] = {}
         edit_candidates = 0
         edit_skipped = 0
+        # The frame rule's FLOOR — the smallest clip length the model can train
+        # on: 1 for `4n+1` / `8n+1` (a still), 5 for MiniMax H3's `17n+5`; no
+        # rule → 1, so nothing is ever skipped. Parsed by the one canonical
+        # `Nn+M` parser so this floor and the bucket ladder agree.
+        from app.engine.components.bucketing import BucketManager as _RuleBM
+
+        _parsed_rule = _RuleBM._parse_frame_step(self._video_frame_rule)
+        video_frame_floor = _parsed_rule[1] if _parsed_rule else 1
+        skipped_short_clips = 0
+        # Stills skipped under a frame rule whose floor is above one frame; the
+        # count exists on the summary only for such a rule.
+        skipped_stills = 0
+        # Clips the frame rule rounded DOWN (97 -> 90 under `17n+5`): each is
+        # logged where it happens and counted on the `data_prepared` summary.
+        snapped_clips = 0
+        # A model that runs on ONE fixed clock (its audio and video positions
+        # are laid out at the definition's native fps) says so in its
+        # DEFINITION (`VideoProfile.ingest_fps` — the same value the selector
+        # route serves to the SPA): an unset ``target_fps`` then resolves to
+        # that clock instead of the clip's own fps, every clip that is
+        # resampled is logged where it happens and counted on the
+        # ``data_prepared`` summary. No statement = the clip's own fps wins,
+        # as ever, and neither the line nor the count exists.
+        from app.engine.core.video_contract import resolve_video_profile, whole_frames
+
+        _ingest_fps = _coerce_fps(resolve_video_profile(self.definition).ingest_fps)
+        fixed_clock = _ingest_fps > 0.0
+        resampled_clips = 0
 
         # ── Global augmentation config ──
         self._aug_h_flip = bool(self.config.get("h_flip", False))
@@ -644,6 +672,12 @@ class PipelineDataMixin:
                         vid_fps = vid_trim_start = vid_trim_end = None
                         vid_target_frames = 1
                         vid_target_fps = None
+                        # Every frame count in a line below is counted on the
+                        # rate the clip is TRAINED at. For a clip resampled to a
+                        # stated ingestion clock that is not the count the user
+                        # sees on the file, so the line names the clock. Empty
+                        # otherwise: those lines keep their wording.
+                        _clock_note = ""
                         if is_video:
                             duration_s = float(meta.get("duration_s") or 0.0)
                             vid_trim_start = float(meta.get("trim_start_s") or 0.0)
@@ -667,17 +701,40 @@ class PipelineDataMixin:
                             # Positive target_fps → clip's own fps → model
                             # native. Coerced so a stringified "0" can't pose as
                             # a real override and zero out the effective rate.
+                            _cfg_fps = self.config.get("target_fps")
+                            if fixed_clock and _coerce_fps(_cfg_fps) <= 0.0:
+                                # Unset under a stated ingestion clock = that
+                                # clock, never the clip's own fps.
+                                _cfg_fps = _ingest_fps
                             _base_fps = _resolve_clip_base_fps(
-                                self.config.get("target_fps"),
+                                _cfg_fps,
                                 meta.get("fps"),
                                 self._model_native_fps,
                             )
                             vid_target_fps = self._effective_fps(_base_fps)
-                            available_frames = (
-                                int(eff_dur * vid_target_fps)
-                                if vid_target_fps > 0
-                                else 0
-                            )
+                            _source_fps = _coerce_fps(meta.get("fps"))
+                            if (
+                                fixed_clock
+                                and _source_fps > 0.0
+                                and abs(_source_fps - vid_target_fps) > 1e-6
+                            ):
+                                resampled_clips += 1
+                                _clock_note = (
+                                    f" at {vid_target_fps:g} fps, the model's clock "
+                                    f"(the file is {_source_fps:g} fps)"
+                                )
+                                self.logger.info(
+                                    "clip_fps_resampled",
+                                    dataset=name,
+                                    media=img_rel,
+                                    source_fps=_source_fps,
+                                    used_fps=vid_target_fps,
+                                    message=(
+                                        f"clip is {_source_fps:g} fps; it is resampled "
+                                        f"to {vid_target_fps:g} fps, the model's clock"
+                                    ),
+                                )
+                            available_frames = whole_frames(eff_dur, vid_target_fps)
                             vid_fps = vid_target_fps
 
                         # ── Audio item detection + duration-window bucketing ──
@@ -746,6 +803,46 @@ class PipelineDataMixin:
                                     pass
 
                         bucketing_mode = self.config.get("bucketing_mode", "kohya")
+                        # A clip shorter than the frame rule's FLOOR can never be
+                        # trained: `frame_bucket_for` would hand it the smallest
+                        # bucket anyway, and the loader would then pad an
+                        # untrimmed clip by repeating frames or abort the run on
+                        # a trimmed one (`VideoClipTooShort` -> RuntimeError).
+                        # Skip it here, where the frame count is still visible.
+                        # `4n+1` / `8n+1` floors are 1, so only a family whose
+                        # rule starts above a still (H3's `17n+5`) ever skips.
+                        # The same floor applies to a STILL: it is one frame. A
+                        # model whose frame rule starts above 1 has no legal
+                        # length for it, and its video VAE is handed a 4-D
+                        # tensor it cannot encode — the pre-cache would abort
+                        # the job. Skipped here, loudly, and counted.
+                        if not is_video and video_frame_floor > 1:
+                            skipped_stills += 1
+                            self.logger.warning(
+                                "still_image_skipped",
+                                dataset=name,
+                                media=img_rel,
+                                message=(
+                                    "a still image is 1 frame; the smallest legal "
+                                    f"length is {video_frame_floor} "
+                                    f"({self._video_frame_rule}) — this model "
+                                    "trains on video clips only"
+                                ),
+                            )
+                            continue
+                        if is_video and available_frames < video_frame_floor:
+                            skipped_short_clips += 1
+                            self.logger.warning(
+                                "short_clip_skipped",
+                                dataset=name,
+                                media=img_rel,
+                                message=(
+                                    f"clip has {available_frames} frames{_clock_note}; the "
+                                    f"smallest legal length is {video_frame_floor} "
+                                    f"({self._video_frame_rule})"
+                                ),
+                            )
+                            continue
                         if is_video:
                             # Temporal bucket: pick the largest frame bucket that
                             # the trimmed clip can supply, capped at this dataset's
@@ -760,6 +857,31 @@ class PipelineDataMixin:
                                 )
                                 buckets = [vbucket]
                                 vid_target_frames = vbucket["frames"]
+                                # The frame RULE rounded this clip down: it
+                                # could supply more frames under the cap than
+                                # the ladder hands back. A cut by the cap alone
+                                # (the run's / dataset's frame setting) is the
+                                # user's own choice and is not reported here.
+                                _suppliable = min(
+                                    available_frames,
+                                    max(ds_bucket_manager.frame_buckets),
+                                )
+                                if vid_target_frames < _suppliable:
+                                    snapped_clips += 1
+                                    self.logger.info(
+                                        "clip_frames_snapped",
+                                        dataset=name,
+                                        media=img_rel,
+                                        source_frames=available_frames,
+                                        used_frames=vid_target_frames,
+                                        frame_rule=self._video_frame_rule,
+                                        message=(
+                                            f"clip has {available_frames} frames{_clock_note}; "
+                                            f"{vid_target_frames} are used, the "
+                                            "largest length the frame rule "
+                                            f"({self._video_frame_rule}) allows"
+                                        ),
+                                    )
                             else:
                                 sbucket = self.bucket_manager.get_bucket(w, h)
                                 vid_target_frames = max(
@@ -946,7 +1068,17 @@ class PipelineDataMixin:
 
         self.inventory = inventory
         if not inventory:
-            raise ValueError("No training data found in datasets.")
+            skipped = skipped_stills + skipped_short_clips
+            raise ValueError(
+                "No training data found in datasets."
+                + (
+                    f" {skipped_stills} still image(s) and {skipped_short_clips} "
+                    "clip(s) below the model's smallest legal length were skipped "
+                    f"({self._video_frame_rule})."
+                    if skipped
+                    else ""
+                )
+            )
 
         # Log masked coverage stats
         masked_count = sum(1 for i in inventory if i.get("has_masked"))
@@ -959,7 +1091,14 @@ class PipelineDataMixin:
             )
 
         self.bucket_manager.log_distribution()
-        self.logger.info("data_prepared", total_items=len(inventory))
+        self.logger.info(
+            "data_prepared",
+            total_items=len(inventory),
+            skipped_short_clips=skipped_short_clips,
+            snapped_clips=snapped_clips,
+            **({"skipped_stills": skipped_stills} if video_frame_floor > 1 else {}),
+            **({"resampled_clips": resampled_clips} if fixed_clock else {}),
+        )
 
         # Initialize LatentManager early — needed by _validate_latent_cache()
         # and _pre_cache_latents() which run before prepare_for_training().

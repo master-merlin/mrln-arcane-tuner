@@ -1,14 +1,18 @@
-"""MiniMax-H3 model driver — Task 6: non-training surface.
+"""MiniMax-H3 model driver — the family's training surface.
 
-Implements the ``IModelDriver`` methods that do NOT require the real training
-forward pass: component wiring, the curated LoRA target list, block topology,
-and loading dtype — all sourced from the ``ModelDefinition`` (Task 4), the
-single source of truth. Everything that belongs to the packed joint
-audio+video forward, the ``t = 1 - sigma`` / ``v = x0 - noise`` INVERTED
-flow-match contract (see ``family.py``'s module docstring), and LoRA saving
-lands in PR1 and raises ``NotImplementedError`` naming it explicitly — per
-the "failure is never silent" invariant, a job that somehow reaches those
-methods must fail loudly, not silently train on wrong data or produce a
+Component wiring, the curated LoRA target list, block topology and loading
+dtype are all sourced from the ``ModelDefinition``, the single source of
+truth. On top of that the driver owns every model-specific step of a training
+iteration: text encoding (the Qwen3-VL layer-50 tap, plan row 2.1) with its
+cache key, the inverted flow-match convention (row 1.2: ``t = 1 − σ``,
+``v = x₀ − noise``) with ONE ``u`` driving the video and the audio clock, the
+clean-audio batch extra (row 2.4), the joint audio+video forward on the
+packed ``[text | audio | video]`` sequence (row 2.4) with CFG augmentation as
+a run option (row 3.1), the three-number step loss (``compute_loss``), and
+the hand-off to the original-layout LoRA saver (row 2.8). No method here
+refuses as "not built"; what a method cannot do without its inputs (settings
+not applied, transformer not assigned, a missing uncond row) it raises by
+name — per the "failure is never silent" invariant it never returns a
 plausible-looking empty/None default.
 
 ``init_scheduler`` — DO NOT CHANGE without reading this
@@ -29,15 +33,19 @@ override* per ``driver_meaningfully_overrides``, which silently enrolls
 ``test_autodelegated_family_hook_set_is_exactly_expected``. The same guard
 covers every hook in the derived ``CLOBBER_HOOKS`` set (``add_noise``,
 ``build_batch_extra``, ``compute_target``, ``get_te_cache``,
-``sample_timesteps``, ``set_te_cache``, ``init_scheduler``) — this driver
-deliberately does not override ANY of them, even to raise, so they stay
-"dead but harmless" (unreachable: ``forward_pass`` — and the trainer's
-``_setup_family``, even earlier — already raise first) instead of tripping
-the same trap.
+``sample_timesteps``, ``set_te_cache``, ``init_scheduler``). PR1 row 1.2
+overrides ``add_noise`` / ``compute_target`` / ``sample_timesteps`` here AND
+delegates each explicitly from ``MiniMaxH3Trainer`` in the same commit
+(plan ordering rule 1), so the family never relies on auto-delegation and
+the reviewed allowlist stays unchanged. Any further CLOBBER hook this driver
+grows must land with its trainer delegation the same way.
 """
 
 from __future__ import annotations
 
+import hashlib
+import json
+from dataclasses import dataclass
 from typing import Any
 
 import torch
@@ -46,28 +54,38 @@ import torch.nn as nn
 from app.engine.core.definitions import ModelDefinition
 from app.engine.core.interfaces import IModelDriver
 
+from .packing import H3PackedLayout
+from .settings import H3EffectiveSettings
 
-def _lands_in_pr1(what: str) -> NotImplementedError:
-    return NotImplementedError(
-        f"minimax_h3 {what} lands in PR1; PR0 (Task 6) ships the "
-        "non-training driver surface only."
-    )
+
+@dataclass(frozen=True)
+class H3StepLoss:
+    """The three numbers one training step reports (plan row 2.4)."""
+
+    loss: torch.Tensor
+    loss_video: torch.Tensor
+    loss_audio: torch.Tensor
 
 
 class MiniMaxH3Driver(IModelDriver):
-    """MiniMax-H3 driver — non-training surface (Task 6).
+    """MiniMax-H3 driver.
 
     Handles:
     - Component wiring (tokenizer/processor, Qwen3-VL text encoder, visual
-      VAE, audio VAE, vendored transformer) per the loader manifest (Task 5).
+      VAE, audio VAE, diffusers transformer) per the loader manifest.
     - LoRA target list and block topology, both read VERBATIM from the
-      definition (Task 4) so the YAML stays the single source of truth —
+      definition so the YAML stays the single source of truth —
       pinned by ``test_definition_ships_curated_target_list_matching_driver``.
     - bf16 loading dtype (every definition's ``detected_precision`` is bf16
       throughout).
+    - Text encoding and the text-cache key, the latent-cache fingerprint and
+      the frame rule.
+    - The flow-match hooks (``sample_timesteps`` / ``add_noise`` /
+      ``compute_target`` / ``audio_timestep``), ``build_batch_extra``, the
+      packed joint ``forward_pass``, ``compute_loss`` and ``get_saver``.
 
-    Text encoding, the joint audio+video forward pass, and LoRA saving raise
-    ``NotImplementedError`` naming PR1 (see module docstring).
+    The settings-dependent methods need ``apply_settings`` first (the trainer
+    calls it once at setup) and raise naming the caller otherwise.
     """
 
     def __init__(self, definition: ModelDefinition, device: torch.device):
@@ -82,8 +100,34 @@ class MiniMaxH3Driver(IModelDriver):
         self.text_encoder: nn.Module | None = None
         self.tokenizer: Any = None
         self._components: dict[str, Any] = {}
+        # The ONE resolved settings object (row 1.0); the trainer applies it
+        # once at setup. Every consumer that needs it refuses to run without.
+        self.settings: H3EffectiveSettings | None = None
+        self._layouts: dict[tuple[Any, ...], H3PackedLayout] = {}
+
+    def apply_settings(self, settings: H3EffectiveSettings) -> None:
+        self.settings = settings
+
+    def _require_settings(self, what: str) -> H3EffectiveSettings:
+        if self.settings is None:
+            raise RuntimeError(
+                f"minimax_h3 {what}: H3EffectiveSettings not applied — the trainer "
+                "must call driver.apply_settings(resolve_h3_settings(...)) at setup"
+            )
+        return self.settings
 
     # --- Phase 1: Loading & Component Access ---
+
+    def step0_banner(self, u_seed: int | None) -> str:
+        """The ONE line that tells a log reader what this run trains under
+        (row 3.2): every effective setting WITH the producer that won it
+        (``config`` / ``definition`` / ``schema_default`` / ``family_default``
+        / ``train_audio_off``) and the seed of the ``u`` draw (``unseeded``
+        when the run carries none). Printed by the trainer before step 0."""
+        items = self._require_settings("step0_banner").banner_items()
+        parts = [f"{label}={value} ({source})" for label, value, source in items]
+        parts.append(f"u_seed={'unseeded' if u_seed is None else int(u_seed)}")
+        return "h3_settings " + " ".join(parts)
 
     def assign_components(self, components: dict[str, Any]) -> None:
         """Wire loaded MiniMax-H3 components into driver state.
@@ -92,7 +136,7 @@ class MiniMaxH3Driver(IModelDriver):
         (processor, never moved to device), ``text_encoder`` (Qwen3-VL-32B,
         cached then unloaded before the DiT loads), ``vae`` (visual),
         ``audio_vae`` (MONO — run once per stereo channel), ``transformer``
-        (vendored; ``transformer`` or ``transformer_ref`` subfolder per
+        (diffusers' class; ``transformer`` or ``transformer_ref`` subfolder per
         definition).
         """
         self._components = components
@@ -137,12 +181,222 @@ class MiniMaxH3Driver(IModelDriver):
         ``detected_precision``: text_encoder/vae/unet all ``torch.bfloat16``)."""
         return torch.bfloat16
 
-    # --- Phase 2: Text Encoding ---
+    # --- Phase 2: Text Encoding (plan row 2.1) ---
+    #
+    # Evidence for the tap: MiniMax-H3 README "The H3-Encoder uses the full
+    # pretrained weights of Qwen3-VL-32B and provides the hidden states from
+    # its 50th layer" (research §4); ai-toolkit `text_encoder.py` "the
+    # **unnormalized** hidden_states[50] … hidden_states[0] is the embedding
+    # output". transformers 5.14.1 (installed; probed on a tiny Qwen3-VL,
+    # `.agent/workdir/minimax-pr1/hs_probe.py`): `hidden_states` has
+    # `num_hidden_layers + 1` entries, `[0]` == the input embeddings, only
+    # `[-1]` carries the final RMSNorm — so `[50]` on the 64-layer stack is
+    # decoder layer 49's raw output, exactly the conditioning H3 was trained on.
+    # Presentation: raw tokens, no chat template, no special tokens
+    # (ai-toolkit, same file); the caption is capped at `te.max_length`.
+
+    def _tokenizer_only(self) -> Any:
+        """The tokenizer under the ``AutoProcessor`` (or a bare tokenizer)."""
+        tok = self.tokenizer
+        return getattr(tok, "tokenizer", tok)
+
+    def _tap_index(self) -> int:
+        return int((self.definition.architecture_params or {})["te.hidden_state_tap_index"])
+
+    def _prompt_max_tokens(self) -> int:
+        return int((self.definition.architecture_params or {})["te.max_length"])
+
+    def tokenizer_fingerprint(self) -> str:
+        """SHA-256 over the tokenizer class + its full vocabulary — a
+        different vocabulary yields different ids for the same caption, hence
+        a different embedding; the cache key must carry it."""
+        cached = getattr(self, "_tokenizer_fp", None)
+        if cached is not None:
+            return cached
+        tok = self._tokenizer_only()
+        vocab = tok.get_vocab()
+        digest = hashlib.sha256()
+        digest.update(type(tok).__name__.encode("utf-8"))
+        for token, idx in sorted(vocab.items(), key=lambda kv: (kv[1], kv[0])):
+            digest.update(f"{idx}:{token}\n".encode("utf-8"))
+        self._tokenizer_fp = digest.hexdigest()
+        return self._tokenizer_fp
+
+    def te_cache_scope(self) -> str:
+        """Path segment the disk cache lives under: tap index + tokenizer."""
+        return f"tap{self._tap_index()}-{self.tokenizer_fingerprint()[:16]}"
+
+    def te_cache_key(self, prompt: str) -> str:
+        """The string a cached embedding is keyed on — every input the
+        embedding is a function of: definition, tap index, tokenizer, prompt.
+        Human-readable; ``TextEmbeddingCache`` hashes it for the filename."""
+        return (
+            f"minimax_h3|{self.definition.id}|tap={self._tap_index()}"
+            f"|tok={self.tokenizer_fingerprint()[:16]}|{prompt}"
+        )
+
+    def _encode_one(self, caption: str) -> torch.Tensor:
+        """``[L, D]`` layer-tap hidden states for ONE caption, no padding."""
+        tok = self._tokenizer_only()
+        ids = list(tok(caption, add_special_tokens=False)["input_ids"])[: self._prompt_max_tokens()]
+        if not ids:
+            # Empty (dropout / unconditional) prompt: one pad token keeps the
+            # sequence non-degenerate (ai-toolkit's fallback).
+            ids = [getattr(tok, "pad_token_id", None) or 0]
+        input_ids = torch.tensor([ids], dtype=torch.long, device=self.device)
+        te = self.text_encoder
+        inner = getattr(te, "model", te)  # skip the LM head — dead weight here
+        tap = self._tap_index()
+        with torch.no_grad():
+            out = inner(
+                input_ids=input_ids,
+                attention_mask=torch.ones_like(input_ids),
+                output_hidden_states=True,
+                use_cache=False,
+            )
+        hidden_states = out.hidden_states
+        if tap >= len(hidden_states):
+            raise ValueError(
+                f"te.hidden_state_tap_index={tap} but the encoder returned "
+                f"{len(hidden_states)} hidden states (num_hidden_layers + 1)"
+            )
+        return hidden_states[tap][0]
 
     def encode_text(self, captions: list[str], dtype: torch.dtype) -> Any:
-        raise _lands_in_pr1(
-            "text encoding (Qwen3-VL, hidden_state_tap_index=50)"
+        """Qwen3-VL layer-tap conditioning, batched by right-padding.
+
+        Each caption is encoded ALONE (no padding inside the encoder, so the
+        result is byte-identical to the single-prompt reference path) and the
+        batch is assembled by zero-padding to the longest — ``attention_mask``
+        marks the real rows.
+        """
+        from app.engine.core.text_encoding import TextEncoderOutput
+
+        if self.text_encoder is None or self.tokenizer is None:
+            raise RuntimeError(
+                "minimax_h3 encode_text: text_encoder/tokenizer not assigned — "
+                "the encoder was released or assign_components() never ran"
+            )
+        rows = [self._encode_one(cap) for cap in captions]
+        max_len = max(r.shape[0] for r in rows)
+        emb = rows[0].new_zeros((len(rows), max_len, rows[0].shape[-1]))
+        mask = torch.zeros((len(rows), max_len), dtype=torch.long, device=rows[0].device)
+        for i, r in enumerate(rows):
+            emb[i, : r.shape[0]] = r
+            mask[i, : r.shape[0]] = 1
+        return TextEncoderOutput(embeddings=emb.to(dtype=dtype), attention_mask=mask)
+
+    # --- Text-encoder lifecycle: released BEFORE the DiT loads ---
+
+    def text_encoder_weight_bytes(self) -> int:
+        te = self.text_encoder
+        if te is None or not hasattr(te, "parameters"):
+            return 0
+        return sum(p.numel() * p.element_size() for p in te.parameters())
+
+    def release_text_encoders(self) -> None:
+        """Drop EVERY reference the driver holds: the attribute
+        ``get_text_encoders()`` reads AND the entry in the shared component
+        dict (the base offload pops the trainer's copy — the same dict — but
+        the driver owns component state, so it drops its own view too)."""
+        self.text_encoder = None
+        self._components.pop("text_encoder", None)
+
+    def assert_text_encoder_released(self) -> None:
+        """The 63 GB encoder and the 62 GB DiT never coexist: refuse the DiT
+        load while the encoder is still held anywhere the driver can see."""
+        if self.text_encoder is not None or "text_encoder" in self._components:
+            gb = self.text_encoder_weight_bytes() / 1e9
+            raise RuntimeError(
+                f"text encoder still resident ({gb:.2f} GB) at DiT load — "
+                "release it (cache the embeddings) before materialising the transformer"
+            )
+
+    # --- Latent-cache identity (plan row 2.3) ---
+
+    def latent_cache_fingerprint(self) -> str:
+        """Short hash of EVERY input the RAW VAE latent depends on — and no
+        other (D10): the pixel convention (`PIXEL_ADAPTER_VERSION`, read at
+        call time), the visual VAE's class and its config. NOT the packed
+        layout version and NOT the sigma shifts: those shape the sequence at
+        train time, and keying on them would re-encode a dataset on every
+        settings change. The frame rule already lives in the resolution
+        segment of the cache path (`tgt_f`).
+        """
+        from . import pixel_adapter
+
+        vae = self.vae
+        if vae is None:
+            raise RuntimeError(
+                "minimax_h3 latent_cache_fingerprint: no visual VAE assigned — "
+                "the cache key cannot be derived without the encoder identity"
+            )
+        inner = getattr(vae, "inner", vae)
+        config = getattr(inner, "config", None)
+        if config is None:
+            config_dict: dict[str, Any] = {}
+        elif hasattr(config, "items"):  # diffusers FrozenDict or a plain dict
+            config_dict = dict(config.items())
+        else:
+            config_dict = dict(vars(config))
+        payload = json.dumps(
+            {
+                "pixel_adapter": pixel_adapter.PIXEL_ADAPTER_VERSION,
+                "vae_class": type(inner).__name__,
+                "vae_config": config_dict,
+            },
+            sort_keys=True,
+            default=str,
         )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
+
+    # --- Frame rule (plan row 2.7) ---
+    #
+    # The visual VAE chunks 17 pixel frames into 5 latent frames behind a
+    # 5-frame head, so a legal clip length is ``17n+5`` (research §3.3) — read
+    # from the definition, never a literal (RULE-21), and snapped through the
+    # object every video family shares (`video_contract.snap_frames`) so the
+    # family's answer and the temporal bucketing ladder can never disagree.
+    # Ingestion (`pipeline_data.prepare_data`) is where a too-short clip is
+    # skipped; these are the family-side give-ups for callers that hold a
+    # frame count of their own (previews, the sampler's `num_frames`).
+
+    def frame_rule(self) -> str:
+        rule = self.definition.architecture_params.get("video.frame_rule")
+        if not rule:
+            raise ValueError(
+                f"minimax_h3 {self.definition.id}: architecture_params['video.frame_rule'] is missing"
+            )
+        return str(rule)
+
+    def _frame_floor(self) -> int:
+        from app.engine.components.bucketing import BucketManager
+
+        parsed = BucketManager._parse_frame_step(self.frame_rule())
+        if parsed is None:
+            raise ValueError(f"minimax_h3: unparseable video.frame_rule {self.frame_rule()!r}")
+        return parsed[1]
+
+    def frame_ladder(self, max_frames: int) -> list[int]:
+        from app.engine.components.bucketing import BucketManager
+
+        return BucketManager.frame_ladder(int(max_frames), self.frame_rule())
+
+    def snap_num_frames(self, num_frames: int) -> int:
+        """Snap DOWN to the nearest legal length (``97 → 90``); at or below the
+        floor the floor itself (there is no legal value under it)."""
+        from app.engine.core.video_contract import snap_frames
+
+        return snap_frames(int(num_frames), self.frame_rule())
+
+    def assert_clip_frames(self, num_frames: int) -> None:
+        """Refuse a clip shorter than the floor — loudly, never padded."""
+        floor = self._frame_floor()
+        if int(num_frames) < floor:
+            raise ValueError(
+                f"clip has {int(num_frames)} frames; the smallest legal H3 length is "
+                f"{floor} ({self.frame_rule()})"
+            )
 
     # --- Phase 4: Precision, LoRA Targets & Layer Manifest ---
 
@@ -159,23 +413,353 @@ class MiniMaxH3Driver(IModelDriver):
         return []
 
     # --- Phase 5: Training Loop Hooks ---
+    #
+    # The INVERTED flow-match contract (concept §5.1, closed oracle against
+    # diffusers 0.40.0 `scheduling_minimax_h3.py`: `:170-171` t = 1 − σ,
+    # `:225` x_t = t·x₀ + (1−t)·noise, `:273` x̂₀ = x_t + σ·v):
+    #     x₀ = x_t + σ·v   ⇒   v = x₀ − noise   (unique; no scale, no sign freedom)
+    # Research §3.1: ai-toolkit `t_v = 1.0 − sigma_v`, `return -noise_pred`;
+    # diffusion-pipe `t_v = 1.0 − sigma_v`, `-video_out` — the same contract.
+    # These three are CLOBBER hooks: `MiniMaxH3Trainer` delegates each one
+    # explicitly (ordering rule 1) so `test_autodelegated_family_hook_set_is_
+    # exactly_expected` stays byte-identical.
 
+    def sample_timesteps(
+        self,
+        batch_size: int,
+        device: torch.device,
+        config: dict[str, Any],
+        latents: torch.Tensor | None = None,
+        progress: float = 0.0,
+    ) -> torch.Tensor:
+        """Draw ONE ``u`` per item, push it through the VIDEO shift and return
+        ``t_v = 1 − σ_v`` in ``[0, 1]`` (the audio clock is derived from σ_v
+        in the forward pass through ``H3SigmaSchedule`` — never a second draw).
+
+        Family default draw is ``uniform`` — with the definition's shift on top
+        it reproduces the inference grid (diffusion-pipe's recommendation,
+        research §4); a user-set ``timestep_sampling`` wins.
+        """
+        from app.engine.strategies.timestep_sampling import TimestepSampler  # noqa: PLC0415
+
+        from .schedule import H3SigmaSchedule, sigma_to_t
+        from .settings import resolve_h3_settings
+
+        mode = config.get("timestep_sampling", "uniform")
+        u = TimestepSampler.sample(
+            mode, batch_size, device, config, latents=latents, progress=progress,
+        )
+        schedule = H3SigmaSchedule.from_settings(resolve_h3_settings(self.definition, config))
+        sigma_v, _sigma_a = schedule.draw(u)
+        return sigma_to_t(sigma_v).clamp(0.0, 1.0)
+
+    def add_noise(
+        self,
+        latents: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """``x_t = t·x₀ + σ·noise`` with ``σ = 1 − t`` — H3's clock (``t = 1``
+        clean), identical to ``MiniMaxH3Scheduler.scale_noise``. Written with
+        the noise weight from ``schedule.t_to_sigma`` so the family keeps ONE
+        conversion site and both endpoints are exact."""
+        from .schedule import t_to_sigma
+
+        t = timesteps.to(device=latents.device, dtype=latents.dtype)
+        while t.ndim < latents.ndim:
+            t = t.unsqueeze(-1)
+        return t * latents + t_to_sigma(t) * noise
+
+    def compute_target(
+        self,
+        latents: torch.Tensor,
+        noise: torch.Tensor,
+        timesteps: torch.Tensor,
+    ) -> torch.Tensor:
+        """The data-ward velocity ``v = x₀ − noise`` — the unique target the
+        reference scheduler's ``step`` inverts. The house default
+        (``noise − latents``) is the OPPOSITE sign on this family."""
+        return latents - noise
+
+    def max_distinct_timesteps(self) -> int:
+        """How many DISTINCT timestep values one forward may carry: ``t_v``,
+        ``t_a`` and the keyframe ``t_c`` (3) for ``t2v`` / ``both``; the
+        reference mode adds clean reference soundtracks (4) — research §3.5."""
+        mode = str(self.definition.architecture_params.get("mode", "t2v"))
+        return 4 if mode == "reference" else 3
+
+    def assert_timestep_cardinality(self, timesteps: torch.Tensor) -> None:
+        """The DRIVER boundary check before ``packed_forward``: the transformer
+        embeds whatever ``timestep`` arrives (`transformer_minimax_h3.py:613`),
+        so a per-row ``(seq_len,)`` tensor — or ``timestep_indices`` handed
+        where ``timestep`` goes — would train silently on garbage. Raises
+        ``ValueError`` naming the defect."""
+        limit = self.max_distinct_timesteps()
+        if timesteps.ndim != 1 or timesteps.numel() > limit:
+            raise ValueError(
+                f"minimax_h3 expects the DISTINCT timestep set (<= {limit} values), got "
+                f"shape {tuple(timesteps.shape)} — per-row timesteps do not belong here"
+            )
+        if not timesteps.dtype.is_floating_point:
+            raise ValueError(
+                f"minimax_h3 timesteps must be floating t in [0, 1], got dtype {timesteps.dtype}"
+            )
+        if bool((timesteps < 0).any()) or bool((timesteps > 1).any()):
+            raise ValueError(
+                "minimax_h3 timesteps must lie in [0, 1] unscaled on H3's clock (1 = clean), "
+                f"got {timesteps.tolist()}"
+            )
+
+    # --- Phase 5b: the joint forward + the three-number loss (plan row 2.4) ---
+
+    def audio_timestep(self, t_video: torch.Tensor) -> torch.Tensor:
+        """``t_a`` for a given ``t_v``: ONE ``u`` drives both clocks, so the
+        audio timestep is the video sigma un-shifted by the video shift and
+        re-shifted by the audio shift (research §3.2), never a second draw."""
+        from .schedule import H3SigmaSchedule, remap_sigma, sigma_to_t, t_to_sigma
+
+        schedule = H3SigmaSchedule.from_settings(self._require_settings("audio_timestep"))
+        sigma_a = remap_sigma(
+            t_to_sigma(t_video), schedule.sigma_shift_video, schedule.sigma_shift_audio
+        )
+        return sigma_to_t(sigma_a).clamp(0.0, 1.0)
+
+    def build_batch_extra(self, items: list[dict]) -> dict[str, Any]:
+        """Stack the items' clean audio latents ``(2, C, T)`` into
+        ``{"audio_clean": (B, 2, C, T), "audio_mask": (B,)}``. An item without
+        audio gets zeros shaped like a present sibling and ``mask = 0``. A
+        batch in which NO item has audio (silent clips, stills) is the same
+        thing with no sibling to copy: absence is EXPLICIT — zero rows of the
+        length the items' frame count implies and an all-zero mask — never
+        ``{}``, because the model has no audio-less forward (row 3.2) and the
+        loss refuses audio tensors that went missing.
+        ``train_audio`` does NOT gate this (row 3.2): H3 is single-stream and
+        the rows stay packed; audio off only zeroes ``audio_loss_weight``.
+        The trainer (row 2.5) loads the cached latents into
+        ``item["audio_latents"]`` before delegating here."""
+        from .packing import AUDIO_CHANNELS, audio_latent_num_frames, fit_audio_latents
+
+        if not items:
+            return {}
+        present = [item.get("audio_latents") for item in items]
+        # The VAE pads a clip up to whole latents; the reference trains on
+        # round(frames / fps · rate) — fit each item's rows to ITS frame count
+        # (an item without one, a still, keeps what the cache holds).
+        arch = self.definition.architecture_params or {}
+        fps = float(arch.get("video.frame_rate", 24.0) or 24.0)
+        rate = float(arch.get("audio.latent_rate", 40) or 40)
+        if not any(a is not None for a in present):
+            # Items of a batch share one temporal bucket; a still counts 1 frame.
+            frames = max(int(item.get("target_frames") or 1) for item in items)
+            rows = torch.zeros(
+                len(items),
+                AUDIO_CHANNELS,
+                int(arch["transformer.audio_in_channels"]),
+                audio_latent_num_frames(frames, fps, rate),
+            )
+            return {"audio_clean": rows, "audio_mask": torch.zeros(len(items), dtype=rows.dtype)}
+        fitted = []
+        for a, item in zip(present, items, strict=True):
+            frames = item.get("target_frames")
+            if a is not None and frames:
+                a = fit_audio_latents(a, audio_latent_num_frames(int(frames), fps, rate))
+            fitted.append(a)
+        present = fitted
+        ref = next(a for a in present if a is not None)
+        stacked = []
+        mask = []
+        for a in present:
+            if a is None or tuple(a.shape) != tuple(ref.shape):
+                stacked.append(torch.zeros_like(ref))
+                mask.append(0.0)
+            else:
+                stacked.append(a)
+                mask.append(1.0)
+        return {
+            "audio_clean": torch.stack(stacked, dim=0),
+            "audio_mask": torch.tensor(mask, dtype=ref.dtype),
+        }
+
+    def _layout_for(self, num_text: int, video: torch.Tensor, audio_latents: int) -> H3PackedLayout:
+        from .packing import H3Geometry, build_layout
+
+        key = (num_text, tuple(video.shape[2:]), audio_latents)
+        layout = self._layouts.get(key)
+        if layout is None:
+            layout = build_layout(
+                H3Geometry(
+                    num_text=num_text,
+                    latent_frames=int(video.shape[2]),
+                    latent_height=int(video.shape[3]),
+                    latent_width=int(video.shape[4]),
+                    audio_latents=audio_latents,
+                )
+            )
+            self._layouts[key] = layout
+        return layout
+
+    # Method re-implemented from tdrussell/diffusion-pipe@8f83dbf2 (MIT) models/minimax_h3.py
+    # FinalLayer.forward; no line copied — the CFG-augmentation blend below (research §3.7):
+    # the uncond arm under no_grad, the model output rearranged, scale 1.0 = one forward.
     def forward_pass(
         self,
         noisy_input: torch.Tensor,
         timesteps: torch.Tensor,
         text_embeddings: Any,
         batch: dict[str, Any],
-    ) -> torch.Tensor:
-        raise _lands_in_pr1(
-            "the joint audio+video forward pass (packed [text | conditions "
-            "| audio | video] sequence, inverted flow-match contract)"
+        *,
+        cfg_augment: bool = True,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """The joint audio+video forward on the packed ``[text | audio | video]``
+        sequence — ONE sequence per item, built with that item's TRUE text
+        length (the batch's padding rows never enter the transformer) and its
+        own distinct timestep set ``[t_v, t_a]``.
+
+        ``noisy_input``: video ``x_t`` ``(B, C, T, H, W)``; ``timesteps``: ``t_v``
+        per item ``(B,)``; ``batch["audio_noisy"]``: audio ``x_t`` ``(B, 2, Ca, Ta)``
+        (absent → video-only sequence). Returns ``(video_velocity, audio_velocity)``
+        in the raw latent shapes; the trainer's step loss (row 2.6) consumes both.
+
+        CFG augmentation (row 3.1; research §3.7 re-implemented): with
+        ``cfg_augment_scale = s > 1`` a SECOND forward on the empty-prompt TE
+        row (``batch["text_embeddings_uncond"]``, served by the trainer from
+        the text cache — the encoder is released before the DiT loads) runs
+        under ``torch.no_grad()`` and the MODEL OUTPUT is rearranged, before
+        any sign convention, as ``(out + (s − 1) · out_uncond) / s`` for video
+        and audio; the uncond arm is stashed as ``batch["video_pred_uncond"]``
+        / ``batch["audio_pred_uncond"]``. ``s == 1.0`` is one forward.
+        ``cfg_augment=False`` is the INFERENCE call (the sampler): the
+        conditional arm only, whatever the training scale — the augmentation
+        rearranges what the loss sees, never what a preview denoises with.
+        """
+        if self.transformer is None:
+            raise RuntimeError("minimax_h3 forward_pass: transformer not assigned")
+        emb, mask = self._text_rows(text_embeddings)
+        audio_noisy = batch.get("audio_noisy")
+        t_v = timesteps.to(device=noisy_input.device, dtype=torch.float32).reshape(-1)
+        if t_v.numel() != noisy_input.shape[0]:
+            raise ValueError(
+                f"minimax_h3 forward_pass: {t_v.numel()} timesteps for a batch of {noisy_input.shape[0]}"
+            )
+        t_a = self.audio_timestep(t_v)
+
+        video_velocity, audio_velocity = self._packed_batch_forward(
+            noisy_input, t_v, t_a, emb, mask, audio_noisy
         )
+        scale = float(self._require_settings("forward_pass").cfg_augment_scale)
+        if scale == 1.0 or not cfg_augment:
+            return video_velocity, audio_velocity
+        uncond = batch.get("text_embeddings_uncond")
+        if uncond is None:
+            raise ValueError(
+                f"minimax_h3 forward_pass: cfg_augment_scale={scale} needs the empty-prompt "
+                "row in batch['text_embeddings_uncond'] — the trainer must serve it from the text cache"
+            )
+        emb_u, mask_u = self._text_rows(uncond)
+        if emb_u.shape[0] == 1 and noisy_input.shape[0] > 1:
+            emb_u = emb_u.expand(noisy_input.shape[0], -1, -1)
+            mask_u = mask_u.expand(noisy_input.shape[0], -1) if mask_u is not None else None
+        with torch.no_grad():
+            video_uncond, audio_uncond = self._packed_batch_forward(
+                noisy_input, t_v, t_a, emb_u, mask_u, audio_noisy
+            )
+        batch["video_pred_uncond"] = video_uncond
+        batch["audio_pred_uncond"] = audio_uncond
+        video_velocity = (video_velocity + (scale - 1.0) * video_uncond) / scale
+        if audio_velocity is not None and audio_uncond is not None:
+            audio_velocity = (audio_velocity + (scale - 1.0) * audio_uncond) / scale
+        return video_velocity, audio_velocity
+
+    @staticmethod
+    def _text_rows(text_embeddings: Any) -> tuple[torch.Tensor, torch.Tensor | None]:
+        emb = getattr(text_embeddings, "embeddings", None)
+        mask = getattr(text_embeddings, "attention_mask", None)
+        if emb is None:
+            emb, mask = text_embeddings  # (embeddings, mask) tuple form
+        return emb, mask
+
+    def _packed_batch_forward(
+        self,
+        noisy_input: torch.Tensor,
+        t_v: torch.Tensor,
+        t_a: torch.Tensor,
+        emb: torch.Tensor,
+        mask: torch.Tensor | None,
+        audio_noisy: torch.Tensor | None,
+    ) -> tuple[torch.Tensor, torch.Tensor | None]:
+        """One packed sequence per item on the given text rows (the cond OR
+        the uncond arm); returns the raw-shape velocities."""
+        from .packing import pack_audio, packed_forward, patchify_video, unpack_audio, unpatchify_video
+
+        video_out = []
+        audio_out = []
+        for i in range(noisy_input.shape[0]):
+            n_text = int(mask[i].sum()) if mask is not None else int(emb.shape[1])
+            text_rows = emb[i : i + 1, :n_text]
+            audio_latents = int(audio_noisy.shape[-1]) if audio_noisy is not None else 0
+            layout = self._layout_for(n_text, noisy_input, audio_latents)
+            video_rows = patchify_video(noisy_input[i : i + 1], layout.patch_size)
+            if audio_noisy is not None:
+                audio_rows = pack_audio(audio_noisy[i : i + 1])
+            else:
+                audio_rows = noisy_input.new_zeros((1, 0, int(self.definition.architecture_params["transformer.audio_in_channels"])))
+            distinct = torch.stack([t_v[i], t_a[i]])
+            self.assert_timestep_cardinality(distinct)
+            v_rows, a_rows = packed_forward(
+                self.transformer, layout, video_rows, audio_rows, text_rows, distinct
+            )
+            video_out.append(unpatchify_video(v_rows, layout))
+            if audio_noisy is not None:
+                audio_out.append(unpack_audio(a_rows, audio_latents))
+        video_velocity = torch.cat(video_out, dim=0)
+        audio_velocity = torch.cat(audio_out, dim=0) if audio_out else None
+        return video_velocity, audio_velocity
+
+    def compute_loss(
+        self,
+        video_pred: torch.Tensor,
+        video_target: torch.Tensor,
+        batch: dict[str, Any],
+        *,
+        audio_pred: torch.Tensor | None = None,
+        audio_target: torch.Tensor | None = None,
+        audio_mask: torch.Tensor | None = None,
+    ) -> H3StepLoss:
+        """``loss = loss_video + audio_loss_weight · loss_audio`` — the ONE lever
+        between the modalities (settings row 1.0), reported as three numbers.
+        The audio term is per-item masked (absent-audio items contribute 0);
+        with ``train_audio`` off it is 0 and ``loss == loss_video``. Audio ON
+        with no audio tensors is refused, never a silent video-only step."""
+        settings = self._require_settings("compute_loss")
+        loss_video = torch.nn.functional.mse_loss(video_pred.float(), video_target.float())
+        if not settings.train_audio:
+            zero = torch.zeros((), dtype=loss_video.dtype, device=loss_video.device)
+            return H3StepLoss(loss=loss_video, loss_video=loss_video, loss_audio=zero)
+        if audio_pred is None or audio_target is None:
+            raise ValueError(
+                "minimax_h3 compute_loss: train_audio is on but no audio pred/target "
+                "reached the loss — the audio stream was dropped somewhere upstream"
+            )
+        per_item = (audio_pred.float() - audio_target.float()).pow(2).flatten(1).mean(dim=1)
+        if audio_mask is None:
+            loss_audio = per_item.mean()
+        else:
+            # The mask is built on the host (`build_batch_extra`, cached rows
+            # are CPU tensors) and only `audio_clean` travels to the card —
+            # GATE-1 (plan row 2.12) met a CUDA prediction with a CPU mask.
+            m = audio_mask.to(device=per_item.device, dtype=per_item.dtype).reshape(-1)
+            loss_audio = (per_item * m).sum() / m.sum().clamp(min=1.0)
+        loss = loss_video + float(settings.audio_loss_weight) * loss_audio
+        return H3StepLoss(loss=loss, loss_video=loss_video, loss_audio=loss_audio)
 
     # --- Phase 6: LoRA Output & Saver ---
 
     def get_saver(self) -> Any:
-        raise _lands_in_pr1("the LoRA saver")
+        """The ORIGINAL-layout saver (row 2.8): `CheckpointManager` calls its
+        `save(components, path, metadata)` on every periodic and final save."""
+        from .saver import MiniMaxH3Saver
+
+        return MiniMaxH3Saver()
 
     # --- Phase 9: Advanced Memory & Training Features ---
 
@@ -185,7 +769,7 @@ class MiniMaxH3Driver(IModelDriver):
         52 blocks total: 50 main ``transformer_blocks`` + 2 NESTED
         ``token_refiner.refiner_blocks`` (a bare ``refiner_blocks`` attr_path
         does not resolve — see the YAML's comment). Read from the definition
-        rather than introspecting a loaded model: PR0 never loads real
-        weights, and the definition is authoritative regardless.
+        rather than introspecting a loaded model: the definition is
+        authoritative whether or not weights are loaded.
         """
         return list(self.definition.block_topology)

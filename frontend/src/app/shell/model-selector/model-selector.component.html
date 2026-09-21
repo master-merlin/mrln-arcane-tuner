@@ -1,5 +1,5 @@
 <!-- frontend/src/app/shell/model-selector/model-selector.component.html -->
-<div class="flex items-center gap-2 text-xs">
+<div class="ms-row text-xs">
     <button
         type="button"
         role="switch"
@@ -16,11 +16,12 @@
             [style.transform]="ctx.modelAware() ? 'translateX(14px)' : 'translateX(2px)'"
         ></span>
     </button>
-    <span class="text-text-subtle select-none">Model-aware</span>
+    <span class="ms-label text-text-subtle select-none">Model-aware</span>
 
     @if (ctx.modelAware()) {
         <select
-            class="bg-surface-mid border border-surface-high rounded-theme-md px-2 py-1"
+            class="ms-select bg-surface-mid border border-surface-high rounded-theme-md px-2 py-1"
+            [attr.title]="selectedFamily() || null"
             [ngModel]="selectedFamily()"
             (ngModelChange)="onFamilyChange($event)"
             data-testid="family-select"
@@ -33,7 +34,8 @@
 
         @if (selectedFamily()) {
             <select
-                class="bg-surface-mid border border-surface-high rounded-theme-md px-2 py-1"
+                class="ms-select bg-surface-mid border border-surface-high rounded-theme-md px-2 py-1"
+                [attr.title]="ctx.activeDefinition()?.name ?? null"
                 [ngModel]="ctx.activeDefinitionId()"
                 (ngModelChange)="onDefinitionChange($event)"
                 data-testid="definition-select"

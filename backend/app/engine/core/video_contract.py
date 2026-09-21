@@ -20,6 +20,7 @@ and defensively at trainer init (``pipeline_data``).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -68,6 +69,36 @@ def snap_frames(num_frames: int, rule: str | None) -> int:
     return ((n - offset) // step) * step + offset
 
 
+# One millionth of a frame. A window cut on frame boundaries multiplies out to
+# an integer in exact arithmetic and to a hair under it in doubles ((29/24 -
+# 24/24) * 24 = 4.999999999999998); truncating that loses a whole frame, which
+# a frame rule then turns into a skipped or shortened clip. The tolerance is
+# far above the rounding error of a double product at any real clip length and
+# far below any fraction a real trim can leave. The SPA's ``estimateFrames``
+# carries the same value; ``frame-count.golden.json`` pins both.
+WHOLE_FRAME_TOLERANCE = 1e-6
+
+
+def whole_frames(duration_s: float, fps: float) -> int:
+    """Whole frames a ``duration_s`` window holds at ``fps``: FLOOR, never
+    round — a frame that is not wholly inside the window cannot be supplied —
+    of the product nudged by :data:`WHOLE_FRAME_TOLERANCE`. ``0`` when there is
+    nothing to count (no duration, no rate, a non-finite input).
+
+    THE count for "duration and rate -> frames a clip can supply": ingestion
+    buckets on it and the loader must be able to supply it.
+    """
+    product = float(duration_s) * float(fps)
+    if not math.isfinite(product) or duration_s <= 0.0 or fps <= 0.0:
+        return 0
+    return math.floor(product + WHOLE_FRAME_TOLERANCE)
+
+
+# Definition statement (``architecture_params``): every clip is resampled to
+# the definition's native fps at ingestion. Absent = the clip keeps its own fps.
+INGEST_AT_NATIVE_FPS_KEY = "video.ingest_at_native_fps"
+
+
 @dataclass(frozen=True)
 class VideoProfile:
     """Model-derived video facts — the single source of truth for a family."""
@@ -82,6 +113,12 @@ class VideoProfile:
     has_audio: bool
     has_image_encoder: bool
     dual_expert: bool
+    # The ONE clock every clip is resampled to at ingestion, or None when a
+    # clip keeps its own fps. Stated by the definition
+    # (``video.ingest_at_native_fps: true``) and equal to ``native_fps`` then:
+    # the shared ingestion reads it here and the selector route serves it, so
+    # a frame count shown to the user and the frame count trained agree.
+    ingest_fps: float | None = None
 
     def supports_i2v(self) -> bool:
         return self.mode in ("i2v", "both")
@@ -126,6 +163,7 @@ def resolve_video_profile(definition) -> VideoProfile:
         has_audio=bool(caps.get("has_audio", False)),
         has_image_encoder=bool(caps.get("has_image_encoder", False)),
         dual_expert=bool(caps.get("dual_expert", False)),
+        ingest_fps=(native_fps or None) if arch.get(INGEST_AT_NATIVE_FPS_KEY) is True else None,
     )
 
 
@@ -189,6 +227,12 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
     if profile.native_fps is not None:
         report.derived["video_native_fps"] = profile.native_fps
     report.derived["video_divisibility"] = profile.divisibility
+    _arch = getattr(definition, "architecture_params", {}) or {}
+    if _arch.get(INGEST_AT_NATIVE_FPS_KEY) is True and profile.ingest_fps is None:
+        report.errors.append(
+            f"The model definition states {INGEST_AT_NATIVE_FPS_KEY} but no native fps "
+            "(video.native_fps / video.frame_rate) — its ingestion clock is unknown."
+        )
 
     # model_shift timestep params — match the model's inference scheduler so
     # training-time timestep sampling reproduces the inference noise schedule.
@@ -248,7 +292,10 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
             f"still_resolutions entries must be positive ints, got {bad_still}."
         )
 
-    # target_fps: 0 means "use native"; a set value far from native is rejected.
+    # target_fps: 0 = unset — ingestion then uses ``profile.ingest_fps`` when the
+    # definition states one, else the CLIP's own fps (native only when the clip
+    # has none: ``pipeline_data._resolve_clip_base_fps``). A set value far from
+    # native is rejected.
     fps = _to_float(config.get("target_fps"))
     if fps and profile.native_fps and abs(fps - profile.native_fps) > _FPS_TOL:
         report.errors.append(

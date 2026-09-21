@@ -136,24 +136,21 @@
                             <button class="chip ws-health-chip"
                                     type="button"
                                     data-testid="ws-clip-health-chip"
-                                    [class.solid]="clipWarningCount() === 0"
+                                    [class.solid]="clipHealthChip().passClaim"
                                     [class.warning]="clipWarningCount() > 0"
                                     (click)="toggleHealthPopover()"
-                                    [title]="clipWarningCount() > 0
-                                        ? clipWarningCount() + ' clip(s) with frame-rule warnings'
-                                        : 'All clips pass the frame rules'">
-                                <app-ico [name]="clipWarningCount() > 0 ? 'TriangleAlert' : 'Check'" [size]="11"/>
-                                @if (clipWarningCount() > 0) {
-                                    {{ clipWarningCount() }} clip warning{{ clipWarningCount() === 1 ? '' : 's' }}
-                                } @else {
-                                    Clips OK
-                                }
+                                    [title]="clipHealthChip().title">
+                                <app-ico [name]="clipHealthChip().icon" [size]="11"/>
+                                {{ clipHealthChip().label }}
                             </button>
                             @if (showHealthPopover()) {
                                 <div class="ws-health-pop" data-testid="ws-clip-health-pop">
                                     <div class="eyebrow">CLIP HEALTH</div>
-                                    @if (clipWarningCount() === 0) {
-                                        <div class="ws-health-empty">All {{ videoPairs().length }} clips pass the frame rules.</div>
+                                    @if (clipHealthChip().note; as note) {
+                                        <div class="ws-health-empty" data-testid="ws-clip-health-note">{{ note }}</div>
+                                    }
+                                    @if (clipHealthChip().passText; as passText) {
+                                        <div class="ws-health-empty" data-testid="ws-clip-health-pass">{{ passText }}</div>
                                     } @else {
                                         @for (v of videoPairs(); track v.media_file) {
                                             @if (v.metadata?.clip_warnings; as cw) {

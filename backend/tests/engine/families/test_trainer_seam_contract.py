@@ -151,6 +151,14 @@ def _check_teo(out: Any) -> None:
     assert out.attention_mask is not None and out.pooled is not None
 
 
+def _check_teo_emb_mask(out: Any) -> None:
+    """TextEncoderOutput(embeddings [B,S,D], attention_mask [B,S]), no pooled — minimax_h3."""
+    assert isinstance(out, TextEncoderOutput), f"expected TextEncoderOutput, got {type(out)}"
+    assert out.embeddings.ndim == 3 and out.embeddings.shape[0] == 2
+    assert out.attention_mask is not None and out.attention_mask.shape == out.embeddings.shape[:2]
+    assert out.pooled is None
+
+
 def _check_tuple4(out: Any) -> None:
     assert isinstance(out, tuple) and len(out) == 4, f"expected 4-tuple, got {type(out)}"
     emb, mask, emb2, mask2 = out
@@ -234,6 +242,13 @@ FAMILIES: list[FamilySpec] = [
         "app.engine.models.families.ltx2.driver:Ltx2Driver",
         "transformer", "transformer",
         encode_kind="teo", encode_seed=_seed_teo_triple, encode_check=_check_teo,
+    ),
+    FamilySpec(
+        "minimax_h3",
+        "app.engine.models.families.minimax_h3.trainer:MiniMaxH3Trainer",
+        "app.engine.models.families.minimax_h3.driver:MiniMaxH3Driver",
+        "transformer", "transformer",
+        encode_kind="teo_emb_mask", encode_seed=_seed_tuple_emb_mask, encode_check=_check_teo_emb_mask,
     ),
     FamilySpec(
         "microsoft_lens",

@@ -10,6 +10,7 @@ import { SceneDetectModalComponent } from './scene-detect-modal';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { OverlayStore } from '../../state/overlay.store';
+import { ModelContextStore } from '../../state/model-context.store';
 import type { DatasetPair } from '../../services/dataset';
 
 function videoPair(media: string, fps = 24): DatasetPair {
@@ -84,6 +85,24 @@ describe('SceneDetectModalComponent', () => {
         await comp.checkResults();
         expect(comp.step()).toBe('review');
         expect(comp.segments().length).toBe(2);
+    });
+
+    it('the review table applies the active definition\'s ingestion clock to the source fps it is handed (F6)', async () => {
+        localStorage.clear();
+        const store = TestBed.inject(ModelContextStore);
+        store.setModelAware(true);
+        store.setDefinition({ id: 'probe-def', family: 'probe', name: 'Probe', frame_rule: '17n+5', ingest_fps: 24.0 });
+        api.getSceneProposals.mockReturnValue(of({ segments: [{ start_s: 1, end_s: 4, label: null }], ready: true }));
+        const { comp, fixture } = make([videoPair('src.mp4', 30)]);
+        comp.sourceRel.set('src.mp4');
+        await comp.checkResults();
+        fixture.detectChanges();
+        const root = fixture.nativeElement as HTMLElement;
+        // 3 s of a 30 fps file = 90 source frames = 72 on the 24 fps clock -> 56 used.
+        expect(root.querySelector('[data-testid="spt-frames"]')!.textContent!.trim()).toBe('72');
+        expect(root.querySelector('[data-testid="spt-source-frames"]')!.textContent!.trim()).toBe('file: 90');
+        expect(root.querySelector('[data-testid="spt-outcome"]')!.textContent!.trim()).toBe('56 used');
+        localStorage.clear();
     });
 
     it('auto-poll fires getSceneProposals on the 2s interval and flips to review when ready', async () => {

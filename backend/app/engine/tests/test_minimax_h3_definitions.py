@@ -1,13 +1,13 @@
 """minimax_h3 definition-YAML pins.
 
 Guards the boogu_image/dreamlite precedent: a definition whose
-``lora_targetable_modules`` does not EXACTLY match what the real vendored
+``lora_targetable_modules`` does not EXACTLY match what the real diffusers
 transformer offers either silently starts empty and gets overwritten by the
 introspector's exhaustive catalog at first model load, or omits real
 weight-bearing Linears — leaving part of the network un-adapted at training
 time, which only shows up as a weak LoRA after a full GPU run.
 
-Method: instantiate the vendored transformer TINY on CPU, walk named_modules()
+Method: instantiate diffusers' transformer TINY on CPU, walk named_modules()
 to discover the real Linear suffix set, and assert the shipped YAML matches
 EXACTLY.
 """
@@ -19,7 +19,7 @@ import pathlib
 import torch.nn as nn
 import yaml
 
-from app.engine.tests.test_minimax_h3_vendor import build_tiny_transformer
+from app.engine.tests.test_minimax_h3_transformer import build_tiny_transformer
 
 DEF_IDS = ("minimax-h3-t2va", "minimax-h3-fl2va", "minimax-h3-ref2va")
 
@@ -89,12 +89,12 @@ def test_all_three_definitions_exist():
         assert _load(def_id)["family"] == "minimax_h3"
 
 
-def test_vendored_class_module_names_match_the_checkpoint():
-    """The vendored class and the checkpoint must agree on module naming, in
-    BOTH directions.
+def test_diffusers_class_module_names_match_the_checkpoint():
+    """The installed diffusers class and the checkpoint must agree on module
+    naming, in BOTH directions.
 
     A missing module means ``from_pretrained`` either raises or silently
-    skips weights after a ~62 GB download. A vendored class that INVENTS
+    skips weights after a ~62 GB download. A class that INVENTS
     extra Linears absent from the checkpoint is just as dangerous the other
     way: it would load with random-initialized weights that the checkpoint
     never trained, and nothing about that failure mode is loud. Catching
@@ -104,10 +104,10 @@ def test_vendored_class_module_names_match_the_checkpoint():
     missing = CHECKPOINT_BLOCK_LINEARS - derived
     extra = derived - CHECKPOINT_BLOCK_LINEARS
     assert derived == CHECKPOINT_BLOCK_LINEARS, (
-        f"vendored class and checkpoint disagree on module naming — "
-        f"the vendor drop and the weights are out of sync.\n"
-        f"  vendor lacks (checkpoint ships): {sorted(missing)}\n"
-        f"  vendor invents (checkpoint lacks): {sorted(extra)}"
+        f"diffusers class and checkpoint disagree on module naming — "
+        f"the installed diffusers and the weights are out of sync.\n"
+        f"  class lacks (checkpoint ships): {sorted(missing)}\n"
+        f"  class invents (checkpoint lacks): {sorted(extra)}"
     )
 
 
@@ -152,7 +152,7 @@ def test_target_list_is_exactly_the_non_adaln_checkpoint_linears():
 def test_refiner_blocks_match_checkpoint_minus_adaln():
     """Refiner blocks carry the checkpoint's block Linears MINUS
     ``adaln_proj.linear`` — refiners have no per-row AdaLN table, only the
-    main transformer blocks do (see the module docstring). A vendored
+    main transformer blocks do (see the module docstring). A
     refiner block that gained or lost a Linear relative to this would
     silently escape every other test here, since those only check the
     combined main+refiner suffix set or the shipped YAML, never refiner

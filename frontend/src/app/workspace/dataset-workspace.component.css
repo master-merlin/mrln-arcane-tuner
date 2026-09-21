@@ -66,6 +66,25 @@
     gap: 6px;
     min-width: 0;
     justify-content: flex-end;
+    /*
+     * A right-aligned, non-wrapping flex row whose children cannot shrink
+     * (nowrap buttons) overflows out of its LEFT edge — over the mode tabs — and
+     * that side is unscrollable, so `scrollWidth === clientWidth` while the
+     * overlap is real. Wrapping keeps every line inside the grid track at every
+     * width; the second line only appears when the track is genuinely too narrow.
+     */
+    flex-wrap: wrap;
+    row-gap: 6px;
+}
+/*
+ * Shrink before wrapping. A wrapping flex row breaks lines on each item's
+ * HYPOTHETICAL size and only shrinks an item that is alone on its line, so the
+ * one elastic item (the model selector, whose selects truncate) enters the line
+ * at its floor and grows back up to — never past — its natural width.
+ */
+.ws-right app-model-selector {
+    flex: 1 1 17rem;
+    max-width: max-content;
 }
 
 /*
@@ -84,7 +103,7 @@
     }
     .ws-left   { grid-row: 1; grid-column: 1; }
     .ws-center { grid-row: 1; grid-column: 2; justify-self: end; }
-    .ws-right  { grid-row: 2; grid-column: 1 / -1; flex-wrap: wrap; row-gap: 6px; }
+    .ws-right  { grid-row: 2; grid-column: 1 / -1; }
 }
 
 .ws-back { padding-left: 6px; }

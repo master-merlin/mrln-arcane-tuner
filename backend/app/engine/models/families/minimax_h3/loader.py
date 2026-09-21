@@ -2,13 +2,19 @@
 
 Component sourcing differs per component, and the split matters:
 
-- Transformer / both VAEs / scheduler are VENDORED (vendor/, pinned diffusers
-  SHA 245d78fb). H3 is NOT in any diffusers release — the installed 0.39.0
-  contains zero MiniMax code, so a ``diffusers.MiniMaxH3*`` class path would
-  ImportError. When upstream ships H3 natively these paths become the only
-  thing that changes.
-- Text encoder is Qwen3-VL via stock ``transformers`` — no vendoring, the same
-  pattern ``nucleus_image`` already proves. Confirmed importable in THIS venv
+- Transformer / both VAEs / scheduler are the INSTALLED diffusers classes
+  (``MiniMaxH3Transformer3DModel``, ``AutoencoderKLMiniMaxH3``,
+  ``AutoencoderKLMiniMaxH3Audio``, ``MiniMaxH3Scheduler``): diffusers 0.40.0,
+  the ``requirements.txt`` floor, ships the whole H3 stack. The family's
+  earlier ``vendor/`` fork (pre-release SHA 245d78fb) was retired in plan row
+  1.8 once its forward proved bit-exact with upstream on the tiny arch
+  (``tests/fixtures/h3_vendor_parity.npz``). Two upstream behaviours the data
+  path must respect: the video VAE casts its inputs to the encoder/decoder
+  parameter dtype (``_keep_in_fp32_modules``), and the audio VAE declares
+  ``_supports_group_offloading = False`` — never group-offload it.
+  ``diffusers_ships_native_h3()`` probes the installed package for the class.
+- Text encoder is Qwen3-VL via stock ``transformers``, the same pattern
+  ``nucleus_image`` already proves. Confirmed importable in THIS venv
   (``transformers`` 4.57.0): ``from transformers import
   Qwen3VLForConditionalGeneration, AutoProcessor`` succeeds. The definitions'
   ``architecture_params`` (Task 4) also record ``te.type: qwen3_vl``.
@@ -23,27 +29,89 @@ subfolder comes from the definition's ``architecture_params["transformer.subfold
 (Task 4) so t2va/fl2va never download it.
 """
 
+from typing import Any
+
+import torch
+
 from app.engine.core.pipeline.loader_base import (
     ComponentSpec,
     GenericComponentLoader,
 )
 from app.engine.core.definitions import ModelDefinition
 
-_VENDOR = "app.engine.models.families.minimax_h3.vendor."
+
+def diffusers_ships_native_h3(class_name: str = "MiniMaxH3Transformer3DModel") -> bool:
+    """``True`` when the installed ``diffusers`` exports ``class_name``.
+
+    A real lookup against the installed package (imported here, not at module
+    import — nothing imported at startup may raise, ARCHITECTURE D1), so a
+    downgrade below the 0.40.0 floor answers ``False`` instead of failing at
+    ``from_pretrained`` after the download.
+    """
+    try:
+        import diffusers
+
+        return getattr(diffusers, class_name, None) is not None
+    except Exception:  # noqa: BLE001 — a broken install is "does not ship it"
+        return False
 
 
 class MiniMaxH3Loader(GenericComponentLoader):
     """Load MiniMax-H3 components — tokenizer, TE, both VAEs, transformer."""
 
+    @staticmethod
+    def _post_load_vae(model: Any, definition: ModelDefinition) -> Any:
+        """The ONE place the visual VAE is wrapped in ``H3PixelAdaptedVAE``
+        (``[-1, 1]`` <-> ImageNet space). The audio VAE has no such hook."""
+        from app.engine.models.families.minimax_h3.pixel_adapter import H3PixelAdaptedVAE
+
+        return H3PixelAdaptedVAE(model)
+
+    def __init__(self, device, *, defer_transformer: bool = False) -> None:
+        super().__init__(device)
+        # Host-RAM / VRAM sequencing (plan row 2.1): the 63 GB Qwen3-VL and
+        # the 62 GB DiT never coexist. With ``defer_transformer`` the
+        # transformer is OMITTED from the Phase-A manifest and materialised by
+        # :meth:`load_transformer` once the trainer has cached the embeddings
+        # and released the encoder (the WAN 2.2 ``defer_second_expert`` shape).
+        self.defer_transformer = bool(defer_transformer)
+
+    @staticmethod
+    def _transformer_spec(definition: ModelDefinition) -> ComponentSpec:
+        arch = definition.architecture_params or {}
+        # ref2va reads transformer_ref/; t2va and fl2va read transformer/.
+        # -- Transformer (diffusers). Subfolder comes from the definition so
+        #    ref2va's second 33B checkpoint is never downloaded by t2va/fl2va.
+        return ComponentSpec(
+            key="transformer",
+            hf_class="diffusers.models.transformers.transformer_minimax_h3"
+            ".MiniMaxH3Transformer3DModel",
+            subfolder=arch.get("transformer.subfolder", "transformer"),
+        )
+
+    def load_transformer(
+        self,
+        definition: ModelDefinition,
+        torch_dtype: torch.dtype,
+        initial_device: str = "cpu",
+    ) -> Any:
+        """Materialise the deferred DiT through the SAME single-spec path the
+        batch load uses (root resolution, ``from_pretrained``, placement)."""
+        spec = self._transformer_spec(definition)
+        root_path = getattr(self, "_root_path", None) or self._resolve_root(definition)
+        self.logger.info(
+            "minimax_h3_deferred_transformer_materializing",
+            subfolder=spec.subfolder,
+            dtype=str(torch_dtype),
+            device=str(initial_device),
+        )
+        return self._load_single_spec(spec, definition, root_path, torch_dtype, initial_device)
+
     def get_component_manifest(
         self,
         definition: ModelDefinition,
     ) -> list[ComponentSpec]:
-        arch = definition.architecture_params or {}
-        # ref2va reads transformer_ref/; t2va and fl2va read transformer/.
-        transformer_subfolder = arch.get("transformer.subfolder", "transformer")
-
-        return [
+        manifest = [
             # -- Processor (AutoProcessor is not moved to device — no
             #    .to(device).eval() on a tokenizer/processor object). --
             ComponentSpec(
@@ -60,26 +128,25 @@ class MiniMaxH3Loader(GenericComponentLoader):
                 hf_class="transformers.Qwen3VLForConditionalGeneration",
                 subfolder="text_encoder",
             ),
-            # -- Visual VAE (vendored) --
+            # -- Visual VAE (diffusers; casts inputs to its fp32 modules).
+            #    Wrapped ONCE in the H3 pixel adapter after loading so every
+            #    consumer sees the engine's [-1, 1] pixels (row 2.0). --
             ComponentSpec(
                 key="vae",
-                hf_class=_VENDOR + "autoencoder_kl_minimax_h3.AutoencoderKLMiniMaxH3",
+                hf_class="diffusers.AutoencoderKLMiniMaxH3",
                 subfolder="vae",
+                post_load_hook="_post_load_vae",
             ),
-            # -- Audio VAE (vendored, MONO — run once per channel) --
+            # -- Audio VAE (diffusers, MONO — run once per channel; no
+            #    group offloading, see the module docstring) --
             ComponentSpec(
                 key="audio_vae",
-                hf_class=_VENDOR
-                + "autoencoder_kl_minimax_h3_audio.AutoencoderKLMiniMaxH3Audio",
+                hf_class="diffusers.AutoencoderKLMiniMaxH3Audio",
                 subfolder="audio_vae",
             ),
-            # -- Transformer (vendored). Subfolder comes from the
-            #    definition so ref2va's second 33B checkpoint is never
-            #    downloaded by t2va/fl2va. --
-            ComponentSpec(
-                key="transformer",
-                hf_class=_VENDOR
-                + "transformer_minimax_h3.MiniMaxH3Transformer3DModel",
-                subfolder=transformer_subfolder,
-            ),
         ]
+        # A ``__new__``-constructed loader (the manifest tests) has no flag:
+        # eager is the default there too.
+        if not getattr(self, "defer_transformer", False):
+            manifest.append(self._transformer_spec(definition))
+        return manifest

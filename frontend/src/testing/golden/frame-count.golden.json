@@ -1,0 +1,17 @@
+{
+  "_about": "Whole frames a [start_s, end_s] window holds on the clock it is trained on (ingest_fps when stated, source_fps otherwise). DATA, not a formula: each `frames` value is the count in exact arithmetic, written by hand. Read by backend/app/engine/tests/test_frame_count_golden.py AND frontend/src/app/components/dataset/video/frame-count.golden.spec.ts, so ingestion and the UI guidance cannot drift apart silently. The decimals are the shortest round-trip form of the double a trim at that frame boundary stores (29/24 = 1.2083333333333333).",
+  "cases": [
+    {"id": "five_frames_from_1s_at_24", "start_s": 1.0, "end_s": 1.2083333333333333, "source_fps": 24.0, "ingest_fps": 24.0, "frames": 5, "note": "[24/24, 29/24]: the double product is 4.999999999999998"},
+    {"id": "22_frames_from_2s_at_24", "start_s": 2.0, "end_s": 2.9166666666666665, "source_fps": 24.0, "ingest_fps": 24.0, "frames": 22, "note": "[48/24, 70/24]: the double product is 21.999999999999996"},
+    {"id": "22_frames_from_0.3s_at_24", "start_s": 0.3, "end_s": 1.2166666666666666, "source_fps": 24.0, "ingest_fps": 24.0, "frames": 22, "note": "a decimal start; the double product is 21.999999999999996"},
+    {"id": "fraction_floors_0.98s_at_24", "start_s": 0.0, "end_s": 0.98, "source_fps": 24.0, "ingest_fps": null, "frames": 23, "note": "23.52 frames: a real fraction still floors"},
+    {"id": "just_under_five_frames", "start_s": 0.0, "end_s": 0.20829166666666665, "source_fps": 24.0, "ingest_fps": null, "frames": 4, "note": "4.999 frames: a thousandth of a frame short is short"},
+    {"id": "90_source_frames_at_30_on_the_24_clock", "start_s": 0.0, "end_s": 3.0, "source_fps": 30.0, "ingest_fps": 24.0, "frames": 72, "note": "resampled: counted on the ingestion clock"},
+    {"id": "ntsc_10s_at_29.97", "start_s": 0.0, "end_s": 10.0, "source_fps": 29.97, "ingest_fps": null, "frames": 299, "note": "299.7 frames"},
+    {"id": "ntsc_100_frames_at_30000_1001", "start_s": 0.0, "end_s": 3.3366666666666664, "source_fps": 29.97002997002997, "ingest_fps": null, "frames": 100, "note": "100 x 1001/30000 s: the double product is 99.99999999999999"},
+    {"id": "81_frames_from_2.95s_at_16", "start_s": 2.95, "end_s": 8.0125, "source_fps": 16.0, "ingest_fps": null, "frames": 81, "note": "a 4n+1 length: the double product is 80.99999999999999"},
+    {"id": "80_frames_from_3.2s_at_30_on_the_16_clock", "start_s": 3.2, "end_s": 8.2, "source_fps": 30.0, "ingest_fps": 16.0, "frames": 80, "note": "[96/30, 246/30]: the double product is 79.99999999999999"},
+    {"id": "one_hour_at_60", "start_s": 0.0, "end_s": 3600.0, "source_fps": 60.0, "ingest_fps": null, "frames": 216000, "note": "a long clip"},
+    {"id": "one_hour_and_a_frame_from_a_third_at_60", "start_s": 0.3333333333333333, "end_s": 3600.3500000000004, "source_fps": 60.0, "ingest_fps": null, "frames": 216001, "note": "a long clip off the origin"}
+  ]
+}

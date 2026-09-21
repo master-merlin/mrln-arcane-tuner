@@ -7,6 +7,18 @@ export interface DefinitionRef {
     name: string;
     /** Caption format key returned by the backend (e.g. 'plain', 'ideogram4_json'). Defaults to 'plain' when absent. */
     caption_format?: string;
+    /**
+     * The definition's `video.frame_rule` ("Nn+M") as served by the backend;
+     * null/absent for a family that states none (or a definition persisted
+     * before the field was served — the selector refreshes it on load).
+     */
+    frame_rule?: string | null;
+    /**
+     * The definition's ingestion clock in fps as served by the backend: every
+     * clip is resampled to it before the frame rule applies. null/absent =
+     * a clip trains at its own fps.
+     */
+    ingest_fps?: number | null;
 }
 
 interface PersistedState {
@@ -50,6 +62,17 @@ export class ModelContextStore {
     readonly activeCaptionFormat = computed<string>(
         () => this.activeDefinition()?.caption_format ?? 'plain',
     );
+
+    /** The active definition's frame rule ("Nn+M"), or null when none is active or stated. */
+    readonly activeFrameRule = computed<string | null>(
+        () => this.activeDefinition()?.frame_rule ?? null,
+    );
+
+    /** The active definition's ingestion clock (fps), or null when none is active or stated. */
+    readonly activeIngestFps = computed<number | null>(() => {
+        const fps = this.activeDefinition()?.ingest_fps;
+        return typeof fps === 'number' && fps > 0 ? fps : null;
+    });
 
     private persist(): void {
         const state: PersistedState = {

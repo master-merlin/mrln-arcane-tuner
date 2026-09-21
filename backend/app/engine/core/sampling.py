@@ -487,8 +487,12 @@ class GenericSamplingPipeline(ABC):
         return snap_frames(frames, frame_rule)
 
     def _get_sample_prompts(self) -> list[dict[str, Any]]:
-        """Read sample prompts from config."""
-        raw = self.config.get("sample_prompts", [])
+        """Read sample prompts from config.
+
+        An explicit ``null`` is "no prompts", the same as an absent key or an
+        empty list — every other reader of the key normalizes it the same way.
+        """
+        raw = self.config.get("sample_prompts") or []
         result: list[dict[str, Any]] = []
         for entry in raw:
             if hasattr(entry, "model_dump"):

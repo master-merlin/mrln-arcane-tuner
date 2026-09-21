@@ -130,3 +130,46 @@ def test_the_architecture_link_points_at_a_heading_that_exists():
         "anchor does not 404 — it lands silently at the top of the page, which is why "
         "nobody reports it."
     )
+
+
+def _family_rows() -> dict[str, str]:
+    return {m.group(1): m.group(0) for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|.*$", _readme_section(), re.M)}
+
+
+def _gating(family: str) -> dict[str, bool]:
+    """definition id -> carries a top-level ``unavailable_reason`` (the
+    availability gate's key, ECOSYSTEM §6), read from the shipped YAML."""
+    import yaml
+
+    out: dict[str, bool] = {}
+    for path in sorted((FAMILIES_DIR / family / "definitions").glob("*.yaml")):
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+        out[doc["id"]] = bool(doc.get("unavailable_reason"))
+    return out
+
+
+def test_a_row_does_not_call_a_family_unselectable_once_a_definition_is_offered():
+    """LANE-92 row 5.2: `minimax-h3-t2va` was ungated and the README still said
+    the whole family was "not selectable in this release"."""
+    for family, row in _family_rows().items():
+        if "not selectable in this release" not in row:
+            continue
+        offered = [d for d, gated in _gating(family).items() if not gated]
+        assert not offered, f"README calls `{family}` not selectable, but the pickers offer {offered}"
+
+
+def test_a_partly_gated_family_row_names_which_definition_is_which():
+    """A family with both offered and gated definitions says so by id: the
+    offered ones before the word "unavailable", the gated ones after it."""
+    checked = 0
+    for family, row in _family_rows().items():
+        gating = _gating(family)
+        if not any(gating.values()) or all(gating.values()):
+            continue
+        checked += 1
+        assert "unavailable" in row, f"`{family}` has gated definitions and its row does not say so"
+        head, tail = row.split("unavailable", 1)
+        for def_id, gated in gating.items():
+            side, other, word = (tail, head, "unavailable") if gated else (head, tail, "offered")
+            assert f"`{def_id}`" in side and f"`{def_id}`" not in other, f"`{def_id}` is {word}; the row says otherwise"
+    assert checked, "no partly gated family found: the check ran against nothing"

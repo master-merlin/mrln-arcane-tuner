@@ -136,7 +136,7 @@ class PipelineCachingMixin:
                     caption_hints[m_composite] = f"{img_name}_masked"
 
         # Sampling prompts — expand wildcards at pre-cache time
-        for idx, sp in enumerate(self.config.get("sample_prompts", [])):
+        for idx, sp in enumerate(self.config.get("sample_prompts", []) or []):
             prompt = (
                 sp.get("prompt", "")
                 if isinstance(sp, dict)

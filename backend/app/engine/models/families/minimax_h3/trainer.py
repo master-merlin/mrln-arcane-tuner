@@ -1,6 +1,6 @@
-"""MiniMax-H3 Trainer — PR1 in progress.
+"""MiniMax-H3 Trainer — the family's training path (plan rows in brackets).
 
-Landed: the inverted flow-match delegations (row 1.2), the text-embedding
+Owns: the inverted flow-match delegations (row 1.2), the text-embedding
 lifecycle — pre-cache, unconditional encoder release, cache-serving
 ``encode_text``, deferred DiT materialisation (row 2.1) — the latent-cache
 fingerprint seam (2.3), the batch-extra delegation (2.4), the real

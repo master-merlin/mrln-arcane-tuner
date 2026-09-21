@@ -74,12 +74,14 @@ detected_precision:
 architecture_params:
   # mode: both correctly marks this definition as i2v-capable
   # (VideoProfile.supports_i2v() must be True here — the counterpart fix to
-  # t2va's mode: t2v). PR1 MARKER: as of PR0, "both" is the ONLY thing that
-  # differentiates fl2va from t2va — same transformer subfolder, same
+  # t2va's mode: t2v). PR1 MARKER (the name is history; PR1 / LANE-92 shipped
+  # WITHOUT this, which is why the definition stays gated): "both" is the
+  # ONLY thing that differentiates fl2va from t2va — same transformer
+  # subfolder, same
   # control_inputs: 0, otherwise byte-identical architecture_params. There is
   # NO first/last-frame conditioning mechanism wired up anywhere yet (no
   # conditioning-frame injection into the packed sequence, no dedicated
-  # parameters here). PR1 owns: (1) adding the real first/last-frame
+  # parameters here). Clearing the gate takes: (1) the real first/last-frame
   # conditioning parameters, and (2) a test that pins them so this
   # definition cannot silently drift back to being plain-t2v-with-a-
   # different-name.

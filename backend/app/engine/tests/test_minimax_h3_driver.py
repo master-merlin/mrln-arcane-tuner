@@ -1,8 +1,9 @@
-"""minimax_h3 family registration + capability flags + driver non-training surface."""
+"""minimax_h3 family registration + capability flags + the driver."""
 
 from __future__ import annotations
 
 import ast
+import re
 from pathlib import Path
 
 from app.engine.models.registry import ModelRegistry
@@ -35,7 +36,7 @@ def test_capability_flags_declare_video_and_audio():
 
 
 # ---------------------------------------------------------------------------
-# Task 6: driver non-training surface
+# The driver: wiring, targets, topology, dtype
 # ---------------------------------------------------------------------------
 
 def _driver(def_id: str = "minimax-h3-t2va"):
@@ -719,6 +720,57 @@ def test_refusal_scanner_flags_the_positive_control():
         ("h3_refusal_control.py", "helper_refusal"),
         ("h3_refusal_control.py", "still_refuses"),
     }, found
+
+
+# ── The PROSE pin (plan row 5.3) ───────────────────────────────────────────
+#
+# The scanner above reads code only, on purpose — so a docstring that still
+# promised the PR0 refusal outlived the refusal itself. No file of the family
+# (code, docstrings, YAML comments) may present the scaffold as the present
+# state. Phrases are matched on whitespace-normalised text with comment
+# markers folded away, so a sentence wrapped across lines is still seen.
+
+_STALE_PROSE = (
+    "lands in PR1",
+    "lands in later PR1 rows",
+    "PR0 ships the scaffold",
+    "``NotImplementedError`` naming",
+    "non-training surface",
+    "PR1 in progress",
+    "PR0 never loads",
+    "as of PR0",
+    "PR1 owns",
+)
+
+
+def _stale_prose(text: str) -> list[str]:
+    flat = " ".join(re.sub(r"(?m)^\s*#+\s?", "", text).split())
+    return [phrase for phrase in _STALE_PROSE if phrase in flat]
+
+
+def _family_prose_files() -> list[Path]:
+    return sorted(p for p in _FAMILY_DIR.rglob("*") if p.suffix in {".py", ".yaml"})
+
+
+def test_no_prose_presents_the_pr0_scaffold_as_the_present_state():
+    files = _family_prose_files()
+    assert {"driver.py", "trainer.py", "minimax_h3_t2va.yaml"} <= {p.name for p in files}
+    found = [
+        f"{p.relative_to(_FAMILY_DIR).as_posix()}: {phrase!r}"
+        for p in files
+        for phrase in _stale_prose(p.read_text(encoding="utf-8"))
+    ]
+    assert not found, "stale PR0-scaffold prose: " + "; ".join(found)
+
+
+def test_prose_pin_sees_a_wrapped_stale_sentence_and_the_scheduler_trap_stays():
+    wrapped = "    # forward and LoRA saving lands in later\n    # PR1 rows and raise\n    ``NotImplementedError`` naming PR1\n"
+    assert _stale_prose(wrapped) == ["lands in later PR1 rows", "``NotImplementedError`` naming"]
+    # The `init_scheduler` trap explanation is TRUE and must survive the sweep.
+    driver = " ".join((_FAMILY_DIR / "driver.py").read_text(encoding="utf-8").split())
+    assert "``init_scheduler`` — DO NOT CHANGE without reading this" in driver
+    assert "including one that raises ``NotImplementedError`` — is a *meaningful override*" in driver
+    assert _stale_prose("including one that raises ``NotImplementedError`` — is a *meaningful override*") == []
 
 
 # ── The LoRA saver (plan row 2.8): the ORIGINAL-checkpoint layout ──────────

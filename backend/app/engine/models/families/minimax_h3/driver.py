@@ -1,14 +1,18 @@
-"""MiniMax-H3 model driver — Task 6: non-training surface.
+"""MiniMax-H3 model driver — the family's training surface.
 
-Implements the ``IModelDriver`` methods that do NOT require the real training
-forward pass: component wiring, the curated LoRA target list, block topology,
-and loading dtype — all sourced from the ``ModelDefinition`` (Task 4), the
-single source of truth. Text encoding (the Qwen3-VL layer-50 tap, plan row
-2.1) and the flow-match convention (row 1.2) are real; what still belongs to
-the packed joint audio+video forward and LoRA saving lands in later PR1 rows
-and raises ``NotImplementedError`` naming it explicitly — per
-the "failure is never silent" invariant, a job that somehow reaches those
-methods must fail loudly, not silently train on wrong data or produce a
+Component wiring, the curated LoRA target list, block topology and loading
+dtype are all sourced from the ``ModelDefinition``, the single source of
+truth. On top of that the driver owns every model-specific step of a training
+iteration: text encoding (the Qwen3-VL layer-50 tap, plan row 2.1) with its
+cache key, the inverted flow-match convention (row 1.2: ``t = 1 − σ``,
+``v = x₀ − noise``) with ONE ``u`` driving the video and the audio clock, the
+clean-audio batch extra (row 2.4), the joint audio+video forward on the
+packed ``[text | audio | video]`` sequence (row 2.4) with CFG augmentation as
+a run option (row 3.1), the three-number step loss (``compute_loss``), and
+the hand-off to the original-layout LoRA saver (row 2.8). No method here
+refuses as "not built"; what a method cannot do without its inputs (settings
+not applied, transformer not assigned, a missing uncond row) it raises by
+name — per the "failure is never silent" invariant it never returns a
 plausible-looking empty/None default.
 
 ``init_scheduler`` — DO NOT CHANGE without reading this
@@ -64,19 +68,24 @@ class H3StepLoss:
 
 
 class MiniMaxH3Driver(IModelDriver):
-    """MiniMax-H3 driver — non-training surface (Task 6).
+    """MiniMax-H3 driver.
 
     Handles:
     - Component wiring (tokenizer/processor, Qwen3-VL text encoder, visual
-      VAE, audio VAE, diffusers transformer) per the loader manifest (Task 5).
+      VAE, audio VAE, diffusers transformer) per the loader manifest.
     - LoRA target list and block topology, both read VERBATIM from the
-      definition (Task 4) so the YAML stays the single source of truth —
+      definition so the YAML stays the single source of truth —
       pinned by ``test_definition_ships_curated_target_list_matching_driver``.
     - bf16 loading dtype (every definition's ``detected_precision`` is bf16
       throughout).
+    - Text encoding and the text-cache key, the latent-cache fingerprint and
+      the frame rule.
+    - The flow-match hooks (``sample_timesteps`` / ``add_noise`` /
+      ``compute_target`` / ``audio_timestep``), ``build_batch_extra``, the
+      packed joint ``forward_pass``, ``compute_loss`` and ``get_saver``.
 
-    Text encoding, the joint audio+video forward pass, and LoRA saving raise
-    ``NotImplementedError`` naming PR1 (see module docstring).
+    The settings-dependent methods need ``apply_settings`` first (the trainer
+    calls it once at setup) and raise naming the caller otherwise.
     """
 
     def __init__(self, definition: ModelDefinition, device: torch.device):
@@ -746,7 +755,7 @@ class MiniMaxH3Driver(IModelDriver):
         52 blocks total: 50 main ``transformer_blocks`` + 2 NESTED
         ``token_refiner.refiner_blocks`` (a bare ``refiner_blocks`` attr_path
         does not resolve — see the YAML's comment). Read from the definition
-        rather than introspecting a loaded model: PR0 never loads real
-        weights, and the definition is authoritative regardless.
+        rather than introspecting a loaded model: the definition is
+        authoritative whether or not weights are loaded.
         """
         return list(self.definition.block_topology)

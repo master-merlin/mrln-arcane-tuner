@@ -1028,16 +1028,11 @@ def test_a_batch_of_only_silent_clips_trains_with_zero_audio_loss(tmp_path, buil
     assert lines and lines[-1].kwargs["loss_audio"] == 0.0, "the three-number loss line must still print"
 
 
-def test_a_still_image_batch_trains_with_zero_audio_loss(tmp_path, build_tiny_transformer):
-    """Nothing refuses a still for this family (`pipeline_data` skips only
-    `is_video` items under the frame floor), so it is the silent case too."""
-    t, _item = _absence_shell(tmp_path, build_tiny_transformer)
-    still = t.inventory[1]
-    assert still["is_video"] is False and "target_frames" not in still
-    loss, pred, target, batch = _step_from_items(t, [still])
-    assert batch["audio_mask"].tolist() == [0.0]
-    assert batch["audio_clean"].shape[:3] == (1, 2, 32) and not batch["audio_clean"].any()
-    assert float(t.last_step_losses.loss_audio) == 0.0 and torch.isfinite(loss)
+# A still image never reaches a step: `prepare_data` skips it (the `17n+5`
+# floor). The pin — through the real ingestion and pre-cache, a real PNG — is
+# `test_minimax_h3_accepted_inputs.py::test_a_still_is_skipped_loudly_and_never_reaches_the_encoder`.
+# The test that stood here handed the step fabricated 5-D latents and so
+# "proved" a path whose real pre-cache aborts (VERIFY 2.02).
 
 
 def test_a_mixed_presence_batch_still_trains_its_present_audio(tmp_path, build_tiny_transformer):

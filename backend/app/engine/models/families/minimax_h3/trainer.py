@@ -554,9 +554,9 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
     def _pre_cache_aux(self) -> None:
         """Encode every inventory clip's soundtrack through `audio_latents`
         while the audio VAE is resident (run_trainer calls this right after
-        the video pre-cache, before the VAEs are offloaded). Stills carry no
-        soundtrack (masked at train time); a clip without an audio stream is
-        skipped the same way. Runs with `train_audio` off too (row 3.2): the
+        the video pre-cache, before the VAEs are offloaded). A still never
+        gets here (`prepare_data` skips it under the `17n+5` floor); a clip
+        without an audio stream is counted `absent` and trains with mask 0. Runs with `train_audio` off too (row 3.2): the
         rows are packed either way, only their loss weight is 0."""
         audio_vae = getattr(self.driver, "audio_vae", None)
         if audio_vae is None:

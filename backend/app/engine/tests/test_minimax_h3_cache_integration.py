@@ -7,7 +7,8 @@ pre-cache (`_pre_cache_latents`) and training (`_get_batch` → the batch's
 `cache_dirs`) all read `item["cache_dir"]` from that inventory. So the
 fingerprint is only real if `MiniMaxH3Trainer.prepare_data` rewrites the
 inventory — these four tests drive the REAL base `prepare_data` on a tiny
-on-disk dataset (two PNG stills, the dataset API faked at the HTTP client)
+on-disk dataset (two real mp4 clips — a still is skipped under the `17n+5`
+floor, so it is not a representative H3 item; the dataset API faked at the HTTP client)
 and read the dirs back off the seams production reads.
 """
 
@@ -21,15 +22,14 @@ from unittest.mock import MagicMock
 
 import httpx
 import torch
-from PIL import Image
-
 from app.engine.models.families.minimax_h3.driver import MiniMaxH3Driver
 from app.engine.models.families.minimax_h3.pixel_adapter import H3PixelAdaptedVAE
 from app.engine.models.families.minimax_h3.trainer import MiniMaxH3Trainer
 from app.engine.models.registry import ModelRegistry
+from app.engine.tests.h3_real_seams import write_clip
 from app.engine.tests.h3_text_stubs import StubVisualVAE
 
-_IDS = ("a.png", "b.png")
+_IDS = ("a.mp4", "b.mp4")
 
 
 def _definition(def_id: str = "minimax-h3-t2va"):
@@ -45,8 +45,7 @@ def _dataset(tmp_path) -> str:
         return str(ds)
     ds.mkdir()
     for name in _IDS:
-        Image.new("RGB", (64, 64), (10, 20, 30)).save(ds / name)
-        (ds / name).with_suffix(".txt").write_text(f"caption {name}", encoding="utf-8")
+        write_clip(ds / name, 24, soundtrack=False)
     return str(ds)
 
 
@@ -55,7 +54,10 @@ def _fake_api(monkeypatch, ds_path: str) -> None:
         {
             "media_file": name,
             "caption_content": f"caption {name}",
-            "metadata": {"width": 64, "height": 64, "is_video": False, "enabled": True},
+            "metadata": {
+                "width": 64, "height": 64, "is_video": True, "enabled": True,
+                "fps": 24.0, "duration_s": 1.0,
+            },
         }
         for name in _IDS
     ]

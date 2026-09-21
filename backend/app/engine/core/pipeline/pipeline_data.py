@@ -518,6 +518,9 @@ class PipelineDataMixin:
         _parsed_rule = _RuleBM._parse_frame_step(self._video_frame_rule)
         video_frame_floor = _parsed_rule[1] if _parsed_rule else 1
         skipped_short_clips = 0
+        # Stills skipped under a frame rule whose floor is above one frame; the
+        # count exists on the summary only for such a rule.
+        skipped_stills = 0
         # Clips the frame rule rounded DOWN (97 -> 90 under `17n+5`): each is
         # logged where it happens and counted on the `data_prepared` summary.
         snapped_clips = 0
@@ -800,6 +803,25 @@ class PipelineDataMixin:
                         # Skip it here, where the frame count is still visible.
                         # `4n+1` / `8n+1` floors are 1, so only a family whose
                         # rule starts above a still (H3's `17n+5`) ever skips.
+                        # The same floor applies to a STILL: it is one frame. A
+                        # model whose frame rule starts above 1 has no legal
+                        # length for it, and its video VAE is handed a 4-D
+                        # tensor it cannot encode — the pre-cache would abort
+                        # the job. Skipped here, loudly, and counted.
+                        if not is_video and video_frame_floor > 1:
+                            skipped_stills += 1
+                            self.logger.warning(
+                                "still_image_skipped",
+                                dataset=name,
+                                media=img_rel,
+                                message=(
+                                    "a still image is 1 frame; the smallest legal "
+                                    f"length is {video_frame_floor} "
+                                    f"({self._video_frame_rule}) — this model "
+                                    "trains on video clips only"
+                                ),
+                            )
+                            continue
                         if is_video and available_frames < video_frame_floor:
                             skipped_short_clips += 1
                             self.logger.warning(
@@ -1038,7 +1060,17 @@ class PipelineDataMixin:
 
         self.inventory = inventory
         if not inventory:
-            raise ValueError("No training data found in datasets.")
+            skipped = skipped_stills + skipped_short_clips
+            raise ValueError(
+                "No training data found in datasets."
+                + (
+                    f" {skipped_stills} still image(s) and {skipped_short_clips} "
+                    "clip(s) below the model's smallest legal length were skipped "
+                    f"({self._video_frame_rule})."
+                    if skipped
+                    else ""
+                )
+            )
 
         # Log masked coverage stats
         masked_count = sum(1 for i in inventory if i.get("has_masked"))
@@ -1056,6 +1088,7 @@ class PipelineDataMixin:
             total_items=len(inventory),
             skipped_short_clips=skipped_short_clips,
             snapped_clips=snapped_clips,
+            **({"skipped_stills": skipped_stills} if video_frame_floor > 1 else {}),
             **({"resampled_clips": resampled_clips} if fixed_clock else {}),
         )
 

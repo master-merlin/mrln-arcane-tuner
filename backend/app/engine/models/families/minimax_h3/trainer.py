@@ -649,6 +649,8 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         """Fingerprint of everything the audio encode depends on: the family
         module's version, the sample/latent rates and the audio VAE's identity
         (class + its per-channel normalisation stats)."""
+        from app.engine.components import audio_io
+
         from .audio_latents import AUDIO_LATENT_VERSION
 
         arch = self.definition.architecture_params or {}
@@ -663,6 +665,10 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         )
         parts = [
             f"al{AUDIO_LATENT_VERSION}",
+            # The waveform the latent was encoded FROM: which samples a window
+            # of the file decodes to (VERIFY 5.01 - the decode used to slide a
+            # late soundtrack to zero, and such a latent may be on disk).
+            f"dec{audio_io.AUDIO_DECODE_VERSION}",
             str(arch.get("audio.sampling_rate", "")),
             str(arch.get("audio.latent_rate", "")),
             type(audio_vae).__name__ if audio_vae is not None else "none",

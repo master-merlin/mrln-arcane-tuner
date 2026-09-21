@@ -200,6 +200,7 @@ class VideoFrameLoader:
                     pass
 
             max_wanted = wanted_ts[-1]
+            first_t: float | None = None  # presentation time of the first decoded frame
 
             def _timed_frames():
                 """Yield ``(t, frame)`` up to the last wanted timestamp.
@@ -207,6 +208,7 @@ class VideoFrameLoader:
                 Frames are NOT converted here — the selector decides which ones
                 are worth the rgb24 copy.
                 """
+                nonlocal first_t
                 seen = 0
                 for frame in container.decode(stream):
                     # Presentation time in seconds (fallback to pts*time_base).
@@ -217,6 +219,8 @@ class VideoFrameLoader:
                     else:
                         t = seen / (target_fps or 1.0)
                     seen += 1
+                    if first_t is None:
+                        first_t = t
                     yield t, frame
                     # Stop once we hold a frame at/after the last wanted stamp.
                     if t >= max_wanted:
@@ -231,6 +235,23 @@ class VideoFrameLoader:
             )
             if not frames_out:
                 raise VideoClipTooShort(f"decoded 0 frames from {path}")
+
+            # The window is a stretch of the file's presentation clock. A video
+            # stream that starts AFTER the window does (a delayed stream, a
+            # transport-stream style start offset) has no picture there: the
+            # nearest-frame rule resolves every such stamp to the first frame,
+            # so the clip holds still while its soundtrack runs. One held stamp
+            # is ordinary rounding; two or more is said out loud.
+            held = sum(1 for ts in wanted_ts if first_t is not None and ts < first_t - 1e-6)
+            if held >= 2:
+                logger.warning(
+                    "video_window_before_stream_start",
+                    path=str(path),
+                    window_start_s=trim_start_s,
+                    first_frame_s=round(first_t, 4),
+                    held_frames=held,
+                    hint="the video stream starts after this window does; the held frames repeat its first picture",
+                )
 
             clip = torch.stack(frames_out, dim=1)  # [3, F, H, W]
             logger.debug(

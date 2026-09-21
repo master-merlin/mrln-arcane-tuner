@@ -73,21 +73,33 @@ def tiny_real_vae() -> H3PixelAdaptedVAE:
 def write_clip(
     path, frames: int, *, soundtrack: bool, fps: float = FPS, sound_from_s: float = 0.0,
     caption: str | None = None, side: int = SIDE,
+    audio_offset_s: float = 0.0, video_offset_s: float = 0.0, audio_seconds: float | None = None,
+    audio_gap: tuple[float, float] | None = None,
 ) -> dict:
     """A real mp4 (H.264, AAC when ``soundtrack``) and its /pairs row. The tone
     starts at ``sound_from_s`` — silence before it — so a window of the clip
-    can be told from another by its audio."""
+    can be told from another by its audio.
+
+    The timeline knobs (LANE-92 VERIFY 5.01 — every fixture used to start both
+    streams at zero): ``audio_offset_s`` / ``video_offset_s`` shift a stream's
+    presentation timestamps, ``audio_seconds`` shortens the soundtrack,
+    ``audio_gap=(at_s, length_s)`` leaves a hole in its timestamps. All at
+    their defaults = the app's own encoder, byte for byte what it was."""
     from app.engine.components.video import VideoFrameLoader
 
     g = torch.Generator().manual_seed(frames)
     video = (torch.rand(3, frames, side, side, generator=g) * 2.0 - 1.0).float()
     audio = None
     if soundtrack:
-        n = int(math.ceil(frames / fps * SR))
+        seconds = frames / fps if audio_seconds is None else audio_seconds
+        n = int(math.ceil(seconds * SR))
         tone = torch.sin(torch.arange(n, dtype=torch.float32) * 0.05) * 0.5
         tone[: int(sound_from_s * SR)] = 0.0
         audio = (torch.stack([tone, tone]), SR)
-    VideoFrameLoader().encode_video(video, audio, fps, str(path))
+    if audio_offset_s or video_offset_s or audio_gap:
+        _mux_shifted(path, video, audio, fps, audio_offset_s, video_offset_s, audio_gap)
+    else:
+        VideoFrameLoader().encode_video(video, audio, fps, str(path))
     return {
         "media_file": path.name,
         "caption_content": f"a clip of {frames} frames" if caption is None else caption,
@@ -96,6 +108,59 @@ def write_clip(
             "fps": fps, "duration_s": frames / fps,
         },
     }
+
+
+def _mux_shifted(path, video, audio, fps, audio_offset_s, video_offset_s, audio_gap) -> None:
+    """The same two codecs as the app's encoder, with the presentation
+    timestamps under the test's control (PyAV only — nothing new installed)."""
+    from fractions import Fraction
+
+    import av
+    import numpy as np
+
+    from app.engine.components.video import VideoFrameLoader
+
+    frames_u8 = VideoFrameLoader._to_fhwc_uint8(video)
+    rate = round(fps)
+    container = av.open(str(path), mode="w")
+    try:
+        vstream = container.add_stream("libx264", rate=rate)
+        vstream.width, vstream.height, vstream.pix_fmt = frames_u8.shape[2], frames_u8.shape[1], "yuv420p"
+        astream = None
+        if audio is not None:
+            astream = container.add_stream("aac", rate=SR)
+            astream.time_base = Fraction(1, SR)
+            astream.layout = "stereo"
+        for i in range(frames_u8.shape[0]):
+            vframe = av.VideoFrame.from_ndarray(frames_u8[i], format="rgb24")
+            vframe.pts = i + int(round(video_offset_s * rate))
+            vframe.time_base = Fraction(1, rate)
+            for packet in vstream.encode(vframe):
+                container.mux(packet)
+        for packet in vstream.encode():
+            container.mux(packet)
+        if astream is not None:
+            samples = (audio[0].clamp(-1.0, 1.0) * 32767.0).round().to(torch.int16).numpy()
+            gap_at = None if audio_gap is None else int(audio_gap[0] * SR)
+            pts = int(round(audio_offset_s * SR))
+            for start in range(0, samples.shape[1], 1024):
+                block = samples[:, start : start + 1024]
+                if gap_at is not None and start >= gap_at:
+                    pts += int(audio_gap[1] * SR)
+                    gap_at = None
+                aframe = av.AudioFrame.from_ndarray(
+                    np.ascontiguousarray(block.T.reshape(1, -1)), format="s16", layout="stereo"
+                )
+                aframe.sample_rate = SR
+                aframe.pts = pts
+                aframe.time_base = Fraction(1, SR)
+                pts += block.shape[1]
+                for packet in astream.encode(aframe):
+                    container.mux(packet)
+            for packet in astream.encode():
+                container.mux(packet)
+    finally:
+        container.close()
 
 
 def write_still(path) -> dict:

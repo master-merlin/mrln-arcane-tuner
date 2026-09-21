@@ -534,10 +534,18 @@ class Ltx2Trainer(GenericTrainingPipeline):
         change whenever the VAE does). A mismatch here previously exposed stale
         cached latents when mel/audio-VAE params changed.
         """
+        from app.engine.components import audio_io
+
         from .audio_mel import DEFAULT_MEL_BINS, DEFAULT_MEL_HOP, DEFAULT_N_FFT
 
         driver = getattr(self, "driver", None)
         parts = [
+            # The waveform the latent was encoded FROM: which samples a window
+            # of the file decodes to. The decode used to slice from sample zero
+            # whatever the soundtrack's timestamps said, and a latent aligned
+            # that way may be on disk - so this re-keys the audio cache ONCE
+            # for every dataset (the video latents are untouched).
+            f"dec{audio_io.AUDIO_DECODE_VERSION}",
             str(int(getattr(driver, "audio_sampling_rate", 16000))),
             str(DEFAULT_N_FFT),
             str(DEFAULT_MEL_HOP),

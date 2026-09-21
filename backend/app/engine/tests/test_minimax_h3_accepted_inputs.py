@@ -428,6 +428,44 @@ def test_sweep_tiled_coverage_gives_every_window_its_own_soundtrack(tmp_path, mo
     assert variation[0] < 1e-4 < variation[1], f"per-window audio variation {variation}: the windows share one soundtrack"
 
 
+def _per_window_audio_variation(t) -> list[float]:
+    windows = sorted(t.inventory, key=lambda i: i["trim_start_s"])
+    assert [w["trim_start_s"] for w in windows] == [0.0, pytest.approx(22 / 24, abs=1e-3)], windows
+    out = []
+    for item in windows:
+        _loss, _pred, _target, batch = seams.train_step(t, [item])
+        assert batch["audio_mask"].tolist() == [1.0]
+        out.append(float(batch["audio_clean"].std(dim=-1).max()))
+    return out
+
+
+def test_sweep_a_soundtrack_that_starts_late_trains_each_window_against_its_own_second(
+    tmp_path, monkeypatch, build_tiny_transformer
+):
+    """VERIFY 5.01 through the real loaders AND the audio cache on disk: video
+    at 0, one second of tone PRESENTED from 1.0 s (inside the second window,
+    which starts at 22/24 s). The first window's cached audio rows are silence, the second's
+    carry the tone. Before the fix the decode slid the tone to zero: the first
+    window trained on it and the second on padding."""
+    t = _job(
+        tmp_path, monkeypatch, build_tiny_transformer,
+        clips=((48, True, {"audio_offset_s": 1.0, "audio_seconds": 1.0}),), temporal_coverage="tiled",
+    )
+    variation = _per_window_audio_variation(t)
+    assert variation[0] < 1e-4 < variation[1], f"per-window audio variation {variation}: the soundtrack was slid to zero"
+
+
+def test_sweep_the_zero_origin_control_of_the_late_soundtrack(tmp_path, monkeypatch, build_tiny_transformer):
+    """The same tone (0.8 s of it) at offset ZERO: now the FIRST window carries
+    it and the second is past its end."""
+    t = _job(
+        tmp_path, monkeypatch, build_tiny_transformer,
+        clips=((48, True, {"audio_seconds": 0.8}),), temporal_coverage="tiled",
+    )
+    variation = _per_window_audio_variation(t)
+    assert variation[1] < 1e-4 < variation[0], f"per-window audio variation {variation}"
+
+
 _TIMESTEP_MODES = ["logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc", "model_shift"]
 
 

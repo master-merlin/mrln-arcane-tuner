@@ -27,36 +27,10 @@ and ``torch.stack`` succeeds. A clip with no audio stream returns ``None`` — a
 
 from __future__ import annotations
 
-import structlog
-import torch
 from torch import Tensor
-
-logger = structlog.get_logger(__name__)
 
 # The LTX-2 audio VAE encoder consumes a 2-channel (stereo) mel.
 _TARGET_CHANNELS = 2
-
-
-def _resample_frames(resampler, frame) -> list:
-    """Normalize ``AudioResampler.resample`` to a list across PyAV versions.
-
-    PyAV ≥ 9 returns a list of frames; older builds return a single frame or
-    ``None``. Returning a uniform list lets the caller iterate unconditionally.
-    """
-    out = resampler.resample(frame)
-    if out is None:
-        return []
-    return out if isinstance(out, list) else [out]
-
-
-def _to_stereo(arr) -> "object":
-    """Normalize a decoded audio frame to a planar ``[2, samples]`` array."""
-    import numpy as np
-
-    arr = np.atleast_2d(arr)
-    if arr.shape[0] == 1:  # mono → duplicate into both channels
-        arr = np.repeat(arr, _TARGET_CHANNELS, axis=0)
-    return arr[:_TARGET_CHANNELS]
 
 
 def load_audio_waveform(
@@ -77,55 +51,21 @@ def load_audio_waveform(
 
     Returns ``None`` when the file has no audio stream.
 
-    Note: training clips are short (a few seconds), so the whole audio stream is
-    decoded and then sliced by sample index — this sidesteps keyframe-seek offset
-    bugs that would misalign the trim window.
+    The decode itself is the engine-shared one
+    (:func:`app.engine.components.audio_io.load_audio_waveform`): the window is
+    a stretch of the file's presentation clock — the clock the video frames are
+    selected on — so a soundtrack that starts late, early or has a hole in it
+    lands where the file says it plays. This module's own copy sliced the
+    decoded samples from index zero and paired such files with the wrong
+    second of sound; a cache of its output is re-keyed by
+    ``AUDIO_DECODE_VERSION`` (see ``trainer._audio_cache_version``).
     """
-    import av
-    import numpy as np
+    from app.engine.components.audio_io import load_audio_waveform as _shared
 
-    if duration_s <= 0 or target_sr <= 0:
-        return None
-
-    try:
-        container = av.open(str(path))
-    except (OSError, ValueError) as e:
-        logger.warning("audio_open_failed", path=str(path), error=str(e))
-        return None
-
-    try:
-        if not container.streams.audio:
-            return None
-        stream = container.streams.audio[0]
-
-        # Planar stereo: to_ndarray() → [2, samples] per frame; a mono source is
-        # up-mixed to stereo by the resampler (both channels carry the signal).
-        resampler = av.audio.resampler.AudioResampler(
-            format="fltp", layout="stereo", rate=int(target_sr),
-        )
-        parts: list[np.ndarray] = []
-        for frame in container.decode(stream):
-            for rframe in _resample_frames(resampler, frame):
-                parts.append(_to_stereo(rframe.to_ndarray()))
-        # Flush any buffered samples held by the resampler.
-        for rframe in _resample_frames(resampler, None):
-            parts.append(_to_stereo(rframe.to_ndarray()))
-
-        parts = [p for p in parts if p.size]
-        if not parts:
-            return None
-        wav = np.concatenate(parts, axis=1).astype("float32")  # [2, total]
-    finally:
-        try:
-            container.close()
-        except Exception:  # noqa: BLE001
-            pass
-
-    n = int(round(duration_s * target_sr))
-    start_i = max(int(round(max(trim_start_s, 0.0) * target_sr)), 0)
-    seg = wav[:, start_i : start_i + n]
-
-    out = torch.zeros(_TARGET_CHANNELS, n, dtype=torch.float32)
-    if seg.shape[1]:
-        out[:, : seg.shape[1]] = torch.from_numpy(seg[:, :n])
-    return out.clamp_(-1.0, 1.0), int(target_sr)  # [2, N] stereo
+    return _shared(
+        path,
+        trim_start_s=trim_start_s,
+        duration_s=duration_s,
+        target_sr=target_sr,
+        channels=_TARGET_CHANNELS,
+    )

@@ -216,11 +216,9 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         is resident; entries are ``(emb [L, D] cpu, mask [L] long)`` trimmed
         to the caption's true length."""
         if not self.config.get("cache_text_embeddings", True):
-            raise ValueError(
-                "minimax_h3 requires cache_text_embeddings=True: the 63 GB "
-                "Qwen3-VL encoder cannot stay resident beside the 62 GB DiT "
-                "for live per-step encoding"
-            )
+            # `_setup_family` refuses this before the encoder loads; kept here
+            # because this method is the one that would otherwise obey it.
+            raise ValueError(self._LIVE_TEXT_ENCODING_REFUSAL)
         if self.driver.text_encoder is None:
             raise RuntimeError(
                 "minimax_h3 _pre_cache_text_embeddings: the text encoder is "
@@ -364,6 +362,7 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
 
     async def prepare_data(self):
         await super().prepare_data()
+        self._skip_audio_only_items()
         fingerprint = self.driver.latent_cache_fingerprint()
         for item in self.inventory:
             for key in ("cache_dir", "masked_cache_dir"):
@@ -371,6 +370,30 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
                 if path:
                     item[key] = self._fingerprinted_cache_dir(path, fingerprint)
         self.logger.info("minimax_h3_latent_cache_fingerprint", fingerprint=fingerprint)
+
+    def _skip_audio_only_items(self) -> None:
+        """The shared ingestion turns an audio FILE into an inventory item for
+        any family; here its waveform would be handed to the VISUAL VAE and
+        abort the pre-cache. This family trains a soundtrack only as part of a
+        clip, so an audio file is skipped — one warning per file, a count on
+        the job's log, and a dataset left empty fails."""
+        audio = [item for item in self.inventory if item.get("is_audio")]
+        if not audio:
+            return
+        for path in sorted({item["path"] for item in audio}):
+            self.logger.warning(
+                "audio_file_skipped",
+                media=os.path.basename(path),
+                message="an audio file has no frames; this model trains a soundtrack only as part of a video clip",
+            )
+        files = len({item["path"] for item in audio})
+        self.inventory = [item for item in self.inventory if not item.get("is_audio")]
+        self.logger.info("minimax_h3_audio_files_skipped", skipped_audio_files=files, total_items=len(self.inventory))
+        if not self.inventory:
+            raise ValueError(
+                f"No training data found in datasets. {files} audio file(s) were skipped — "
+                "this model trains on video clips (with or without a soundtrack), not on audio files alone."
+            )
 
     @staticmethod
     def _fingerprinted_cache_dir(cache_dir: str, fingerprint: str) -> str:
@@ -419,6 +442,7 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
             )
         self._refuse_a_second_clock()
         self._refuse_uncached_latents()
+        self._refuse_unproven_settings()
         from .loader import MiniMaxH3Loader
         from .settings import resolve_h3_settings
 
@@ -475,6 +499,77 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
                 "reads them from that cache; without it the soundtrack would silently "
                 "not be trained. Set cache_latents to true"
             )
+
+    # A run setting this family ACCEPTS it must train correctly; every setting
+    # below was never observed doing so (no test through the real seams, no
+    # real job), so it is refused by name here — before any weight loads —
+    # instead of being accepted and handled wrongly or silently. The sweep
+    # that classifies every switch: `.agent/output/h3-gates/settings-sweep.md`;
+    # the pins: `test_minimax_h3_accepted_inputs.py`. A row leaves this table
+    # only together with the test that proves the setting.
+    _UNPROVEN_SWITCHES: tuple[tuple[str, str], ...] = (
+        ("ema", "EMA weights were never trained or sampled with this family; turn ema off"),
+        (
+            "adaptive_targeting",
+            "adaptive layer targeting ranks modules by projection group and this family's "
+            "groups were never validated; turn adaptive_targeting off",
+        ),
+        (
+            "train_text_encoder",
+            "the text encoder is released before the transformer loads and only its cached "
+            "embeddings are used; turn train_text_encoder off",
+        ),
+        (
+            "h_flip",
+            "a mirrored clip would keep its unmirrored stereo soundtrack; turn h_flip off",
+        ),
+        ("v_flip", "flip augmentation was never validated on this family's latents; turn v_flip off"),
+    )
+
+    def _refuse_unproven_settings(self) -> None:
+        cfg = self.config
+        if not cfg.get("cache_text_embeddings", True):
+            raise ValueError(self._LIVE_TEXT_ENCODING_REFUSAL)
+        # Unset resolves to the one supported value (every H3 weight ships
+        # bf16); an explicit other value is refused, never overridden.
+        precision = cfg.setdefault("mixed_precision", "bf16")
+        if precision != "bf16":
+            raise ValueError(
+                f"minimax_h3: mixed_precision={precision!r} is not supported — every weight of this "
+                "model is bf16 and it was only ever trained under bf16 autocast; set mixed_precision to bf16"
+            )
+        for key, reason in self._UNPROVEN_SWITCHES:
+            if cfg.get(key):
+                raise ValueError(f"minimax_h3: {key}={cfg.get(key)!r} is not supported in this release — {reason}")
+        if float(cfg.get("noise_offset") or 0.0) > 0.0:
+            raise ValueError(
+                f"minimax_h3: noise_offset={cfg.get('noise_offset')} is not supported in this release — it would "
+                "offset the video noise only, never the soundtrack's, and was never validated; set noise_offset to 0"
+            )
+        if cfg.get("resume_from_checkpoint"):
+            raise ValueError(
+                "minimax_h3: resume_from_checkpoint is not supported in this release — continuing a run "
+                "from a checkpoint was never validated for this family (its transformer loads late, after "
+                "the text encoder is released); start the run from step 0 instead"
+            )
+        for ds in cfg.get("datasets") or []:
+            if isinstance(ds, dict) and ds.get("masking_enabled"):
+                raise ValueError(
+                    f"minimax_h3: dataset {ds.get('dataset_name')!r} has masking_enabled=True — a masked "
+                    "variant is a still image and this family trains on video clips only; turn masking "
+                    "off for this dataset"
+                )
+        from app.engine.core.video_contract import validate_video_config
+
+        report = validate_video_config(self.definition, cfg)
+        if not report.ok:
+            raise ValueError("minimax_h3: video configuration invalid — " + "; ".join(report.errors))
+
+    _LIVE_TEXT_ENCODING_REFUSAL = (
+        "minimax_h3 requires cache_text_embeddings=True: the 63 GB "
+        "Qwen3-VL encoder cannot stay resident beside the 62 GB DiT "
+        "for live per-step encoding"
+    )
 
     def _banner_seed(self) -> int | None:
         seed = self.config.get("seed")

@@ -70,23 +70,29 @@ def tiny_real_vae() -> H3PixelAdaptedVAE:
     return H3PixelAdaptedVAE(inner)
 
 
-def write_clip(path, frames: int, *, soundtrack: bool, fps: float = FPS) -> dict:
-    """A real mp4 (H.264, AAC when ``soundtrack``) and its /pairs row."""
+def write_clip(
+    path, frames: int, *, soundtrack: bool, fps: float = FPS, sound_from_s: float = 0.0,
+    caption: str | None = None, side: int = SIDE,
+) -> dict:
+    """A real mp4 (H.264, AAC when ``soundtrack``) and its /pairs row. The tone
+    starts at ``sound_from_s`` — silence before it — so a window of the clip
+    can be told from another by its audio."""
     from app.engine.components.video import VideoFrameLoader
 
     g = torch.Generator().manual_seed(frames)
-    video = (torch.rand(3, frames, SIDE, SIDE, generator=g) * 2.0 - 1.0).float()
+    video = (torch.rand(3, frames, side, side, generator=g) * 2.0 - 1.0).float()
     audio = None
     if soundtrack:
         n = int(math.ceil(frames / fps * SR))
         tone = torch.sin(torch.arange(n, dtype=torch.float32) * 0.05) * 0.5
+        tone[: int(sound_from_s * SR)] = 0.0
         audio = (torch.stack([tone, tone]), SR)
     VideoFrameLoader().encode_video(video, audio, fps, str(path))
     return {
         "media_file": path.name,
-        "caption_content": f"a clip of {frames} frames",
+        "caption_content": f"a clip of {frames} frames" if caption is None else caption,
         "metadata": {
-            "width": SIDE, "height": SIDE, "is_video": True, "enabled": True,
+            "width": side, "height": side, "is_video": True, "enabled": True,
             "fps": fps, "duration_s": frames / fps,
         },
     }

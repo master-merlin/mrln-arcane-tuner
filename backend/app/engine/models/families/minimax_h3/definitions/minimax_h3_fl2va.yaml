@@ -55,6 +55,9 @@ defaults:
   # dense (sparse attention was not shipped with the weights), so 107 frames
   # is ~18.8K tokens where 345 is ~59.9K. See spec section 5.
   num_frames: 107
+  # Every H3 weight ships bf16 and the trainer refuses any other training
+  # precision at setup; the form starts on the one supported value.
+  mixed_precision: bf16
 components:
   repo:
     path: huggingface:MiniMaxAI/MiniMax-H3

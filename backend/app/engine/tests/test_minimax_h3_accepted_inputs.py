@@ -13,20 +13,24 @@ import torch
 from app.engine.tests import h3_real_seams as seams
 
 
-def _dataset(tmp_path, monkeypatch, *, clips=((24, True),), stills: int = 0) -> list[dict]:
+def _dataset(tmp_path, monkeypatch, *, clips=((24, True),), stills: int = 0, kind: str = "standard") -> list[dict]:
+    """``clips``: ``(frames, soundtrack)`` or ``(frames, soundtrack, write_clip kwargs)``."""
     ds = tmp_path / "ds"
     ds.mkdir(exist_ok=True)
-    pairs = [
-        seams.write_clip(ds / f"clip{i}_{frames}f.mp4", frames, soundtrack=sound)
-        for i, (frames, sound) in enumerate(clips)
-    ]
+    pairs = []
+    for i, spec in enumerate(clips):
+        frames, sound, extra = (*spec, {})[:3]
+        pairs.append(seams.write_clip(ds / f"clip{i}_{frames}f.mp4", frames, soundtrack=sound, **extra))
     pairs += [seams.write_still(ds / f"still{i}.png") for i in range(stills)]
-    seams.fake_api(monkeypatch, ds, pairs)
+    seams.fake_api(monkeypatch, ds, pairs, kind=kind)
     return pairs
 
 
-def _job(tmp_path, monkeypatch, build_tiny_transformer, *, clips=((24, True),), stills: int = 0, **config):
-    _dataset(tmp_path, monkeypatch, clips=clips, stills=stills)
+def _job(
+    tmp_path, monkeypatch, build_tiny_transformer, *, clips=((24, True),), stills: int = 0, kind: str = "standard",
+    **config,
+):
+    _dataset(tmp_path, monkeypatch, clips=clips, stills=stills, kind=kind)
     t = seams.shell(seams.base_config(**config))
     seams.load_components(t, build_tiny_transformer)
     seams.run_front_half(t)
@@ -134,3 +138,266 @@ def test_a_clip_with_a_soundtrack_is_supervised_or_the_run_is_refused(tmp_path, 
         f"train_audio=true, a clip WITH a soundtrack, {len(calls)} audio-loader calls, "
         f"audio_mask={extra['audio_mask'].tolist()}: the soundtrack is silently not trained"
     )
+
+
+# ── THE SWEEP, REFUSED rows: one row per setting, each refused at setup ─────
+#
+# `needles`: what the message must name so a user can act on it — the setting,
+# its value, and the way out.
+
+_REFUSED = [
+    ({"cache_latents": False}, ("cache_latents=False", "Set cache_latents to true")),
+    ({"cache_text_embeddings": False}, ("cache_text_embeddings=True", "Qwen3-VL")),
+    ({"mixed_precision": "fp16"}, ("mixed_precision='fp16'", "set mixed_precision to bf16")),
+    ({"mixed_precision": "no"}, ("mixed_precision='no'", "set mixed_precision to bf16")),
+    ({"ema": True}, ("ema=True", "turn ema off")),
+    ({"adaptive_targeting": True}, ("adaptive_targeting=True", "turn adaptive_targeting off")),
+    ({"train_text_encoder": True}, ("train_text_encoder=True", "turn train_text_encoder off")),
+    ({"h_flip": True}, ("h_flip=True", "stereo", "turn h_flip off")),
+    ({"v_flip": True}, ("v_flip=True", "turn v_flip off")),
+    ({"noise_offset": 0.05}, ("noise_offset=0.05", "set noise_offset to 0")),
+    ({"resume_from_checkpoint": "outputs/x/checkpoint-10"}, ("resume_from_checkpoint", "step 0")),
+    (
+        {"datasets": [{"dataset_name": "ds", "masking_enabled": True}]},
+        ("'ds'", "masking_enabled=True", "turn masking off"),
+    ),
+    ({"num_frames": 10}, ("num_frames=10", "17n+5")),
+    ({"temporal_coverage": "sliding"}, ("temporal_coverage='sliding'", "'first' or 'tiled'")),
+    ({"target_fps": 30}, ("target_fps=30", "24")),
+    ({"frame_stride": 2}, ("frame_stride=2", "leave frame_stride at 1")),
+]
+
+# The same keys at the value the schema ships (or the only supported one): the
+# positive control — every one of these sets up.
+_ACCEPTED = [
+    {},
+    {"cache_latents": True, "cache_text_embeddings": True, "mixed_precision": "bf16"},
+    {"ema": False, "adaptive_targeting": False, "train_text_encoder": False, "h_flip": False, "v_flip": False},
+    {"noise_offset": 0.0, "resume_from_checkpoint": "", "target_fps": 0, "frame_stride": 1},
+    {"datasets": [{"dataset_name": "ds", "masking_enabled": False}], "temporal_coverage": "tiled", "num_frames": 22},
+]
+
+
+@pytest.fixture
+def loaders_built(monkeypatch):
+    from app.engine.models.families.minimax_h3 import loader as loader_mod
+
+    built: list[dict] = []
+    real_init = loader_mod.MiniMaxH3Loader.__init__
+
+    def _recording_init(self, device, **kwargs):
+        built.append(kwargs)
+        real_init(self, device, **kwargs)
+
+    monkeypatch.setattr(loader_mod.MiniMaxH3Loader, "__init__", _recording_init)
+    return built
+
+
+@pytest.mark.parametrize("config, needles", _REFUSED, ids=[next(iter(c)) + "=" + str(next(iter(c.values())))[:24] for c, _ in _REFUSED])
+def test_sweep_refused_at_setup_before_any_weight_loads(loaders_built, config, needles):
+    with pytest.raises(ValueError) as err:
+        seams.shell(seams.base_config(**config))
+    message = str(err.value)
+    assert message.startswith("minimax_h3"), message
+    for needle in needles:
+        assert needle in message, f"{needle!r} missing from: {message}"
+    assert loaders_built == [], "the loader was built before the refusal"
+
+
+@pytest.mark.parametrize("config", _ACCEPTED)
+def test_sweep_the_supported_values_of_the_same_settings_set_up(loaders_built, config):
+    t = seams.shell(seams.base_config(**config))
+    assert t.settings is not None and loaders_built == [{"defer_transformer": True}]
+    assert t.config["mixed_precision"] == "bf16"
+
+
+@pytest.mark.parametrize("def_id", ["minimax-h3-t2va", "minimax-h3-fl2va", "minimax-h3-ref2va"])
+def test_sweep_the_form_starts_on_the_one_supported_precision(def_id):
+    """The schema default is fp16 and the trainer refuses it: the definition's
+    `defaults` (what the training form fills pristine controls from) must
+    carry bf16, or a default-form job is refused at setup."""
+    defaults = seams.definition(def_id).defaults
+    assert defaults.get("mixed_precision") == "bf16"
+    t = seams.shell(seams.base_config(mixed_precision=defaults["mixed_precision"]))
+    assert t.settings is not None
+
+
+def test_sweep_an_audio_file_is_skipped_loudly_and_an_audio_only_dataset_fails(tmp_path, monkeypatch, build_tiny_transformer):
+    import shutil
+
+    from app.engine.tests.test_minimax_h3_trainer import _STEREO_CLICK_WAV
+
+    ds = tmp_path / "ds"
+    ds.mkdir()
+    shutil.copy(_STEREO_CLICK_WAV, ds / "song.wav")
+    audio_row = {
+        "media_file": "song.wav",
+        "caption_content": "a song",
+        "metadata": {"is_audio": True, "enabled": True, "duration_s": 1.0, "sample_rate": 32000, "channels": 2},
+    }
+    seams.fake_api(monkeypatch, ds, [audio_row])
+    t = seams.shell(seams.base_config())
+    seams.load_components(t, build_tiny_transformer)
+    with pytest.raises(ValueError) as err:
+        seams.run_front_half(t)
+    assert str(err.value).startswith("No training data found in datasets.") and "1 audio file(s)" in str(err.value)
+
+    seams.fake_api(monkeypatch, ds, [audio_row, seams.write_clip(ds / "clip.mp4", 24, soundtrack=True)])
+    t = seams.shell(seams.base_config())
+    seams.load_components(t, build_tiny_transformer)
+    seams.run_front_half(t)
+    assert [i["path"].endswith("clip.mp4") for i in t.inventory] == [True]
+    skipped = seams.events(t, "audio_file_skipped", level="warning")
+    assert [e["media"] for e in skipped] == ["song.wav"]
+    assert seams.events(t, "pre_caching_latents_done")[-1]["encoded"] == 1
+    loss, *_ = seams.train_step(t, list(t.inventory))
+    assert torch.isfinite(loss)
+
+
+def test_sweep_an_edit_dataset_is_trained_as_its_target_clips(tmp_path, monkeypatch, build_tiny_transformer):
+    """`control_inputs: 0`: the run is not an edit run, a dataset of kind
+    `edit` contributes its target media only."""
+    t = _job(tmp_path, monkeypatch, build_tiny_transformer, kind="edit")
+    (item,) = t.inventory
+    assert not item.get("control_paths")
+    loss, *_ = seams.train_step(t, [item])
+    assert torch.isfinite(loss)
+
+
+# ── THE SWEEP, PROVEN rows: accepted settings through the real seams ───────
+#
+# Each test is a row of `.agent/output/h3-gates/settings-sweep.md`.
+
+
+def _batches(t, batch_size: int, count: int) -> list[list[dict]]:
+    it = t._iter_training_batches(batch_size)
+    return [next(it) for _ in range(count)]
+
+
+def test_sweep_batch_2_mixed_lengths_and_mixed_audio_presence(tmp_path, monkeypatch, build_tiny_transformer):
+    """`train_batch_size=2`: the real iterator never mixes frame buckets, and a
+    batch of one clip with a soundtrack beside a silent one supervises only
+    the present one."""
+    t = _job(
+        tmp_path, monkeypatch, build_tiny_transformer,
+        clips=((24, True), (24, False), (8, True), (8, True)), train_batch_size=2,
+    )
+    assert sorted(i["target_frames"] for i in t.inventory) == [5, 5, 22, 22]
+    assert seams.events(t, "minimax_h3_data_summary")[-1]["clips_without_audio"] == 1
+    for items in _batches(t, 2, 8):
+        assert len({i["target_frames"] for i in items}) == 1, "a batch mixed two frame buckets"
+    long_pair = [i for i in t.inventory if i["target_frames"] == 22]
+    _loss, pred, _target, batch = seams.train_step(t, long_pair)
+    assert sorted(batch["audio_mask"].tolist()) == [0.0, 1.0]
+    present = batch["audio_mask"].tolist().index(1.0)
+    per_item = (pred[1].float() - batch["audio_target"].float()).pow(2).flatten(1).mean(dim=1)
+    assert torch.allclose(t.last_step_losses.loss_audio, per_item[present], atol=1e-6)
+    short_pair = [i for i in t.inventory if i["target_frames"] == 5]
+    loss_short, _p, _t, batch_short = seams.train_step(t, short_pair)
+    assert batch_short["audio_mask"].tolist() == [1.0, 1.0] and torch.isfinite(loss_short)
+    assert batch_short["audio_clean"].shape[-1] < batch["audio_clean"].shape[-1], "audio rows follow the clip length"
+
+
+def test_sweep_gradient_accumulation_scales_the_step_loss(tmp_path, monkeypatch, build_tiny_transformer):
+    t = _job(tmp_path, monkeypatch, build_tiny_transformer, gradient_accumulation_steps=4)
+    one, *_ = seams.train_step(t, list(t.inventory), grad_accum=1)
+    four, *_ = seams.train_step(t, list(t.inventory), grad_accum=4)
+    assert torch.allclose(one / 4, four, atol=1e-7)
+    four.backward()
+
+
+@pytest.mark.parametrize("dropout, caption", [(1.0, "a caption that is always dropped"), (0.0, "")])
+def test_sweep_a_dropped_or_empty_caption_trains_on_the_cached_empty_prompt(
+    tmp_path, monkeypatch, build_tiny_transformer, dropout, caption
+):
+    _dataset(tmp_path, monkeypatch, clips=((24, True, {"caption": caption}),))
+    config = seams.base_config(datasets=[{"dataset_name": "ds", "caption_dropout_rate": dropout}])
+    t = seams.shell(config)
+    seams.load_components(t, build_tiny_transformer)
+    seams.run_front_half(t)
+    loss, _pred, _target, batch = seams.train_step(t, list(t.inventory))
+    assert batch["captions"] == [""] and torch.isfinite(loss)
+
+
+@pytest.mark.parametrize(
+    "config, weight",
+    [
+        ({"train_audio": True}, 0.1),  # the definition's audio.loss_weight
+        ({"train_audio": True, "audio_loss_weight": 0.5}, 0.5),
+        ({"train_audio": False, "audio_loss_weight": 0.5}, 0.0),
+        ({"train_audio": True, "audio_loss_weight": 0.0}, 0.0),
+    ],
+)
+def test_sweep_train_audio_and_its_weight_decide_the_total(tmp_path, monkeypatch, build_tiny_transformer, config, weight):
+    t = _job(tmp_path, monkeypatch, build_tiny_transformer, **config)
+    assert t.driver.settings.audio_loss_weight == weight
+    loss, _pred, _target, batch = seams.train_step(t, list(t.inventory))
+    out = t.last_step_losses
+    assert batch["audio_clean"].any(), "the rows stay packed whatever the weight"
+    assert torch.allclose(loss, out.loss_video + weight * out.loss_audio, atol=1e-6)
+
+
+def test_sweep_cfg_augment_reads_the_uncond_row_from_the_real_te_cache_at_batch_2(
+    tmp_path, monkeypatch, build_tiny_transformer
+):
+    t = _job(
+        tmp_path, monkeypatch, build_tiny_transformer,
+        clips=((24, True), (24, True)), train_batch_size=2, cfg_augment_scale=4.0,
+    )
+    loss, _pred, _target, batch = seams.train_step(t, list(t.inventory))
+    assert torch.isfinite(loss)
+    uncond = batch["text_embeddings_uncond"]
+    # ONE cached row, expanded over the batch by the driver: the uncond arm
+    # must have run for BOTH items, video and audio.
+    assert batch["video_pred_uncond"].shape[0] == 2 and batch["audio_pred_uncond"].shape[0] == 2
+    cached_empty = t.encode_text([""], t.autocast_dtype).embeddings[0]
+    assert torch.equal(uncond.embeddings[0], cached_empty), "the uncond row is the pre-cached empty prompt"
+
+
+@pytest.mark.parametrize("num_frames, expected", [(5, 5), (22, 22), (107, 22)])
+def test_sweep_num_frames_caps_land_on_a_legal_length(tmp_path, monkeypatch, build_tiny_transformer, num_frames, expected):
+    """A cap above the clip (107) gives the clip's own legal length. A cap that
+    is not `17n+5` is a REFUSED row."""
+    t = _job(tmp_path, monkeypatch, build_tiny_transformer, num_frames=num_frames)
+    (item,) = t.inventory
+    assert item["target_frames"] == expected
+    loss, *_ = seams.train_step(t, [item])
+    assert torch.isfinite(loss)
+
+
+def test_sweep_two_resolutions_train_the_same_clip_at_both(tmp_path, monkeypatch, build_tiny_transformer):
+    t = _job(
+        tmp_path, monkeypatch, build_tiny_transformer,
+        clips=((24, True), (24, True, {"side": 128})), resolutions=[64, 128],
+    )
+    sizes = sorted({(i["target_w"], i["target_h"]) for i in t.inventory})
+    assert sizes == [(64, 64), (128, 128)], sizes
+    for item in t.inventory:
+        loss, *_ = seams.train_step(t, [item])
+        assert torch.isfinite(loss)
+
+
+def test_sweep_tiled_coverage_gives_every_window_its_own_soundtrack(tmp_path, monkeypatch, build_tiny_transformer):
+    """48 frames, silence for the first second, a tone for the second: the
+    first window's audio rows are silent, the second's are not."""
+    t = _job(
+        tmp_path, monkeypatch, build_tiny_transformer,
+        clips=((48, True, {"sound_from_s": 1.0}),), temporal_coverage="tiled",
+    )
+    windows = sorted(t.inventory, key=lambda i: i["trim_start_s"])
+    assert len(windows) == 2 and windows[0]["trim_start_s"] != windows[1]["trim_start_s"]
+    # Silence encodes to ONE constant row value (the stub VAE's normalised
+    # zero), a tone does not: variation along the time axis tells them apart.
+    variation = []
+    for item in windows:
+        _loss, _pred, _target, batch = seams.train_step(t, [item])
+        assert batch["audio_mask"].tolist() == [1.0]
+        variation.append(float(batch["audio_clean"].std(dim=-1).max()))
+    assert variation[0] < 1e-4 < variation[1], f"per-window audio variation {variation}: the windows share one soundtrack"
+
+
+@pytest.mark.parametrize("prompts", [[], None])
+def test_sweep_no_sample_prompts_is_a_job_without_previews(tmp_path, monkeypatch, build_tiny_transformer, prompts):
+    t = _job(tmp_path, monkeypatch, build_tiny_transformer, sample_prompts=prompts, sample_every_n_steps=10)
+    loss, *_ = seams.train_step(t, list(t.inventory))
+    assert torch.isfinite(loss)

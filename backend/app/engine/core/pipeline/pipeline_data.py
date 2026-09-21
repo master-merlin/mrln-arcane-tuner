@@ -163,14 +163,6 @@ def _resolve_clip_base_fps(
 class PipelineDataMixin:
     """Dataset preparation, inventory building, and batch construction."""
 
-    # A family whose model runs on ONE fixed clock (its audio and video
-    # positions are laid out at the definition's native fps) sets this True:
-    # an unset ``target_fps`` then resolves to the model's native fps instead
-    # of the clip's own, every clip that is resampled is logged where it
-    # happens and counted on the ``data_prepared`` summary. False = the clip's
-    # own fps wins, as ever, and neither the line nor the count exists.
-    _ingest_video_at_native_fps: bool = False
-
     # ── Prepare Data (shared) ────────────────────────────────────────────
 
     def _video_bucket_manager_for(self, max_frames: int):
@@ -524,8 +516,18 @@ class PipelineDataMixin:
         # Clips the frame rule rounded DOWN (97 -> 90 under `17n+5`): each is
         # logged where it happens and counted on the `data_prepared` summary.
         snapped_clips = 0
-        # Clips resampled to the model's native fps (fixed-clock families only).
-        fixed_clock = bool(self._ingest_video_at_native_fps) and self._model_native_fps > 0.0
+        # A model that runs on ONE fixed clock (its audio and video positions
+        # are laid out at the definition's native fps) says so in its
+        # DEFINITION (`VideoProfile.ingest_fps` — the same value the selector
+        # route serves to the SPA): an unset ``target_fps`` then resolves to
+        # that clock instead of the clip's own fps, every clip that is
+        # resampled is logged where it happens and counted on the
+        # ``data_prepared`` summary. No statement = the clip's own fps wins,
+        # as ever, and neither the line nor the count exists.
+        from app.engine.core.video_contract import resolve_video_profile
+
+        _ingest_fps = _coerce_fps(resolve_video_profile(self.definition).ingest_fps)
+        fixed_clock = _ingest_fps > 0.0
         resampled_clips = 0
 
         # ── Global augmentation config ──
@@ -695,9 +697,9 @@ class PipelineDataMixin:
                             # a real override and zero out the effective rate.
                             _cfg_fps = self.config.get("target_fps")
                             if fixed_clock and _coerce_fps(_cfg_fps) <= 0.0:
-                                # Unset on a fixed-clock family = the model's
-                                # native fps, never the clip's own.
-                                _cfg_fps = self._model_native_fps
+                                # Unset under a stated ingestion clock = that
+                                # clock, never the clip's own fps.
+                                _cfg_fps = _ingest_fps
                             _base_fps = _resolve_clip_base_fps(
                                 _cfg_fps,
                                 meta.get("fps"),

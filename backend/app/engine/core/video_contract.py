@@ -68,6 +68,11 @@ def snap_frames(num_frames: int, rule: str | None) -> int:
     return ((n - offset) // step) * step + offset
 
 
+# Definition statement (``architecture_params``): every clip is resampled to
+# the definition's native fps at ingestion. Absent = the clip keeps its own fps.
+INGEST_AT_NATIVE_FPS_KEY = "video.ingest_at_native_fps"
+
+
 @dataclass(frozen=True)
 class VideoProfile:
     """Model-derived video facts — the single source of truth for a family."""
@@ -82,6 +87,12 @@ class VideoProfile:
     has_audio: bool
     has_image_encoder: bool
     dual_expert: bool
+    # The ONE clock every clip is resampled to at ingestion, or None when a
+    # clip keeps its own fps. Stated by the definition
+    # (``video.ingest_at_native_fps: true``) and equal to ``native_fps`` then:
+    # the shared ingestion reads it here and the selector route serves it, so
+    # a frame count shown to the user and the frame count trained agree.
+    ingest_fps: float | None = None
 
     def supports_i2v(self) -> bool:
         return self.mode in ("i2v", "both")
@@ -126,6 +137,7 @@ def resolve_video_profile(definition) -> VideoProfile:
         has_audio=bool(caps.get("has_audio", False)),
         has_image_encoder=bool(caps.get("has_image_encoder", False)),
         dual_expert=bool(caps.get("dual_expert", False)),
+        ingest_fps=(native_fps or None) if arch.get(INGEST_AT_NATIVE_FPS_KEY) is True else None,
     )
 
 
@@ -189,6 +201,12 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
     if profile.native_fps is not None:
         report.derived["video_native_fps"] = profile.native_fps
     report.derived["video_divisibility"] = profile.divisibility
+    _arch = getattr(definition, "architecture_params", {}) or {}
+    if _arch.get(INGEST_AT_NATIVE_FPS_KEY) is True and profile.ingest_fps is None:
+        report.errors.append(
+            f"The model definition states {INGEST_AT_NATIVE_FPS_KEY} but no native fps "
+            "(video.native_fps / video.frame_rate) — its ingestion clock is unknown."
+        )
 
     # model_shift timestep params — match the model's inference scheduler so
     # training-time timestep sampling reproduces the inference noise schedule.

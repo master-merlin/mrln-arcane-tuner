@@ -20,6 +20,14 @@ class DefinitionRef(BaseModel):
     # from this string (video_contract.frame_predicate is the authority); a
     # field not declared HERE is silently dropped by the response model.
     frame_rule: str | None = None
+    # The fps every clip is resampled to at ingestion, or None when a clip
+    # keeps its own fps (``VideoProfile.ingest_fps`` — the value the trainer's
+    # ingestion resolves, from the definition's ``video.ingest_at_native_fps``).
+    # ``frame_rule`` counts TRAINING frames: with a clock stated here a clip of
+    # N source frames at S fps trains ``floor(N / S * ingest_fps)`` frames, and
+    # the SPA must apply the rule to THAT number. Declared here for the same
+    # reason as ``frame_rule``.
+    ingest_fps: float | None = None
 
 
 class TokenCountRequest(BaseModel):

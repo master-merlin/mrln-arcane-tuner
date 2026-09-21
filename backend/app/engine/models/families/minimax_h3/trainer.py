@@ -50,12 +50,12 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
 
     settings: H3EffectiveSettings | None = None
 
-    # H3 has ONE clock and the definition states it (`video.frame_rate`): the
-    # rotary positions (`packing.py`) and the audio fit (`driver.build_batch_extra`)
-    # are laid out on it, so ingestion resamples every clip to it
-    # (`PipelineDataMixin._ingest_video_at_native_fps`) and `_setup_family`
-    # refuses a setting that asks for another rate.
-    _ingest_video_at_native_fps = True
+    # H3 has ONE clock and the definition states it (`video.frame_rate` +
+    # `video.ingest_at_native_fps`): the rotary positions (`packing.py`) and the
+    # audio fit (`driver.build_batch_extra`) are laid out on it, so the shared
+    # ingestion resamples every clip to it (`VideoProfile.ingest_fps`, the value
+    # the selector route serves) and `_setup_family` refuses a definition that
+    # does not state it and a setting that asks for another rate.
 
     # ── Explicit delegations of the driver's CLOBBER hooks (plan row 1.2,
     # ordering rule 1). The base pipeline WOULD auto-delegate these, but an
@@ -464,11 +464,13 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         from app.engine.core.pipeline.pipeline_data import _coerce_fps
         from app.engine.core.video_contract import resolve_video_profile
 
-        clock = resolve_video_profile(self.definition).native_fps
+        clock = resolve_video_profile(self.definition).ingest_fps
         if not clock:
             raise ValueError(
-                f"minimax_h3 {self.definition.id}: the definition states no fps "
-                "(architecture_params['video.frame_rate']) — the model's clock is unknown"
+                f"minimax_h3 {self.definition.id}: the definition states no ingestion clock "
+                "(architecture_params['video.frame_rate'] with "
+                "'video.ingest_at_native_fps': true) — clips would keep their own fps while "
+                "the soundtrack and the rotary positions run on the model's"
             )
         raw = self.config.get("target_fps")
         target = _coerce_fps(raw)

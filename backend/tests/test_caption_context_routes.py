@@ -17,7 +17,7 @@ def test_list_definitions_returns_id_family_name_caption_format(client):
     body = resp.json()
     assert isinstance(body, list) and body, "no selectable definitions served"
     for entry in body:
-        assert set(entry.keys()) == {"id", "family", "name", "caption_format", "frame_rule"}
+        assert set(entry.keys()) == {"id", "family", "name", "caption_format", "frame_rule", "ingest_fps"}
 
 
 def test_definitions_carry_frame_rule(client):
@@ -52,6 +52,32 @@ def test_definitions_carry_frame_rule(client):
     # its own rule, from the real route (row 4.3 could only inject it).
     h3 = {d["id"]: d["frame_rule"] for d in body if d["id"].startswith("minimax-h3-")}
     assert h3 == {"minimax-h3-t2va": "17n+5"}, h3
+
+
+def test_definitions_carry_the_ingestion_clock(client):
+    """LANE-92 VERIFY 3.01: a frame rule counts TRAINING frames, and a
+    definition that states ``video.ingest_at_native_fps`` trains every clip on
+    its own clock, not the clip's. The SPA cannot turn a source frame count
+    into a training frame count without that number, so it is served beside the
+    rule — the same value ingestion resolves, from the same resolver.
+    """
+    from app.engine.core.video_contract import resolve_video_profile
+    from app.engine.models.registry import registry
+
+    registry.initialize()
+    body = client.get("/api/caption-context/definitions").json()
+    assert body, "no selectable definitions served"
+    for d in body:
+        assert "ingest_fps" in d, f"{d['id']}: ingest_fps absent from the response"
+        defn = registry.get_definition(d["id"])
+        assert d["ingest_fps"] == resolve_video_profile(defn).ingest_fps, d["id"]
+    clocks = {d["id"]: d["ingest_fps"] for d in body if d["ingest_fps"] is not None}
+    assert clocks == {"minimax-h3-t2va": 24.0}, clocks
+    # The negative, by name: video definitions whose clips keep their own fps.
+    served = {d["id"]: d for d in body}
+    for def_id in ("wan2.1-t2v-1.3b", "wan2.2-t2v-a14b"):
+        assert served[def_id]["frame_rule"] == "4n+1"
+        assert served[def_id]["ingest_fps"] is None
 
 
 def test_list_definitions_serves_caption_format_for_selector(client):

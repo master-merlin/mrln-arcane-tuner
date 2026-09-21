@@ -29,6 +29,7 @@ async def list_definitions() -> list[DefinitionRef]:
     never train is a dead end that only reveals itself at job start.
     """
     from app.core.captioning.formats import get_caption_format_for_definition
+    from app.engine.core.video_contract import resolve_video_profile
     from app.engine.models.registry import registry
 
     out: list[DefinitionRef] = []
@@ -42,6 +43,7 @@ async def list_definitions() -> list[DefinitionRef]:
                     name=defn.name,
                     caption_format=get_caption_format_for_definition(defn.id).id,
                     frame_rule=(defn.architecture_params or {}).get("video.frame_rule"),
+                    ingest_fps=resolve_video_profile(defn).ingest_fps,
                 )
             )
     return out

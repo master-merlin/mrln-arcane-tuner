@@ -229,3 +229,112 @@ def test_another_family_still_keeps_its_source_fps(tmp_path, monkeypatch):
     assert not [c for c in t.logger.info.call_args_list if c.args and c.args[0] == "clip_fps_resampled"]
     summary = [c for c in t.logger.info.call_args_list if c.args and c.args[0] == "data_prepared"]
     assert set(summary[-1].kwargs) == {"total_items", "skipped_short_clips", "snapped_clips"}
+
+
+# ── VERIFY 3.01: the clock is a statement of the DEFINITION ────────────────
+#
+# The clock used to be a trainer class flag, so no API consumer could know it
+# and the SPA approved clips on the source fps that ingestion then skipped or
+# shortened. One statement (`video.ingest_at_native_fps`), one resolver
+# (`resolve_video_profile(...).ingest_fps`), read by the shared ingestion AND
+# served by the selector route.
+
+
+def _bare(def_or_id, tmp_path, monkeypatch) -> _BarePipeline:
+    """The SHARED ingestion with no family trainer around it."""
+    t = object.__new__(_BarePipeline)
+    t.definition = _definition(def_or_id) if isinstance(def_or_id, str) else def_or_id
+    t.driver = SimpleNamespace(assign_components=lambda components: None)
+    t.components = {"vae": None}
+    t.device = torch.device("cpu")
+    t.logger = MagicMock()
+    t._log_writer = None
+    t.config = {"resolutions": [64], "datasets": [{"dataset_name": "ds"}], "cache_latents": True}
+    t._assign_components()
+    _fake_api(monkeypatch, tmp_path)
+    return t
+
+
+def _served_ingest_fps() -> dict:
+    from app.api.caption_context_routes import list_definitions
+
+    return {d.id: d.model_dump()["ingest_fps"] for d in asyncio.run(list_definitions())}
+
+
+def test_the_shared_ingestion_reads_the_clock_from_the_definition(tmp_path, monkeypatch):
+    """No trainer class is involved: the definition alone decides."""
+    t = _bare(H3, tmp_path, monkeypatch)
+    clock_fps, _ = _clock(t)
+    asyncio.run(t.prepare_data())
+    (item,) = t.inventory
+    assert float(item["target_fps"]) == clock_fps != SOURCE_FPS
+    summary = [c for c in t.logger.info.call_args_list if c.args and c.args[0] == "data_prepared"]
+    assert summary[-1].kwargs["resampled_clips"] == 1
+
+
+def test_no_class_flag_states_the_clock():
+    from app.engine.core.pipeline.pipeline_data import PipelineDataMixin
+
+    for cls in (MiniMaxH3Trainer, PipelineDataMixin, GenericTrainingPipeline):
+        assert not hasattr(cls, "_ingest_video_at_native_fps"), f"{cls.__name__} states the clock a second time"
+
+
+def test_the_api_serves_the_clock_the_trainer_ingests_on(tmp_path, monkeypatch):
+    t = _h3(tmp_path, monkeypatch)
+    asyncio.run(t.prepare_data())
+    (item,) = t.inventory
+    served = _served_ingest_fps()
+    assert served[H3] == 24.0 == float(item["target_fps"])
+    assert served[WAN] is None, "a family whose clips keep their own fps states no ingestion clock"
+    # The verdict case the SPA must reproduce from that number: 90 source
+    # frames at 30 fps are 72 on the clock, and `17n+5` trains 56 of them.
+    assert int(SOURCE_SECONDS * SOURCE_FPS) == 90
+    assert int(SOURCE_SECONDS * served[H3]) == 72
+    assert int(item["target_frames"]) == 56
+
+
+def test_without_the_statement_the_clip_keeps_its_fps_and_the_family_refuses(tmp_path, monkeypatch):
+    """The negative: take the statement away from the SAME definition."""
+    stated = _definition(H3)
+    arch = {k: v for k, v in stated.architecture_params.items() if k != "video.ingest_at_native_fps"}
+    assert len(arch) == len(stated.architecture_params) - 1, "the definition does not state its ingestion clock"
+    unstated = stated.model_copy(update={"architecture_params": arch})
+
+    t = _bare(unstated, tmp_path, monkeypatch)
+    asyncio.run(t.prepare_data())
+    (item,) = t.inventory
+    assert float(item["target_fps"]) == SOURCE_FPS
+
+    h3 = object.__new__(MiniMaxH3Trainer)
+    h3.device = torch.device("cpu")
+    h3.definition = unstated
+    h3.logger = MagicMock()
+    h3._log_writer = None
+    h3.text_cache = {}
+    h3.config = {"resolutions": [64], "datasets": [{"dataset_name": "ds"}], "cache_latents": True, "num_frames": 107}
+    with pytest.raises(ValueError, match="video.ingest_at_native_fps"):
+        h3._setup_family()
+
+
+def test_a_statement_without_an_fps_is_an_invalid_definition():
+    from app.engine.core.video_contract import resolve_video_profile, validate_video_config
+
+    stated = _definition(H3)
+    arch = {k: v for k, v in stated.architecture_params.items() if k not in ("video.frame_rate", "video.native_fps")}
+    clockless = stated.model_copy(update={"architecture_params": arch})
+    assert resolve_video_profile(clockless).ingest_fps is None
+    report = validate_video_config(clockless, {})
+    assert any("video.ingest_at_native_fps" in e for e in report.errors), report.errors
+    assert validate_video_config(stated, {}).ok
+
+
+def test_only_the_definitions_that_state_a_clock_have_one():
+    from app.engine.core.video_contract import resolve_video_profile
+
+    _definition(H3)
+    with_clock = {
+        def_id: resolve_video_profile(d).ingest_fps
+        for def_id, d in ModelRegistry._definitions.items()
+        if resolve_video_profile(d).ingest_fps is not None
+    }
+    assert with_clock == {"minimax-h3-t2va": 24.0, "minimax-h3-fl2va": 24.0, "minimax-h3-ref2va": 24.0}

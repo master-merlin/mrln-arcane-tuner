@@ -91,6 +91,11 @@ architecture_params:
   # Requires the Nn+M frame-rule generalization from Task 3B.
   video.frame_rule: 17n+5
   video.frame_rate: 24.0
+  # The model has ONE clock: rotary positions and the soundtrack are laid out
+  # at video.frame_rate, so every clip is resampled to it at ingestion and the
+  # frame rule counts frames ON THAT CLOCK (a 30-fps clip of 90 frames is 72).
+  # Read by the shared ingestion and served to the SPA as ingest_fps.
+  video.ingest_at_native_fps: true
   video.short_edge: 768
   video.max_pixels: 1032192   # 768 * 1344 canvas cap
   # -- Transformer (transformer/config.json) --

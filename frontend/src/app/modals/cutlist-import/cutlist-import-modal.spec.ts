@@ -9,6 +9,7 @@ import { CutlistImportModalComponent } from './cutlist-import-modal';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { OverlayStore } from '../../state/overlay.store';
+import { ModelContextStore } from '../../state/model-context.store';
 import type { DatasetPair } from '../../services/dataset';
 
 function videoPair(media: string, fps = 24): DatasetPair {
@@ -123,6 +124,25 @@ describe('CutlistImportModalComponent', () => {
         // Modal stays open on error.
         expect(overlay.modalStack().length).toBe(1);
         expect(comp.splitting()).toBe(false);
+    });
+
+    it('the review table applies the active definition\'s ingestion clock to the source fps it is handed (F5)', async () => {
+        localStorage.clear();
+        const store = TestBed.inject(ModelContextStore);
+        store.setModelAware(true);
+        store.setDefinition({ id: 'probe-def', family: 'probe', name: 'Probe', frame_rule: '17n+5', ingest_fps: 24.0 });
+        api.parseCutlist.mockReturnValue(of({ segments: [{ start_s: 1, end_s: 4, label: null }], format: 'llc', warnings: [] }));
+        const { comp, fixture } = make([videoPair('src.mp4', 30)]);
+        comp.sourceRel.set('src.mp4');
+        comp.file.set(new File(['x'], 'cuts.llc'));
+        await comp.parse();
+        fixture.detectChanges();
+        const root = fixture.nativeElement as HTMLElement;
+        // 3 s of a 30 fps file = 90 source frames = 72 on the 24 fps clock -> 56 used.
+        expect(root.querySelector('[data-testid="spt-frames"]')!.textContent!.trim()).toBe('72');
+        expect(root.querySelector('[data-testid="spt-source-frames"]')!.textContent!.trim()).toBe('file: 90');
+        expect(root.querySelector('[data-testid="spt-outcome"]')!.textContent!.trim()).toBe('56 used');
+        localStorage.clear();
     });
 
     it('canParse() requires both a source and a file', () => {

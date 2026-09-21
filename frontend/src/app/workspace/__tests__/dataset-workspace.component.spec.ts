@@ -9,6 +9,7 @@ import { MediaItemStore } from '../../state/media-item.store';
 import { CaptionCacheStore } from '../../state/caption-cache.store';
 import { DatasetSyncService } from '../../state/dataset-sync.service';
 import { ScopeStore } from '../../state/scope.store';
+import { ModelContextStore } from '../../state/model-context.store';
 import { DatasetService } from '../../services/dataset';
 import { ToastService } from '../../services/toast';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
@@ -570,5 +571,63 @@ describe('DatasetWorkspaceComponent.openMass — completion callback', () => {
             expect(openedKind).toBe(kind);
             expect(typeof data.onCompleted).toBe('function');
         }
+    });
+});
+
+// ---------------------------------------------------------------------------
+// LANE-92 VERIFY 3.01 (F8): the clip-health chip claims only what was checked.
+// The backend clip health knows 4n+1 and 8n+1, never the active definition.
+// ---------------------------------------------------------------------------
+describe('DatasetWorkspaceComponent clip-health chip (what it claims)', () => {
+    const UNCHECKED = '17n+5, the active model\'s rule, is not checked here: the trim editor judges it per clip.';
+
+    function withVideos(rule: string | null, warnings: Record<string, string[]> = {}): any {
+        localStorage.clear();
+        const cmp = bed();
+        (TestBed.inject(MediaItemStore) as any).byDataset = (_: string) => signal([
+            mediaItem({ media_file: 'a.mp4', media_type: 'video', clip_warnings: warnings }),
+            mediaItem({ media_file: 'b.mp4', media_type: 'video', clip_warnings: {} }),
+        ]);
+        if (rule) {
+            const store = TestBed.inject(ModelContextStore);
+            store.setModelAware(true);
+            store.setDefinition({ id: 'probe-def', family: 'probe', name: 'Probe', frame_rule: rule, ingest_fps: null });
+        }
+        return cmp;
+    }
+
+    afterEach(() => localStorage.clear());
+
+    it('an active rule the clip health does not check: no "pass the frame rules" claim, names what was checked', () => {
+        const chip = withVideos('17n+5').clipHealthChip();
+        expect(chip.passClaim).toBe(false);
+        expect(chip.label).toBe('4n+1 / 8n+1 checked');
+        expect(chip.icon).toBe('Info');
+        expect(chip.title).toBe('Checked against 4n+1 / 8n+1 only, not 17n+5, the active model\'s rule');
+        expect(chip.passText).toBe(`All 2 clips pass the 4n+1 / 8n+1 checks. ${UNCHECKED}`);
+        expect(`${chip.label} ${chip.title} ${chip.passText}`).not.toContain('the frame rules');
+    });
+
+    it('a covered rule, or no active model, keeps the pass claim', () => {
+        for (const rule of ['4n+1', '8n+1', null]) {
+            const chip = withVideos(rule).clipHealthChip();
+            expect(chip).toEqual({
+                passClaim: true,
+                label: 'Clips OK',
+                icon: 'Check',
+                title: 'All clips pass the frame rules',
+                passText: 'All 2 clips pass the frame rules.',
+                note: null,
+            });
+            TestBed.resetTestingModule();
+        }
+    });
+
+    it('warnings under an unchecked rule say which rules they are about', () => {
+        const chip = withVideos('17n+5', { wan: ['frame count 12 is not 4k+1'] }).clipHealthChip();
+        expect(chip.passClaim).toBe(false);
+        expect(chip.label).toBe('1 clip warning');
+        expect(chip.icon).toBe('TriangleAlert');
+        expect(chip.note).toBe(`These are the 4n+1 / 8n+1 checks. ${UNCHECKED}`);
     });
 });

@@ -121,6 +121,62 @@ describe('VideoTrimEditorComponent', () => {
         store.setDefinition({ id: 'probe-def', family: 'probe', name: 'Probe', frame_rule: frameRule });
     }
 
+    // ── LANE-92 VERIFY 3.01 (b): the rule judges TRAINING frames ──────────
+    /** The store value in the shape `GET /api/caption-context/definitions` serves. */
+    function activateServed(ingestFps: number | null): void {
+        const store = TestBed.inject(ModelContextStore);
+        store.setModelAware(true);
+        store.setDefinition({ id: 'probe-def', family: 'probe', name: 'Probe', frame_rule: '17n+5', ingest_fps: ingestFps });
+    }
+
+    function text(root: HTMLElement, testid: string): string | null {
+        const el = root.querySelector<HTMLElement>(`[data-testid="${testid}"]`);
+        return el ? el.textContent!.replace(/\s+/g, ' ').trim() : null;
+    }
+
+    it('trim_editor_judges_training_frames: 5 frames at 30 fps are 4 on a 24 fps clock -> skipped', () => {
+        activateServed(24.0);
+        const { fixture } = make({ duration: 10, fps: 30, trimStartS: 0, trimEndS: 5 / 30 });
+        const root = fixture.nativeElement as HTMLElement;
+        expect(text(root, 'vte-frames')).toBe('4');
+        expect(chips(root)).toEqual([{ label: '17n+5', pass: false }]);
+        expect(text(root, 'vte-clock-note')).toBe('4 frames at 24 fps, the model\'s clock (file: 5 at 30 fps)');
+        expect(text(root, 'vte-outcome')).toBe('Skipped in training: shorter than 5, the smallest 17n+5 length');
+    });
+
+    it('trim_editor_judges_training_frames: 90 frames at 30 fps are 72 -> the rule cuts to 56', () => {
+        activateServed(24.0);
+        const { fixture } = make({ duration: 10, fps: 30, trimStartS: 0, trimEndS: 3 });
+        const root = fixture.nativeElement as HTMLElement;
+        expect(text(root, 'vte-frames')).toBe('72');
+        expect(chips(root)).toEqual([{ label: '17n+5', pass: false }]);
+        expect(text(root, 'vte-clock-note')).toBe('72 frames at 24 fps, the model\'s clock (file: 90 at 30 fps)');
+        expect(text(root, 'vte-outcome')).toBe('56 of 72 used: the largest 17n+5 length');
+    });
+
+    it('control: ingest_fps null keeps the clip\'s own clock (90 at 30 fps stays 90, no clock note)', () => {
+        activateServed(null);
+        const { fixture } = make({ duration: 10, fps: 30, trimStartS: 0, trimEndS: 3 });
+        const root = fixture.nativeElement as HTMLElement;
+        expect(text(root, 'vte-frames')).toBe('90'); // 17*5+5: on the ladder
+        expect(chips(root)).toEqual([{ label: '17n+5', pass: true }]);
+        expect(text(root, 'vte-clock-note')).toBeNull();
+        expect(text(root, 'vte-outcome')).toBeNull();
+    });
+
+    it('a file already on the clock shows no clock note; without a model there is no outcome line', () => {
+        activateServed(24.0);
+        const onClock = make({ duration: 10, fps: 24, trimStartS: 0, trimEndS: 3 });
+        expect(text(onClock.fixture.nativeElement, 'vte-clock-note')).toBeNull();
+        expect(text(onClock.fixture.nativeElement, 'vte-outcome')).toBe('56 of 72 used: the largest 17n+5 length');
+        onClock.fixture.destroy();
+
+        TestBed.inject(ModelContextStore).setModelAware(false);
+        const agnostic = make({ duration: 10, fps: 30, trimStartS: 0, trimEndS: 3 });
+        expect(text(agnostic.fixture.nativeElement, 'vte-frames')).toBe('90');
+        expect(text(agnostic.fixture.nativeElement, 'vte-outcome')).toBeNull();
+    });
+
     it('trim_editor_shows_the_active_definition_rule', () => {
         activate('19n+5');
         // 24 frames = 19*1+5: on the 19n+5 ladder, NOT on 17n+5 / 4n+1 / 8n+1.

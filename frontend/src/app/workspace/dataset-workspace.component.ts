@@ -30,6 +30,7 @@ import { BrowseMode } from './modes/browse-mode';
 import { GridSkeletonComponent } from './grid-skeleton.component';
 import { DetailsMode } from './modes/details-mode';
 import { EditMode } from './modes/edit-mode';
+import { CLIP_HEALTH_CHECKED_LABEL, clipHealthCovers, parseFrameRule } from '../components/dataset/video/frame-rules';
 
 /**
  * Fullscreen dataset workspace overlay.
@@ -61,6 +62,19 @@ import { EditMode } from './modes/edit-mode';
 /** Rows of placeholder tiles the LANE-58 skeleton draws at most — a tile is
  *  480px tall, so four rows already overflow any viewport in use. */
 const SKELETON_MAX_ROWS = 4;
+
+/** Everything the clip-health chip and its popover say, in one place. */
+interface ClipHealthChipView {
+    /** True only when a clean result covers the rule the user is working under. */
+    passClaim: boolean;
+    label: string;
+    icon: 'Check' | 'Info' | 'TriangleAlert';
+    title: string;
+    /** Popover line for a clean result; null when there are warnings. */
+    passText: string | null;
+    /** Popover scope note shown above the warning rows; null when not needed. */
+    note: string | null;
+}
 
 @Component({
     selector: 'app-dataset-workspace',
@@ -326,6 +340,48 @@ export class DatasetWorkspaceComponent {
             return n + (hasWarn ? 1 : 0);
         }, 0),
     );
+    /**
+     * What the clip-health chip says. The backend clip health checks two
+     * fixed rules and never the active definition's, so a clean result is a
+     * pass claim only when the active rule is one of those (or none is active).
+     */
+    protected clipHealthChip = computed<ClipHealthChipView>(() => {
+        const warnings = this.clipWarningCount();
+        const total = this.videoPairs().length;
+        const activeRule = this.modelContext.activeFrameRule();
+        const covered = clipHealthCovers(activeRule);
+        const checked = CLIP_HEALTH_CHECKED_LABEL;
+        const unchecked = `${parseFrameRule(activeRule)?.label}, the active model's rule, is not checked here: `
+            + 'the trim editor judges it per clip.';
+        if (warnings > 0) {
+            return {
+                passClaim: false,
+                label: `${warnings} clip warning${warnings === 1 ? '' : 's'}`,
+                icon: 'TriangleAlert',
+                title: `${warnings} clip(s) with frame-rule warnings`,
+                passText: null,
+                note: covered ? null : `These are the ${checked} checks. ${unchecked}`,
+            };
+        }
+        if (!covered) {
+            return {
+                passClaim: false,
+                label: `${checked} checked`,
+                icon: 'Info',
+                title: `Checked against ${checked} only, not ${parseFrameRule(activeRule)?.label}, the active model's rule`,
+                passText: `All ${total} clips pass the ${checked} checks. ${unchecked}`,
+                note: null,
+            };
+        }
+        return {
+            passClaim: true,
+            label: 'Clips OK',
+            icon: 'Check',
+            title: 'All clips pass the frame rules',
+            passText: `All ${total} clips pass the frame rules.`,
+            note: null,
+        };
+    });
     /** Open/close state for the health popover. The two video-curation modals
      *  (cut-list import + scene detect) are now opened through the modal-layer
      *  registry via {@link openCutlist} / {@link openSceneDetect}. */

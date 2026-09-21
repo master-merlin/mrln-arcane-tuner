@@ -116,6 +116,47 @@ describe('SegmentPreviewTableComponent', () => {
         ]);
     });
 
+    // ── LANE-92 VERIFY 3.01 (b): the rule judges TRAINING frames ──────────
+    function activateServed(ingestFps: number | null): void {
+        const store = TestBed.inject(ModelContextStore);
+        store.setModelAware(true);
+        // The shape `GET /api/caption-context/definitions` serves.
+        store.setDefinition({ id: 'probe-def', family: 'probe', name: 'Probe', frame_rule: '17n+5', ingest_fps: ingestFps });
+    }
+
+    function cells(root: HTMLElement, testid: string): (string | null)[] {
+        return Array.from(root.querySelectorAll<HTMLElement>('[data-testid="spt-row"]')).map(row => {
+            const el = row.querySelector<HTMLElement>(`[data-testid="${testid}"]`);
+            return el ? el.textContent!.replace(/\s+/g, ' ').trim() : null;
+        });
+    }
+
+    it('segment_table_judges_training_frames: 30 fps under a 24 fps clock (5 -> 4 skipped, 90 -> 72 -> 56)', () => {
+        activateServed(24.0);
+        const { fixture } = make([seg(0, 5 / 30), seg(1, 4)], { fps: 30 });
+        const root = fixture.nativeElement as HTMLElement;
+        expect(cells(root, 'spt-frames')).toEqual(['4', '72']);
+        expect(cells(root, 'spt-source-frames')).toEqual(['file: 5', 'file: 90']);
+        expect(cells(root, 'spt-outcome')).toEqual(['skipped', '56 used']);
+        expect(chipRows(root)).toEqual([
+            [{ label: '17n+5', pass: false }],
+            [{ label: '17n+5', pass: false }],
+        ]);
+        const head = root.querySelector<HTMLElement>('[data-testid="spt-frames-head"]')!;
+        expect(head.textContent!.replace(/\s+/g, ' ').trim()).toBe('Frames at 24 fps (file: 30 fps)');
+    });
+
+    it('control: ingest_fps null keeps the clip\'s own clock and the plain header', () => {
+        activateServed(null);
+        const { fixture } = make([seg(1, 4)], { fps: 30 });
+        const root = fixture.nativeElement as HTMLElement;
+        expect(cells(root, 'spt-frames')).toEqual(['90']); // 17*5+5
+        expect(cells(root, 'spt-source-frames')).toEqual([null]);
+        expect(cells(root, 'spt-outcome')).toEqual([null]);
+        expect(chipRows(root)).toEqual([[{ label: '17n+5', pass: true }]]);
+        expect(root.querySelector('[data-testid="spt-frames-head"]')!.textContent!.trim()).toBe('Frames');
+    });
+
     it('segment_table_shows_the_active_definition_rule', () => {
         const store = TestBed.inject(ModelContextStore);
         store.setModelAware(true);

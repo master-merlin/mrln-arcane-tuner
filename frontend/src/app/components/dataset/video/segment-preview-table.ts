@@ -2,14 +2,19 @@ import { ChangeDetectionStrategy, Component, computed, inject, input, output } f
 import { IcoComponent } from '../../../icons/ico.component';
 import type { VideoSegment } from '../../../services/dataset';
 import { ModelContextStore } from '../../../state/model-context.store';
-import { estimateFrames, frameRulesFor, passesRule } from './frame-rules';
+import { clipFrames, fpsLabel, frameRulesFor, parseFrameRule, passesRule, ruleOutcome } from './frame-rules';
 
 /** One rendered row — the segment plus its derived duration / est-frame view. */
 interface SegmentRow {
     seg: VideoSegment;
     index: number;
     duration: number;
+    /** TRAINING frames — what the rule chips judge. */
     frames: number;
+    /** The file's own count over the window; set only when the clocks differ. */
+    sourceFrames: number | null;
+    /** What training does with an off-ladder row under the active rule. */
+    outcome: string | null;
     /** Per-rule pass flags, in `families()` order. */
     family: boolean[];
 }
@@ -41,7 +46,7 @@ interface SegmentRow {
                         <th>Start</th>
                         <th>End</th>
                         <th>Duration</th>
-                        @if (showFrames()) { <th>Frames</th> }
+                        @if (showFrames()) { <th data-testid="spt-frames-head">{{ framesHead() }}</th> }
                         <th>Label</th>
                         @if (editable()) { <th class="act"></th> }
                     </tr>
@@ -56,6 +61,14 @@ interface SegmentRow {
                             @if (showFrames()) {
                                 <td class="frames">
                                     <span class="mono" data-testid="spt-frames">{{ r.frames || '—' }}</span>
+                                    @if (r.sourceFrames !== null) {
+                                        <span class="src" data-testid="spt-source-frames"
+                                              title="Frames in the file over this window, at the file's own fps">file: {{ r.sourceFrames }}</span>
+                                    }
+                                    @if (r.outcome) {
+                                        <span class="outcome" data-testid="spt-outcome"
+                                              title="What training does with this length under the active model's frame rule">{{ r.outcome }}</span>
+                                    }
                                     @if (r.frames > 0) {
                                         <span class="chips">
                                             @for (f of families(); track f.label; let i = $index) {
@@ -119,6 +132,8 @@ interface SegmentRow {
             overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .spt .act { width: 1%; white-space: nowrap; text-align: right; }
         .frames .chips { display: inline-flex; gap: 4px; margin-left: 8px; }
+        .frames .src { margin-left: 6px; font-size: 10.5px; color: var(--color-text-subtle); }
+        .frames .outcome { margin-left: 6px; font-size: 10.5px; color: var(--color-warning); }
         .chip {
             font-size: 9px; font-weight: 700; letter-spacing: 0.04em;
             padding: 1px 5px; border-radius: 999px;
@@ -149,7 +164,9 @@ interface SegmentRow {
 export class SegmentPreviewTableComponent {
     /** The segments to render. */
     segments = input.required<VideoSegment[]>();
-    /** Source fps — drives the est-frame-count column. Omit to hide frames. */
+    /** The FILE's fps. Omit to hide frames. The column and its verdicts are on
+     *  training frames: counted on the active definition's ingestion clock
+     *  when it states one, else on this. */
     fps = input<number | undefined>(undefined);
     /** When true, renders per-row delete + merge controls. */
     editable = input<boolean>(false);
@@ -168,17 +185,31 @@ export class SegmentPreviewTableComponent {
         return !!f && f > 0;
     });
 
+    /** Column header: names both clocks when the definition's differs from the file's. */
+    protected framesHead = computed<string>(() => {
+        const f = clipFrames(0, 1, this.fps(), this.modelContext.activeIngestFps());
+        return f.resampled
+            ? `Frames at ${fpsLabel(f.clockFps)} fps (file: ${fpsLabel(f.sourceFps)} fps)`
+            : 'Frames';
+    });
+
     protected rows = computed<SegmentRow[]>(() => {
         const fps = this.fps();
+        const ingestFps = this.modelContext.activeIngestFps();
         const families = this.families();
+        const rule = parseFrameRule(this.modelContext.activeFrameRule());
         return this.segments().map((seg, index) => {
-            const frames = estimateFrames(seg.start_s, seg.end_s, fps);
+            const f = clipFrames(seg.start_s, seg.end_s, fps, ingestFps);
+            const frames = f.training;
+            const o = rule && frames > 0 ? ruleOutcome(frames, rule) : null;
             return {
                 seg,
                 index,
                 duration: Math.max(0, seg.end_s - seg.start_s),
                 frames,
-                family: families.map(f => passesRule(frames, f)),
+                sourceFrames: f.resampled ? f.source : null,
+                outcome: o?.skipped ? 'skipped' : o?.cut ? `${o.used} used` : null,
+                family: families.map(fam => passesRule(frames, fam)),
             };
         });
     });

@@ -57,6 +57,23 @@ describe('ModelContextStore', () => {
         expect(store.activeFrameRule()).toBeNull();
     });
 
+    it('activeIngestFps is the active definition\'s served ingest_fps, null when off, absent or not positive', () => {
+        const store = new ModelContextStore();
+        store.setModelAware(true);
+        store.setDefinition({ ...DEF, ingest_fps: 24.0 });
+        expect(store.activeIngestFps()).toBe(24);
+        expect(new ModelContextStore().activeIngestFps()).toBe(24); // survives a reload
+        store.setModelAware(false);
+        expect(store.activeIngestFps()).toBeNull();
+        store.setModelAware(true);
+        store.setDefinition({ ...DEF, ingest_fps: null }); // every family but the fixed-clock one
+        expect(store.activeIngestFps()).toBeNull();
+        store.setDefinition({ ...DEF, ingest_fps: 0 });
+        expect(store.activeIngestFps()).toBeNull();
+        store.setDefinition(DEF); // persisted before the backend served the field
+        expect(store.activeIngestFps()).toBeNull();
+    });
+
     it('activeDefinitionId is null when model-aware is off even if a def was set', () => {
         const store = new ModelContextStore();
         store.setModelAware(true);

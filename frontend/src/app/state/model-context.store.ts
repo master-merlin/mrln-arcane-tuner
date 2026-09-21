@@ -13,6 +13,12 @@ export interface DefinitionRef {
      * before the field was served — the selector refreshes it on load).
      */
     frame_rule?: string | null;
+    /**
+     * The definition's ingestion clock in fps as served by the backend: every
+     * clip is resampled to it before the frame rule applies. null/absent =
+     * a clip trains at its own fps.
+     */
+    ingest_fps?: number | null;
 }
 
 interface PersistedState {
@@ -61,6 +67,12 @@ export class ModelContextStore {
     readonly activeFrameRule = computed<string | null>(
         () => this.activeDefinition()?.frame_rule ?? null,
     );
+
+    /** The active definition's ingestion clock (fps), or null when none is active or stated. */
+    readonly activeIngestFps = computed<number | null>(() => {
+        const fps = this.activeDefinition()?.ingest_fps;
+        return typeof fps === 'number' && fps > 0 ? fps : null;
+    });
 
     private persist(): void {
         const state: PersistedState = {

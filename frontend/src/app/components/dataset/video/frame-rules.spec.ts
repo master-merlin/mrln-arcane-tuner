@@ -3,7 +3,9 @@
  * contract (`video_contract.frame_predicate` / `BucketManager._parse_frame_step`).
  * The rule STRING always comes from a definition; nothing here names a family.
  */
-import { estimateFrames, frameRulesFor, parseFrameRule, passesRule } from './frame-rules';
+import {
+    clipFrames, clipHealthCovers, estimateFrames, frameRulesFor, parseFrameRule, passesRule, ruleOutcome,
+} from './frame-rules';
 
 function rule(text: string) {
     const parsed = parseFrameRule(text);
@@ -57,9 +59,48 @@ describe('frame-rules', () => {
         }
     });
 
-    it('estimateFrames rounds duration × fps and is 0 without fps', () => {
+    it('estimateFrames is duration × fps and is 0 without fps', () => {
         expect(estimateFrames(0, 2, 24)).toBe(48);
         expect(estimateFrames(0, 2, undefined)).toBe(0);
         expect(estimateFrames(2, 2, 24)).toBe(0);
+    });
+
+    it('estimateFrames FLOORS, as ingestion does (int(eff_dur * fps)) — for every family', () => {
+        // 0.98 s × 24 fps = 23.52: ingestion trains 23, a rounding UI said 24.
+        expect(estimateFrames(0, 0.98, 24)).toBe(23);
+        expect(estimateFrames(0, 0.98, 24, null)).toBe(23);
+    });
+
+    it('estimateFrames counts TRAINING frames on the stated ingestion clock', () => {
+        // LANE-92 VERIFY 3.01: a 30 fps file under a 24 fps clock.
+        expect(estimateFrames(0, 5 / 30, 30, 24)).toBe(4); // 5 source frames -> 4
+        expect(estimateFrames(0, 3, 30, 24)).toBe(72); // 90 source frames -> 72
+        // No clock stated (null / absent / 0): the clip keeps its own fps.
+        expect(estimateFrames(0, 3, 30, null)).toBe(90);
+        expect(estimateFrames(0, 3, 30)).toBe(90);
+        expect(estimateFrames(0, 3, 30, 0)).toBe(90);
+        // The clock needs no source fps: ingestion resamples whatever the file is.
+        expect(estimateFrames(0, 3, undefined, 24)).toBe(72);
+    });
+
+    it('clipFrames keeps the SOURCE count beside the training count and says when they differ', () => {
+        expect(clipFrames(0, 3, 30, 24)).toEqual({ training: 72, source: 90, clockFps: 24, sourceFps: 30, resampled: true });
+        expect(clipFrames(0, 3, 24, 24)).toEqual({ training: 72, source: 72, clockFps: 24, sourceFps: 24, resampled: false });
+        expect(clipFrames(0, 3, 30, null)).toEqual({ training: 90, source: 90, clockFps: 30, sourceFps: 30, resampled: false });
+    });
+
+    it('ruleOutcome: below the floor is skipped; off the ladder is cut to the largest legal length', () => {
+        const rule = parseFrameRule('17n+5')!;
+        expect(ruleOutcome(4, rule)).toEqual({ used: 0, skipped: true, cut: false });
+        expect(ruleOutcome(72, rule)).toEqual({ used: 56, skipped: false, cut: true });
+        expect(ruleOutcome(56, rule)).toEqual({ used: 56, skipped: false, cut: false });
+        expect(ruleOutcome(5, rule)).toEqual({ used: 5, skipped: false, cut: false });
+    });
+
+    it('clipHealthCovers: only the rules the backend clip health checks (4n+1, 8n+1), or no active rule', () => {
+        expect(clipHealthCovers(null)).toBe(true);
+        expect(clipHealthCovers('4n+1')).toBe(true);
+        expect(clipHealthCovers(' 8N + 1 ')).toBe(true);
+        expect(clipHealthCovers('17n+5')).toBe(false);
     });
 });

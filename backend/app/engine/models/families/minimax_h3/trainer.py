@@ -88,12 +88,12 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         # the audio cache into a per-step COPY of each item (the inventory
         # never retains tensors) before the explicit delegation. `train_audio`
         # does not gate it (row 3.2): the rows stay packed, audio off is a
-        # zero loss weight.
-        if self.config.get("cache_latents", True):
-            items = [
-                {**item, "audio_latents": lat} if (lat := self._load_cached_audio(item)) is not None else item
-                for item in items
-            ]
+        # zero loss weight. The cache is the ONLY source (`_setup_family`
+        # refuses `cache_latents=False`).
+        items = [
+            {**item, "audio_latents": lat} if (lat := self._load_cached_audio(item)) is not None else item
+            for item in items
+        ]
         return self.driver.build_batch_extra(items)
 
     # ── The joint forward + step loss (plan row 2.6, ASTRA MAJOR-6) ────────
@@ -418,6 +418,7 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
                 "17n+5 -> 5n+2) — use 'first' or 'tiled'"
             )
         self._refuse_a_second_clock()
+        self._refuse_uncached_latents()
         from .loader import MiniMaxH3Loader
         from .settings import resolve_h3_settings
 
@@ -460,6 +461,19 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
                 f"the model's clock is {clock:g} fps (the definition's video.frame_rate) — "
                 "the soundtrack and the frames would train on different timelines; "
                 "leave frame_stride at 1"
+            )
+
+    def _refuse_uncached_latents(self) -> None:
+        """The soundtrack is encoded ONCE, up front (`_pre_cache_aux`), and the
+        step reads it from that cache (`build_batch_extra`); there is no
+        per-step audio encode. Without the latent cache every clip would train
+        as "no soundtrack" with a zero audio loss and no line saying so."""
+        if not self.config.get("cache_latents", True):
+            raise ValueError(
+                "minimax_h3: cache_latents=False is not supported — this family encodes "
+                "each clip's frames and soundtrack once, before training, and the step "
+                "reads them from that cache; without it the soundtrack would silently "
+                "not be trained. Set cache_latents to true"
             )
 
     def _banner_seed(self) -> int | None:
@@ -545,7 +559,7 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         skipped the same way. Runs with `train_audio` off too (row 3.2): the
         rows are packed either way, only their loss weight is 0."""
         audio_vae = getattr(self.driver, "audio_vae", None)
-        if audio_vae is None or not self.config.get("cache_latents", True):
+        if audio_vae is None:
             self._log_audio_coverage()
             return
 
@@ -620,10 +634,8 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         """ONE line per job: how many inventory items train with explicitly
         absent audio (zero rows, mask 0 — `driver.build_batch_extra`). Counted
         on what the step will find, the audio cache on disk: a clip without a
-        soundtrack, a failed encode, a still and a run without the latent
-        cache all read the same way there."""
-        cached = bool(self.config.get("cache_latents", True))
-        without = sum(1 for item in self.inventory if not (cached and self._audio_cache_path(item)))
+        soundtrack and a failed encode read the same way there."""
+        without = sum(1 for item in self.inventory if not self._audio_cache_path(item))
         self.logger.info(
             "minimax_h3_data_summary", total_items=len(self.inventory), clips_without_audio=without
         )

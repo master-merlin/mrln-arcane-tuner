@@ -412,3 +412,13 @@ def test_sweep_no_sample_prompts_is_a_job_without_previews(tmp_path, monkeypatch
     t = _job(tmp_path, monkeypatch, build_tiny_transformer, sample_prompts=prompts, sample_every_n_steps=10)
     loss, *_ = seams.train_step(t, list(t.inventory))
     assert torch.isfinite(loss)
+    # VERIFY 3.02: the row says "a job without previews", so the PREVIEW path is
+    # the path under test — the family's own sampler, built the way the
+    # orchestrator builds it, asked the way `pipeline_train` asks it (step -1
+    # baseline, a cadence step, the final round). `pipeline_train` catches an
+    # exception here and warns `sampling failed`; the sampler must not raise.
+    sampler = t._create_sampler()
+    assert sampler is not None
+    assert sampler._get_sample_prompts() == []
+    for step, final in ((-1, False), (9, False), (9, True)):
+        assert sampler.generate_samples(step, final=final) == []

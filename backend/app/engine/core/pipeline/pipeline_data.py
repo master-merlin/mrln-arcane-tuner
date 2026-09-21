@@ -163,6 +163,14 @@ def _resolve_clip_base_fps(
 class PipelineDataMixin:
     """Dataset preparation, inventory building, and batch construction."""
 
+    # A family whose model runs on ONE fixed clock (its audio and video
+    # positions are laid out at the definition's native fps) sets this True:
+    # an unset ``target_fps`` then resolves to the model's native fps instead
+    # of the clip's own, every clip that is resampled is logged where it
+    # happens and counted on the ``data_prepared`` summary. False = the clip's
+    # own fps wins, as ever, and neither the line nor the count exists.
+    _ingest_video_at_native_fps: bool = False
+
     # ── Prepare Data (shared) ────────────────────────────────────────────
 
     def _video_bucket_manager_for(self, max_frames: int):
@@ -513,6 +521,9 @@ class PipelineDataMixin:
         # Clips the frame rule rounded DOWN (97 -> 90 under `17n+5`): each is
         # logged where it happens and counted on the `data_prepared` summary.
         snapped_clips = 0
+        # Clips resampled to the model's native fps (fixed-clock families only).
+        fixed_clock = bool(self._ingest_video_at_native_fps) and self._model_native_fps > 0.0
+        resampled_clips = 0
 
         # ── Global augmentation config ──
         self._aug_h_flip = bool(self.config.get("h_flip", False))
@@ -679,12 +690,35 @@ class PipelineDataMixin:
                             # Positive target_fps → clip's own fps → model
                             # native. Coerced so a stringified "0" can't pose as
                             # a real override and zero out the effective rate.
+                            _cfg_fps = self.config.get("target_fps")
+                            if fixed_clock and _coerce_fps(_cfg_fps) <= 0.0:
+                                # Unset on a fixed-clock family = the model's
+                                # native fps, never the clip's own.
+                                _cfg_fps = self._model_native_fps
                             _base_fps = _resolve_clip_base_fps(
-                                self.config.get("target_fps"),
+                                _cfg_fps,
                                 meta.get("fps"),
                                 self._model_native_fps,
                             )
                             vid_target_fps = self._effective_fps(_base_fps)
+                            _source_fps = _coerce_fps(meta.get("fps"))
+                            if (
+                                fixed_clock
+                                and _source_fps > 0.0
+                                and abs(_source_fps - vid_target_fps) > 1e-6
+                            ):
+                                resampled_clips += 1
+                                self.logger.info(
+                                    "clip_fps_resampled",
+                                    dataset=name,
+                                    media=img_rel,
+                                    source_fps=_source_fps,
+                                    used_fps=vid_target_fps,
+                                    message=(
+                                        f"clip is {_source_fps:g} fps; it is resampled "
+                                        f"to {vid_target_fps:g} fps, the model's clock"
+                                    ),
+                                )
                             available_frames = (
                                 int(eff_dur * vid_target_fps)
                                 if vid_target_fps > 0
@@ -1022,6 +1056,7 @@ class PipelineDataMixin:
             total_items=len(inventory),
             skipped_short_clips=skipped_short_clips,
             snapped_clips=snapped_clips,
+            **({"resampled_clips": resampled_clips} if fixed_clock else {}),
         )
 
         # Initialize LatentManager early — needed by _validate_latent_cache()

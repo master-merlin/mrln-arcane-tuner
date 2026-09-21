@@ -50,6 +50,13 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
 
     settings: H3EffectiveSettings | None = None
 
+    # H3 has ONE clock and the definition states it (`video.frame_rate`): the
+    # rotary positions (`packing.py`) and the audio fit (`driver.build_batch_extra`)
+    # are laid out on it, so ingestion resamples every clip to it
+    # (`PipelineDataMixin._ingest_video_at_native_fps`) and `_setup_family`
+    # refuses a setting that asks for another rate.
+    _ingest_video_at_native_fps = True
+
     # ── Explicit delegations of the driver's CLOBBER hooks (plan row 1.2,
     # ordering rule 1). The base pipeline WOULD auto-delegate these, but an
     # explicit method keeps the family out of the reviewed auto-delegation
@@ -410,6 +417,7 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
                 "release (its latent window assumes (F-1)/t+1 frames; H3 chunks "
                 "17n+5 -> 5n+2) — use 'first' or 'tiled'"
             )
+        self._refuse_a_second_clock()
         from .loader import MiniMaxH3Loader
         from .settings import resolve_h3_settings
 
@@ -421,6 +429,38 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         # its source; the seed is the run seed `_apply_run_seed` reads (an
         # uninterpretable one is "unseeded" there too).
         self.logger.info(self.driver.step0_banner(u_seed=self._banner_seed()))
+
+    def _refuse_a_second_clock(self) -> None:
+        """An explicit `target_fps`, or a `frame_stride` whose effective rate
+        differs from the definition's fps, would train the video frames on one
+        timeline and the soundtrack on another. Refused by name with both
+        numbers — never overridden silently, never trained. Unset (0) is
+        resolved to the definition's fps at ingestion and reported there."""
+        from app.engine.core.pipeline.pipeline_data import _coerce_fps
+        from app.engine.core.video_contract import resolve_video_profile
+
+        clock = resolve_video_profile(self.definition).native_fps
+        if not clock:
+            raise ValueError(
+                f"minimax_h3 {self.definition.id}: the definition states no fps "
+                "(architecture_params['video.frame_rate']) — the model's clock is unknown"
+            )
+        raw = self.config.get("target_fps")
+        target = _coerce_fps(raw)
+        if target > 0.0 and abs(target - clock) > 1e-6:
+            raise ValueError(
+                f"minimax_h3: target_fps={raw} contradicts the model's clock of {clock:g} fps "
+                "(the definition's video.frame_rate) — the soundtrack and the frames would "
+                f"train on different timelines; leave target_fps at 0 or set it to {clock:g}"
+            )
+        stride = int(self.config.get("frame_stride", 1) or 1)
+        if stride > 1:
+            raise ValueError(
+                f"minimax_h3: frame_stride={stride} gives an effective {clock / stride:g} fps, "
+                f"the model's clock is {clock:g} fps (the definition's video.frame_rate) — "
+                "the soundtrack and the frames would train on different timelines; "
+                "leave frame_stride at 1"
+            )
 
     def _banner_seed(self) -> int | None:
         seed = self.config.get("seed")

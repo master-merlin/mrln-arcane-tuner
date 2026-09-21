@@ -266,7 +266,10 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
             f"still_resolutions entries must be positive ints, got {bad_still}."
         )
 
-    # target_fps: 0 means "use native"; a set value far from native is rejected.
+    # target_fps: 0 = unset — ingestion then uses ``profile.ingest_fps`` when the
+    # definition states one, else the CLIP's own fps (native only when the clip
+    # has none: ``pipeline_data._resolve_clip_base_fps``). A set value far from
+    # native is rejected.
     fps = _to_float(config.get("target_fps"))
     if fps and profile.native_fps and abs(fps - profile.native_fps) > _FPS_TOL:
         report.errors.append(

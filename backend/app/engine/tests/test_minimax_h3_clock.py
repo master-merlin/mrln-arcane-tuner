@@ -81,7 +81,7 @@ def _write_click_wav(path) -> None:
         w.writeframes(bytes(frames))
 
 
-def _fake_api(monkeypatch, tmp_path, fps: float = SOURCE_FPS) -> None:
+def _fake_api(monkeypatch, tmp_path, fps: float = SOURCE_FPS, seconds: float = SOURCE_SECONDS) -> None:
     ds = tmp_path / "ds"
     ds.mkdir(exist_ok=True)
     _write_click_wav(ds / "clip.wav")
@@ -91,7 +91,7 @@ def _fake_api(monkeypatch, tmp_path, fps: float = SOURCE_FPS) -> None:
             "caption_content": "a click",
             "metadata": {
                 "width": 64, "height": 64, "is_video": True, "enabled": True,
-                "fps": fps, "duration_s": SOURCE_SECONDS,
+                "fps": fps, "duration_s": seconds,
             },
         }
     ]
@@ -314,6 +314,43 @@ def test_without_the_statement_the_clip_keeps_its_fps_and_the_family_refuses(tmp
     h3.config = {"resolutions": [64], "datasets": [{"dataset_name": "ds"}], "cache_latents": True, "num_frames": 107}
     with pytest.raises(ValueError, match="video.ingest_at_native_fps"):
         h3._setup_family()
+
+
+def _messages(t, event: str, level: str) -> list[str]:
+    return [c.kwargs["message"] for c in getattr(t.logger, level).call_args_list if c.args and c.args[0] == event]
+
+
+def test_a_frame_count_in_a_message_says_which_clock_it_was_counted_on(tmp_path, monkeypatch):
+    """The clock sweep: the user sees 5 frames (30 fps) in the dataset view and
+    the job says "clip has 4 frames" — true on the ingestion clock, and
+    unreadable unless the line says so. Same for the snap line (72, not 90)."""
+    t = _h3(tmp_path, monkeypatch)
+    _fake_api(monkeypatch, tmp_path, seconds=5 / SOURCE_FPS)  # the verdict case: 5 source frames
+    with pytest.raises(Exception):  # noqa: B017, PT011 - nothing trainable is left; the skip line is the subject
+        asyncio.run(t.prepare_data())
+    (skip,) = _messages(t, "short_clip_skipped", "warning")
+    assert skip.startswith("clip has 4 frames at 24 fps, the model's clock (the file is 30 fps)"), skip
+    assert "smallest legal length is 5 (17n+5)" in skip
+
+    t = _h3(tmp_path, monkeypatch)  # 90 source frames -> 72 on the clock -> 56 trained
+    asyncio.run(t.prepare_data())
+    (snap,) = _messages(t, "clip_frames_snapped", "info")
+    assert snap.startswith("clip has 72 frames at 24 fps, the model's clock (the file is 30 fps); 56 are used"), snap
+
+
+def test_a_clip_already_on_the_clock_and_another_family_keep_their_wording(tmp_path, monkeypatch):
+    t = _h3(tmp_path, monkeypatch)
+    _fake_api(monkeypatch, tmp_path, fps=24.0)
+    asyncio.run(t.prepare_data())
+    (snap,) = _messages(t, "clip_frames_snapped", "info")
+    assert snap == "clip has 72 frames; 56 are used, the largest length the frame rule (17n+5) allows"
+
+    wan = _bare(WAN, tmp_path, monkeypatch)
+    wan.config["num_frames"] = 85  # the cap leaves room: 83 -> 81 is the RULE rounding down
+    _fake_api(monkeypatch, tmp_path, seconds=83.5 / SOURCE_FPS)
+    asyncio.run(wan.prepare_data())
+    (snap,) = _messages(wan, "clip_frames_snapped", "info")
+    assert snap == "clip has 83 frames; 81 are used, the largest length the frame rule (4n+1) allows"
 
 
 def test_a_statement_without_an_fps_is_an_invalid_definition():

@@ -672,6 +672,12 @@ class PipelineDataMixin:
                         vid_fps = vid_trim_start = vid_trim_end = None
                         vid_target_frames = 1
                         vid_target_fps = None
+                        # Every frame count in a line below is counted on the
+                        # rate the clip is TRAINED at. For a clip resampled to a
+                        # stated ingestion clock that is not the count the user
+                        # sees on the file, so the line names the clock. Empty
+                        # otherwise: those lines keep their wording.
+                        _clock_note = ""
                         if is_video:
                             duration_s = float(meta.get("duration_s") or 0.0)
                             vid_trim_start = float(meta.get("trim_start_s") or 0.0)
@@ -713,6 +719,10 @@ class PipelineDataMixin:
                                 and abs(_source_fps - vid_target_fps) > 1e-6
                             ):
                                 resampled_clips += 1
+                                _clock_note = (
+                                    f" at {vid_target_fps:g} fps, the model's clock "
+                                    f"(the file is {_source_fps:g} fps)"
+                                )
                                 self.logger.info(
                                     "clip_fps_resampled",
                                     dataset=name,
@@ -831,7 +841,7 @@ class PipelineDataMixin:
                                 dataset=name,
                                 media=img_rel,
                                 message=(
-                                    f"clip has {available_frames} frames; the "
+                                    f"clip has {available_frames} frames{_clock_note}; the "
                                     f"smallest legal length is {video_frame_floor} "
                                     f"({self._video_frame_rule})"
                                 ),
@@ -870,7 +880,7 @@ class PipelineDataMixin:
                                         used_frames=vid_target_frames,
                                         frame_rule=self._video_frame_rule,
                                         message=(
-                                            f"clip has {available_frames} frames; "
+                                            f"clip has {available_frames} frames{_clock_note}; "
                                             f"{vid_target_frames} are used, the "
                                             "largest length the frame rule "
                                             f"({self._video_frame_rule}) allows"

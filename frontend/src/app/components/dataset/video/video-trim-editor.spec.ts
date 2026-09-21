@@ -154,6 +154,35 @@ describe('VideoTrimEditorComponent', () => {
         expect(text(root, 'vte-outcome')).toBe('56 of 72 used: the largest 17n+5 length');
     });
 
+    // ── LANE-92 VERIFY 4.01: a frame-aligned trim off the origin ───────────
+    // (29/24 - 24/24) * 24 is 4.999999999999998 in doubles; a plain floor
+    // called a legal 5-frame window "4, skipped" and a 22-frame one "21 -> 5".
+    it('trim_editor_counts_a_frame_aligned_trim: [24/24, 29/24] at 24 fps is 5 frames, on the ladder', () => {
+        activateServed(24.0);
+        const { fixture } = make({ duration: 10, fps: 24, trimStartS: 24 / 24, trimEndS: 29 / 24 });
+        const root = fixture.nativeElement as HTMLElement;
+        expect(text(root, 'vte-frames')).toBe('5');
+        expect(chips(root)).toEqual([{ label: '17n+5', pass: true }]);
+        expect(text(root, 'vte-outcome')).toBeNull();
+    });
+
+    it('trim_editor_counts_a_frame_aligned_trim: [48/24, 70/24] at 24 fps is 22 frames, on the ladder', () => {
+        activateServed(24.0);
+        const { fixture } = make({ duration: 10, fps: 24, trimStartS: 48 / 24, trimEndS: 70 / 24 });
+        const root = fixture.nativeElement as HTMLElement;
+        expect(text(root, 'vte-frames')).toBe('22');
+        expect(chips(root)).toEqual([{ label: '17n+5', pass: true }]);
+        expect(text(root, 'vte-outcome')).toBeNull();
+    });
+
+    it('control: a real fraction still floors (0.98 s at 24 fps is 23 frames -> 22 used)', () => {
+        activateServed(24.0);
+        const { fixture } = make({ duration: 10, fps: 24, trimStartS: 0, trimEndS: 0.98 });
+        const root = fixture.nativeElement as HTMLElement;
+        expect(text(root, 'vte-frames')).toBe('23');
+        expect(text(root, 'vte-outcome')).toBe('22 of 23 used: the largest 17n+5 length');
+    });
+
     it('control: ingest_fps null keeps the clip\'s own clock (90 at 30 fps stays 90, no clock note)', () => {
         activateServed(null);
         const { fixture } = make({ duration: 10, fps: 30, trimStartS: 0, trimEndS: 3 });

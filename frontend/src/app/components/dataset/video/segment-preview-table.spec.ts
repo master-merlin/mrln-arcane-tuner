@@ -146,6 +146,22 @@ describe('SegmentPreviewTableComponent', () => {
         expect(head.textContent!.replace(/\s+/g, ' ').trim()).toBe('Frames at 24 fps (file: 30 fps)');
     });
 
+    // ── LANE-92 VERIFY 4.01: frame-aligned segments off the origin ─────────
+    // The double products are 4.999999999999998 and 21.999999999999996; a
+    // plain floor showed "4 skipped" and "21 -> 5 used" for two legal lengths.
+    it('segment_table_counts_frame_aligned_segments: 5 and 22 frames are on the ladder, 0.98 s still floors to 23', () => {
+        activateServed(24.0);
+        const { fixture } = make([seg(24 / 24, 29 / 24), seg(48 / 24, 70 / 24), seg(0, 0.98)], { fps: 24 });
+        const root = fixture.nativeElement as HTMLElement;
+        expect(cells(root, 'spt-frames')).toEqual(['5', '22', '23']);
+        expect(cells(root, 'spt-outcome')).toEqual([null, null, '22 used']);
+        expect(chipRows(root)).toEqual([
+            [{ label: '17n+5', pass: true }],
+            [{ label: '17n+5', pass: true }],
+            [{ label: '17n+5', pass: false }],
+        ]);
+    });
+
     it('control: ingest_fps null keeps the clip\'s own clock and the plain header', () => {
         activateServed(null);
         const { fixture } = make([seg(1, 4)], { fps: 30 });

@@ -65,7 +65,7 @@ describe('frame-rules', () => {
         expect(estimateFrames(2, 2, 24)).toBe(0);
     });
 
-    it('estimateFrames FLOORS, as ingestion does (int(eff_dur * fps)) — for every family', () => {
+    it('estimateFrames FLOORS, as ingestion does (whole_frames(eff_dur, fps)) — for every family', () => {
         // 0.98 s × 24 fps = 23.52: ingestion trains 23, a rounding UI said 24.
         expect(estimateFrames(0, 0.98, 24)).toBe(23);
         expect(estimateFrames(0, 0.98, 24, null)).toBe(23);

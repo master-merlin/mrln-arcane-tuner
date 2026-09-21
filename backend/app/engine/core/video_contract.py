@@ -20,6 +20,7 @@ and defensively at trainer init (``pipeline_data``).
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from typing import Any, Callable
 
@@ -66,6 +67,31 @@ def snap_frames(num_frames: int, rule: str | None) -> int:
     if n <= offset:
         return offset
     return ((n - offset) // step) * step + offset
+
+
+# One millionth of a frame. A window cut on frame boundaries multiplies out to
+# an integer in exact arithmetic and to a hair under it in doubles ((29/24 -
+# 24/24) * 24 = 4.999999999999998); truncating that loses a whole frame, which
+# a frame rule then turns into a skipped or shortened clip. The tolerance is
+# far above the rounding error of a double product at any real clip length and
+# far below any fraction a real trim can leave. The SPA's ``estimateFrames``
+# carries the same value; ``frame-count.golden.json`` pins both.
+WHOLE_FRAME_TOLERANCE = 1e-6
+
+
+def whole_frames(duration_s: float, fps: float) -> int:
+    """Whole frames a ``duration_s`` window holds at ``fps``: FLOOR, never
+    round — a frame that is not wholly inside the window cannot be supplied —
+    of the product nudged by :data:`WHOLE_FRAME_TOLERANCE`. ``0`` when there is
+    nothing to count (no duration, no rate, a non-finite input).
+
+    THE count for "duration and rate -> frames a clip can supply": ingestion
+    buckets on it and the loader must be able to supply it.
+    """
+    product = float(duration_s) * float(fps)
+    if not math.isfinite(product) or duration_s <= 0.0 or fps <= 0.0:
+        return 0
+    return math.floor(product + WHOLE_FRAME_TOLERANCE)
 
 
 # Definition statement (``architecture_params``): every clip is resampled to

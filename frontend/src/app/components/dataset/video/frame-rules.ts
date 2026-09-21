@@ -65,10 +65,20 @@ export function frameRulesFor(activeRule: string | null | undefined): readonly F
 }
 
 /**
+ * One millionth of a frame — the backend's `WHOLE_FRAME_TOLERANCE`
+ * (`video_contract.py`), same value. A window cut on frame boundaries is an
+ * integer in exact arithmetic and a hair under it in doubles
+ * ((29/24 - 24/24) * 24 = 4.999999999999998); a plain floor loses the frame.
+ * `src/testing/golden/frame-count.golden.json` pins both sides to one table.
+ */
+export const WHOLE_FRAME_TOLERANCE = 1e-6;
+
+/**
  * TRAINING frame count over a [start, end] window: the number ingestion
  * reaches and the frame rule judges. Mirrors the trainer's
- * `available_frames = int(eff_dur * vid_target_fps)` (`pipeline_data.py`)
- * exactly — FLOOR, never round, for every family — on the clock ingestion
+ * `whole_frames(eff_dur, vid_target_fps)` (`video_contract.py`, called by
+ * `pipeline_data.py`) exactly — FLOOR of the product nudged by
+ * `WHOLE_FRAME_TOLERANCE`, never round, for every family — on the clock ingestion
  * uses: the definition's stated `ingestFps` when there is one (every clip is
  * resampled to it), the clip's own `sourceFps` otherwise.
  *
@@ -86,7 +96,7 @@ export function estimateFrames(
     if (!fps || fps <= 0) return 0;
     const dur = endS - startS;
     if (!Number.isFinite(dur) || dur <= 0) return 0;
-    return Math.floor(dur * fps);
+    return Math.floor(dur * fps + WHOLE_FRAME_TOLERANCE);
 }
 
 /** A window's frame counts on both clocks: what trains, and what the file holds. */

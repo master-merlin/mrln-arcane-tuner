@@ -524,7 +524,7 @@ class PipelineDataMixin:
         # resampled is logged where it happens and counted on the
         # ``data_prepared`` summary. No statement = the clip's own fps wins,
         # as ever, and neither the line nor the count exists.
-        from app.engine.core.video_contract import resolve_video_profile
+        from app.engine.core.video_contract import resolve_video_profile, whole_frames
 
         _ingest_fps = _coerce_fps(resolve_video_profile(self.definition).ingest_fps)
         fixed_clock = _ingest_fps > 0.0
@@ -734,11 +734,7 @@ class PipelineDataMixin:
                                         f"to {vid_target_fps:g} fps, the model's clock"
                                     ),
                                 )
-                            available_frames = (
-                                int(eff_dur * vid_target_fps)
-                                if vid_target_fps > 0
-                                else 0
-                            )
+                            available_frames = whole_frames(eff_dur, vid_target_fps)
                             vid_fps = vid_target_fps
 
                         # ── Audio item detection + duration-window bucketing ──

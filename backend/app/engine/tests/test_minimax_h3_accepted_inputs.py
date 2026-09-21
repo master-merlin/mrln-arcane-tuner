@@ -268,9 +268,19 @@ def test_sweep_an_audio_file_is_skipped_loudly_and_an_audio_only_dataset_fails(t
 def test_sweep_an_edit_dataset_is_trained_as_its_target_clips(tmp_path, monkeypatch, build_tiny_transformer):
     """`control_inputs: 0`: the run is not an edit run, a dataset of kind
     `edit` contributes its target media only."""
-    t = _job(tmp_path, monkeypatch, build_tiny_transformer, kind="edit")
+    (pair,) = _dataset(tmp_path, monkeypatch, kind="edit")
+    # What an edit dataset's `/pairs` row really carries: a control and a role
+    # ordering. Neither file exists — a run that followed either would fail to
+    # open it, so "ignored" is observed, not assumed.
+    pair["effective_controls"] = ["control/not-on-disk.mp4"]
+    pair["effective_target"] = "control/also-not-on-disk.mp4"
+    t = seams.shell(seams.base_config())
+    seams.load_components(t, build_tiny_transformer)
+    seams.run_front_half(t)
     (item,) = t.inventory
+    assert item["path"].replace("\\", "/").endswith("/ds/" + pair["media_file"])
     assert not item.get("control_paths")
+    assert not seams.events(t, "edit_pair_incomplete", level="warning")
     loss, *_ = seams.train_step(t, [item])
     assert torch.isfinite(loss)
 
@@ -307,6 +317,17 @@ def test_sweep_batch_2_mixed_lengths_and_mixed_audio_presence(tmp_path, monkeypa
     loss_short, _p, _t, batch_short = seams.train_step(t, short_pair)
     assert batch_short["audio_mask"].tolist() == [1.0, 1.0] and torch.isfinite(loss_short)
     assert batch_short["audio_clean"].shape[-1] < batch["audio_clean"].shape[-1], "audio rows follow the clip length"
+
+
+def test_sweep_a_dataset_of_only_silent_clips_trains_the_video_term_alone(tmp_path, monkeypatch, build_tiny_transformer):
+    """Row 36 through the seams (a real file without an audio stream, the real
+    audio pre-cache deciding "absent")."""
+    t = _job(tmp_path, monkeypatch, build_tiny_transformer, clips=((24, False),))
+    assert seams.events(t, "minimax_h3_data_summary")[-1]["clips_without_audio"] == 1
+    loss, pred, target, batch = seams.train_step(t, list(t.inventory))
+    assert batch["audio_mask"].tolist() == [0.0] and not batch["audio_clean"].any()
+    assert float(t.last_step_losses.loss_audio) == 0.0
+    assert torch.allclose(loss, t.last_step_losses.loss_video, atol=1e-7) and torch.isfinite(loss)
 
 
 def test_sweep_gradient_accumulation_scales_the_step_loss(tmp_path, monkeypatch, build_tiny_transformer):
@@ -405,6 +426,49 @@ def test_sweep_tiled_coverage_gives_every_window_its_own_soundtrack(tmp_path, mo
         assert batch["audio_mask"].tolist() == [1.0]
         variation.append(float(batch["audio_clean"].std(dim=-1).max()))
     assert variation[0] < 1e-4 < variation[1], f"per-window audio variation {variation}: the windows share one soundtrack"
+
+
+_TIMESTEP_MODES = ["logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc", "model_shift"]
+
+
+def test_sweep_the_timestep_modes_are_the_schema_list():
+    from typing import get_args
+
+    from app.engine.models.base import BaseTrainingConfig
+
+    assert list(get_args(BaseTrainingConfig.model_fields["timestep_sampling"].annotation)) == _TIMESTEP_MODES
+
+
+@pytest.mark.parametrize("mode", _TIMESTEP_MODES)
+def test_sweep_every_timestep_sampling_mode_trains_and_the_setting_wins(tmp_path, monkeypatch, build_tiny_transformer, mode):
+    """Row 33 (re-proven in VERIFY round 3: the test it named never set the
+    key). Every mode the schema offers goes through the family's draw in a real
+    step; a mode other than the family default changes the draw."""
+    t = _job(tmp_path, monkeypatch, build_tiny_transformer, timestep_sampling=mode)
+    loss, *_ = seams.train_step(t, list(t.inventory))
+    assert torch.isfinite(loss)
+    like = torch.zeros(256, 24, 7, 4, 4)
+
+    def draw(config_mode):
+        t.config["timestep_sampling"] = config_mode
+        torch.manual_seed(5)
+        return t.sample_timesteps(256, like)
+
+    drawn, default = draw(mode), draw("uniform")
+    assert drawn.shape == (256,) and bool(((drawn >= 0) & (drawn <= 1)).all())
+    assert torch.equal(drawn, default) == (mode == "uniform"), f"timestep_sampling={mode} drew the uniform grid"
+
+
+def test_sweep_sampling_off_is_a_job_without_a_sampler(tmp_path, monkeypatch, build_tiny_transformer):
+    """Row 31 through the seams: with prompts configured and the cadence at 0
+    the front half completes, the step trains, and no sampler is built."""
+    t = _job(
+        tmp_path, monkeypatch, build_tiny_transformer,
+        sample_every_n_steps=0, sample_prompts=[{"prompt": "never rendered"}],
+    )
+    loss, *_ = seams.train_step(t, list(t.inventory))
+    assert torch.isfinite(loss)
+    assert t._create_sampler() is None
 
 
 @pytest.mark.parametrize("prompts", [[], None])

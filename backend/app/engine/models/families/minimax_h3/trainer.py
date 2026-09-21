@@ -538,6 +538,28 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
                 f"minimax_h3: mixed_precision={precision!r} is not supported — every weight of this "
                 "model is bf16 and it was only ever trained under bf16 autocast; set mixed_precision to bf16"
             )
+        # Observed on the real model (GATE-5, the real-job runs): bf16 with and
+        # without block swap, int8 without. Nothing else.
+        quantization = str(cfg.get("quantization") or "none")
+        if quantization not in ("none", "int8"):
+            raise ValueError(
+                f"minimax_h3: quantization={quantization!r} is not supported in this release — this model "
+                "was only ever trained unquantized (bf16) and with int8; set quantization to none or int8"
+            )
+        swapped = {k: v for k, v in (cfg.get("block_swap_config") or {}).items() if int(v or 0) > 0}
+        if swapped and quantization != "none":
+            raise ValueError(
+                f"minimax_h3: block_swap_config={swapped} with quantization={quantization!r} is not supported "
+                "in this release — block swapping was only ever measured on the unquantized model; use int8 "
+                "without block swap, or quantization none with it"
+            )
+        te_quantization = str(cfg.get("te_quantization") or "none")
+        if te_quantization != "none":
+            raise ValueError(
+                f"minimax_h3: te_quantization={te_quantization!r} is not supported in this release — the text "
+                "encoder only ever produced this model's embeddings unquantized, and it is released before "
+                "the transformer loads; set te_quantization to none"
+            )
         for key, reason in self._UNPROVEN_SWITCHES:
             if cfg.get(key):
                 raise ValueError(f"minimax_h3: {key}={cfg.get(key)!r} is not supported in this release — {reason}")

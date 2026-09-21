@@ -150,6 +150,13 @@ _REFUSED = [
     ({"cache_text_embeddings": False}, ("cache_text_embeddings=True", "Qwen3-VL")),
     ({"mixed_precision": "fp16"}, ("mixed_precision='fp16'", "set mixed_precision to bf16")),
     ({"mixed_precision": "no"}, ("mixed_precision='no'", "set mixed_precision to bf16")),
+    ({"quantization": "fp8"}, ("quantization='fp8'", "set quantization to none or int8")),
+    ({"quantization": "nf4"}, ("quantization='nf4'", "set quantization to none or int8")),
+    (
+        {"quantization": "int8", "block_swap_config": {"transformer_blocks": 25}},
+        ("block_swap_config={'transformer_blocks': 25}", "quantization='int8'", "int8 without block swap"),
+    ),
+    ({"te_quantization": "int8"}, ("te_quantization='int8'", "set te_quantization to none")),
     ({"ema": True}, ("ema=True", "turn ema off")),
     ({"adaptive_targeting": True}, ("adaptive_targeting=True", "turn adaptive_targeting off")),
     ({"train_text_encoder": True}, ("train_text_encoder=True", "turn train_text_encoder off")),
@@ -174,6 +181,10 @@ _ACCEPTED = [
     {"cache_latents": True, "cache_text_embeddings": True, "mixed_precision": "bf16"},
     {"ema": False, "adaptive_targeting": False, "train_text_encoder": False, "h_flip": False, "v_flip": False},
     {"noise_offset": 0.0, "resume_from_checkpoint": "", "target_fps": 0, "frame_stride": 1},
+    # The three cells measured on the real model (GATE-5 `gate5.md`, the real-job runs).
+    {"quantization": "int8", "block_swap_config": None, "te_quantization": "none"},
+    {"quantization": "int8", "block_swap_config": {"transformer_blocks": 0}},
+    {"quantization": "none", "block_swap_config": {"transformer_blocks": 25}},
     {"datasets": [{"dataset_name": "ds", "masking_enabled": False}], "temporal_coverage": "tiled", "num_frames": 22},
 ]
 

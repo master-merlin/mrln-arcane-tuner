@@ -1094,3 +1094,39 @@ def test_fp32_trajectory_keeps_sub_bf16_increments():
     for t in scheduler.timesteps:
         y = MiniMaxH3Sampler._advance(scheduler, y, velocity, t).to(torch.bfloat16).float()
     assert torch.allclose(y, torch.ones(4)), "bf16 control drifted: the increment is not sub-resolution"
+
+
+# ---------------------------------------------------------------------------
+# Prior-art attribution (plan rows 1.9 / 2.14 / 5.3, § Scope 6): every site
+# whose plan row PORTS a method from a cited repository passage carries the
+# header, next to the code it attributes.
+# ---------------------------------------------------------------------------
+
+_FAMILY_DIR = _TESTS_DIR.parent / "models" / "families" / "minimax_h3"
+_ATTRIBUTION = re.compile(
+    r"^\s*# Method re-implemented from (?P<repo>[\w.-]+/[\w.-]+)@(?P<sha>[0-9a-f]{7,40}) \((?P<licence>[^)]+)\)"
+)
+# (plan row, file, the repository the research document cites, anchor).
+# An anchor is the source line the header must sit directly above (the file
+# is not a whole-file port); ``None`` = the header opens the file.
+_PRIOR_ART_SITES = [
+    ("1.1", "schedule.py", "ostris/ai-toolkit", None),
+    ("1.3", "packing.py", "ostris/ai-toolkit", None),
+    ("3.1", "driver.py", "tdrussell/diffusion-pipe", "    def forward_pass("),
+]
+_HEADER_WINDOW = 4  # lines: the header plus its continuation comment lines
+
+
+@pytest.mark.parametrize(("row", "name", "repo", "anchor"), _PRIOR_ART_SITES)
+def test_prior_art_sites_carry_the_attribution_header(row: str, name: str, repo: str, anchor: str | None) -> None:
+    lines = (_FAMILY_DIR / name).read_text(encoding="utf-8").splitlines()
+    hits = [i for i, line in enumerate(lines) if (m := _ATTRIBUTION.match(line)) and m["repo"] == repo]
+    assert hits, f"{name} (plan row {row}): no '# Method re-implemented from {repo}@<sha> (<licence>)' header"
+    if anchor is None:
+        assert hits[0] < 10, f"{name} (plan row {row}): the header must open the file, found at line {hits[0] + 1}"
+        return
+    at = next(i for i, line in enumerate(lines) if line.startswith(anchor))
+    assert any(0 < at - i <= _HEADER_WINDOW for i in hits), (
+        f"{name} (plan row {row}): the {repo} header must sit within {_HEADER_WINDOW} lines above "
+        f"`{anchor.strip()}` (line {at + 1}); found at lines {[i + 1 for i in hits]}"
+    )

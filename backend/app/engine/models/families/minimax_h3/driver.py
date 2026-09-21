@@ -575,6 +575,9 @@ class MiniMaxH3Driver(IModelDriver):
             self._layouts[key] = layout
         return layout
 
+    # Method re-implemented from tdrussell/diffusion-pipe@8f83dbf2 (MIT) models/minimax_h3.py
+    # FinalLayer.forward; no line copied — the CFG-augmentation blend below (research §3.7):
+    # the uncond arm under no_grad, the model output rearranged, scale 1.0 = one forward.
     def forward_pass(
         self,
         noisy_input: torch.Tensor,

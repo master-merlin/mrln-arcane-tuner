@@ -11,8 +11,10 @@ pins three contracts:
   2. Vendor parity, frozen: the vendored transformer's fp32 CPU forward on
      the tiny arch was recorded ONCE — same seed, same state dict, same
      inputs — into ``fixtures/h3_vendor_parity.npz`` before the fork was
-     deleted; the upstream class must reproduce it bit-exact (``torch.equal``)
-     for the video AND the audio output. Grad checkpointing arming both
+     deleted; fed the RECORDED inputs, the upstream class must reproduce the
+     recorded video AND audio outputs to ``_PARITY_TOL`` (see the comment
+     there: bit-exactness is a property of the recording machine's wheel
+     build, not of the two implementations). Grad checkpointing arming both
      sites on the upstream class is pinned by the convention suite
      (``checkpointing_arms_both_sites``, row 1.5).
   3. Source guard: no ``families.minimax_h3.vendor`` import anywhere under
@@ -202,6 +204,30 @@ def packed_inputs(seed: int = 0) -> dict[str, torch.Tensor]:
     }
 
 
+# The vendored forward was recorded in ONE floating-point environment (fp32,
+# CPU, torch 2.12.1+cu130, windows). A different wheel build reassociates the
+# same fp32 arithmetic, so `torch.equal` is a claim about that environment and
+# not about the two implementations. MEASURED on CI's shape (linux, torch
+# 2.12.1+cpu, python 3.12.14; docker probe 2026-09-22, LANE-111): the upstream
+# forward on the SAME recorded weights and inputs lands at max |Δ| = 2.384e-07
+# for the video output and 1.192e-07 for the audio one — 2 ULP at fp32, where
+# `torch.equal` can never hold. This tolerance is ~40x that measured floor and
+# still four orders below any behavioural divergence: a dropped residual, a
+# mis-scaled rope or mis-routed modality moves these outputs by O(0.1-1). A
+# 1e-3 perturbation of a single element of either output was run against this
+# predicate on that same linux/+cpu shape and failed it, each output
+# separately (LANE-111 mutants a and b).
+_PARITY_TOL = 1e-5
+
+
+def assert_parity(name: str, got: torch.Tensor, recorded: torch.Tensor) -> None:
+    delta = (got - recorded).abs().max().item()
+    assert delta <= _PARITY_TOL, (
+        f"{name} output differs from the vendored forward: "
+        f"max |Δ| = {delta:.3e} > {_PARITY_TOL:.0e}"
+    )
+
+
 def _outputs(out) -> tuple[torch.Tensor, torch.Tensor]:
     sample = out.sample if hasattr(out, "sample") else out[0]
     audio_sample = out.audio_sample if hasattr(out, "audio_sample") else out[1]
@@ -277,10 +303,11 @@ def test_native_probe_negative_control():
 # ── 2. Vendor parity, frozen ─────────────────────────────────────────────
 
 
-def test_vendored_and_upstream_agree_bit_exact():
+def test_vendored_and_upstream_agree_on_the_recorded_forward():
     """The vendored fork's fp32 CPU forward (recorded into the fixture before
-    ``vendor/`` was deleted: seed 0, the tiny arch, ``packed_inputs(0)``)
-    equals the installed class's forward bit-exact, video AND audio."""
+    ``vendor/`` was deleted: seed 0, the tiny arch, ``packed_inputs(0)``) is
+    reproduced by the installed class's forward, video AND audio, within
+    ``_PARITY_TOL``."""
     from diffusers import MiniMaxH3Transformer3DModel
 
     assert _PARITY_FIXTURE.is_file(), f"parity fixture missing: {_PARITY_FIXTURE}"
@@ -291,23 +318,32 @@ def test_vendored_and_upstream_agree_bit_exact():
     missing, unexpected = model.load_state_dict(fixture["state_dict"], strict=True)
     assert not missing and not unexpected
 
-    inputs = packed_inputs(0)
-    assert set(fixture["inputs"]) == set(inputs), "fixture inputs != packed_inputs keys"
-    for key, recorded in fixture["inputs"].items():
-        assert torch.equal(inputs[key], recorded), f"packed_inputs drifted from the fixture at {key!r}"
+    # The RECORDED inputs are what the vendored forward was fed, so they are
+    # what the upstream forward must be fed — the fixture is one recording,
+    # inputs and outputs together. Regenerating them made this test assert that
+    # `torch.randn` reproduces bit-exactly across wheel builds, OSes and CPU
+    # ISAs, which is not the parity it exists to measure and which is not true:
+    # on CI (linux, +cpu wheels) the regenerated tensor differed at
+    # 'hidden_states' and killed the run before either model ran, so the parity
+    # claim had never been measured there at all (gate run 35728063777,
+    # 2026-09-22, LANE-111).
+    inputs = fixture["inputs"]
+    live = packed_inputs(0)
+    assert set(live) == set(inputs), "fixture inputs != packed_inputs keys"
+    for key, recorded in inputs.items():
+        # Shape and dtype ARE a contract — the packing layout the fixture was
+        # recorded against. Values are not, and are not compared.
+        assert (live[key].shape, live[key].dtype) == (recorded.shape, recorded.dtype), (
+            f"packed_inputs changed the packing layout at {key!r}: "
+            f"{tuple(live[key].shape)}/{live[key].dtype} != {tuple(recorded.shape)}/{recorded.dtype}"
+        )
 
     with torch.no_grad():
         sample, audio_sample = _outputs(model(**inputs))
 
     assert sample.dtype == torch.float32 and audio_sample.dtype == torch.float32
-    assert torch.equal(sample, fixture["sample"]), (
-        f"video output differs from the vendored forward: max |Δ| = "
-        f"{(sample - fixture['sample']).abs().max().item():.3e}"
-    )
-    assert torch.equal(audio_sample, fixture["audio_sample"]), (
-        f"audio output differs from the vendored forward: max |Δ| = "
-        f"{(audio_sample - fixture['audio_sample']).abs().max().item():.3e}"
-    )
+    assert_parity("video", sample, fixture["sample"])
+    assert_parity("audio", audio_sample, fixture["audio_sample"])
 
 
 # ── 3. Source guard ──────────────────────────────────────────────────────

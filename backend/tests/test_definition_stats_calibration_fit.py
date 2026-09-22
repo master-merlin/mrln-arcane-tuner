@@ -15,14 +15,19 @@ device, not the seam): a 96 GB card with 41 GB held.
 
 from __future__ import annotations
 
+import contextlib
+import logging
 from types import SimpleNamespace
 
 import pytest
+import structlog
 from structlog.testing import capture_logs
 
+from app.core.logger import setup_logging
 from app.core.stats import definition_stats_service as svc
 from app.core.system_monitor import SystemMonitor
 from app.engine.models.registry import registry
+from app.engine.utils import vram_estimator as _vram_estimator_module
 from app.engine.utils.vram_estimator import VRAMEstimator
 
 _DEF = "sdxl_base_1.0"
@@ -48,9 +53,34 @@ def _estimate_lines(logs: list[dict]) -> list[dict]:
     return [e for e in logs if e.get("event") == "vram_estimate"]
 
 
+@contextlib.contextmanager
+def capture_estimate_logs():
+    """``capture_logs`` on its own does not always see ``vram_estimate``.
+
+    ``setup_logging`` configures with ``cache_logger_on_first_use=True``
+    (app/core/logger.py:234), so the estimator's module-level proxy
+    (app/engine/utils/vram_estimator.py:24) freezes a bound logger — and with
+    it the processor LIST INSTANCE that was configured at that moment — the
+    first time anything in the process logs (structlog/_config.py:385-389).
+    ``capture_logs`` installs itself by refilling the CURRENTLY configured list
+    IN PLACE (structlog/testing.py:86-93), whereas ``configure(processors=...)``
+    rebinds ``_CONFIG.default_processors`` to a NEW list
+    (structlog/_config.py:246-247). So any ``setup_logging`` between the first
+    log call and the capture strands the frozen logger on a list the capture
+    never touches, and the capture comes back empty — which xdist worker that
+    lands in is luck (LANE-111: red on CI, green locally, same commit).
+
+    Dropping the proxy's cached ``bind`` makes it re-bind against whatever list
+    is configured now, i.e. the one the capture is holding.
+    """
+    _vram_estimator_module.logger.__dict__.pop("bind", None)
+    with capture_logs() as logs:
+        yield logs
+
+
 def test_the_calibration_estimate_carries_no_fit_verdict(card_held_by_the_job):
     defn = registry._definitions[_DEF]
-    with capture_logs() as logs:
+    with capture_estimate_logs() as logs:
         analytic = svc._analytic_vram(defn, dict(_CONFIG))
     assert analytic is not None
     assert analytic["fit_known"] is False, "a fit verdict was computed against the finishing job's own memory"
@@ -70,8 +100,55 @@ def test_the_analytic_breakdown_the_ratios_divide_by_is_unchanged(card_held_by_t
 def test_the_preflight_estimate_still_judges_fit_against_free_memory(card_held_by_the_job):
     """Positive control: the estimate the UI asks for keeps its verdict."""
     defn = registry._definitions[_DEF]
-    with capture_logs() as logs:
+    with capture_estimate_logs() as logs:
         report = VRAMEstimator.estimate(defn, dict(_CONFIG)).to_dict()
     assert report["fit_known"] is True and report["fits"] is False
     assert report["available_mb"] == 887
-    assert _estimate_lines(logs)[0]["fits"] is False
+    lines = _estimate_lines(logs)
+    assert lines, "the vram_estimate event escaped the capture"
+    assert lines[0]["fits"] is False
+
+
+@pytest.fixture
+def logging_restored():
+    """Undo everything ``setup_logging`` touches: it REPLACES root's handler
+    list (app/core/logger.py:243) and rebinds structlog's global config, and a
+    test that leaves either moved would silently change every later test in
+    this worker."""
+    config = structlog.get_config()
+    root = logging.getLogger()
+    handlers, level = root.handlers[:], root.level
+    try:
+        yield
+    finally:
+        structlog.configure(**config)
+        root.handlers, root.level = handlers, level
+
+
+def test_the_estimate_log_is_captured_across_a_logging_reconfiguration(
+    card_held_by_the_job, logging_restored
+):
+    """The assertion above reads the log, so the capture must not be luck.
+
+    ``setup_logging`` runs with ``cache_logger_on_first_use=True``
+    (app/core/logger.py:234), so the estimator's module logger freezes a bound
+    logger — and the processor LIST INSTANCE configured at that moment — the
+    first time anything logs in the process (structlog/_config.py:385-389).
+    ``capture_logs`` installs itself by refilling the CURRENTLY configured list
+    in place (structlog/testing.py:86-93), while ``configure(processors=...)``
+    rebinds ``_CONFIG.default_processors`` to a NEW list
+    (structlog/_config.py:246-247). A reconfiguration therefore strands the
+    capture, and which xdist worker that happens in is luck — which is how
+    LANE-111's CI red arose while the same file passed locally.
+    """
+    defn = registry._definitions[_DEF]
+    VRAMEstimator.estimate(defn, dict(_CONFIG))  # freezes the module logger's bind
+    setup_logging(include_file_handler=False)  # strands it on the previous list
+
+    with capture_estimate_logs() as logs:
+        report = VRAMEstimator.estimate(defn, dict(_CONFIG)).to_dict()
+
+    assert report["fit_known"] is True and report["fits"] is False
+    lines = _estimate_lines(logs)
+    assert lines, "the vram_estimate event escaped the capture after logging was reconfigured"
+    assert lines[0]["fits"] is False

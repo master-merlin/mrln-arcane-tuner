@@ -152,3 +152,47 @@ def test_the_estimate_log_is_captured_across_a_logging_reconfiguration(
     lines = _estimate_lines(logs)
     assert lines, "the vram_estimate event escaped the capture after logging was reconfigured"
     assert lines[0]["fits"] is False
+
+
+def test_a_reconfiguration_inside_the_capture_window_loses_the_event(
+    card_held_by_the_job, logging_restored
+):
+    """BOUNDARY, not desired behaviour: reconfiguring INSIDE the window is unrepairable.
+
+    The test above reconfigures BEFORE the capture, and dropping the proxy's
+    cached ``bind`` repairs that. Reconfiguring AFTER the capture is installed
+    cannot be repaired from inside the helper, by construction:
+    ``capture_logs`` installs itself by refilling the CURRENTLY configured
+    processor list IN PLACE (structlog/testing.py:86-93), while
+    ``configure(processors=...)`` rebinds ``_CONFIG.default_processors`` to a
+    NEW list (structlog/_config.py:246-247) — so the reconfiguration orphans
+    the capture list AFTER it was installed, and nothing done before the
+    capture can reach forward to it. Repairing it would mean monkeypatching
+    ``structlog.configure`` for the duration of every capture.
+
+    This test therefore PINS the limitation instead of dropping the
+    requirement: any test that reconfigures logging mid-capture reads an empty
+    log, and that emptiness means nothing about the code under test. If a
+    future structlog makes ``capture_logs`` survive a reconfiguration, this
+    test goes RED and tells us the limitation lifted.
+
+    Measured 2026-09-22, each order in its own process: reconfigure-before -> 1
+    ``vram_estimate`` line, no reconfiguration -> 1 line, reconfigure-inside ->
+    0 lines.
+    """
+    defn = registry._definitions[_DEF]
+    VRAMEstimator.estimate(defn, dict(_CONFIG))  # freezes the module logger's bind
+
+    with capture_estimate_logs() as logs:
+        setup_logging(include_file_handler=False)  # orphans the capture's list
+        report = VRAMEstimator.estimate(defn, dict(_CONFIG)).to_dict()
+
+    # The estimate really ran and really emits this event elsewhere in this
+    # file, so the empty capture below is the reconfiguration and not a
+    # no-op call.
+    assert report["fit_known"] is True and report["fits"] is False
+    assert not _estimate_lines(logs), (
+        "capture_logs survived a reconfiguration inside its own window: the "
+        "structlog limitation this test pins has lifted, so the helper and the "
+        "docstrings that cite structlog/testing.py:86-93 can be revisited"
+    )

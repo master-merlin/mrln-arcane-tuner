@@ -75,8 +75,10 @@ concrete checkpoint from that family's YAML. A family is an architecture with
 its own loader, driver, trainer, sampler and saver; a definition is one
 shipped checkpoint of it. The dropdown only enumerates definitions that have
 cleared their availability gate; the Server screen's model count includes
-gated ones too (currently the MiniMax H3 definitions), so it will read
-higher than what you can actually pick here. Also on this card: the
+gated ones too (currently two of the three MiniMax H3 definitions — text-to-
+video+audio is offered, first/last-frame-to-video and reference-to-video are
+not), so it will read higher than what you can actually pick here. Also on
+this card: the
 **quantization backend** and **quantization** level for the base model, and
 the same pair for the text encoder — quantizing either trades reduced weight
 memory for compute and fidelity effects that vary by backend and model, and
@@ -466,7 +468,8 @@ this list.
 ### Video Settings
 
 <!-- schema-explainers:VIDEO start -->
-- **Audio Loss Weight** (`audio_loss_weight`) — From the schema: Relative weight of the audio loss term. Default `1.0` (range 0.0 to 10.0, step 0.1).
+- **Audio Loss Weight** (`audio_loss_weight`) — Relative weight of the audio loss term in the total loss. Default `1.0` (range 0.0 to 10.0, step 0.1).
+- **Cfg Augment Scale** (`cfg_augment_scale`) — CFG-augmented training scale: learn the guided output the sampler actually produces. 1.0 = off, empty = the model's value. *(schema: CFG-augmented training scale: the loss is taken on (out + (s-1)*out_uncond)/s so the LoRA learns what the model produces UNDER guidance at sampling time; 1.0 = off, empty = the model's own value (1.0 = off for MiniMax-H3))*. Default `None` (range 1.0 to 10.0, step 0.5).
 - **Expert Mode** (`expert_mode`) — From the schema: Which WAN 2.2 experts to train: both (dual, default) or a single noise expert (high or low) — single-expert loads ONE transformer, halving VRAM (ai-toolkit style). Default `both` (choices: `both`, `high`, `low`).
 - **Expert Swap Mode** (`expert_swap_mode`) — From the schema: Dual-expert placement: auto, swap (1 expert on GPU + pinned CPU) or resident (both on GPU). Default `auto` (choices: `auto`, `swap`, `resident`).
 - **Expert Switch Interval** (`expert_switch_interval`) — From the schema: Steps between high/low expert swaps (swap mode only). Default `1` (range 1 to 1000, step 1).
@@ -475,11 +478,13 @@ this list.
 - **I2V Image Dropout** (`i2v_image_dropout`) — From the schema: Chance of dropping the conditioning image (enables CFG for I2V). Default `0.1` (range 0.0 to 1.0, step 0.05).
 - **Max Windows** (`max_windows`) — From the schema: Upper bound on tiled windows emitted per clip. Default `10` (range 1 to 999, step 1).
 - **Num Frames** (`num_frames`) — From the schema: Max frames per clip (snapped to the family's frame rule at runtime). Default `81` (range 1 to 257, step 1).
+- **Sigma Shift Audio** (`sigma_shift_audio`) — Audio sigma shift of the flow-matching schedule, coupled to the video clock. Empty = the model's own value. *(schema: Audio sigma shift of the flow-matching schedule, coupled to the video clock through one shared draw (empty = the model's own value, e.g. 3.0 for MiniMax-H3))*. Default `None` (range 0.1 to 50.0, step 0.5).
+- **Sigma Shift Video** (`sigma_shift_video`) — Video sigma shift of the flow-matching schedule. Empty = the model's own value. *(schema: Video sigma shift of the flow-matching schedule (empty = the model's own value, e.g. 12.0 for MiniMax-H3))*. Default `None` (range 0.1 to 50.0, step 0.5).
 - **Sliding Max Clip Seconds** (`sliding_max_clip_seconds`) — From the schema: Sliding mode: clips longer than this (seconds) fall back to tiled windows instead of one full-clip latent (0 = no limit; the frame ladder still caps the cached length). Default `0.0` (min 0.0, step 1.0).
 - **Still Resolutions** (`still_resolutions`) — From the schema: Resolutions for F=1 STILL images when mixing stills + video datasets in one video job. Empty list means INHERIT from `resolutions`. Lets stills train at higher resolution than the video buckets for extra detail. Default `[]`.
 - **Target Fps** (`target_fps`) — From the schema: Training frame rate (0 = use the model's native fps). Default `0` (range 0.0 to 60.0, step 1.0).
 - **Temporal Coverage** (`temporal_coverage`) — From the schema: How the LoRA sees the whole clip: first (opening window only, default/backward-compatible), tiled (K windows per clip across epochs), sliding (Phase 2 — full-clip cache + random slice). Default `first` (choices: `first`, `tiled`, `sliding`).
-- **Train Audio** (`train_audio`) — From the schema: Jointly train the audio stream (audio-capable models only). Default `False`.
+- **Train Audio** (`train_audio`) — Jointly train the audio stream of an audio-capable video model. *(schema: Jointly train the audio stream (audio-capable models only))*. Default `False`.
 - **Video Mode** (`video_mode`) — From the schema: Text-to-video or image-to-video (first-frame conditioning). Default `t2v` (choices: `t2v`, `i2v`).
 - **Window Overlap** (`window_overlap`) — From the schema: Fractional overlap between tiled windows (0 = abutting). Default `0.0` (range 0.0 to 0.95, step 0.05).
 <!-- schema-explainers:VIDEO end -->

@@ -611,10 +611,13 @@ This table is generated from `backend/app/engine/models/families/` and pinned by
 - **Edit / paired-image training** — two-image (control → target) edit datasets
   and captioning for instruction-edit models (Flux.1 Kontext, Qwen-Image-Edit):
   paired-pair production, two-image VLM captioning, and edit-aware training.
-- **Video training** — LoRA training for video diffusion models: **WAN 2.1**
-  (T2V / I2V), **WAN 2.2** (dual high/low-noise experts, single-run
-  auto-switch, dual LoRA output), and **LTX 2.3** (T2V / I2V, optional joint
-  audio). Backed by a video dataset-curation layer: lazy clip preview,
+- **Video training** — LoRA training for every family in the **Video** table
+  above — **MiniMax H3** (joint video + audio) and **LTX 2.5** among them.
+  That table is generated from `backend/app/engine/models/families/` and
+  pinned by a test, so it, not this sentence, is the authoritative list of
+  which definitions each family ships and which are still gated; per-family
+  mechanism detail (WAN 2.2's dual noise experts, LTX's optional joint audio)
+  is in `docs/ARCHITECTURE.md`. Backed by a video dataset-curation layer: lazy clip preview,
   LosslessCut cutlist import, scene-detect auto-split, non-destructive in-app
   trim, per-clip health checks, and multi-frame auto-captioning.
 

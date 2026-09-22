@@ -283,7 +283,7 @@ jobs:
       # the day, with the repository's own token. The comment names the release
       # the SHA resolves to; Dependabot (github-actions ecosystem) proposes bumps.
       - name: TruffleHog
-        uses: trufflesecurity/trufflehog@cc1fe982afc515d2991365ce8d4d0dd07170fcad # v3.97.2
+        uses: trufflesecurity/trufflehog@f714bf454f350590f4a24c3ddb1aef02c35bf5b6 # v3.97.5
         with:
           extra_args: --results=verified,unknown
 

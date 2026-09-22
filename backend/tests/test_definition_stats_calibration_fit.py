@@ -53,6 +53,17 @@ def _estimate_lines(logs: list[dict]) -> list[dict]:
     return [e for e in logs if e.get("event") == "vram_estimate"]
 
 
+def _drop_cached_bind() -> None:
+    """Forget the estimator proxy's cached ``bind`` (see below for why).
+
+    A cached bind holds the processor LIST INSTANCE that was configured when it
+    was made, so it must be dropped both BEFORE a capture (so the capture's list
+    is the one bound) and AFTER any test that reconfigured logging (so the next
+    ordinary capture is not stranded on a list nobody configures any more).
+    """
+    _vram_estimator_module.logger.__dict__.pop("bind", None)
+
+
 @contextlib.contextmanager
 def capture_estimate_logs():
     """``capture_logs`` on its own does not always see ``vram_estimate``.
@@ -73,7 +84,7 @@ def capture_estimate_logs():
     Dropping the proxy's cached ``bind`` makes it re-bind against whatever list
     is configured now, i.e. the one the capture is holding.
     """
-    _vram_estimator_module.logger.__dict__.pop("bind", None)
+    _drop_cached_bind()
     with capture_logs() as logs:
         yield logs
 
@@ -109,20 +120,78 @@ def test_the_preflight_estimate_still_judges_fit_against_free_memory(card_held_b
     assert lines[0]["fits"] is False
 
 
-@pytest.fixture
-def logging_restored():
-    """Undo everything ``setup_logging`` touches: it REPLACES root's handler
-    list (app/core/logger.py:243) and rebinds structlog's global config, and a
-    test that leaves either moved would silently change every later test in
-    this worker."""
+# Every logger whose LEVEL ``setup_logging`` moves: ``config_log_level``
+# (app/core/logger.py:146-162, root + uvicorn* + fastapi) and
+# ``_quiet_noisy_loggers`` (app/core/logger.py:173-176, the download libraries).
+# Restoring only root would leave those thresholds raised for the rest of the
+# worker, so a later test asserting on a filelock/urllib3/websockets INFO line
+# would read an empty log for no reason of its own.
+_LEVELS_SETUP_LOGGING_MOVES = (
+    "",
+    "uvicorn",
+    "uvicorn.access",
+    "uvicorn.error",
+    "fastapi",
+    "filelock",
+    "urllib3",
+    "hf_xet",
+    "websockets",
+)
+# ``setup_logging`` also empties these three loggers' own handler lists and
+# forces ``propagate`` (app/core/logger.py:298-301).
+_UVICORN_LOGGERS = ("uvicorn", "uvicorn.access", "uvicorn.error")
+
+
+@contextlib.contextmanager
+def logging_restored_ctx():
+    """Undo everything ``setup_logging`` touches, including the cached bind.
+
+    It REPLACES root's handler list (app/core/logger.py:243), moves the level of
+    every logger in ``_LEVELS_SETUP_LOGGING_MOVES``, empties the uvicorn
+    loggers' handlers, and rebinds structlog's global config — and a test that
+    leaves any of those moved would silently change every later test in this
+    worker.
+
+    The cached bind is the subtle one. Restoring the config rebinds
+    ``_CONFIG.default_processors`` to the ORIGINAL list
+    (structlog/_config.py:246-247), while the estimator proxy still holds a bind
+    made against the list that was live during the test. The next ORDINARY
+    ``capture_logs`` — in any test written before this file, which does no
+    bind-dropping of its own — refills the configured list in place
+    (structlog/testing.py:86-93) and comes back EMPTY, because the proxy is
+    still logging through the abandoned list. So the teardown drops the bind
+    too, which is what ``test_an_ordinary_capture_after_this_fixture_still_sees_the_event``
+    pins. The proxy repaired is the one this file's tests bind; a test that
+    binds another module's proxy under this fixture must drop that one as well.
+
+    Exposed as a context manager (not only as a fixture) so that the teardown
+    happens INSIDE a test and can therefore be asserted on.
+    """
     config = structlog.get_config()
     root = logging.getLogger()
-    handlers, level = root.handlers[:], root.level
+    handlers = root.handlers[:]
+    levels = {name: logging.getLogger(name).level for name in _LEVELS_SETUP_LOGGING_MOVES}
+    uvicorn_state = {
+        name: (logging.getLogger(name).handlers[:], logging.getLogger(name).propagate)
+        for name in _UVICORN_LOGGERS
+    }
     try:
         yield
     finally:
         structlog.configure(**config)
-        root.handlers, root.level = handlers, level
+        root.handlers = handlers
+        for name, level in levels.items():
+            logging.getLogger(name).setLevel(level)
+        for name, (uv_handlers, propagate) in uvicorn_state.items():
+            uv_log = logging.getLogger(name)
+            uv_log.handlers, uv_log.propagate = uv_handlers, propagate
+        _drop_cached_bind()
+
+
+@pytest.fixture
+def logging_restored():
+    with logging_restored_ctx():
+        yield
 
 
 def test_the_estimate_log_is_captured_across_a_logging_reconfiguration(
@@ -191,8 +260,41 @@ def test_a_reconfiguration_inside_the_capture_window_loses_the_event(
     # file, so the empty capture below is the reconfiguration and not a
     # no-op call.
     assert report["fit_known"] is True and report["fits"] is False
-    assert not _estimate_lines(logs), (
-        "capture_logs survived a reconfiguration inside its own window: the "
+    assert not _estimate_lines(logs), (        "capture_logs survived a reconfiguration inside its own window: the "
         "structlog limitation this test pins has lifted, so the helper and the "
         "docstrings that cite structlog/testing.py:86-93 can be revisited"
+    )
+
+
+def test_an_ordinary_capture_after_this_fixture_still_sees_the_event(card_held_by_the_job):
+    """The repair above must not become the very defect this lane removes.
+
+    The population at risk is every capture-using test written before this
+    file: it calls ``capture_logs`` plainly and drops no cached bind. If the
+    ``logging_restored`` teardown left the estimator proxy bound to the list
+    that was live during the reconfiguring test, that later capture would come
+    back empty in this xdist worker — an unrelated red, weeks from now, in a
+    file nobody touched.
+
+    So this test runs the reconfiguring test's SHAPE inside the fixture's
+    context manager, lets the teardown run, and only then performs an ORDINARY
+    capture. Measured 2026-09-22 with the bind-drop removed from the teardown:
+    the ordinary capture below returns 0 lines.
+    """
+    defn = registry._definitions[_DEF]
+
+    with logging_restored_ctx():
+        VRAMEstimator.estimate(defn, dict(_CONFIG))  # freezes the module logger's bind
+        setup_logging(include_file_handler=False)  # strands it on the previous list
+        with capture_estimate_logs() as inside:
+            VRAMEstimator.estimate(defn, dict(_CONFIG))
+        assert _estimate_lines(inside), "the regression test's own shape stopped capturing"
+
+    with capture_logs() as after:  # ORDINARY: no bind-dropping of its own
+        VRAMEstimator.estimate(defn, dict(_CONFIG))
+
+    assert _estimate_lines(after), (
+        "the logging_restored teardown leaked a stale cached bind: an ordinary "
+        "capture_logs after it reads an empty log, so every capture-using test "
+        "later in this worker would fail for a reason that is not its own"
     )

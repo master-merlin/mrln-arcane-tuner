@@ -488,7 +488,7 @@ def test_prompt_length_shifts_media_origin():
     assert float(t_video_short[0]) == 8.0 and float(t_audio_short[0]) == 8.0
 
 
-# ── 9. Gradients reach only the targeted modules (row 1.4, E2) ───────────
+# ── 9. Gradients reach only the targeted modules (plan row 1.4, evidence row 2) ──
 
 
 def _t2va_targets() -> list[str]:
@@ -577,7 +577,7 @@ def test_gradients_reach_only_the_targeted_modules(build_tiny_transformer):
     assert base.is_cache_enabled is False
 
 
-# ── 10. Gradient checkpointing arms BOTH sites (row 1.5, E3) ─────────────
+# ── 10. Gradient checkpointing arms BOTH sites (plan row 1.5, evidence row 3) ───
 
 
 def _lora_wrapped(build_tiny_transformer):

@@ -97,10 +97,37 @@ def _sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _spellings(ext: str) -> list[tuple[str, str]]:
+    """Return (spelling_id, spelled_ext) for the three case-forms under test.
+
+    ``ext`` is as listed in ``MULTIMEDIA_EXTENSIONS`` (lowercase, e.g.
+    ``.mp4``). ``lower`` is that value unchanged; ``upper`` uppercases the
+    whole extension (``.MP4``); ``mixed`` uppercases only the first letter
+    after the dot, keeping the rest lowercase (``.Mp4``).
+    """
+    stem = ext[1:]  # drop the leading dot
+    lower = ext
+    upper = "." + stem.upper()
+    mixed = "." + (stem[0].upper() + stem[1:].lower() if stem else stem)
+    return [
+        (f"{stem}-lower", lower),
+        (f"{stem}-upper", upper),
+        (f"{stem}-mixed", mixed),
+    ]
+
+
 EXTENSIONS = sorted(MULTIMEDIA_EXTENSIONS)
-CASES = [(ext, existing) for ext in EXTENSIONS for existing in (True, False)]
+CASES = [
+    (spelled_ext, existing)
+    for ext in EXTENSIONS
+    for _spelling_id, spelled_ext in _spellings(ext)
+    for existing in (True, False)
+]
 CASE_IDS = [
-    f"{ext.lstrip('.')}-{'existing' if existing else 'absent'}" for ext, existing in CASES
+    f"{spelling_id}-{'existing' if existing else 'absent'}"
+    for ext in EXTENSIONS
+    for spelling_id, _spelled_ext in _spellings(ext)
+    for existing in (True, False)
 ]
 
 
@@ -121,7 +148,9 @@ async def test_put_caption_on_media_name_leaves_media_untouched(env, ext, existi
         )
 
     if existing:
-        assert media_path.exists(), f"{GUARD_MESSAGE} (media file vanished): {media_name}"
+        assert media_path.exists(), (
+            f"{GUARD_MESSAGE} (media file vanished): {media_name}"
+        )
         assert _sha256(media_path) == before_hash, (
             f"{GUARD_MESSAGE}: {media_name} content changed"
         )
@@ -153,7 +182,9 @@ async def test_put_lyrics_on_media_name_leaves_media_untouched(env, ext, existin
         )
 
     if existing:
-        assert media_path.exists(), f"{GUARD_MESSAGE} (media file vanished): {media_name}"
+        assert media_path.exists(), (
+            f"{GUARD_MESSAGE} (media file vanished): {media_name}"
+        )
         assert _sha256(media_path) == before_hash, (
             f"{GUARD_MESSAGE}: {media_name} content changed"
         )
@@ -199,7 +230,8 @@ async def test_variant_caption_path_saves_and_reads_back(env):
     variant_wire = "captions/my_definition/shot.txt"
     async with _client() as client:
         w = await client.put(
-            f"/api/datasets/ds/captions/{variant_wire}", json={"content": "a variant caption"}
+            f"/api/datasets/ds/captions/{variant_wire}",
+            json={"content": "a variant caption"},
         )
         assert w.status_code == 200, w.text
         r = await client.get(f"/api/datasets/ds/captions/{variant_wire}")

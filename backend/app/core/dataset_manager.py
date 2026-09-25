@@ -1755,7 +1755,25 @@ class DatasetManager:
         by the caller: this helper creates directories, so handing it an
         unchecked path would let a traversal create directories outside the
         dataset root.
+
+        A third failure never raised anything at all: a client-supplied
+        filename ending in a media extension (``clip.mp4``, ``shot.PNG``, a
+        media file the scan recognizes case-insensitively -- same
+        normalization as the scan's own extension check) would have its
+        bytes replaced by caption/lyrics TEXT with no error and no trace
+        (LANE-100). Refuse it before the write, using the same lowercase
+        normalization the scan applies.
         """
+        if path.suffix.lower() in MULTIMEDIA_EXTENSIONS:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"Refusing to write a caption/lyrics sidecar to "
+                    f"'{path.name}': that is a media extension "
+                    f"({path.suffix.lower()}), and the write would replace "
+                    f"the media file's bytes with text."
+                ),
+            )
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
             with open(path, "w", encoding="utf-8") as f:

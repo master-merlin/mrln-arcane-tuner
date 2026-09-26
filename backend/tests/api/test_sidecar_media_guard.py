@@ -159,9 +159,14 @@ async def test_put_caption_on_media_name_leaves_media_untouched(env, ext, existi
             f"{GUARD_MESSAGE}: {media_name} was created by a caption save"
         )
 
-    assert 400 <= r.status_code < 500, (
-        f"expected a 4xx refusal for a caption PUT on the media name "
+    assert r.status_code == 400, (
+        f"expected a 400 refusal for a caption PUT on the media name "
         f"{media_name!r}, got {r.status_code}: {r.text[:200]}"
+    )
+    detail = r.json()["detail"]
+    assert ext.lower() in detail.lower(), (
+        f"expected the refusal detail to name the rejected extension "
+        f"{ext!r}, got detail={detail!r}"
     )
 
 
@@ -193,9 +198,14 @@ async def test_put_lyrics_on_media_name_leaves_media_untouched(env, ext, existin
             f"{GUARD_MESSAGE}: {media_name} was created by a lyrics save"
         )
 
-    assert 400 <= r.status_code < 500, (
-        f"expected a 4xx refusal for a lyrics PUT on the media name "
+    assert r.status_code == 400, (
+        f"expected a 400 refusal for a lyrics PUT on the media name "
         f"{media_name!r}, got {r.status_code}: {r.text[:200]}"
+    )
+    detail = r.json()["detail"]
+    assert ext.lower() in detail.lower(), (
+        f"expected the refusal detail to name the rejected extension "
+        f"{ext!r}, got detail={detail!r}"
     )
 
 

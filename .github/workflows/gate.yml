@@ -13,12 +13,20 @@
 # comments; a transitively vulnerable *pinned* torch stack must not be able to
 # wedge every contributor's pull request on day one.
 name: gate
+# integrate.py dispatches this workflow on a lane branch with `op` and finds the
+# run again by the `op` its name carries -- keep the run-name as it is.
+run-name: gate ${{ inputs.op || github.sha }}
 
 on:
   push:
     branches: [main]
   pull_request:
   workflow_dispatch:
+    inputs:
+      op:
+        description: "the Integrate operation (integrate.py), echoed into the run's name"
+        required: false
+        default: ""
 
 # Least privilege: nothing here writes to the repository.
 permissions:

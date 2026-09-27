@@ -137,13 +137,31 @@ def test_scan_cover_does_not_depend_on_listing_order(tmp_path, monkeypatch):
 
     real_scandir = __import__("os").scandir
 
-    def reversed_scandir(scan_path):
-        entries = list(real_scandir(scan_path))
-        entries.sort(key=lambda e: e.name, reverse=True)
-        return iter(entries)
+    class _ReversedScandir:
+        """A drop-in for `os.scandir` usable both as an iterator and as the
+        context manager some callers (e.g. thumbnail cleanup) use it as —
+        real `os.scandir` supports both.
+        """
+
+        def __init__(self, scan_path):
+            with real_scandir(scan_path) as it:
+                entries = sorted(it, key=lambda e: e.name, reverse=True)
+            self._it = iter(entries)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._it)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
 
     monkeypatch.setattr(
-        "app.core.dataset_manager.os.scandir", reversed_scandir,
+        "app.core.dataset_manager.os.scandir", _ReversedScandir,
     )
 
     dataset_manager.create_dataset("order_ds", path=str(path))

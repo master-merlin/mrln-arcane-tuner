@@ -886,7 +886,17 @@ class DatasetManager:
                 # card preview candidate (an image/video sibling, if any,
                 # wins instead; an audio-only dataset stays preview-less,
                 # which the frontend already handles for empty state).
-                if not ctx["preview_candidate"] and ext not in AUDIO_EXTENSIONS:
+                # The candidate with the lexicographically smallest name
+                # wins, not the first one `os.scandir` happens to yield:
+                # that raw order is filesystem-dependent (alphabetical on
+                # NTFS, unspecified on Linux/ext4), so the same dataset
+                # elected a different cover per OS. Sorting here keeps this
+                # election in step with `_auto_preview_candidate`, which
+                # elects from a sorted listing for the unpin path.
+                if ext not in AUDIO_EXTENSIONS and (
+                    ctx["preview_candidate"] is None
+                    or rel_path < ctx["preview_candidate"]
+                ):
                     ctx["preview_candidate"] = rel_path
 
             elif ext in self.CAPTION_EXTS:

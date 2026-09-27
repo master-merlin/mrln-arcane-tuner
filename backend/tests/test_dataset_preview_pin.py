@@ -114,3 +114,50 @@ def test_audio_cannot_be_pinned(ds):
 def test_pinning_an_unknown_dataset_raises(ds):
     with pytest.raises(ValueError):
         dataset_manager.set_preview_image("no_such_dataset", "a_first.jpg")
+
+
+# ── Listing order independence (LANE-115) ───────────────────────────────
+
+
+def test_scan_cover_does_not_depend_on_listing_order(tmp_path, monkeypatch):
+    """`os.scandir` order is filesystem-dependent (alphabetical on NTFS, not
+    guaranteed on Linux). The scan's election must not depend on it — it must
+    agree with the sorted-order election `_auto_preview_candidate` uses for
+    the unpin path, whatever order the raw listing comes back in.
+    """
+    root = tmp_path / "datasets"
+    root.mkdir()
+    monkeypatch.setattr(dataset_manager, "default_root", str(root))
+
+    path = root / "order_ds"
+    path.mkdir()
+    names = ("a_first.jpg", "b_second.jpg", "c_third.jpg")
+    for name in names:
+        Image.new("RGB", (64, 48), "blue").save(path / name)
+
+    real_scandir = __import__("os").scandir
+
+    def reversed_scandir(scan_path):
+        entries = list(real_scandir(scan_path))
+        entries.sort(key=lambda e: e.name, reverse=True)
+        return iter(entries)
+
+    monkeypatch.setattr(
+        "app.core.dataset_manager.os.scandir", reversed_scandir,
+    )
+
+    dataset_manager.create_dataset("order_ds", path=str(path))
+    scanned = dataset_manager.scan_dataset("order_ds")
+
+    assert scanned.preview_image == "a_first.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.set_preview_image("order_ds", "c_third.jpg")
+    unpinned = dataset_manager.set_preview_image("order_ds", None)
+
+    assert unpinned.preview_image == scanned.preview_image, (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.delete_dataset("order_ds", delete_files=True)

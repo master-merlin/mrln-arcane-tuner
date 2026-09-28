@@ -114,3 +114,172 @@ def test_audio_cannot_be_pinned(ds):
 def test_pinning_an_unknown_dataset_raises(ds):
     with pytest.raises(ValueError):
         dataset_manager.set_preview_image("no_such_dataset", "a_first.jpg")
+
+
+# ── Listing order independence (LANE-115) ───────────────────────────────
+
+
+def test_scan_cover_does_not_depend_on_listing_order(tmp_path, monkeypatch):
+    """`os.scandir` order is filesystem-dependent (alphabetical on NTFS, not
+    guaranteed on Linux). The scan's election must not depend on it — it must
+    agree with the sorted-order election `_auto_preview_candidate` uses for
+    the unpin path, whatever order the raw listing comes back in.
+    """
+    root = tmp_path / "datasets"
+    root.mkdir()
+    monkeypatch.setattr(dataset_manager, "default_root", str(root))
+
+    path = root / "order_ds"
+    path.mkdir()
+    names = ("a_first.jpg", "b_second.jpg", "c_third.jpg")
+    for name in names:
+        Image.new("RGB", (64, 48), "blue").save(path / name)
+
+    real_scandir = __import__("os").scandir
+
+    class _ReversedScandir:
+        """A drop-in for `os.scandir` usable both as an iterator and as the
+        context manager some callers (e.g. thumbnail cleanup) use it as —
+        real `os.scandir` supports both.
+        """
+
+        def __init__(self, scan_path):
+            with real_scandir(scan_path) as it:
+                entries = sorted(it, key=lambda e: e.name, reverse=True)
+            self._it = iter(entries)
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return next(self._it)
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(
+        "app.core.dataset_manager.os.scandir", _ReversedScandir,
+    )
+
+    dataset_manager.create_dataset("order_ds", path=str(path))
+    scanned = dataset_manager.scan_dataset("order_ds")
+    scan_cover = str(scanned.preview_image)
+
+    assert scan_cover == "a_first.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    pinned = dataset_manager.set_preview_image("order_ds", "c_third.jpg")
+    assert pinned.preview_image == "c_third.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.set_preview_image("order_ds", None)
+    unpinned_cover = dataset_manager.datasets["order_ds"].preview_image
+
+    assert unpinned_cover == scan_cover == "a_first.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.delete_dataset("order_ds", delete_files=True)
+
+
+def test_unpin_cover_uses_the_scan_s_eligibility(tmp_path, monkeypatch):
+    """`_auto_preview_candidate` (the unpin path) must use the exact same
+    eligibility rule as the scan's own election: a regular, non-symlink
+    file whose name does not start with "." or "~". Otherwise an unpin can
+    elect a file the scan never counted as part of the dataset at all.
+    """
+    root = tmp_path / "datasets"
+    root.mkdir()
+    monkeypatch.setattr(dataset_manager, "default_root", str(root))
+
+    # (a) A hidden file that sorts before every eligible name must never be
+    # elected by either the scan or the unpin path.
+    path_a = root / "hidden_ds"
+    path_a.mkdir()
+    names = ("a_first.jpg", "b_second.jpg", "c_third.jpg")
+    for name in names:
+        Image.new("RGB", (64, 48), "blue").save(path_a / name)
+    Image.new("RGB", (64, 48), "blue").save(path_a / ".hidden.jpg")
+
+    dataset_manager.create_dataset("hidden_ds", path=str(path_a))
+    scanned = dataset_manager.scan_dataset("hidden_ds")
+    scan_cover = str(scanned.preview_image)
+    assert scan_cover == "a_first.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    pinned = dataset_manager.set_preview_image("hidden_ds", "c_third.jpg")
+    assert pinned.preview_image == "c_third.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.set_preview_image("hidden_ds", None)
+    unpinned_cover = dataset_manager.datasets["hidden_ds"].preview_image
+    assert unpinned_cover == scan_cover == "a_first.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.delete_dataset("hidden_ds", delete_files=True)
+
+    # (b) A dataset whose only images are excluded names: both paths must
+    # elect no cover at all, never one of the skipped files.
+    path_b = root / "excluded_only_ds"
+    path_b.mkdir()
+    Image.new("RGB", (64, 48), "blue").save(path_b / ".hidden.jpg")
+    Image.new("RGB", (64, 48), "blue").save(path_b / "~tmp.jpg")
+
+    dataset_manager.create_dataset("excluded_only_ds", path=str(path_b))
+    scanned_b = dataset_manager.scan_dataset("excluded_only_ds")
+    assert scanned_b.preview_image is None, (
+        "scan cover depends on listing order"
+    )
+
+    pinned_b = dataset_manager.set_preview_image("excluded_only_ds", ".hidden.jpg")
+    assert pinned_b.preview_image == ".hidden.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.set_preview_image("excluded_only_ds", None)
+    unpinned_b = dataset_manager.datasets["excluded_only_ds"].preview_image
+    assert unpinned_b is None, (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.delete_dataset("excluded_only_ds", delete_files=True)
+
+    # (c) A symlinked image must not be elected by either path — only where
+    # the platform allows creating one.
+    path_c = root / "symlink_ds"
+    path_c.mkdir()
+    Image.new("RGB", (64, 48), "blue").save(path_c / "a_first.jpg")
+    target = path_c / "a_first.jpg"
+    link = path_c / "0_link.jpg"
+    try:
+        link.symlink_to(target)
+    except (OSError, NotImplementedError):
+        pytest.skip("platform does not allow creating a symlink here")
+
+    dataset_manager.create_dataset("symlink_ds", path=str(path_c))
+    scanned_c = dataset_manager.scan_dataset("symlink_ds")
+    scan_cover_c = str(scanned_c.preview_image)
+    assert scan_cover_c == "a_first.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    pinned_c = dataset_manager.set_preview_image("symlink_ds", "a_first.jpg")
+    assert pinned_c.preview_pinned is True, (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.set_preview_image("symlink_ds", None)
+    unpinned_c = dataset_manager.datasets["symlink_ds"].preview_image
+    assert unpinned_c == scan_cover_c == "a_first.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.delete_dataset("symlink_ds", delete_files=True)

@@ -882,12 +882,6 @@ class DatasetManager:
 
                 if progress_cb is not None:
                     progress_cb(task_idx, task_total, f)
-                # Audio has no thumbnail — never elect it as the library
-                # card preview candidate (an image/video sibling, if any,
-                # wins instead; an audio-only dataset stays preview-less,
-                # which the frontend already handles for empty state).
-                if not ctx["preview_candidate"] and ext not in AUDIO_EXTENSIONS:
-                    ctx["preview_candidate"] = rel_path
 
             elif ext in self.CAPTION_EXTS:
                 # Lyrics sidecars (`<stem>.lyrics.txt`) are a distinct
@@ -900,6 +894,14 @@ class DatasetManager:
                 if lower_f.endswith(".lyrics.txt"):
                     continue
                 ctx["caption_stems"].add(stem)
+
+        # The unpinned library cover: elected AFTER the listing is fully
+        # walked, via the ONE eligibility-and-order rule (`_elect_cover`)
+        # also used by the unpin path (`_auto_preview_candidate`) — never
+        # accumulated per-entry in the raw `os.scandir` order the loop
+        # above happens to see, which is filesystem-dependent (alphabetical
+        # on NTFS, unspecified on Linux/ext4).
+        ctx["preview_candidate"] = self._elect_cover(dataset.path)
 
         # Unload scoring model after all files processed
         if scoring_service is not None:
@@ -1491,20 +1493,46 @@ class DatasetManager:
         return dataset
 
     def _auto_preview_candidate(self, dataset: Dataset) -> str | None:
-        """First non-audio media file, in scan order — the unpinned default.
+        """The unpinned default cover; kept here so unpinning does not have
+        to run a full scan to answer the question.
 
-        Mirrors the election in ``_enumerate_and_extract``; kept here so
-        unpinning does not have to run a full scan to answer the question.
+        Delegates to ``_elect_cover`` — the ONE eligibility-and-order rule
+        shared with the scan's own election, so a pin and an unpin can never
+        disagree about what the scan would have chosen.
         """
-        if not os.path.isdir(dataset.path):
+        return self._elect_cover(dataset.path)
+
+    def _elect_cover(self, dataset_path: str) -> str | None:
+        """The unpinned library cover: the lexicographically-lowest eligible
+        file, in SORTED order — never the raw ``os.scandir`` order, which is
+        filesystem-dependent (alphabetical on NTFS, unspecified on
+        Linux/ext4), and never the file the scan happened to process first.
+
+        Eligible: a regular, non-symlink file (``follow_symlinks=False`` —
+        a symlink is not part of the dataset's own content) whose name does
+        not start with ``.`` or ``~`` (hidden/temp files the scan itself
+        skips), with a non-audio multimedia extension, matched
+        case-insensitively.
+
+        This is the single rule both the scan's election
+        (``_enumerate_and_extract``) and the unpin path
+        (``_auto_preview_candidate``) use — they must never diverge, because
+        a rescan and an unpin electing different covers for the same
+        dataset is the defect this method exists to close.
+        """
+        if not os.path.isdir(dataset_path):
             return None
-        for entry in sorted(os.scandir(dataset.path), key=lambda e: e.name):
-            if not entry.is_file():
+        candidates = []
+        for entry in os.scandir(dataset_path):
+            if not entry.is_file(follow_symlinks=False):
                 continue
-            ext = os.path.splitext(entry.name)[1].lower()
-            if ext in MULTIMEDIA_EXTENSIONS and ext not in AUDIO_EXTENSIONS:
-                return entry.name
-        return None
+            name = entry.name
+            if name.startswith(".") or name.startswith("~"):
+                continue
+            ext = os.path.splitext(name.lower())[1]
+            if ext in self.MULTIMEDIA_EXTS and ext not in AUDIO_EXTENSIONS:
+                candidates.append(name)
+        return min(candidates) if candidates else None
 
     def get_dataset_pairs(self, name: str) -> list[dict]:
         if name not in self.datasets:

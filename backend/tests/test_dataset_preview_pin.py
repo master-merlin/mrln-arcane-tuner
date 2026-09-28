@@ -166,15 +166,21 @@ def test_scan_cover_does_not_depend_on_listing_order(tmp_path, monkeypatch):
 
     dataset_manager.create_dataset("order_ds", path=str(path))
     scanned = dataset_manager.scan_dataset("order_ds")
+    scan_cover = str(scanned.preview_image)
 
-    assert scanned.preview_image == "a_first.jpg", (
+    assert scan_cover == "a_first.jpg", (
         "scan cover depends on listing order"
     )
 
-    dataset_manager.set_preview_image("order_ds", "c_third.jpg")
-    unpinned = dataset_manager.set_preview_image("order_ds", None)
+    pinned = dataset_manager.set_preview_image("order_ds", "c_third.jpg")
+    assert pinned.preview_image == "c_third.jpg", (
+        "scan cover depends on listing order"
+    )
 
-    assert unpinned.preview_image == scanned.preview_image, (
+    dataset_manager.set_preview_image("order_ds", None)
+    unpinned_cover = dataset_manager.datasets["order_ds"].preview_image
+
+    assert unpinned_cover == scan_cover == "a_first.jpg", (
         "scan cover depends on listing order"
     )
 
@@ -202,13 +208,19 @@ def test_unpin_cover_uses_the_scan_s_eligibility(tmp_path, monkeypatch):
 
     dataset_manager.create_dataset("hidden_ds", path=str(path_a))
     scanned = dataset_manager.scan_dataset("hidden_ds")
-    assert scanned.preview_image == "a_first.jpg", (
+    scan_cover = str(scanned.preview_image)
+    assert scan_cover == "a_first.jpg", (
         "scan cover depends on listing order"
     )
 
-    dataset_manager.set_preview_image("hidden_ds", "c_third.jpg")
-    unpinned = dataset_manager.set_preview_image("hidden_ds", None)
-    assert unpinned.preview_image == "a_first.jpg", (
+    pinned = dataset_manager.set_preview_image("hidden_ds", "c_third.jpg")
+    assert pinned.preview_image == "c_third.jpg", (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.set_preview_image("hidden_ds", None)
+    unpinned_cover = dataset_manager.datasets["hidden_ds"].preview_image
+    assert unpinned_cover == scan_cover == "a_first.jpg", (
         "scan cover depends on listing order"
     )
 
@@ -227,9 +239,14 @@ def test_unpin_cover_uses_the_scan_s_eligibility(tmp_path, monkeypatch):
         "scan cover depends on listing order"
     )
 
+    pinned_b = dataset_manager.set_preview_image("excluded_only_ds", ".hidden.jpg")
+    assert pinned_b.preview_image == ".hidden.jpg", (
+        "scan cover depends on listing order"
+    )
+
     dataset_manager.set_preview_image("excluded_only_ds", None)
-    unpinned_b = dataset_manager.datasets["excluded_only_ds"]
-    assert unpinned_b.preview_image is None, (
+    unpinned_b = dataset_manager.datasets["excluded_only_ds"].preview_image
+    assert unpinned_b is None, (
         "scan cover depends on listing order"
     )
 
@@ -249,13 +266,19 @@ def test_unpin_cover_uses_the_scan_s_eligibility(tmp_path, monkeypatch):
 
     dataset_manager.create_dataset("symlink_ds", path=str(path_c))
     scanned_c = dataset_manager.scan_dataset("symlink_ds")
-    assert scanned_c.preview_image == "a_first.jpg", (
+    scan_cover_c = str(scanned_c.preview_image)
+    assert scan_cover_c == "a_first.jpg", (
         "scan cover depends on listing order"
     )
 
-    dataset_manager.set_preview_image("symlink_ds", "a_first.jpg")
-    unpinned_c = dataset_manager.set_preview_image("symlink_ds", None)
-    assert unpinned_c.preview_image == "a_first.jpg", (
+    pinned_c = dataset_manager.set_preview_image("symlink_ds", "a_first.jpg")
+    assert pinned_c.preview_pinned is True, (
+        "scan cover depends on listing order"
+    )
+
+    dataset_manager.set_preview_image("symlink_ds", None)
+    unpinned_c = dataset_manager.datasets["symlink_ds"].preview_image
+    assert unpinned_c == scan_cover_c == "a_first.jpg", (
         "scan cover depends on listing order"
     )
 

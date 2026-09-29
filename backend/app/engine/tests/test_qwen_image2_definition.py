@@ -24,11 +24,14 @@ Also pinned, because a definition that is wrong here fails only at GPU time:
   from memory;
 * ``block_topology`` counts the checkpoint's 32 blocks under the attribute the
   vendored model really has;
-* the definition declares the non-commercial licence (RULE-21: the ONE place
-  the text lives).
+* the non-commercial licence lives in the README licence table (RULE-21: the
+  ONE place the text lives -- DECISION 2026-09-29 word `a`), same as every
+  other restricted family, not on the definition or in saved metadata.
 """
 
 from __future__ import annotations
+
+import pathlib
 
 import pytest
 import torch.nn as nn
@@ -38,6 +41,9 @@ from app.engine.models.registry import ModelRegistry
 
 DEF_ID = "qwen-image-2.1"
 FAMILY = "qwen_image2"
+
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
+README = REPO_ROOT / "README.md"
 
 
 @pytest.fixture()
@@ -99,8 +105,15 @@ def test_architecture_params_are_the_weights_own(registry):
     assert arch["te.text_config.hidden_size"] == 4096
 
 
-def test_licence_is_declared_on_the_definition(registry):
-    assert _defn(registry).license == "qwen-research (non-commercial)"
+def test_licence_is_in_the_readme_restricted_table():
+    """RULE-21: the README licence table, not the definition or saved metadata."""
+    text = README.read_text(encoding="utf-8")
+    restricted = text.split("**Restricted", 1)[1].split("**Permissive", 1)[0]
+    rows = [ln for ln in restricted.splitlines() if ln.startswith("| `qwen_image2`")]
+    assert len(rows) == 1, f"expected exactly one qwen_image2 row, found {len(rows)}"
+    row = rows[0]
+    assert "Qwen/Qwen-Image-2.1" in row
+    assert "non-commercial" in row
 
 
 # ── Loader: every declared class resolves ───────────────────────────────────

@@ -13,8 +13,6 @@ Pinned, each against upstream diffusers ``6256aa7666`` (``pipeline_qwenimage21.p
   mixin ``QwenImage21Pipeline`` inherits (spec scope 7) -- with ``0``
   unexpected and ``0`` missing keys, one adapted module per A/B pair, and the
   saved weights applied;
-* the saved file's ``modelspec.license`` is the definition's licence (spec
-  scenario 4), and a definition without one writes no key;
 * sampling keeps a float32 trajectory and runs the DiT with autocast OFF even
   under an outer autocast (LESSONS: autocast sampler collapse);
 * ``torch.compile`` is declared off (upstream #14821).
@@ -39,7 +37,6 @@ tiny = importlib.util.module_from_spec(_spec)
 _spec.loader.exec_module(tiny)
 
 C = 8  # tiny latent channels
-LICENCE = "qwen-research (non-commercial)"
 
 
 def _definition():
@@ -152,9 +149,7 @@ def test_compile_is_declared_off():
 # ── Saver ───────────────────────────────────────────────────────────────────
 
 
-def _trained_lora_file(tmp_path, *, licence=LICENCE) -> pathlib.Path:
-    from app.engine.models.families.qwen_image2.saver import QwenImage2Saver
-
+def _trained_lora_file(tmp_path) -> pathlib.Path:
     t = _trainer(tiny.tiny_transformer(in_channels=C))
     t._apply_peft()
     model = t.driver.get_primary_model()
@@ -164,7 +159,7 @@ def _trained_lora_file(tmp_path, *, licence=LICENCE) -> pathlib.Path:
             if "lora_B" in name:
                 p.normal_(0, 0.1)
     path = tmp_path / "lora.safetensors"
-    saver = t.driver.get_saver() if licence == LICENCE else QwenImage2Saver(license_text=licence)
+    saver = t.driver.get_saver()
     saver.save({"unet": model, "config": {"save_precision": "fp32"}}, path)
     assert path.exists(), "the saver wrote no file"
     return path
@@ -212,20 +207,6 @@ def test_saved_lora_loads_through_the_qwen_lora_loader_mixin(tmp_path):
     # its own -- spec scope 7 names the diffusers PEFT format.
     off_layout = [k for k in saved if not k.startswith("transformer.")]
     assert off_layout == [], f"keys outside the diffusers layout: {off_layout[:2]}"
-
-
-def test_saved_file_records_the_definition_licence(tmp_path):
-    path = _trained_lora_file(tmp_path)
-    with safe_open(str(path), "pt") as f:
-        meta = f.metadata()
-    assert _definition().license == LICENCE
-    assert meta.get("modelspec.license") == LICENCE
-
-
-def test_a_definition_without_a_licence_writes_no_licence_key(tmp_path):
-    path = _trained_lora_file(tmp_path, licence=None)
-    with safe_open(str(path), "pt") as f:
-        assert "modelspec.license" not in f.metadata()
 
 
 # ── Sampler ─────────────────────────────────────────────────────────────────

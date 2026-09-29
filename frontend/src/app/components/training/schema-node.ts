@@ -49,14 +49,6 @@ export interface SchemaNode {
   /** backend name → schemes that backend supports (e.g. quantization). Values
    *  are usually a plain scheme list, but some schemas wrap them as `{schemes}`. */
   backend_map?: Record<string, string[] | { schemes?: string[] }>;
-  /** enum value (a definition id) → its licence notice text, projected onto
-   *  `definition_id`'s schema node so both dropdown renderers (this
-   *  component's inline Model Selection select AND
-   *  {@link DynamicFormFieldComponent}) can read the notice uniformly, with
-   *  no separate model-list input. RULE-21: this is a PROJECTION built from
-   *  `ModelDefinition.license` — the definition itself is the one producer of
-   *  the text; an absent entry means "no licence flag", never a blank notice. */
-  license_map?: Record<string, string>;
 
   // Composition
   items?: SchemaNode;

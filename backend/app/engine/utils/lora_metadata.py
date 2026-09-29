@@ -21,29 +21,6 @@ TRIGGER_COMMENT_KEY = "ss_training_comment"
 #: looks here and finds nothing if only the comment is written.
 TRIGGER_PHRASE_KEY = "modelspec.trigger_phrase"
 
-#: The ModelSpec field for the base checkpoint's licence terms. Written only
-#: when the definition declares one (e.g. Qwen-Image-2.1's non-commercial
-#: research licence) — most families ship no restriction, and an empty
-#: string would misreport that as "licensed under nothing" rather than
-#: "unknown/not tracked".
-LICENSE_KEY = "modelspec.license"
-
-
-def license_metadata(license_text: str | None) -> dict[str, str]:
-    """``modelspec.license`` from a definition's ``license`` field.
-
-    Mirrors ``trigger_metadata``: returns an EMPTY dict when the definition
-    carries no licence text, so a reader cannot mistake "not tracked" for
-    "no restriction". RULE-21: the licence text lives only on the
-    definition; this just stringifies whatever the caller read from there.
-    """
-    if license_text is None:
-        return {}
-    text = str(license_text).strip()
-    if not text:
-        return {}
-    return {LICENSE_KEY: text}
-
 
 def trigger_metadata(config: Any) -> dict[str, str]:
     """Both keys a downstream tool might read the trigger word from.

@@ -10,7 +10,8 @@ version: '1.0'
 # Qwen RESEARCH LICENSE (2026-09-20): non-commercial use only; a distributed
 # fine-tune must show "Built with Qwen".
 # https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE
-license: qwen-research (non-commercial)
+# Tracked in the README licence table ("Restricted"), not here -- see
+# README.md's `qwen_image2` row (RULE-21, DECISION 2026-09-29 word `a`).
 defaults:
   # Upstream QwenImage21Pipeline.__call__ defaults (diffusers 6256aa7666):
   # output_resolution=1024, num_inference_steps=40.

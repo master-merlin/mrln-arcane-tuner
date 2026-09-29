@@ -30,6 +30,20 @@ class ModelDefinition(BaseModel):
         0, description="Paired control-image inputs (0 = standard T2I)"
     )
 
+    # Free-text licence notice for the base checkpoint (e.g. Qwen-Image-2.1's
+    # non-commercial research licence). ``None`` (the default) means "not
+    # tracked" — most families carry no restriction beyond their weights'
+    # own terms, and that is NOT the same claim as "no restriction", so a
+    # blank/None value is never surfaced in the picker or LoRA metadata (see
+    # ``enrich_schema``'s ``license_map`` and
+    # ``lora_metadata.license_metadata``). RULE-21: this is the ONE place
+    # the licence text is written; the picker and the saved LoRA both read
+    # it from here.
+    license: str | None = Field(
+        None,
+        description="Licence notice for the base checkpoint (None = not tracked)",
+    )
+
     # Why this definition is not offered to the user, or None when it is.
     # ECOSYSTEM §6 (reserved 2026-08-31, LANE-45 / DECISION-26 (a)). A non-empty
     # value gates the definition out of every USER-FACING enumeration and is the

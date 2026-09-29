@@ -1387,6 +1387,12 @@ class TrainingPlugin(ABC):
         # definition_id -> control_inputs; lets the frontend dataset picker
         # require an edit (paired) dataset when an edit model is selected.
         edit_map = {}
+        # definition_id -> licence text, entries present ONLY for a
+        # definition that declares one (control_inputs=0 vs an absent key
+        # would be ambiguous for a bool-ish map; here absence itself is the
+        # signal the picker notice keys off, same reasoning as
+        # ``lora_metadata.license_metadata``'s empty-dict return).
+        license_map = {}
 
         # USER-FACING enumeration: this builds the training form's model picker
         # (the model_family + definition_id enums, their labels, the
@@ -1403,6 +1409,9 @@ class TrainingPlugin(ABC):
             all_definitions.append(model.id)
             all_definition_labels.append(f"{model.name} v{model.version}")
             edit_map[model.id] = int(getattr(model, "control_inputs", 0) or 0)
+            license_text = str(getattr(model, "license", None) or "").strip()
+            if license_text:
+                license_map[model.id] = license_text
 
         if "properties" in schema:
             if "model_family" in schema["properties"]:
@@ -1421,6 +1430,7 @@ class TrainingPlugin(ABC):
                 )
                 schema["properties"]["definition_id"]["backend_map"] = definition_map
                 schema["properties"]["definition_id"]["edit_map"] = edit_map
+                schema["properties"]["definition_id"]["license_map"] = license_map
                 schema["properties"]["definition_id"]["default"] = (
                     all_definitions[0] if all_definitions else ""
                 )

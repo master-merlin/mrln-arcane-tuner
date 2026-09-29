@@ -21,6 +21,7 @@ Pinned, each against upstream diffusers ``6256aa7666`` (``pipeline_qwenimage21.p
 from __future__ import annotations
 
 import importlib.util
+import inspect
 import pathlib
 
 import pytest
@@ -147,6 +148,17 @@ def test_compile_is_declared_off():
 
 
 # ── Saver ───────────────────────────────────────────────────────────────────
+
+
+def test_saver_takes_no_licence_argument():
+    """The saver has no `__init__` override; licences live only in the README
+    licence table (RULE-21), never in saved metadata or a constructor arg."""
+    from app.engine.models.families.qwen_image2.saver import QwenImage2Saver
+
+    assert inspect.signature(QwenImage2Saver).parameters == {}
+
+    t = _trainer(tiny.tiny_transformer(in_channels=C))
+    assert isinstance(t.driver.get_saver(), QwenImage2Saver)
 
 
 def _trained_lora_file(tmp_path) -> pathlib.Path:

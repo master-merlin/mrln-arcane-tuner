@@ -16,15 +16,7 @@ from app.engine.core.pipeline.saver_base import GenericLoRASaver
 
 
 class QwenImage2Saver(GenericLoRASaver):
-    """Saves the Qwen-Image 2.x transformer LoRA as safetensors.
-
-    ``license_text`` is accepted (and ignored) for the driver's call-site
-    compatibility; licences live in the README licence table, not saved
-    metadata -- see the module docstring.
-    """
+    """Saves the Qwen-Image 2.x transformer LoRA as safetensors."""
 
     architecture_name = "qwen_image2"
     key_prefix = "transformer."
-
-    def __init__(self, license_text: str | None = None) -> None:
-        del license_text

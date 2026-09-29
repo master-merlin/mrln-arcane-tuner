@@ -175,8 +175,7 @@ class QwenImage2Driver(IModelDriver):
     def get_saver(self):
         from .saver import QwenImage2Saver
 
-        # RULE-21: the licence text is read from the definition, never re-typed.
-        return QwenImage2Saver(license_text=getattr(self.definition, "license", None))
+        return QwenImage2Saver()
 
     def get_block_topology(self) -> list[dict[str, Any]]:
         model = self.get_primary_model()

@@ -191,7 +191,7 @@ engine/
 ├── factories/             # Optimizer + quantization (bitsandbytes/quanto/torchao) factories + base/impl subdirs
 ├── models/
 │   ├── registry.py        # Model family registry (plugin-driven) + count()
-│   └── families/          # 29 families + 2 support packages (see below)
+│   └── families/          # 30 families + 2 support packages (see below)
 ├── strategies/            # EMA, timestep sampling, noise interpolation, sigma schedule/tracker
 └── utils/                 # LoRA tools + conversion, safe save, introspection, VRAM/cost estimators, override manager
 ```
@@ -199,7 +199,7 @@ engine/
 
 #### Model families
 
-**29 shipped families across 54 definitions**, plus two support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share) and `prx_shared` (the same role for `prx` and `prx_pixel`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (26), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
+**30 shipped families across 55 definitions**, plus two support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share) and `prx_shared` (the same role for `prx` and `prx_pixel`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (27), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
 
 Counts here are pinned by `backend/tests/test_architecture_family_counts.py` — the table below is generated from the tree, and a family added without a row in it fails the gate. That guard exists because this section said "13 families" for fifteen families' worth of releases.
 
@@ -223,6 +223,7 @@ Counts here are pinned by `backend/tests/test_architecture_family_counts.py` —
 | `prx`             | PRX 512 T2I (SFT)                                                  | latent_diffusion    | —                                   |
 | `prx_pixel`       | PRX Pixel T2I                                                      | pixel_transformer   | —                                   |
 | `qwen_image`      | Qwen-Image 2512, Qwen-Image-Edit 2509 / 2511                       | latent_diffusion    | —                                   |
+| `qwen_image2`     | Qwen-Image-2.1 (vendored QwenImage21 transformer + VAE from diffusers `6256aa7666`, Qwen3-VL TE); **non-commercial** (Qwen Research License, shown via the definition's `license`) | latent_diffusion | —                      |
 | `sdxl`            | SDXL Base 1.0, Illustrious-XL v2.0, NoobAI-XL v1.1 — dual CLIP, ε-prediction | latent_diffusion | —                          |
 | `zimage`          | Z-Image (Base / De-Turbo)                                          | latent_diffusion    | —                                   |
 | `bernini_r`       | Bernini-R video edit (1.3B / 14B MoE)                              | latent_diffusion    | `is_video`                          |

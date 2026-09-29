@@ -57,6 +57,7 @@ ALL_FAMILIES = (
     "prx",
     "prx_pixel",
     "qwen_image",
+    "qwen_image2",
     "sdxl",
     "wan21",
     "wan22",

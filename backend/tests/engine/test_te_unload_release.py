@@ -375,6 +375,12 @@ _FAMILY_TE_ATTRS: list[tuple[str, str, str, list[str]]] = [
         ["text_encoder"],
     ),
     (
+        "qwen_image2",
+        "app.engine.models.families.qwen_image2.driver",
+        "QwenImage2Driver",
+        ["text_encoder"],
+    ),
+    (
         "sdxl",
         "app.engine.models.families.sdxl.driver",
         "SDXLDriver",

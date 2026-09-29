@@ -366,6 +366,13 @@ FAMILIES: list[FamilySpec] = [
         encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
     ),
     FamilySpec(
+        "qwen_image2",
+        "app.engine.models.families.qwen_image2.trainer:QwenImage2Trainer",
+        "app.engine.models.families.qwen_image2.driver:QwenImage2Driver",
+        "transformer", "transformer",
+        encode_kind="tuple2", encode_seed=_seed_tuple_emb_mask, encode_check=_check_tuple2_3d,
+    ),
+    FamilySpec(
         "ovis_image",
         "app.engine.models.families.ovis_image.trainer:OvisImageTrainer",
         "app.engine.models.families.ovis_image.driver:OvisImageDriver",

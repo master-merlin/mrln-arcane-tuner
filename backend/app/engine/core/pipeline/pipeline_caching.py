@@ -394,7 +394,11 @@ class PipelineCachingMixin:
                     )
                     input_tensor = clip.unsqueeze(0).to(self.device)  # [1,C,F,H,W]
                 else:
-                    img = Image.open(item["path"]).convert("RGB")
+                    # PipelineDataMixin.VAE_IMAGE_MODE owns the mode ("RGB"
+                    # unless a family's VAE reads four channels).
+                    img = Image.open(item["path"]).convert(
+                        getattr(self, "VAE_IMAGE_MODE", "RGB")
+                    )
                     scale = max(tw / img.width, th / img.height)
                     nw, nh = int(img.width * scale), int(img.height * scale)
                     img = img.resize((nw, nh), Image.Resampling.LANCZOS)

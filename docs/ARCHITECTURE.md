@@ -223,7 +223,7 @@ Counts here are pinned by `backend/tests/test_architecture_family_counts.py` —
 | `prx`             | PRX 512 T2I (SFT)                                                  | latent_diffusion    | —                                   |
 | `prx_pixel`       | PRX Pixel T2I                                                      | pixel_transformer   | —                                   |
 | `qwen_image`      | Qwen-Image 2512, Qwen-Image-Edit 2509 / 2511                       | latent_diffusion    | —                                   |
-| `qwen_image2`     | Qwen-Image-2.1 (vendored QwenImage21 transformer + VAE from diffusers `6256aa7666`, Qwen3-VL TE); **non-commercial** (Qwen Research License, shown via the definition's `license`) | latent_diffusion | —                      |
+| `qwen_image2`     | Qwen-Image-2.1 (vendored QwenImage21 transformer + VAE from diffusers `6256aa7666`, Qwen3-VL TE); **non-commercial** (Qwen Research License, listed in the README licence table) | latent_diffusion | —                      |
 | `sdxl`            | SDXL Base 1.0, Illustrious-XL v2.0, NoobAI-XL v1.1 — dual CLIP, ε-prediction | latent_diffusion | —                          |
 | `zimage`          | Z-Image (Base / De-Turbo)                                          | latent_diffusion    | —                                   |
 | `bernini_r`       | Bernini-R video edit (1.3B / 14B MoE)                              | latent_diffusion    | `is_video`                          |

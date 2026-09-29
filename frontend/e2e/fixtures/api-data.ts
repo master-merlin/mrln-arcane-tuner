@@ -183,6 +183,11 @@ export const mpxDistribution = {
 export const trainingModels = [
     { id: 'flux-dev', name: 'FLUX.1 Dev', family: 'flux', architecture_params: {} },
     { id: 'flux-schnell', name: 'FLUX.1 Schnell', family: 'flux', architecture_params: {} },
+    // Non-commercial-licence proof (LANE-132 Task 4): qwen-image-2512 carries
+    // no `license`; qwen-image-2.1 does, and is the ONLY entry the picker
+    // notice fires for.
+    { id: 'qwen-image-2512', name: 'Qwen-Image-2512', family: 'qwen_image', architecture_params: {} },
+    { id: 'qwen-image-2.1', name: 'Qwen-Image-2.1', family: 'qwen_image2', architecture_params: {}, license: 'qwen-research (non-commercial)' },
 ];
 
 /**
@@ -212,9 +217,19 @@ export const trainingSchema = {
             type: 'string',
             title: 'Model Definition',
             group: 'MODEL_SELECTION',
-            enum: ['flux-dev', 'flux-schnell'],
-            enum_labels: { 'flux-dev': 'FLUX.1 Dev', 'flux-schnell': 'FLUX.1 Schnell' },
+            enum: ['flux-dev', 'flux-schnell', 'qwen-image-2512', 'qwen-image-2.1'],
+            enum_labels: {
+                'flux-dev': 'FLUX.1 Dev',
+                'flux-schnell': 'FLUX.1 Schnell',
+                'qwen-image-2512': 'Qwen-Image-2512',
+                'qwen-image-2.1': 'Qwen-Image-2.1',
+            },
             default: 'flux-dev',
+            // Documents the notice's real source: the RUNNING app recomputes
+            // this from `trainingModels`' own `.license` field (RULE-21), not
+            // from this static value — but naming it here keeps the fixture
+            // self-describing about which id fires the notice.
+            license_map: { 'qwen-image-2.1': 'qwen-research (non-commercial)' },
         },
         // BASE → "General Settings"
         lora_name: {

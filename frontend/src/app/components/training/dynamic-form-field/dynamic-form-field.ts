@@ -78,13 +78,18 @@ import { SchemaNode } from '../schema-node';
        <!-- String (Input or Enum Dropdown) -->
        @if (isString()) {
           @if (schema().enum) {
-               <select [formControl]="control()" 
+               <select [formControl]="control()"
                        [attr.data-testid]="'config-select-' + fieldKey()"
                        class="select disabled:opacity-50 disabled:cursor-not-allowed">
                   @for (opt of getFilteredEnumOptions(); track opt.value) {
                     <option [value]="opt.value" [disabled]="opt.disabled">{{ opt.label }}</option>
                   }
                </select>
+               @if (licenseNotice(); as notice) {
+                 <p class="text-[10.5px] font-medium text-amber-400" data-testid="model-license-notice">
+                   Non-commercial licence: {{ notice }}
+                 </p>
+               }
           } @else if (schema().input_type === 'path') {
                <div class="relative">
                  <div class="flex gap-2">
@@ -339,6 +344,20 @@ export class DynamicFormFieldComponent implements OnInit {
       .filter(Boolean);
     this.control().setValue(arr);
     this.control().markAsDirty();
+  }
+
+  /**
+   * The licence notice text for the field's currently selected value, or
+   * `null` when the selection carries no licence flag. RULE-21: reads
+   * `schema.license_map`, itself a projection of each definition's own
+   * `license` field (see `TrainingDynamicConfigComponent.organizeGroups`) —
+   * this component never computes or duplicates the text.
+   */
+  licenseNotice(): string | null {
+    const map = this.schema().license_map;
+    if (!map) return null;
+    const value = this.control().value;
+    return typeof value === 'string' && map[value] ? map[value] : null;
   }
 
   getFilteredEnumOptions() {

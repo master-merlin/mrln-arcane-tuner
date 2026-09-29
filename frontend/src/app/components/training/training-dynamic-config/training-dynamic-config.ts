@@ -170,6 +170,12 @@ export interface TrainingSegment {
                            class="input">
                   }
 
+                  @if (getLicenseNotice(prop); as licenseNotice) {
+                    <p class="text-[10.5px] font-medium text-amber-400" data-testid="model-license-notice">
+                      Non-commercial licence: {{ licenseNotice }}
+                    </p>
+                  }
+
                   @if (prop.schema.description) {
                     <p class="text-[10.5px] text-text-muted">{{ prop.schema.description }}</p>
                   }
@@ -1630,6 +1636,23 @@ export class TrainingDynamicConfigComponent {
       const ib = modelSelectionFieldOrder.indexOf(b.key);
       return (ia === -1 ? 999 : ia) - (ib === -1 ? 999 : ib);
     });
+
+    // Non-commercial licence notice (RULE-21): project each definition's OWN
+    // `license` field onto `definition_id`'s schema node as `license_map`, so
+    // the notice renderer (this component's inline select AND
+    // DynamicFormFieldComponent, neither of which is handed the model list)
+    // can read it purely from `schema.license_map[value]`. A definition with
+    // no `license` is simply absent from the map — never a blank notice.
+    const defIdProp = modelSelectionProps.find(p => p.key === 'definition_id');
+    if (defIdProp) {
+      const licenseMap: Record<string, string> = {};
+      for (const model of this.availableModels()) {
+        const license = (model as { license?: unknown }).license;
+        if (typeof license === 'string' && license) licenseMap[model.id] = license;
+      }
+      defIdProp.schema = { ...defIdProp.schema, license_map: licenseMap };
+    }
+
     this.modelSelectionProps.set(modelSelectionProps);
 
     const groups = groupOrder
@@ -2056,6 +2079,20 @@ export class TrainingDynamicConfigComponent {
   }
 
   // --- Dynamic Dropdown Filtering ---
+
+  /**
+   * The licence notice text for the currently selected value of a
+   * `license_map`-carrying enum field (today only `definition_id`), or
+   * `null` when the selection carries no licence flag. RULE-21: reads the
+   * text `organizeGroups` already projected from the definition's own
+   * `license` field — never a second copy of it.
+   */
+  getLicenseNotice(prop: SchemaProp): string | null {
+    const map = prop.schema.license_map;
+    if (!map) return null;
+    const value = this.form.get(prop.key)?.value;
+    return typeof value === 'string' && map[value] ? map[value] : null;
+  }
 
   /**
    * Returns a filtered list of `{value, label, disabled}` based on a dynamically injected `backend_map`.

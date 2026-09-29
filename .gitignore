@@ -119,3 +119,4 @@ _harness/
 # was ever pushed, so nothing public changed.
 # `documentation/` no longer exists: ARCHITECTURE.md moved to `docs/` and the
 # user chose a clean rename over a redirect stub (LANE-62, 2026-09-01).
+.claude/hooks/harness_state.json

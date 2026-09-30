@@ -19,8 +19,11 @@ class UpdateJobConfigRequest(BaseModel):
 
 
 class ResumeFromCheckpointRequest(BaseModel):
-    """Request body for continuing a job from one of its checkpoints."""
-    checkpoint_dir: str
+    """Request body for continuing a job from one of its checkpoints.
+
+    ``checkpoint_dir`` omitted (null) resumes from the newest intact folder.
+    """
+    checkpoint_dir: str | None = None
 
 
 class SetSamplingCadenceRequest(BaseModel):
@@ -126,3 +129,6 @@ class JobCheckpointResponse(BaseModel):
     # Name of that folder, or None when only the distribution LoRA remains
     # (e.g. the training-state was pruned by keep_last_checkpoints).
     checkpoint_dir: str | None = None
+    # Why ``resumable`` is false for a folder that exists (truncated file,
+    # malformed manifest, ...); None when resumable or no folder.
+    resumable_reason: str | None = None

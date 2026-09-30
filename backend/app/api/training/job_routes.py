@@ -222,7 +222,7 @@ async def resume_from_checkpoint(job_id: str, request: ResumeFromCheckpointReque
         if not job:
             raise HTTPException(status_code=404, detail="Job not found")
         return job
-    except ValueError as e:
+    except ValueError as e:  # includes CheckpointUnreadable (names file + last good)
         raise HTTPException(status_code=400, detail=str(e))
     except (OSError, RuntimeError) as e:
         logger.error("job_resume_from_checkpoint_failed", job_id=job_id, error=str(e))
@@ -517,6 +517,9 @@ async def list_job_checkpoints(job_id: str):
         return []
 
     def _scan() -> list[dict[str, Any]]:
+        # Lazy: the checkpoint module pulls torch, not needed at route import.
+        from app.engine.components.checkpoints import checkpoint_resumable
+
         items: list[dict[str, Any]] = []
         for fpath in run_dir.iterdir():
             if not fpath.is_file() or fpath.suffix.lower() != ".safetensors":
@@ -532,7 +535,8 @@ async def list_job_checkpoints(job_id: str):
             # training_state.json is present (it may have been pruned by
             # keep_last_checkpoints, leaving only the distribution LoRA).
             ckpt_name = _checkpoint_dir_name(step, is_final)
-            resumable = (run_dir / ckpt_name / "training_state.json").is_file()
+            folder = run_dir / ckpt_name
+            resumable, reason = checkpoint_resumable(folder)
             items.append({
                 "filename": fpath.name,
                 "step": 999999 if is_final else step,
@@ -540,7 +544,8 @@ async def list_job_checkpoints(job_id: str):
                 "size_bytes": stat.st_size,
                 "created_at": stat.st_mtime,
                 "resumable": resumable,
-                "checkpoint_dir": ckpt_name if resumable else None,
+                "checkpoint_dir": ckpt_name if folder.is_dir() else None,
+                "resumable_reason": None if resumable else (reason if folder.is_dir() else None),
             })
         return items
 

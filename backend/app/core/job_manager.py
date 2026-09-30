@@ -1209,31 +1209,23 @@ class JobManager:
         return any(m in low for m in self._AUTO_RESUME_ERROR_MARKERS)
 
     def _latest_resumable_checkpoint(self, job: Job) -> tuple[str, int] | None:
-        """Highest-step ``(dir_name, step)`` under the run that has a
-        ``training_state.json`` (i.e. is actually resumable), or None."""
+        """Newest ``(dir_name, rank)`` under the run that VALIDATES as intact
+        (manifest + zip central directories), or None. Newer folders that fail
+        are skipped with a logged warning naming the folder and the reason."""
         try:
             run_dir = self._get_job_output_dir(job)
         except Exception:
             return None
         if not run_dir or not os.path.isdir(run_dir):
             return None
-        best: tuple[int, str] | None = None
-        try:
-            for entry in os.scandir(run_dir):
-                if not entry.is_dir() or not _RESUMABLE_DIR_RE.match(entry.name):
-                    continue
-                if not os.path.isfile(os.path.join(entry.path, "training_state.json")):
-                    continue
-                if entry.name == "final":
-                    step = 10**9  # a final checkpoint outranks any numbered step
-                else:
-                    m = re.match(r"checkpoint-(\d+)$", entry.name)
-                    step = int(m.group(1)) if m else 0
-                if best is None or step > best[0]:
-                    best = (step, entry.name)
-        except OSError:
-            return None
-        return (best[1], best[0]) if best else None
+        # Lazy: the checkpoint module pulls torch, which the API process must
+        # not pay for at import time.
+        from app.engine.components.checkpoints import select_resumable_checkpoint
+
+        best, _skipped = select_resumable_checkpoint(
+            run_dir, log_context={"job_id": job.id}
+        )
+        return best
 
     def _maybe_auto_resume(self, job: Job, error: str | None) -> bool:
         """If a FAILED job died on a transient GPU fault and has a resumable
@@ -2036,28 +2028,53 @@ class JobManager:
 
         self.start_job(job_id)
 
-    def resume_from_checkpoint(self, job_id: str, checkpoint_dir: str) -> None:
+    def resume_from_checkpoint(
+        self, job_id: str, checkpoint_dir: str | None = None
+    ) -> None:
         """Continue a stopped/terminal job from one of its checkpoints.
 
         Reuses the SAME job record (no new queue item): sets
         ``resume_from_checkpoint`` (+ cache reuse) on its config, persists, and
         re-launches via ``restart_job(fresh=False)`` so the run picks up the
-        optimizer/scheduler/EMA state via the pipeline's resume path. The
-        ``checkpoint_dir`` must be a resumable training-state folder
-        (``training_state.json`` present).
+        optimizer/scheduler/EMA state via the pipeline's resume path.
+
+        ``checkpoint_dir`` omitted selects the newest INTACT folder. An
+        explicit one is used only if it validates; a damaged one raises
+        ``CheckpointUnreadable`` naming the file and the newest resumable
+        folder (never a silent substitution). LANE-133.
         """
         job = self.get_job(job_id)
         if not job:
             raise ValueError("Job not found")
         if job.status in [JobStatus.RUNNING, JobStatus.PENDING]:
             raise ValueError(f"Cannot resume job in state {job.status}")
-        if not _RESUMABLE_DIR_RE.match(checkpoint_dir):
+        if checkpoint_dir is not None and not _RESUMABLE_DIR_RE.match(checkpoint_dir):
             raise ValueError(f"Invalid checkpoint directory: {checkpoint_dir}")
 
+        from app.engine.components.checkpoints import (
+            CheckpointUnreadable,
+            checkpoint_resumable,
+            select_resumable_checkpoint,
+        )
+
         run_dir = self._get_job_output_dir(job)
+        best, skipped = select_resumable_checkpoint(run_dir, log_context={"job_id": job_id})
+        if checkpoint_dir is None:
+            if best is None:
+                detail = "; ".join(f"{n}: {r}" for n, r in skipped)
+                raise CheckpointUnreadable(
+                    "no resumable checkpoint"
+                    + (f" (skipped {detail})" if detail else " found in the run folder")
+                )
+            checkpoint_dir = best[0]
+        else:
+            ok, reason = checkpoint_resumable(os.path.join(run_dir, checkpoint_dir))
+            if not ok:
+                raise CheckpointUnreadable(
+                    f"{checkpoint_dir} is not resumable: {reason}; "
+                    f"newest resumable: {best[0] if best else 'none'}"
+                )
         ckpt_path = os.path.abspath(os.path.join(run_dir, checkpoint_dir))
-        if not os.path.isfile(os.path.join(ckpt_path, "training_state.json")):
-            raise ValueError(f"Checkpoint is not resumable: {checkpoint_dir}")
 
         logger.info("resuming_job_from_checkpoint", job_id=job_id, checkpoint=ckpt_path)
 

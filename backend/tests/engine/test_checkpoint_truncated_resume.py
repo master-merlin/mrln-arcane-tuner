@@ -273,6 +273,10 @@ def test_selection_between_final_and_numbered_checkpoints(tmp_path):
 
     assert _resume_or_fail(mgr, job, run, None) == "final"
 
+    # The first resume relaunched the job (PENDING); put it back to a stopped
+    # job before resuming again, as the endpoint test above does.
+    job.config.pop("resume_from_checkpoint", None)
+    job.status = JobStatus.STOPPED
     _truncate_optimizer(final)
     picked = _resume_or_fail(mgr, job, run, None)
     assert picked == "checkpoint-000010", (

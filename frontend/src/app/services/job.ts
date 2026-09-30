@@ -107,6 +107,7 @@ export interface JobCheckpointMeta {
   resumable: boolean;
   /** That folder's name (`checkpoint-NNNNNN` / `final`), or null if pruned. */
   checkpoint_dir: string | null;
+  resumable_reason?: string | null;
 }
 
 /** Echo ack for a job lifecycle action (mirrors backend JobActionResponse). */

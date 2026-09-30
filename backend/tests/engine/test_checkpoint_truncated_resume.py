@@ -520,3 +520,194 @@ def test_a_complete_staging_or_replaced_folder_is_never_resumable(tmp_path, mark
     assert ok is False and reason, (
         f"LANE-133: intact {twin.name} reported resumable; its name marks an unfinished save"
     )
+
+
+# ── VERIFY review remediation (1.01 - 1.04) ──────────────────────────────
+
+
+class _StateObj:
+    def __init__(self):
+        self._sd = {"v": torch.ones(4)}
+
+    def state_dict(self):
+        return self._sd
+
+
+def _save_full(run: Path, step: int) -> Path:
+    """A real save that also writes scheduler.pt, scaler.pt and ema_shadow.pt."""
+    model = nn.Linear(32, 32)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    model(torch.randn(2, 32)).sum().backward()
+    opt.step()
+    sched = torch.optim.lr_scheduler.StepLR(opt, step_size=1)
+    CheckpointManager(str(run)).save_checkpoint(
+        step,
+        {"model": model},
+        optimizer=opt,
+        scheduler=sched,
+        scaler=_StateObj(),
+        ema_handler=_StateObj(),
+        config={"lora_name": "t"},
+    )
+    return run / f"checkpoint-{step:06d}"
+
+
+def _tree_bytes(folder: Path) -> dict[str, bytes]:
+    return {
+        str(p.relative_to(folder)): p.read_bytes()
+        for p in sorted(folder.rglob("*"))
+        if p.is_file()
+    }
+
+
+def _assert_save_aborted(run: Path, folder: Path, before: dict[str, bytes], what: str):
+    assert _tree_bytes(folder) == before, (
+        f"LANE-133: a failed {what} write changed the existing intact folder"
+    )
+    ok, reason = _resumable_fn()(str(folder))
+    assert ok, f"LANE-133: intact folder no longer resumable after failed {what}: {reason}"
+    extra = [p.name for p in run.iterdir() if p.is_dir() and p.name != folder.name]
+    assert extra == [], f"LANE-133: failed {what} left folders {extra}"
+
+
+@pytest.mark.parametrize(
+    "target", ["model.pt", "optimizer.pt", "scheduler.pt", "scaler.pt", "ema_shadow.pt"]
+)
+def test_a_failed_pt_write_aborts_the_save(tmp_path, target):
+    run = tmp_path / "run"
+    run.mkdir()
+    folder = _save_full(run, 10)
+    before = _tree_bytes(folder)
+
+    real_save = torch.save
+
+    def _failing(obj, f, *a, **k):
+        if os.path.basename(os.fspath(f)).startswith(target):
+            raise OSError("disk full")
+        return real_save(obj, f, *a, **k)
+
+    with patch.object(torch, "save", _failing):
+        try:
+            _save_full(run, 10)
+        except OSError:
+            pass
+        else:
+            pytest.fail(f"LANE-133: a failed {target} write was swallowed; save 'succeeded'")
+    _assert_save_aborted(run, folder, before, target)
+
+
+def test_a_failed_training_state_write_aborts_the_save(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    folder = _save_full(run, 10)
+    before = _tree_bytes(folder)
+    real = ckpt_mod._atomic_write_json
+
+    def _failing(path, data, **kw):
+        if os.path.basename(path) == "training_state.json":
+            raise OSError("disk full")
+        return real(path, data, **kw)
+
+    with patch.object(ckpt_mod, "_atomic_write_json", _failing):
+        with pytest.raises(OSError):
+            _save_full(run, 10)
+    _assert_save_aborted(run, folder, before, "training_state.json")
+
+
+def test_a_failed_adapter_write_aborts_the_save(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    folder = _save_full(run, 10)
+    before = _tree_bytes(folder)
+
+    peft = MagicMock()
+    peft.save_pretrained.side_effect = OSError("disk full")
+    with pytest.raises(OSError):
+        CheckpointManager(str(run)).save_checkpoint(
+            10, {"unet": peft}, config={"lora_name": "t"}
+        )
+    _assert_save_aborted(run, folder, before, "adapter")
+
+
+def test_cleanup_removes_only_this_runs_own_unfinished_folders(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    own_staging = run / "checkpoint-000003.staging-0123456789ab"
+    own_replaced = run / "checkpoint-000004.replaced-0123456789ab"
+    foreign = [
+        run / "notes.staging-personal",
+        run / "my.replaced-stuff",
+        run / "checkpoint-000005.staging-personal",
+    ]
+    for d in [own_staging, own_replaced, *foreign]:
+        d.mkdir()
+        (d / "keep.txt").write_text("x")
+
+    _save(run, 10)
+
+    assert not own_staging.exists() and not own_replaced.exists(), (
+        "LANE-133: this run's own unfinished folders were not cleaned up"
+    )
+    for d in foreign:
+        assert (d / "keep.txt").exists(), f"LANE-133: cleanup deleted foreign folder {d.name}"
+
+
+def test_load_with_an_unreadable_training_state_is_named(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    good = _save(run, 5)
+    bad = _save(run, 10)
+    state = bad / "training_state.json"
+    state.write_bytes(state.read_bytes()[:20])  # torn JSON
+
+    _expect_unreadable(
+        lambda: CheckpointManager(str(run)).load_checkpoint(str(bad)),
+        f"{bad.name}/training_state.json",
+        "last good",
+        good.name,
+    )
+
+
+def test_load_with_an_unreadable_adapter_is_named(tmp_path):
+    run = tmp_path / "run"
+    run.mkdir()
+    good = _save(run, 5)
+    bad = _save(run, 10)
+    (bad / "unet").mkdir()
+    (bad / "unet" / "adapter_config.json").write_text("{}")
+
+    peft = MagicMock()
+    peft.load_adapter.side_effect = ValueError("not a safetensors file")
+    _expect_unreadable(
+        lambda: CheckpointManager(str(run)).load_checkpoint(
+            str(bad), peft_components={"unet": peft}
+        ),
+        f"{bad.name}/unet",
+        "last good",
+        good.name,
+    )
+
+
+def test_automatic_resume_with_no_intact_checkpoint_ends_the_job_by_name(tmp_path):
+    """The real automatic path (_maybe_auto_resume), not resume_from_checkpoint."""
+    mgr, job, run = _job(tmp_path)
+    only = _save(run, 10)
+    _truncate_optimizer(only)
+    job.status = JobStatus.FAILED
+    job.error = "CUDA error: unknown error\ncudaErrorUnknown"
+
+    with (
+        patch.object(mgr, "_get_job_output_dir", return_value=str(run)),
+        patch.object(mgr, "_schedule_auto_resume") as sched,
+        patch.object(mgr, "_persist_status") as persist,
+    ):
+        resumed = mgr._maybe_auto_resume(job, job.error)
+
+    assert resumed is False and sched.call_args is None
+    for needle in (only.name, "optimizer.pt", "no resumable checkpoint"):
+        assert needle in (job.error or ""), (
+            f"LANE-133: job.error {job.error!r} does not name {needle!r}"
+        )
+    assert persist.call_args is not None and "no resumable checkpoint" in str(
+        persist.call_args
+    ), "LANE-133: the named reason was not persisted"

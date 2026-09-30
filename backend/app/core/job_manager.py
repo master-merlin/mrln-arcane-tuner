@@ -1209,15 +1209,20 @@ class JobManager:
         return any(m in low for m in self._AUTO_RESUME_ERROR_MARKERS)
 
     def _latest_resumable_checkpoint(self, job: Job) -> tuple[str, int] | None:
+        return self._select_resumable_checkpoint(job)[0]
+
+    def _select_resumable_checkpoint(
+        self, job: Job
+    ) -> tuple[tuple[str, int] | None, list[tuple[str, str]]]:
         """Newest ``(dir_name, rank)`` under the run that VALIDATES as intact
         (manifest + zip central directories), or None. Newer folders that fail
         are skipped with a logged warning naming the folder and the reason."""
         try:
             run_dir = self._get_job_output_dir(job)
         except Exception:
-            return None
+            return None, []
         if not run_dir or not os.path.isdir(run_dir):
-            return None
+            return None, []
         # Lazy: the checkpoint module pulls torch, which the API process must
         # not pay for at import time.
         from app.engine.components.checkpoints import select_resumable_checkpoint
@@ -1228,7 +1233,7 @@ class JobManager:
                 "checkpoint_skipped_not_resumable",
                 job_id=job.id, folder=folder, reason=reason,
             )
-        return best
+        return best, skipped
 
     def _maybe_auto_resume(self, job: Job, error: str | None) -> bool:
         """If a FAILED job died on a transient GPU fault and has a resumable
@@ -1238,9 +1243,23 @@ class JobManager:
             return False
         if not self._is_gpu_fault_error(error):
             return False
-        ckpt = self._latest_resumable_checkpoint(job)
+        ckpt, skipped = self._select_resumable_checkpoint(job)
         if not ckpt:
             logger.warning("auto_resume_no_checkpoint", job_id=job.id)
+            if skipped:
+                # Checkpoints exist but none is intact: the job must END with
+                # the named reason, not a bare device-fault message (LANE-133).
+                from app.engine.components.checkpoints import CheckpointUnreadable
+
+                detail = "; ".join(f"{n}: {r}" for n, r in skipped)
+                named = CheckpointUnreadable(f"no resumable checkpoint (skipped {detail})")
+                logger.error(
+                    "auto_resume_refused_no_intact_checkpoint",
+                    job_id=job.id, error=str(named),
+                )
+                with self._lock:
+                    job.error = f"{job.error or error or 'Training failed'}; auto-resume refused: {named}"
+                self._persist_status(job.id, "failed", error=job.error)
             return False
         name, step = ckpt
 

@@ -231,6 +231,11 @@ MANIFEST_FORMAT = 2
 STAGING_MARK = ".staging-"
 REPLACED_MARK = ".replaced-"
 _RESUMABLE_NAME_RE = re.compile(r"^(final|checkpoint-\d{3,})$")
+# Only this run's own unfinished saves are ever deleted: anchored full-name
+# match, so e.g. ``notes.staging-personal`` is never touched.
+_OWN_UNFINISHED_RE = re.compile(
+    r"^(?:final|checkpoint-\d{3,})\.(?:staging|replaced)-[0-9a-f]{12}$"
+)
 _FINAL_RANK = 10**9  # a final checkpoint outranks any numbered step
 
 
@@ -414,7 +419,7 @@ def remove_unfinished_saves(output_dir: str | os.PathLike[str]) -> None:
     except OSError:
         return
     for entry in entries:
-        if REPLACED_MARK in entry.name:
+        if _OWN_UNFINISHED_RE.match(entry.name) and REPLACED_MARK in entry.name:
             final_name = entry.name.split(REPLACED_MARK)[0]
             final_path = os.path.join(output_dir, final_name)
             if not os.path.exists(final_path) and checkpoint_resumable(entry.path)[0]:
@@ -424,7 +429,7 @@ def remove_unfinished_saves(output_dir: str | os.PathLike[str]) -> None:
                     continue
                 except OSError:
                     pass
-        if STAGING_MARK in entry.name or REPLACED_MARK in entry.name:
+        if _OWN_UNFINISHED_RE.match(entry.name):
             shutil.rmtree(entry.path, ignore_errors=True)
 
 
@@ -857,7 +862,10 @@ class CheckpointManager:
                     _atomic_torch_save(comp.state_dict(), comp_path)
                     manifest[f"{name}.pt"] = os.path.getsize(comp_path)
                 except Exception as e:
+                    # A folder missing a file it should hold must never be
+                    # published: fail the save (LANE-133).
                     logger.error("failed_to_save_component", component=name, error=str(e))
+                    raise
 
             else:
                 logger.debug("skipping_component_no_state_dict", component=name)
@@ -868,8 +876,9 @@ class CheckpointManager:
                 opt_path = os.path.join(path, "optimizer.pt")
                 _atomic_torch_save(optimizer.state_dict(), opt_path)
                 manifest["optimizer.pt"] = os.path.getsize(opt_path)
-            except (OSError, RuntimeError) as e:
+            except Exception as e:
                 logger.error("failed_to_save_optimizer", error=str(e))
+                raise  # an incomplete folder is never published (LANE-133)
             # 2b. The names that make the state above remappable. Optimizer
             # state is keyed by a param's POSITION in the flat group, so after
             # a rebuild restart narrows the trainable set the positions no
@@ -894,8 +903,9 @@ class CheckpointManager:
                 sch_path = os.path.join(path, "scheduler.pt")
                 _atomic_torch_save(scheduler.state_dict(), sch_path)
                 manifest["scheduler.pt"] = os.path.getsize(sch_path)
-            except (OSError, RuntimeError) as e:
+            except Exception as e:
                 logger.error("failed_to_save_scheduler", error=str(e))
+                raise
 
         # 4. Scaler (AMP)
         if scaler:
@@ -903,8 +913,9 @@ class CheckpointManager:
                 sc_path = os.path.join(path, "scaler.pt")
                 _atomic_torch_save(scaler.state_dict(), sc_path)
                 manifest["scaler.pt"] = os.path.getsize(sc_path)
-            except (OSError, RuntimeError) as e:
+            except Exception as e:
                 logger.error("failed_to_save_scaler", error=str(e))
+                raise
 
         # 5. EMA Shadow
         if ema_handler:
@@ -912,8 +923,9 @@ class CheckpointManager:
                 ema_path = os.path.join(path, "ema_shadow.pt")
                 _atomic_torch_save(ema_handler.state_dict(), ema_path)
                 manifest["ema_shadow.pt"] = os.path.getsize(ema_path)
-            except (OSError, RuntimeError) as e:
+            except Exception as e:
                 logger.error("failed_to_save_ema", error=str(e))
+                raise
 
         # 6. Text Embedding Cache
         if te_cache:
@@ -1119,13 +1131,22 @@ class CheckpointManager:
         # 1. Read metadata
         state_path = os.path.join(path, "training_state.json")
         if os.path.exists(state_path):
-            with open(state_path, "r") as f:
-                meta = json.load(f)
-                state.global_step = meta.get("global_step", 0)
-                state.elapsed_time = meta.get("elapsed_time", 0.0)
-                state.config = meta.get("config", {})
-                state.timestamp = meta.get("timestamp", 0.0)
-                state.cache_manifest = meta.get("cache_manifest")
+            folder_name = os.path.basename(os.path.normpath(path))
+            try:
+                with open(state_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                if not isinstance(meta, dict):
+                    raise ValueError("not a JSON object")
+            except (OSError, ValueError) as e:
+                raise CheckpointUnreadable(
+                    f"{folder_name}/training_state.json is truncated or unreadable; "
+                    f"last good: {last_good or 'none'} ({type(e).__name__})"
+                ) from e
+            state.global_step = meta.get("global_step", 0)
+            state.elapsed_time = meta.get("elapsed_time", 0.0)
+            state.config = meta.get("config", {})
+            state.timestamp = meta.get("timestamp", 0.0)
+            state.cache_manifest = meta.get("cache_manifest")
 
         # 2. Validate compatibility & apply overrides
         if current_config and state.config:
@@ -1158,7 +1179,14 @@ class CheckpointManager:
                 adapter_dir = os.path.join(path, name)
                 adapter_config = os.path.join(adapter_dir, "adapter_config.json")
                 if os.path.exists(adapter_config):
-                    model.load_adapter(adapter_dir, adapter_name="default", is_trainable=True)
+                    try:
+                        model.load_adapter(adapter_dir, adapter_name="default", is_trainable=True)
+                    except Exception as e:  # noqa: BLE001 - re-raised as the named error
+                        raise CheckpointUnreadable(
+                            f"{os.path.basename(os.path.normpath(path))}/{name} adapter is "
+                            f"truncated or unreadable; last good: {last_good or 'none'} "
+                            f"({type(e).__name__})"
+                        ) from e
                     state.adapters_loaded.append(name)
                     logger.info("loaded_peft_adapter", component=name, path=adapter_dir)
 

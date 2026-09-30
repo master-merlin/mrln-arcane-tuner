@@ -504,3 +504,19 @@ def test_a_malformed_manifest_is_not_resumable(tmp_path):
         assert ok is False and isinstance(reason, str) and reason, (
             f"LANE-133: folder with {name} manifest is resumable: {ok} {reason!r}"
         )
+
+
+@pytest.mark.parametrize("mark", [".staging-abc123", ".replaced-abc123"])
+def test_a_complete_staging_or_replaced_folder_is_never_resumable(tmp_path, mark):
+    """A fully intact folder under a staging/replaced name is still unfinished."""
+    import shutil
+
+    _mgr, _job_, run = _job(tmp_path)
+    good = _save(run, 5)
+    twin = run / f"{good.name}{mark}"
+    shutil.copytree(good, twin)
+
+    ok, reason = _resumable_fn()(str(twin))
+    assert ok is False and reason, (
+        f"LANE-133: intact {twin.name} reported resumable; its name marks an unfinished save"
+    )

@@ -1222,9 +1222,12 @@ class JobManager:
         # not pay for at import time.
         from app.engine.components.checkpoints import select_resumable_checkpoint
 
-        best, _skipped = select_resumable_checkpoint(
-            run_dir, log_context={"job_id": job.id}
-        )
+        best, skipped = select_resumable_checkpoint(run_dir)
+        for folder, reason in skipped:
+            logger.warning(
+                "checkpoint_skipped_not_resumable",
+                job_id=job.id, folder=folder, reason=reason,
+            )
         return best
 
     def _maybe_auto_resume(self, job: Job, error: str | None) -> bool:
@@ -2058,7 +2061,12 @@ class JobManager:
         )
 
         run_dir = self._get_job_output_dir(job)
-        best, skipped = select_resumable_checkpoint(run_dir, log_context={"job_id": job_id})
+        best, skipped = select_resumable_checkpoint(run_dir)
+        for folder, reason in skipped:
+            logger.warning(
+                "checkpoint_skipped_not_resumable",
+                job_id=job_id, folder=folder, reason=reason,
+            )
         if checkpoint_dir is None:
             if best is None:
                 detail = "; ".join(f"{n}: {r}" for n, r in skipped)

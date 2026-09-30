@@ -124,9 +124,12 @@ class TestCheckpointManagerSave:
         assert manifest_path.exists()
         with open(manifest_path) as f:
             manifest = json.load(f)
-        assert "linear.pt" in manifest
-        assert "training_state.json" in manifest
-        assert all(isinstance(v, int) and v > 0 for v in manifest.values())
+        # Format 2 (LANE-133): {"format": 2, "files": {name: size}}.
+        assert manifest["format"] == 2
+        files = manifest["files"]
+        assert "linear.pt" in files
+        assert "training_state.json" in files
+        assert all(isinstance(v, int) and v > 0 for v in files.values())
 
     def test_save_optimizer_scheduler_scaler(self, tmp_path):
         """Optimizer, scheduler, and scaler .pt files should exist."""

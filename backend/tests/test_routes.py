@@ -841,7 +841,11 @@ def _make_checkpoint_dir(run_dir, folder="checkpoint-000100"):
     ck = run_dir / folder
     (ck / "unet").mkdir(parents=True)
     (ck / "training_state.json").write_text('{"global_step": 100}')
-    (ck / "optimizer.pt").write_bytes(b"x" * 32)
+    # A real torch zip: resumability now validates the .pt central directory
+    # (LANE-133), so 32 junk bytes would (rightly) be a damaged checkpoint.
+    import torch
+
+    torch.save({"state": {}}, str(ck / "optimizer.pt"))
     (ck / "unet" / "adapter_model.safetensors").write_bytes(b"y" * 16)
     return ck
 

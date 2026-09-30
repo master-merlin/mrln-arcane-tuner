@@ -322,13 +322,11 @@ def _checkpoint_rank(name: str) -> int:
 
 def select_resumable_checkpoint(
     run_dir: str | os.PathLike[str],
-    *,
-    log_context: dict[str, Any] | None = None,
 ) -> tuple[tuple[str, int] | None, list[tuple[str, str]]]:
     """Newest resumable folder of a run: ``((name, rank) | None, skipped)``.
 
     ``skipped`` lists ``(folder, reason)`` for each NEWER folder that was
-    passed over; each is also logged as a warning (failure never silent).
+    passed over; the CALLER logs each (failure never silent).
     """
     run_dir = os.fspath(run_dir)
     candidates: list[tuple[int, str]] = []
@@ -345,10 +343,6 @@ def select_resumable_checkpoint(
         if ok:
             return (name, rank), skipped
         skipped.append((name, reason))
-        logger.warning(
-            "checkpoint_skipped_not_resumable",
-            folder=name, reason=reason, **(log_context or {}),
-        )
     return None, skipped
 
 

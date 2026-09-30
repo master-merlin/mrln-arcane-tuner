@@ -1,0 +1,358 @@
+# Qwen-Image 2.1 (LANE-132). Every architecture_params value below the
+# "Harvested" line is the weights' own: app.engine.utils.config_harvester.harvest
+# over Qwen/Qwen-Image-2.1 @ 790c92633540aa0cb11d9abf19eb46d861714758
+# (.agent/workdir/lane-132/harvest_qwen_image_21.py + its .yaml output),
+# never copied from qwen_image (2512 is 60 layers / patch 2 / out 16 / z_dim 16).
+id: qwen-image-2.1
+family: qwen_image2
+name: Qwen-Image 2.1
+version: '1.0'
+# Qwen RESEARCH LICENSE (2026-09-20): non-commercial use only; a distributed
+# fine-tune must show "Built with Qwen".
+# https://huggingface.co/Qwen/Qwen-Image-2.1/blob/main/LICENSE
+# Tracked in the README licence table ("Restricted"), not here -- see
+# README.md's `qwen_image2` row (RULE-21, DECISION 2026-09-29 word `a`).
+defaults:
+  # Upstream QwenImage21Pipeline.__call__ defaults (diffusers 6256aa7666):
+  # output_resolution=1024, num_inference_steps=40.
+  resolution: 1024
+  num_inference_steps: 40
+  scheduler: euler_a
+  # Assumption (LANE-132 Task 3): a conventional LoRA learning rate for a ~7B
+  # DiT; no upstream training recipe exists yet. Judged at the GPU UAT.
+  learning_rate: 1e-4
+components:
+  repo:
+    path: huggingface:Qwen/Qwen-Image-2.1
+    type: diffusers
+    params: {}
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  # Derived keys the estimator and the TE path read (the sibling convention):
+  # hidden = 32 heads x 128; context = the transformer's context_in_dim.
+  te.type: qwen3_vl
+  # Assumption: upstream encode_prompt does not truncate; this caps the
+  # post-template tokens like the qwen_image sibling (text_encoding.py) and is
+  # part of the TE-cache key (tests/test_qwen_image2_text.py).
+  te.max_length: 512
+  hidden_size: 4096
+  num_heads: 32
+  depth: 32
+  in_channels: 64
+  context_dim: 4096
+  # Harvested (see the header).
+  transformer._class_name: QwenImage21Transformer2DModel
+  transformer.attention_head_dim: 128
+  transformer.axes_dims_rope:
+  - 16
+  - 56
+  - 56
+  transformer.context_in_dim: 4096
+  transformer.in_channels: 64
+  transformer.num_attention_heads: 32
+  transformer.num_layers: 32
+  transformer.out_channels: 64
+  transformer.patch_size: 1
+  transformer.mlp_ratio: 3
+  transformer.eps: 1.0e-06
+  transformer.causal_condition: true
+  te.architectures:
+  - Qwen3VLForConditionalGeneration
+  te.dtype: bfloat16
+  te.image_token_id: 151655
+  te.model_type: qwen3_vl
+  te.text_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    bos_token_id: 151643
+    dtype: bfloat16
+    eos_token_id: 151645
+    head_dim: 128
+    hidden_act: silu
+    hidden_size: 4096
+    initializer_range: 0.02
+    intermediate_size: 12288
+    max_position_embeddings: 262144
+    model_type: qwen3_vl_text
+    num_attention_heads: 32
+    num_hidden_layers: 36
+    num_key_value_heads: 8
+    rms_norm_eps: 1.0e-06
+    rope_scaling:
+      mrope_interleaved: true
+      mrope_section:
+      - 24
+      - 20
+      - 20
+      rope_type: default
+    rope_theta: 5000000
+    use_cache: true
+    vocab_size: 151936
+  te.text_config.attention_bias: false
+  te.text_config.attention_dropout: 0.0
+  te.text_config.bos_token_id: 151643
+  te.text_config.dtype: bfloat16
+  te.text_config.eos_token_id: 151645
+  te.text_config.head_dim: 128
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 4096
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 12288
+  te.text_config.max_position_embeddings: 262144
+  te.text_config.model_type: qwen3_vl_text
+  te.text_config.num_attention_heads: 32
+  te.text_config.num_hidden_layers: 36
+  te.text_config.num_key_value_heads: 8
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_scaling:
+    mrope_interleaved: true
+    mrope_section:
+    - 24
+    - 20
+    - 20
+    rope_type: default
+  te.text_config.rope_scaling.mrope_interleaved: true
+  te.text_config.rope_scaling.mrope_section:
+  - 24
+  - 20
+  - 20
+  te.text_config.rope_scaling.rope_type: default
+  te.text_config.rope_theta: 5000000
+  te.text_config.use_cache: true
+  te.text_config.vocab_size: 151936
+  te.tie_word_embeddings: false
+  te.video_token_id: 151656
+  te.vision_config:
+    deepstack_visual_indexes:
+    - 8
+    - 16
+    - 24
+    depth: 27
+    dtype: bfloat16
+    hidden_act: gelu_pytorch_tanh
+    hidden_size: 1152
+    in_channels: 3
+    initializer_range: 0.02
+    intermediate_size: 4304
+    model_type: qwen3_vl
+    num_heads: 16
+    num_position_embeddings: 2304
+    out_hidden_size: 4096
+    patch_size: 16
+    spatial_merge_size: 2
+    temporal_patch_size: 2
+  te.vision_config.deepstack_visual_indexes:
+  - 8
+  - 16
+  - 24
+  te.vision_config.depth: 27
+  te.vision_config.dtype: bfloat16
+  te.vision_config.hidden_act: gelu_pytorch_tanh
+  te.vision_config.hidden_size: 1152
+  te.vision_config.in_channels: 3
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 4304
+  te.vision_config.model_type: qwen3_vl
+  te.vision_config.num_heads: 16
+  te.vision_config.num_position_embeddings: 2304
+  te.vision_config.out_hidden_size: 4096
+  te.vision_config.patch_size: 16
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.temporal_patch_size: 2
+  te.vision_end_token_id: 151653
+  te.vision_start_token_id: 151652
+  scheduler._class_name: FlowMatchEulerDiscreteScheduler
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.invert_sigmas: false
+  scheduler.max_image_seq_len: 8192
+  scheduler.max_shift: 0.9
+  scheduler.num_train_timesteps: 1000
+  scheduler.shift: 1.0
+  scheduler.shift_terminal: 0.02
+  scheduler.stochastic_sampling: false
+  scheduler.time_shift_type: exponential
+  scheduler.use_beta_sigmas: false
+  scheduler.use_dynamic_shifting: true
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_karras_sigmas: false
+  vae._class_name: AutoencoderKLQwenImage21
+  vae.attn_scales: []
+  vae.base_dim: 96
+  vae.decoder_base_dim: 144
+  vae.dim_mult:
+  - 1
+  - 2
+  - 4
+  - 8
+  - 8
+  vae.dropout: 0.0
+  vae.in_channels: 4
+  vae.is_residual: true
+  vae.latents_mean:
+  - 0.5126
+  - 0.7721
+  - -0.0631
+  - 1.3506
+  - -0.7855
+  - -2.1025
+  - -0.3458
+  - 1.3722
+  - 1.8873
+  - -1.7177
+  - -0.651
+  - 0.2732
+  - 0.7562
+  - -0.6163
+  - -1.0277
+  - 3.8363
+  - 2.021
+  - 0.0472
+  - 0.932
+  - 2.0087
+  - 2.4954
+  - -0.1391
+  - -1.4249
+  - 1.8464
+  - -0.5236
+  - 1.2826
+  - 3.7046
+  - -1.3035
+  - 2.7286
+  - -1.4518
+  - -1.9036
+  - -1.9955
+  - -0.0342
+  - -1.0265
+  - -0.7636
+  - 3.0555
+  - 0.0746
+  - -3.0751
+  - -0.1076
+  - 1.7376
+  - -1.0914
+  - -1.9435
+  - -0.2784
+  - -1.368
+  - 0.4809
+  - -0.4433
+  - 0.3764
+  - 0.5729
+  - -2.0595
+  - 1.096
+  - -1.326
+  - -2.0211
+  - -5.0179
+  - 0.5275
+  - 4.0162
+  - 1.8505
+  - 0.3026
+  - 1.9373
+  - 1.4937
+  - 0.2632
+  - 0.5547
+  - -1.7121
+  - -0.1562
+  - 0.0304
+  vae.latents_std:
+  - 3.2001
+  - 3.2936
+  - 3.4321
+  - 3.0091
+  - 3.1061
+  - 4.0379
+  - 4.0705
+  - 3.791
+  - 3.0785
+  - 3.65
+  - 3.9308
+  - 3.0904
+  - 2.8778
+  - 3.7675
+  - 3.732
+  - 5.0756
+  - 3.2864
+  - 4.0397
+  - 3.1317
+  - 4.0443
+  - 2.9249
+  - 3.9454
+  - 3.0988
+  - 4.2489
+  - 3.4896
+  - 3.8513
+  - 3.9323
+  - 3.4719
+  - 3.7498
+  - 4.283
+  - 3.5694
+  - 4.2467
+  - 3.9037
+  - 3.2947
+  - 5.077
+  - 3.5075
+  - 3.27
+  - 3.4767
+  - 2.8063
+  - 5.1125
+  - 3.5327
+  - 4.7833
+  - 3.1286
+  - 4.1819
+  - 3.8527
+  - 3.8312
+  - 3.5605
+  - 4.3875
+  - 3.9624
+  - 4.0168
+  - 3.5643
+  - 4.055
+  - 5.5614
+  - 4.2963
+  - 4.408
+  - 3.4959
+  - 3.8747
+  - 3.7608
+  - 3.5735
+  - 3.149
+  - 3.7662
+  - 3.6746
+  - 3.4563
+  - 3.8161
+  vae.num_res_blocks: 2
+  vae.out_channels: 4
+  vae.patch_size: null
+  vae.scale_factor_spatial: 16
+  vae.scale_factor_temporal: 8
+  vae.temperal_downsample:
+  - false
+  - true
+  - true
+  - true
+  vae.z_dim: 64
+  transformer.hidden_size: 4096
+# On-disk sizes at the same revision: transformer + text_encoder from their
+# safetensors index total_size, vae from the Hub file metadata (fp32 file).
+model_size_mb:
+  transformer: 13571.0
+  text_encoder: 16722.0
+  vae: 1288.4
+# EXACTLY the Linears of one QwenImage21TransformerBlock (single-stream; the
+# shared `modulation`, txt_in, img_in and proj_out are not targets). Pinned
+# against a tiny vendored instance by tests/test_qwen_image2_definition.py.
+lora_targetable_modules:
+- attn.to_q
+- attn.to_k
+- attn.to_v
+- attn.to_out.0
+- img_mlp.proj
+- img_mlp.gate_layer
+- img_mlp.out
+block_topology:
+- name: transformer_blocks
+  attr_path: transformer_blocks
+  count: 32
+  approx_vram_mb: 400

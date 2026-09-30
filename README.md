@@ -554,11 +554,11 @@ Training is configured through a **dynamic JSON Schema-driven UI** — the form 
 
 #### Supported Model Families
 
-**29 families, 54 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](docs/ARCHITECTURE.md#model-families).
+**30 families, 55 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](docs/ARCHITECTURE.md#model-families).
 
 This table is generated from `backend/app/engine/models/families/` and pinned by `backend/tests/test_readme_family_table.py`, so a family added without a row here fails the gate. It listed three of twenty-eight until 2026-08-28 — there is no text-encoder column because populating it accurately for every family means reading every loader, and twenty-five blanks would say less than no column at all.
 
-**Image — 20 families**
+**Image — 21 families**
 
 | Family | Definitions shipped |
 | --- | --- |
@@ -580,6 +580,7 @@ This table is generated from `backend/app/engine/models/families/` and pinned by
 | `prx` | PRX 512 T2I (SFT) |
 | `prx_pixel` | PRX Pixel T2I |
 | `qwen_image` | Qwen-Image 2512 · Qwen-Image-Edit 2509 · Qwen-Image-Edit 2511 |
+| `qwen_image2` | Qwen-Image 2.1 — **non-commercial** (Qwen Research License: its weights may not be used commercially, and a shared fine-tune must say "Built with Qwen") |
 | `sdxl` | Illustrious-XL v2.0 · NoobAI-XL v1.1 · Stable Diffusion XL Base |
 | `zimage` | Z-Image Base · Z-Image De-Turbo (ostris) |
 
@@ -819,6 +820,7 @@ model page as authoritative.
 | `ideogram4` | [`ideogram-ai/ideogram-4-fp8`](https://huggingface.co/ideogram-ai/ideogram-4-fp8) | `ideogram-4-non-commercial` — **non-commercial** | open |
 | `flux1` | [`black-forest-labs/FLUX.1-dev`](https://huggingface.co/black-forest-labs/FLUX.1-dev) | `flux-1-dev-non-commercial-license` — **non-commercial** | **gated** — you must accept the agreement on HuggingFace first |
 | `flux2` | [`black-forest-labs/FLUX.2-dev`](https://huggingface.co/black-forest-labs/FLUX.2-dev) | `flux-non-commercial-license` — **non-commercial** | **gated** |
+| `qwen_image2` | [`Qwen/Qwen-Image-2.1`](https://huggingface.co/Qwen/Qwen-Image-2.1) | Qwen Research License — **non-commercial**; a shared fine-tune must say "Built with Qwen" | open |
 
 **Permissive (verified):** `hidream_o1`
 ([`HiDream-ai/HiDream-O1-Image`](https://huggingface.co/HiDream-ai/HiDream-O1-Image),

@@ -163,6 +163,13 @@ def _resolve_clip_base_fps(
 class PipelineDataMixin:
     """Dataset preparation, inventory building, and batch construction."""
 
+    #: PIL mode a still is converted to before the VAE sees it. Read by both
+    #: latent paths -- this class's train-time decode and
+    #: ``PipelineCachingMixin._pre_cache_latents`` -- so they cannot disagree.
+    #: ``"RGBA"`` for a 4-channel VAE (qwen_image2: upstream converts every
+    #: non-RGBA image to RGBA, so an RGB source gets an opaque alpha).
+    VAE_IMAGE_MODE: str = "RGB"
+
     # ── Prepare Data (shared) ────────────────────────────────────────────
 
     def _video_bucket_manager_for(self, max_frames: int):
@@ -1309,7 +1316,7 @@ class PipelineDataMixin:
                 h_flip=False,
             )
 
-        img = Image.open(img_path).convert("RGB")
+        img = Image.open(img_path).convert(self.VAE_IMAGE_MODE)
         # Smart resize + center crop
         scale = max(tw / img.width, th / img.height)
         nw, nh = int(img.width * scale), int(img.height * scale)

@@ -470,7 +470,7 @@ def _derive_block_topology(family: str, arch: dict) -> list[dict]:
             {"name": "up_blocks", "attr_path": "up_blocks", "count": 4, "approx_vram_mb": 200},
         ]
 
-    if family in ("qwen_image", "zimage"):
+    if family in ("qwen_image", "qwen_image2", "zimage"):
         num_blocks = arch.get("transformer.num_layers") or arch.get("num_layers") or 24
         return [
             {"name": "transformer_blocks", "attr_path": "transformer_blocks",

@@ -57,6 +57,7 @@ D:/AI/huggingface/hub, unless noted):
   krea2             text_encoder     Qwen3VLModel (hand-loaded, see below)Qwen3VLModel
   prx_pixel         text_encoder     Qwen3VLTextModel                     Qwen3VLTextModel
   qwen_image        text_encoder     Qwen2_5_VLForConditionalGeneration   Qwen2_5_VLForConditionalGeneration
+  qwen_image2       text_encoder     Qwen3VLForConditionalGeneration      Qwen3VLForConditionalGeneration
   longcat_image     text_encoder     Qwen2_5_VLForConditionalGeneration   Qwen2_5_VLForConditionalGeneration
   kandinsky5        text_encoder     Qwen2_5_VLForConditionalGeneration   Qwen2_5_VLForConditionalGeneration**
   kandinsky5        text_encoder_2   CLIPTextModel                        CLIPTextModel**
@@ -395,6 +396,11 @@ CASES: list[_Case] = [
           "transformers.Qwen3VLTextModel", "Qwen3VLTextModel"),
     _Case("qwen_image", _m("qwen_image"), "QwenImageLoader", "text_encoder",
           "transformers.Qwen2_5_VLForConditionalGeneration", "Qwen2_5_VLForConditionalGeneration"),
+    # Qwen-Image-2.1's text_encoder/config.json declares
+    # architectures ["Qwen3VLForConditionalGeneration"] (@ 790c92633540,
+    # .agent/workdir/lane-104/step1-weights.log).
+    _Case("qwen_image2", _m("qwen_image2"), "QwenImage2Loader", "text_encoder",
+          "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
     _Case("longcat_image", _m("longcat_image"), "LongCatImageLoader", "text_encoder",
           "transformers.Qwen2_5_VLForConditionalGeneration", "Qwen2_5_VLForConditionalGeneration"),
     _Case("kandinsky5", _m("kandinsky5"), "Kandinsky5Loader", "text_encoder",

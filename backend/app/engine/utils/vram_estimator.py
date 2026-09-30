@@ -115,6 +115,17 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 8.3,  # Qwen2.5-VL
         "vae": 0.17,
     },
+    "qwen_image2": {
+        # Meta-instantiated from the vendored QwenImage21Transformer2DModel /
+        # AutoencoderKLQwenImage21 with the REAL Qwen-Image-2.1 configs
+        # (@ 790c92633540; .agent/workdir/lane-132/count_params.py): 7.115B /
+        # 0.338B. TE: text_encoder safetensors index total_size 16722 MB / 2
+        # (bf16) = 8.77B, the same Qwen3-VL-8B as ideogram4. The definition
+        # ships on-disk model_size_mb, so this entry is the fallback.
+        "transformer": 7.1,
+        "text_encoder": 8.8,  # Qwen3-VL-8B (text-only use)
+        "vae": 0.34,  # AutoencoderKLQwenImage21 (fp32 on disk, 1288 MB)
+    },
     "hidream_o1": {
         # Pixel-space UNIFIED transformer (visual blocks + language_model in a
         # single model): NO VAE and NO external text encoder. The explicit 0.0

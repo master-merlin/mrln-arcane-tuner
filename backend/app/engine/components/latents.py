@@ -121,6 +121,10 @@ class LatentManager:
     # importing the heavy classes is unnecessary at call time.
     _VIDEO_VAE_NAMES = (
         "AutoencoderKLQwenImage",
+        # Qwen-Image 2.1's vendored VAE unpacks five dims in ``_encode``
+        # (qwen_image2/vendor/autoencoder_kl_qwenimage21.py) and is not a
+        # subclass of the one above, so the MRO walk needs its own name.
+        "AutoencoderKLQwenImage21",
         "AutoencoderKLWan",
         "AutoencoderKLLTX2Video",
         "AutoencoderKLLTXVideo",

@@ -49,6 +49,7 @@ ALL_DEFINITION_IDS = [
     "flux2-klein-base-9b",
     "qwen-image-2512",
     "qwen-image-edit-2509",
+    "qwen-image-2.1",
     "zimage-base",
     "zimage-de-turbo",
     "ovis-image-base",
@@ -70,6 +71,7 @@ FAMILY_HAS_VAE_AND_TE = {
     "flux1": (True, True),
     "flux2": (True, True),
     "qwen_image": (True, True),
+    "qwen_image2": (True, True),  # latent_diffusion DiT (AutoencoderKLQwenImage21) + Qwen3-VL TE
     "zimage": (True, True),
     "ernie_image": (True, True),
     "microsoft_lens": (

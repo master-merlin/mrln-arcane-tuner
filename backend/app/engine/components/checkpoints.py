@@ -13,8 +13,11 @@ Handles:
 import gc
 import json
 import os
+import re
 import shutil
 import time
+import uuid
+import zipfile
 
 import structlog
 import torch
@@ -215,6 +218,244 @@ def resolve_lora_name(config: dict[str, Any]) -> str:
     return re.sub(r"\{(\w+)\}", _replacer, raw)
 
 
+# ── Crash-safe folders: validation + selection (LANE-133) ────────────────
+#
+# A checkpoint is written into ``<name>.staging-<uuid>``, completed with a
+# format-2 manifest, then moved to its final name.  A final-named folder is
+# therefore complete-new (format-2 manifest) or legacy (no/unversioned
+# manifest); an interrupted save only ever leaves ``.staging-*`` /
+# ``.replaced-*`` folders, which are never resumable.
+
+MANIFEST_NAME = "checkpoint_manifest.json"
+MANIFEST_FORMAT = 2
+STAGING_MARK = ".staging-"
+REPLACED_MARK = ".replaced-"
+_RESUMABLE_NAME_RE = re.compile(r"^(final|checkpoint-\d{3,})$")
+# Only this run's own unfinished saves are ever deleted: anchored full-name
+# match, so e.g. ``notes.staging-personal`` is never touched.
+_OWN_UNFINISHED_RE = re.compile(
+    r"^(?:final|checkpoint-\d{3,})\.(?:staging|replaced)-[0-9a-f]{12}$"
+)
+_FINAL_RANK = 10**9  # a final checkpoint outranks any numbered step
+
+
+class CheckpointUnreadable(ValueError):
+    """A checkpoint folder cannot be resumed (truncated/unreadable/absent).
+
+    A ``ValueError`` so the HTTP layer maps it to a 400 with the message.
+    """
+
+
+def _pt_problem(path: str) -> str | None:
+    """None when ``path`` has a readable zip central directory, else why not.
+
+    torch checkpoints are zip archives whose central directory sits at the
+    END of the file, so a cached-but-never-flushed tail (zeros) is caught by
+    opening the archive without reading any tensor.
+    """
+    try:
+        with zipfile.ZipFile(path) as zf:
+            zf.namelist()
+    except (zipfile.BadZipFile, OSError, EOFError, ValueError) as e:
+        return f"{type(e).__name__}: {e}"
+    return None
+
+
+def checkpoint_resumable(folder: str | os.PathLike[str]) -> tuple[bool, str]:
+    """Whether ``folder`` is a complete, intact training-state checkpoint.
+
+    Returns ``(True, "")`` or ``(False, reason)``; the reason names the file.
+    """
+    folder = os.fspath(folder)
+    name = os.path.basename(os.path.normpath(folder))
+    if STAGING_MARK in name or REPLACED_MARK in name:
+        return False, f"{name} is an unfinished save (staging/replaced folder)"
+    if not os.path.isdir(folder):
+        return False, f"{name} does not exist"
+
+    manifest_path = os.path.join(folder, MANIFEST_NAME)
+    pt_files: set[str] = set()
+    if os.path.isfile(manifest_path):
+        try:
+            with open(manifest_path, "r", encoding="utf-8") as f:
+                manifest = json.load(f)
+        except (OSError, ValueError) as e:
+            return False, f"{MANIFEST_NAME} is unreadable ({e})"
+        if not isinstance(manifest, dict):
+            return False, f"{MANIFEST_NAME} is malformed"
+        if "format" in manifest:
+            if manifest["format"] != MANIFEST_FORMAT:
+                return False, f"{MANIFEST_NAME} has unknown format {manifest['format']!r}"
+            files = manifest.get("files")
+            if not isinstance(files, dict) or not files:
+                return False, f"{MANIFEST_NAME} lists no files"
+            if "training_state.json" not in files:
+                return False, f"{MANIFEST_NAME} omits training_state.json"
+            for rel, size in files.items():
+                fpath = os.path.join(folder, *str(rel).split("/"))
+                try:
+                    actual = os.path.getsize(fpath)
+                except OSError:
+                    return False, f"{rel} is missing"
+                if actual != size:
+                    return False, f"{rel} has size {actual}, manifest says {size}"
+                if str(rel).endswith(".pt"):
+                    pt_files.add(str(rel))
+        # else: legacy (unversioned size map) — validated like no manifest.
+
+    if not os.path.isfile(os.path.join(folder, "training_state.json")):
+        return False, "training_state.json is missing"
+    try:
+        for entry in os.listdir(folder):
+            if entry.endswith(".pt") and os.path.isfile(os.path.join(folder, entry)):
+                pt_files.add(entry)
+    except OSError as e:
+        return False, f"folder is unreadable ({e})"
+    for rel in sorted(pt_files):
+        problem = _pt_problem(os.path.join(folder, *rel.split("/")))
+        if problem:
+            return False, f"{rel} is truncated or unreadable ({problem})"
+    return True, ""
+
+
+def _checkpoint_rank(name: str) -> int:
+    if name == "final":
+        return _FINAL_RANK
+    m = re.match(r"checkpoint-(\d+)$", name)
+    return int(m.group(1)) if m else 0
+
+
+def select_resumable_checkpoint(
+    run_dir: str | os.PathLike[str],
+) -> tuple[tuple[str, int] | None, list[tuple[str, str]]]:
+    """Newest resumable folder of a run: ``((name, rank) | None, skipped)``.
+
+    ``skipped`` lists ``(folder, reason)`` for each NEWER folder that was
+    passed over; the CALLER logs each (failure never silent).
+    """
+    run_dir = os.fspath(run_dir)
+    candidates: list[tuple[int, str]] = []
+    try:
+        for entry in os.scandir(run_dir):
+            if entry.is_dir() and _RESUMABLE_NAME_RE.match(entry.name):
+                candidates.append((_checkpoint_rank(entry.name), entry.name))
+    except OSError:
+        return None, []
+    candidates.sort(reverse=True)
+    skipped: list[tuple[str, str]] = []
+    for rank, name in candidates:
+        ok, reason = checkpoint_resumable(os.path.join(run_dir, name))
+        if ok:
+            return (name, rank), skipped
+        skipped.append((name, reason))
+    return None, skipped
+
+
+def _fsync_path(path: str) -> None:
+    # r+b: Windows refuses to fsync a read-only descriptor (EBADF).
+    with open(path, "r+b") as f:
+        os.fsync(f.fileno())
+
+
+def _atomic_write_bytes_file(path: str, write: Any) -> None:
+    """``write(tmp_path)`` then flush to disk and ``os.replace`` onto ``path``."""
+    tmp = f"{path}.tmp"
+    try:
+        write(tmp)
+        _fsync_path(tmp)
+        os.replace(tmp, path)
+    except BaseException:
+        # A failed/killed write must not leave a half file under the final
+        # name; the tmp is this run's own and is removed best-effort.
+        try:
+            os.remove(tmp)
+        except OSError:
+            pass
+        raise
+
+
+def _atomic_torch_save(obj: Any, path: str) -> None:
+    _atomic_write_bytes_file(path, lambda tmp: torch.save(obj, tmp))
+
+
+def _atomic_write_json(path: str, data: Any, **dump_kwargs: Any) -> None:
+    def _w(tmp: str) -> None:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(data, f, **dump_kwargs)
+            f.flush()
+
+    _atomic_write_bytes_file(path, _w)
+
+
+def _fsync_tree(root: str) -> None:
+    """Flush every file under ``root`` to disk (adapters, safetensors, ...)."""
+    for dirpath, _dirs, files in os.walk(root):
+        for fname in files:
+            _fsync_path(os.path.join(dirpath, fname))
+
+
+def _load_pt(path: str, last_good: str | None) -> Any:
+    """``torch.load`` a checkpoint file; any read failure is a named error."""
+    try:
+        return torch.load(path, map_location="cpu", weights_only=True)
+    except Exception as e:  # noqa: BLE001 - re-raised as the named error below
+        folder = os.path.basename(os.path.dirname(path))
+        raise CheckpointUnreadable(
+            f"{folder}/{os.path.basename(path)} is truncated or unreadable; "
+            f"last good: {last_good or 'none'} ({type(e).__name__})"
+        ) from e
+
+
+def remove_unfinished_saves(output_dir: str | os.PathLike[str]) -> None:
+    """Remove this run's own ``.staging-*`` / ``.replaced-*`` folders.
+
+    If a swap died between renaming the old folder away and moving the new one
+    in, the final name is missing and the ``.replaced-*`` folder IS the last
+    complete save: it is moved back (when it validates) instead of deleted.
+    """
+    output_dir = os.fspath(output_dir)
+    try:
+        entries = [e for e in os.scandir(output_dir) if e.is_dir()]
+    except OSError:
+        return
+    for entry in entries:
+        if _OWN_UNFINISHED_RE.match(entry.name) and REPLACED_MARK in entry.name:
+            final_name = entry.name.split(REPLACED_MARK)[0]
+            final_path = os.path.join(output_dir, final_name)
+            if not os.path.exists(final_path) and checkpoint_resumable(entry.path)[0]:
+                try:
+                    os.rename(entry.path, final_path)
+                    logger.warning("restored_replaced_checkpoint", folder=final_name)
+                    continue
+                except OSError:
+                    pass
+        if _OWN_UNFINISHED_RE.match(entry.name):
+            shutil.rmtree(entry.path, ignore_errors=True)
+
+
+def _publish_folder(staging: str, final: str) -> None:
+    """Move a completed staging folder to ``final``, replacing it whole.
+
+    An existing ``final`` is renamed aside first and removed only after the
+    new one is in place, so the earlier complete folder survives a failure.
+    """
+    replaced: str | None = None
+    if os.path.exists(final):
+        replaced = f"{final}{REPLACED_MARK}{uuid.uuid4().hex[:12]}"
+        os.rename(final, replaced)
+    try:
+        os.replace(staging, final)
+    except BaseException:
+        if replaced is not None and not os.path.exists(final):
+            try:
+                os.rename(replaced, final)
+            except OSError:
+                pass
+        raise
+    if replaced is not None:
+        shutil.rmtree(replaced, ignore_errors=True)
+
+
 # ── CheckpointManager ────────────────────────────────────────────────────
 
 
@@ -299,7 +540,14 @@ class CheckpointManager:
             lora_filename = f"{resolved_name}_{step:06d}.safetensors"
 
         save_path = os.path.join(self.output_dir, folder_name)
-        os.makedirs(save_path, exist_ok=True)
+        os.makedirs(self.output_dir, exist_ok=True)
+        # Leftovers of an earlier interrupted save of this run (never resumable).
+        remove_unfinished_saves(self.output_dir)
+        # Everything is written into a staging folder and published whole, so a
+        # crash never leaves a half-written folder under a final name.
+        staging_path = f"{save_path}{STAGING_MARK}{uuid.uuid4().hex[:12]}"
+        os.makedirs(staging_path)
+        staged: list[tuple[str, str]] = [(staging_path, save_path)]
 
         logger.info("saving_checkpoint", step=step, path=save_path, is_final=is_final)
 
@@ -344,15 +592,29 @@ class CheckpointManager:
                     ema_handler.restore()
 
         # 2. Save resume state
-        self._save_train_state(save_path, components, optimizer, scheduler, scaler, config, step, ema_handler, elapsed_time, te_cache=te_cache, cache_manifest=cache_manifest, adaptive_state=adaptive_state, optimizer_param_names=optimizer_param_names)
+        try:
+            self._save_train_state(staging_path, components, optimizer, scheduler, scaler, config, step, ema_handler, elapsed_time, te_cache=te_cache, cache_manifest=cache_manifest, adaptive_state=adaptive_state, optimizer_param_names=optimizer_param_names)
 
-        # 2b. Also save step-numbered checkpoint when final (rollback safety)
-        if is_final:
-            step_folder = f"checkpoint-{step:06d}"
-            step_save_path = os.path.join(self.output_dir, step_folder)
-            os.makedirs(step_save_path, exist_ok=True)
-            logger.info("saving_step_numbered_final", step=step, path=step_save_path)
-            self._save_train_state(step_save_path, components, optimizer, scheduler, scaler, config, step, ema_handler, elapsed_time, te_cache=te_cache, cache_manifest=cache_manifest, adaptive_state=adaptive_state, optimizer_param_names=optimizer_param_names)
+            # 2b. Also save step-numbered checkpoint when final (rollback safety)
+            if is_final:
+                step_folder = f"checkpoint-{step:06d}"
+                step_save_path = os.path.join(self.output_dir, step_folder)
+                step_staging = f"{step_save_path}{STAGING_MARK}{uuid.uuid4().hex[:12]}"
+                os.makedirs(step_staging)
+                staged.append((step_staging, step_save_path))
+                logger.info("saving_step_numbered_final", step=step, path=step_save_path)
+                self._save_train_state(step_staging, components, optimizer, scheduler, scaler, config, step, ema_handler, elapsed_time, te_cache=te_cache, cache_manifest=cache_manifest, adaptive_state=adaptive_state, optimizer_param_names=optimizer_param_names)
+
+            # Every folder is complete and flushed: publish them (numbered
+            # sibling first, so the last step is never the only copy moved).
+            for stage, final in reversed(staged):
+                _publish_folder(stage, final)
+        except Exception:
+            # A failed save leaves no half folder; a hard kill (BaseException)
+            # leaves the staging folder, which the next save removes.
+            for stage, _final in staged:
+                shutil.rmtree(stage, ignore_errors=True)
+            raise
 
         # 3. Write verbose training log (to root output dir for easy access)
         self._write_training_log(
@@ -381,7 +643,7 @@ class CheckpointManager:
         """
         checkpoint_dirs = sorted([
             d for d in os.listdir(self.output_dir)
-            if d.startswith("checkpoint-")
+            if re.match(r"^checkpoint-\d+$", d)  # never a .staging-/.replaced- folder
             and os.path.isdir(os.path.join(self.output_dir, d))
         ])
 
@@ -597,10 +859,13 @@ class CheckpointManager:
             elif isinstance(comp, torch.nn.Module) or hasattr(comp, "state_dict"):
                 try:
                     comp_path = os.path.join(path, f"{name}.pt")
-                    torch.save(comp.state_dict(), comp_path)
+                    _atomic_torch_save(comp.state_dict(), comp_path)
                     manifest[f"{name}.pt"] = os.path.getsize(comp_path)
                 except Exception as e:
+                    # A folder missing a file it should hold must never be
+                    # published: fail the save (LANE-133).
                     logger.error("failed_to_save_component", component=name, error=str(e))
+                    raise
 
             else:
                 logger.debug("skipping_component_no_state_dict", component=name)
@@ -609,10 +874,11 @@ class CheckpointManager:
         if optimizer:
             try:
                 opt_path = os.path.join(path, "optimizer.pt")
-                torch.save(optimizer.state_dict(), opt_path)
+                _atomic_torch_save(optimizer.state_dict(), opt_path)
                 manifest["optimizer.pt"] = os.path.getsize(opt_path)
-            except (OSError, RuntimeError) as e:
+            except Exception as e:
                 logger.error("failed_to_save_optimizer", error=str(e))
+                raise  # an incomplete folder is never published (LANE-133)
             # 2b. The names that make the state above remappable. Optimizer
             # state is keyed by a param's POSITION in the flat group, so after
             # a rebuild restart narrows the trainable set the positions no
@@ -622,10 +888,7 @@ class CheckpointManager:
             if optimizer_param_names:
                 try:
                     names_path = os.path.join(path, "optimizer_param_names.json")
-                    tmp_names_path = names_path + ".tmp"
-                    with open(tmp_names_path, "w", encoding="utf-8") as f:
-                        json.dump(list(optimizer_param_names), f)
-                    os.replace(tmp_names_path, names_path)
+                    _atomic_write_json(names_path, list(optimizer_param_names))
                     manifest["optimizer_param_names.json"] = os.path.getsize(names_path)
                 except OSError as e:
                     # Degraded, not fatal: a resume without it still loads the
@@ -638,28 +901,31 @@ class CheckpointManager:
         if scheduler:
             try:
                 sch_path = os.path.join(path, "scheduler.pt")
-                torch.save(scheduler.state_dict(), sch_path)
+                _atomic_torch_save(scheduler.state_dict(), sch_path)
                 manifest["scheduler.pt"] = os.path.getsize(sch_path)
-            except (OSError, RuntimeError) as e:
+            except Exception as e:
                 logger.error("failed_to_save_scheduler", error=str(e))
+                raise
 
         # 4. Scaler (AMP)
         if scaler:
             try:
                 sc_path = os.path.join(path, "scaler.pt")
-                torch.save(scaler.state_dict(), sc_path)
+                _atomic_torch_save(scaler.state_dict(), sc_path)
                 manifest["scaler.pt"] = os.path.getsize(sc_path)
-            except (OSError, RuntimeError) as e:
+            except Exception as e:
                 logger.error("failed_to_save_scaler", error=str(e))
+                raise
 
         # 5. EMA Shadow
         if ema_handler:
             try:
                 ema_path = os.path.join(path, "ema_shadow.pt")
-                torch.save(ema_handler.state_dict(), ema_path)
+                _atomic_torch_save(ema_handler.state_dict(), ema_path)
                 manifest["ema_shadow.pt"] = os.path.getsize(ema_path)
-            except (OSError, RuntimeError) as e:
+            except Exception as e:
                 logger.error("failed_to_save_ema", error=str(e))
+                raise
 
         # 6. Text Embedding Cache
         if te_cache:
@@ -693,10 +959,7 @@ class CheckpointManager:
                     # The tensors beside this go through safe_save; the index
                     # that makes them addressable must be just as atomic, or a
                     # torn write leaves a cache whose contents cannot be found.
-                    idx_tmp = f"{idx_path}.tmp"
-                    with open(idx_tmp, "w", encoding="utf-8") as f:
-                        json.dump(index, f, ensure_ascii=False)
-                    os.replace(idx_tmp, idx_path)
+                    _atomic_write_json(idx_path, index, ensure_ascii=False)
                     manifest["te_cache_index.json"] = os.path.getsize(idx_path)
                     logger.info(
                         "saved_te_cache",
@@ -721,24 +984,23 @@ class CheckpointManager:
             # discards every freeze decision the run had made.
             state["adaptive_targeting"] = adaptive_state
         state_path = os.path.join(path, "training_state.json")
-        tmp_state_path = state_path + ".tmp"
         try:
-            with open(tmp_state_path, "w") as f:
-                json.dump(state, f, indent=2, default=str)
-            os.replace(tmp_state_path, state_path)
+            _atomic_write_json(state_path, state, indent=2, default=str)
             manifest["training_state.json"] = os.path.getsize(state_path)
         except OSError as e:
             logger.error("failed_to_save_training_state", error=str(e))
-            if os.path.exists(tmp_state_path):
-                try:
-                    os.remove(tmp_state_path)
-                except OSError:
-                    pass
+            # Without it the folder can never be resumed: fail the save so an
+            # earlier complete folder of the same name is not replaced by it.
+            raise
 
-        # 7. Manifest
-        manifest_path = os.path.join(path, "checkpoint_manifest.json")
-        with open(manifest_path, "w") as f:
-            json.dump(manifest, f, indent=2)
+        # 8. Manifest — LAST, atomically, after every file is on disk: its
+        # presence is the marker that this folder is complete.
+        _fsync_tree(path)
+        _atomic_write_json(
+            os.path.join(path, MANIFEST_NAME),
+            {"format": MANIFEST_FORMAT, "files": manifest},
+            indent=2,
+        )
 
         logger.info(
             "train_state_saved",
@@ -748,6 +1010,23 @@ class CheckpointManager:
         )
 
     # ── Load ─────────────────────────────────────────────────────────
+
+    def _last_good_checkpoint(self, path: str) -> str | None:
+        """Newest resumable sibling of ``path`` (never ``path`` itself)."""
+        run_dir = os.path.dirname(os.path.abspath(path))
+        here = os.path.basename(os.path.normpath(path))
+        try:
+            for entry in sorted(
+                (e.name for e in os.scandir(run_dir)
+                 if e.is_dir() and _RESUMABLE_NAME_RE.match(e.name)
+                 and e.name != here),
+                key=_checkpoint_rank, reverse=True,
+            ):
+                if checkpoint_resumable(os.path.join(run_dir, entry))[0]:
+                    return entry
+        except OSError:
+            pass
+        return None
 
     def _remap_optimizer_state(
         self,
@@ -846,17 +1125,38 @@ class CheckpointManager:
             raise FileNotFoundError(f"Checkpoint not found: {path}")
 
         state = CheckpointState()
+        # Named in the error of any unreadable file below (LANE-133).
+        last_good = self._last_good_checkpoint(path)
+        folder_name = os.path.basename(os.path.normpath(path))
+
+        # 0. Validate the folder whole before loading anything: every resume
+        # path (job manager AND the pipeline's configured resume) lands here,
+        # so a folder missing training_state.json or disagreeing with its
+        # manifest is refused by name instead of loading as step 0.
+        ok, reason = checkpoint_resumable(path)
+        if not ok:
+            raise CheckpointUnreadable(
+                f"{folder_name}/{reason}; not resumable; last good: {last_good or 'none'}"
+            )
 
         # 1. Read metadata
         state_path = os.path.join(path, "training_state.json")
         if os.path.exists(state_path):
-            with open(state_path, "r") as f:
-                meta = json.load(f)
-                state.global_step = meta.get("global_step", 0)
-                state.elapsed_time = meta.get("elapsed_time", 0.0)
-                state.config = meta.get("config", {})
-                state.timestamp = meta.get("timestamp", 0.0)
-                state.cache_manifest = meta.get("cache_manifest")
+            try:
+                with open(state_path, "r", encoding="utf-8") as f:
+                    meta = json.load(f)
+                if not isinstance(meta, dict):
+                    raise ValueError("not a JSON object")
+            except (OSError, ValueError) as e:
+                raise CheckpointUnreadable(
+                    f"{folder_name}/training_state.json is truncated or unreadable; "
+                    f"last good: {last_good or 'none'} ({type(e).__name__})"
+                ) from e
+            state.global_step = meta.get("global_step", 0)
+            state.elapsed_time = meta.get("elapsed_time", 0.0)
+            state.config = meta.get("config", {})
+            state.timestamp = meta.get("timestamp", 0.0)
+            state.cache_manifest = meta.get("cache_manifest")
 
         # 2. Validate compatibility & apply overrides
         if current_config and state.config:
@@ -878,7 +1178,7 @@ class CheckpointManager:
             for name, comp in components.items():
                 pt_path = os.path.join(path, f"{name}.pt")
                 if os.path.exists(pt_path) and hasattr(comp, "load_state_dict"):
-                    sd = torch.load(pt_path, map_location="cpu", weights_only=True)
+                    sd = _load_pt(pt_path, last_good)
                     comp.load_state_dict(sd)
                     state.components_loaded.append(name)
                     logger.debug("loaded_component", name=name)
@@ -889,7 +1189,14 @@ class CheckpointManager:
                 adapter_dir = os.path.join(path, name)
                 adapter_config = os.path.join(adapter_dir, "adapter_config.json")
                 if os.path.exists(adapter_config):
-                    model.load_adapter(adapter_dir, adapter_name="default", is_trainable=True)
+                    try:
+                        model.load_adapter(adapter_dir, adapter_name="default", is_trainable=True)
+                    except Exception as e:  # noqa: BLE001 - re-raised as the named error
+                        raise CheckpointUnreadable(
+                            f"{os.path.basename(os.path.normpath(path))}/{name} adapter is "
+                            f"truncated or unreadable; last good: {last_good or 'none'} "
+                            f"({type(e).__name__})"
+                        ) from e
                     state.adapters_loaded.append(name)
                     logger.info("loaded_peft_adapter", component=name, path=adapter_dir)
 
@@ -922,7 +1229,7 @@ class CheckpointManager:
         if optimizer:
             opt_path = os.path.join(path, "optimizer.pt")
             if os.path.exists(opt_path):
-                sd = torch.load(opt_path, map_location="cpu", weights_only=True)
+                sd = _load_pt(opt_path, last_good)
                 sd = self._remap_optimizer_state(path, sd, optimizer_param_names)
                 optimizer.load_state_dict(sd)
                 state.components_loaded.append("optimizer")
@@ -939,7 +1246,7 @@ class CheckpointManager:
         if scheduler and not skip_scheduler:
             sch_path = os.path.join(path, "scheduler.pt")
             if os.path.exists(sch_path):
-                sd = torch.load(sch_path, map_location="cpu", weights_only=True)
+                sd = _load_pt(sch_path, last_good)
                 scheduler.load_state_dict(sd)
                 state.components_loaded.append("scheduler")
                 logger.debug("loaded_scheduler")
@@ -948,7 +1255,7 @@ class CheckpointManager:
         if scaler:
             sc_path = os.path.join(path, "scaler.pt")
             if os.path.exists(sc_path):
-                sd = torch.load(sc_path, map_location="cpu", weights_only=True)
+                sd = _load_pt(sc_path, last_good)
                 scaler.load_state_dict(sd)
                 state.components_loaded.append("scaler")
                 logger.debug("loaded_scaler")
@@ -957,7 +1264,7 @@ class CheckpointManager:
         if ema_handler:
             ema_path = os.path.join(path, "ema_shadow.pt")
             if os.path.exists(ema_path):
-                sd = torch.load(ema_path, map_location="cpu", weights_only=True)
+                sd = _load_pt(ema_path, last_good)
                 ema_handler.load_state_dict(sd)
                 state.components_loaded.append("ema")
                 logger.debug("loaded_ema")

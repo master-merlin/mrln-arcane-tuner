@@ -1127,11 +1127,21 @@ class CheckpointManager:
         state = CheckpointState()
         # Named in the error of any unreadable file below (LANE-133).
         last_good = self._last_good_checkpoint(path)
+        folder_name = os.path.basename(os.path.normpath(path))
+
+        # 0. Validate the folder whole before loading anything: every resume
+        # path (job manager AND the pipeline's configured resume) lands here,
+        # so a folder missing training_state.json or disagreeing with its
+        # manifest is refused by name instead of loading as step 0.
+        ok, reason = checkpoint_resumable(path)
+        if not ok:
+            raise CheckpointUnreadable(
+                f"{folder_name}/{reason}; not resumable; last good: {last_good or 'none'}"
+            )
 
         # 1. Read metadata
         state_path = os.path.join(path, "training_state.json")
         if os.path.exists(state_path):
-            folder_name = os.path.basename(os.path.normpath(path))
             try:
                 with open(state_path, "r", encoding="utf-8") as f:
                     meta = json.load(f)

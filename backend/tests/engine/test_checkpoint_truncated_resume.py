@@ -711,3 +711,154 @@ def test_automatic_resume_with_no_intact_checkpoint_ends_the_job_by_name(tmp_pat
     assert persist.call_args is not None and "no resumable checkpoint" in str(
         persist.call_args
     ), "LANE-133: the named reason was not persisted"
+
+
+# ── VERIFY remediation (D-84 a) ──────────────────────────────────────────
+
+
+def _fake_peft():
+    """A PEFT stand-in whose save writes real adapter files, load succeeds."""
+    peft = MagicMock()
+
+    def _save_pretrained(d):
+        Path(d, "adapter_config.json").write_text('{"r": 4}')
+        Path(d, "adapter_model.safetensors").write_bytes(b"\x01" * 4096)
+
+    peft.save_pretrained.side_effect = _save_pretrained
+    return peft
+
+
+def _save_with_adapter(run: Path, step: int) -> tuple[Path, torch.optim.Optimizer]:
+    model = nn.Linear(8, 8)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    model(torch.randn(2, 8)).sum().backward()
+    opt.step()
+    CheckpointManager(str(run)).save_checkpoint(
+        step, {"unet": _fake_peft()}, optimizer=opt, config={"lora_name": "t"}
+    )
+    return run / f"checkpoint-{step:06d}", opt
+
+
+def _drop_training_state(folder: Path) -> str:
+    (folder / "training_state.json").unlink()
+    return "training_state.json"
+
+
+def _grow_adapter(folder: Path) -> str:
+    with open(folder / "unet" / "adapter_model.safetensors", "ab") as f:
+        f.write(b"\x00" * 16)
+    return "unet/adapter_model.safetensors"
+
+
+@pytest.mark.parametrize("damage", [_drop_training_state, _grow_adapter])
+def test_configured_resume_load_refuses_a_non_resumable_folder(tmp_path, damage):
+    """The pipeline's direct path (pipeline_optimization: load_checkpoint with
+    peft_components/optimizer/current_config) validates before loading: a folder
+    missing training_state.json must never load as step 0."""
+    run = tmp_path / "run"
+    run.mkdir()
+    good, _ = _save_with_adapter(run, 5)
+    bad, opt = _save_with_adapter(run, 10)
+    what = damage(bad)
+
+    _expect_unreadable(
+        lambda: CheckpointManager(str(run)).load_checkpoint(
+            str(bad),
+            peft_components={"unet": _fake_peft()},
+            optimizer=opt,
+            current_config={"lora_name": "t"},
+        ),
+        bad.name,
+        what,
+        "last good",
+        good.name,
+    )
+
+    # The intact folder still loads through the same call.
+    st = CheckpointManager(str(run)).load_checkpoint(
+        str(good),
+        peft_components={"unet": _fake_peft()},
+        optimizer=opt,
+        current_config={"lora_name": "t"},
+    )
+    assert st.global_step == 5, f"LANE-133: healthy folder loaded step {st.global_step}"
+
+
+def test_every_file_is_fsynced_before_the_folder_is_published(tmp_path):
+    """Order pin: flush+fsync of every file (and the manifest) precedes the
+    staging->final rename. Removing the os.fsync in _fsync_path fails this."""
+    import builtins
+
+    run = tmp_path / "run"
+    run.mkdir()
+    events: list[tuple[str, str, str]] = []
+    fd_paths: dict[int, str] = {}
+    real_open, real_fsync, real_replace = builtins.open, os.fsync, os.replace
+
+    def norm(p) -> str:
+        return os.path.normcase(os.path.abspath(os.fspath(p)))
+
+    def spy_open(file, *a, **k):
+        f = real_open(file, *a, **k)
+        if isinstance(file, (str, os.PathLike)):
+            fd_paths[f.fileno()] = norm(file)
+        return f
+
+    def spy_fsync(fd):
+        events.append(("fsync", fd_paths.get(fd, f"<fd {fd}>"), ""))
+        return real_fsync(fd)
+
+    def spy_replace(src, dst, *a, **k):
+        events.append(("replace", norm(src), norm(dst)))
+        return real_replace(src, dst, *a, **k)
+
+    model = nn.Linear(8, 8)
+    opt = torch.optim.Adam(model.parameters(), lr=1e-3)
+    model(torch.randn(2, 8)).sum().backward()
+    opt.step()
+    with (
+        patch.object(ckpt_mod, "open", spy_open, create=True),
+        patch.object(os, "fsync", spy_fsync),
+        patch.object(os, "replace", spy_replace),
+    ):
+        CheckpointManager(str(run)).save_checkpoint(
+            10,
+            {"model": model, "unet": _fake_peft()},
+            optimizer=opt,
+            scheduler=torch.optim.lr_scheduler.StepLR(opt, step_size=1),
+            config={"lora_name": "t"},
+        )
+
+    final = run / "checkpoint-000010"
+    publish = [
+        i for i, (kind, src, dst) in enumerate(events)
+        if kind == "replace" and ".staging-" in src and dst == norm(final)
+    ]
+    assert len(publish) == 1, f"LANE-133: no single staging->final publish in {events}"
+    pub_i = publish[0]
+    staging = events[pub_i][1]
+    before = events[:pub_i]
+    fsynced = {p for kind, p, _ in before if kind == "fsync"}
+
+    files = sorted(p.relative_to(final).as_posix() for p in final.rglob("*") if p.is_file())
+    assert ckpt_mod.MANIFEST_NAME in files and "optimizer.pt" in files
+    for rel in files:
+        staged = norm(os.path.join(staging, *rel.split("/")))
+        assert staged in fsynced or f"{staged}.tmp" in fsynced, (
+            f"LANE-133: {rel} was published without an fsync before the folder rename"
+        )
+    # Each tmp is fsynced BEFORE it is renamed onto its name.
+    for i, (kind, src, _dst) in enumerate(before):
+        if kind == "replace" and src.endswith(".tmp"):
+            assert ("fsync", src, "") in before[:i], (
+                f"LANE-133: {src} replaced onto its name before it was fsynced"
+            )
+    # The manifest is the last file made durable before the publish.
+    manifest_staged = norm(os.path.join(staging, ckpt_mod.MANIFEST_NAME))
+    last_file_i = max(
+        i for i, (kind, src, _d) in enumerate(before)
+        if kind == "replace" and src.endswith(".tmp")
+    )
+    assert before[last_file_i][1] == f"{manifest_staged}.tmp", (
+        "LANE-133: the manifest is not the last file written before publish"
+    )

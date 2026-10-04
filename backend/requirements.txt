@@ -16,7 +16,7 @@ click==8.5.0
 clint==0.5.1
 colorama==0.4.6; sys_platform == 'win32'
 coloredlogs==15.0.1
-datasets==4.5.0
+datasets==5.0.1
 decord==0.6.0
 diffusers==0.40.0
 dill==0.4.0  # HELD with multiprocess below. Dependabot #18 proposed 0.4.1 and the install FAILS: multiprocess 0.70.19 declares dill>=0.4.1 while datasets 4.5.0 declares dill<0.4.1, so the pair cannot both move while datasets is pinned here. datasets 5.0.1 widens it to dill<0.4.2 — that bump is the unblocker, and it is a major, so it is its own decision.
@@ -54,7 +54,7 @@ MarkupSafe==2.1.5
 mdurl==0.1.2
 mpmath==1.3.0  # HELD: sympy 1.14.0 declares mpmath<1.4. Dependabot #18 proposed 1.4.1 and the resolve fails.
 multidict==6.9.1
-multiprocess==0.70.18  # HELD with dill above: 0.70.19 declares dill>=0.4.1, which datasets==4.5.0 forbids.
+multiprocess==0.70.18  # HELD with dill above: 0.70.19 declares dill>=0.4.1, which datasets==5.0.1 forbids.
 networkx==3.7
 ninja==1.13.2
 numba==0.67.0

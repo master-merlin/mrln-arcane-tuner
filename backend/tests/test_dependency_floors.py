@@ -64,7 +64,7 @@ FRONTEND_LOCK = {k: v.lstrip("^~") for k, v in FRONTEND_MANIFEST.items()}
 FRONTEND_LOCK.update({"postcss": "8.5.28", "undici": "8.11.2"})
 # ip-address is not a lock target: Dependabot #39 at head 3abbb6aca75e drops its only dependent (express-rate-limit,
 # via the Angular 22.2.0 tree), so the package leaves the lock and alert 150 is closed by absence.
-# The floor test below still fails if it ever returns below 10.7.1.
+# The floor test below still fails if it ever returns below 10.7.2.
 
 TRUFFLEHOG_SHA = "4dd8831c5f12599465d4d45c3c447b4018a34c85"
 
@@ -127,14 +127,35 @@ def _ver(text: str) -> tuple[int, ...]:
     return tuple(int(p) for p in re.findall(r"\d+", text.split("-", 1)[0]))
 
 
-def _lock_versions(name: str) -> list[str]:
-    pkgs = _json("frontend/package-lock.json").get("packages", {})
+def _versions_in(lock: dict, name: str) -> list[str]:
     suffix = f"node_modules/{name}"
     return [
         str(info.get("version"))
-        for path, info in pkgs.items()
+        for path, info in lock.get("packages", {}).items()
         if path == suffix or path.endswith("/" + suffix)
     ]
+
+
+def _lock_versions(name: str) -> list[str]:
+    return _versions_in(_json("frontend/package-lock.json"), name)
+
+
+# (package, floor, must_be_present)
+SECURITY_FLOORS = (("undici", "8.10.2", True), ("ip-address", "10.7.2", False))
+
+
+def _security_floor_problems(lock: dict) -> list[str]:
+    bad = []
+    for name, floor, required in SECURITY_FLOORS:
+        have = _versions_in(lock, name)
+        if not have and required:
+            bad.append(f"LANE-134: {name} has no entry in frontend/package-lock.json")
+        for v in have:
+            if _ver(v) < _ver(floor):
+                bad.append(
+                    f"LANE-134: {name} {v} in frontend/package-lock.json is below the security floor {floor}"
+                )
+    return bad
 
 
 def test_backend_pins_meet_lane134_floors():
@@ -178,17 +199,23 @@ def test_frontend_lock_matches_lane134_targets():
 
 
 def test_frontend_lock_meets_security_floors():
-    bad = []
-    for name, floor in (("undici", "8.10.2"), ("ip-address", "10.7.1")):
-        have = _lock_versions(name)
-        if not have and name == "undici":
-            bad.append(f"LANE-134: {name} has no entry in frontend/package-lock.json")
-        for v in have:
-            if _ver(v) < _ver(floor):
-                bad.append(
-                    f"LANE-134: {name} {v} in frontend/package-lock.json is below the security floor {floor}"
-                )
+    bad = _security_floor_problems(_json("frontend/package-lock.json"))
     assert not bad, "\n".join(bad)
+
+
+def _fake_lock(ip_address: str | None) -> dict:
+    pkgs = {"node_modules/undici": {"version": "8.11.2"}}
+    if ip_address is not None:
+        pkgs["node_modules/ip-address"] = {"version": ip_address}
+    return {"packages": pkgs}
+
+
+def test_security_floor_rejects_ip_address_10_7_1():
+    # alert 150 is fixed only from 10.7.2; 10.7.1 must fail, absence and 10.7.2 must pass.
+    bad = _security_floor_problems(_fake_lock("10.7.1"))
+    assert bad and bad[0].startswith("LANE-134"), bad
+    assert not _security_floor_problems(_fake_lock(None))
+    assert not _security_floor_problems(_fake_lock("10.7.2"))
 
 
 def test_trufflehog_action_is_v3_97_9():

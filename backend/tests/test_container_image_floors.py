@@ -105,6 +105,14 @@ def test_stale_apt_pip_is_removed():
     assert "importlib.metadata" in code and "26.2.1" in code[code.find("importlib.metadata"):][:300], (
         "LANE-135: the runtime stage has no importlib.metadata build check asserting pip == 26.2.1"
     )
+    purge = re.search(r"apt-get\s+purge\b[^\n]*", joined)
+    assert purge and all(
+        re.search(rf"(?<![\w-]){p}(?![\w-])", purge.group(0))
+        for p in ("python3-pip", "python3-pip-whl", "python3-wheel")
+    ), "LANE-135: the apt purge does not name all of python3-pip python3-pip-whl python3-wheel"
+    assert re.search(
+        r"!\s*dpkg\s+-s\s+python3-pip\s+python3-pip-whl\s+python3-wheel(?![\w-])", joined
+    ), "LANE-135: no `! dpkg -s python3-pip python3-pip-whl python3-wheel` removal check in the Dockerfile"
 
 
 def test_ollama_install_is_pinned():
@@ -128,6 +136,17 @@ def test_ollama_install_is_pinned():
     )
     assert ph and ph.group(1) == (sha.group(1) if sha else None), (
         "LANE-135: docker-build.ps1 OllamaSha256 default must equal the Dockerfile OLLAMA_SHA256 default"
+    )
+    assert sha and ph.group(1) == sha.group(1) and re.fullmatch(r"[0-9a-f]{64}", ph.group(1)), (
+        "LANE-135: docker-build.ps1 OllamaSha256 default must be the same 64-hex value as the Dockerfile's"
+    )
+    joined = re.sub(r"\\\s*\n", " ", code)
+    dl = [ln for ln in joined.splitlines() if "curl" in ln and "ollama-linux-amd64" in ln]
+    assert dl and all("ollama-linux-amd64.tar.zst" in ln for ln in dl), (
+        "LANE-135: the Dockerfile's Ollama download line must name the asset ollama-linux-amd64.tar.zst"
+    )
+    assert "ollama-linux-amd64.tgz" not in code, (
+        "LANE-135: the obsolete ollama-linux-amd64.tgz asset name is still in the Dockerfile"
     )
     assert "ollama.com/install.sh" not in code, (
         "LANE-135: the unpinned `curl | sh` ollama.com/install.sh fallback is still in the Dockerfile"

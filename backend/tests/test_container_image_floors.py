@@ -1,7 +1,8 @@
 """LANE-135: container image floors (setuptools, pip, npm) and the CVE register.
 
-Reads Dockerfile, backend/requirements.txt, the dated Docker Scout snapshot and
-``_harness/data/container-cve-dispositions.json`` from the repo root (anchored on
+Reads Dockerfile, docker-build.ps1, backend/requirements.txt, the tracked Docker Scout snapshot
+(backend/tests/fixtures/container_cves/) and
+``backend/container-cve-dispositions.json`` from the repo root (anchored on
 ``__file__``), offline. Every failing assertion starts with ``LANE-135: ``; a
 missing file is an assertion failure, never a collection error.
 
@@ -19,8 +20,9 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parents[2]
 DOCKERFILE = REPO / "Dockerfile"
 REQ = REPO / "backend" / "requirements.txt"
-SNAPSHOT = REPO / ".agent" / "workdir" / "lane-deps" / "evidence" / "scout-cu128-2026-10-04.findings.csv"
-REGISTER = REPO / "_harness" / "data" / "container-cve-dispositions.json"
+BUILD_PS1 = REPO / "docker-build.ps1"
+SNAPSHOT = REPO / "backend" / "tests" / "fixtures" / "container_cves" / "scout-2026-10-04.findings.csv"
+REGISTER = REPO / "backend" / "container-cve-dispositions.json"
 DISPOSITIONS = {"REBUILD", "PIN", "PURGE", "HELD", "DISMISS"}
 
 
@@ -85,13 +87,60 @@ def test_runtime_npm_floor():
     )
 
 
+def test_stale_apt_pip_is_removed():
+    code = _dockerfile_code()
+    runtime = code.find(" AS runtime")
+    rm = code.find("/usr/lib/python3/dist-packages/pip-24.0.dist-info")
+    assert rm != -1 and rm > runtime != -1, (
+        "LANE-135: the runtime stage does not remove /usr/lib/python3/dist-packages/pip-24.0.dist-info; "
+        "the apt pip copy stays on disk and Scout keeps reporting it"
+    )
+    joined = re.sub(r"\\\s*\n", " ", code)  # fold shell line continuations
+    assert re.search(r"rm\s+-rf[^\n]*dist-packages/pip-24\.0\.dist-info", joined), (
+        "LANE-135: pip-24.0.dist-info is named but not removed by an `rm -rf`"
+    )
+    assert "dist-packages/wheel-" in code, (
+        "LANE-135: the apt wheel dist-info (dist-packages/wheel-*) is not removed"
+    )
+    assert "importlib.metadata" in code and "26.2.1" in code[code.find("importlib.metadata"):][:300], (
+        "LANE-135: the runtime stage has no importlib.metadata build check asserting pip == 26.2.1"
+    )
+
+
+def test_ollama_install_is_pinned():
+    code = _dockerfile_code()
+    ver = re.search(r"^ARG OLLAMA_VERSION=(\S*)", code, re.M)
+    sha = re.search(r"^ARG OLLAMA_SHA256=(\S*)", code, re.M)
+    assert ver and ver.group(1) == "v0.35.1", (
+        f"LANE-135: Dockerfile ARG OLLAMA_VERSION defaults to {ver.group(1) if ver else None!r}; the pin is v0.35.1"
+    )
+    assert sha and re.fullmatch(r"[0-9a-f]{64}", sha.group(1)), (
+        f"LANE-135: Dockerfile ARG OLLAMA_SHA256 default is {sha.group(1) if sha else None!r}; "
+        "it must be the 64-hex sha256 of the v0.35.1 release asset"
+    )
+    ps1 = "\n".join(
+        ln for ln in _read(BUILD_PS1).splitlines() if not ln.lstrip().startswith("#")
+    )
+    pv = re.search(r"\[string\]\$OllamaVersion\s*=\s*'([^']*)'", ps1)
+    ph = re.search(r"\[string\]\$OllamaSha256\s*=\s*'([^']*)'", ps1)
+    assert pv and pv.group(1) == "v0.35.1", (
+        f"LANE-135: docker-build.ps1 OllamaVersion defaults to {pv.group(1) if pv else None!r}; the pin is v0.35.1"
+    )
+    assert ph and ph.group(1) == (sha.group(1) if sha else None), (
+        "LANE-135: docker-build.ps1 OllamaSha256 default must equal the Dockerfile OLLAMA_SHA256 default"
+    )
+    assert "ollama.com/install.sh" not in code, (
+        "LANE-135: the unpinned `curl | sh` ollama.com/install.sh fallback is still in the Dockerfile"
+    )
+
+
 def test_every_scout_finding_has_one_disposition():
     assert SNAPSHOT.is_file(), f"LANE-135: Scout snapshot {SNAPSHOT.name} is missing"
     with SNAPSHOT.open(encoding="utf-8", newline="") as fh:
         expected = {(r["cve"], r["purl"]) for r in csv.DictReader(fh)}
     assert expected, "LANE-135: the Scout snapshot has no findings"
     assert REGISTER.is_file(), (
-        "LANE-135: the register _harness/data/container-cve-dispositions.json is missing; "
+        "LANE-135: the register backend/container-cve-dispositions.json is missing; "
         f"it must list all {len(expected)} CVE x package findings of the 2026-10-04 snapshot"
     )
     rows = json.loads(REGISTER.read_text(encoding="utf-8")).get("findings", [])

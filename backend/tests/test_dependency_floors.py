@@ -16,7 +16,6 @@ REQ = "backend/requirements.txt"
 BACKEND_TAKE = [
     ("accelerate", "1.15.0"),
     ("tzdata", "2026.3"),
-    ("anyio", "4.15.1"),
     ("idna", "3.20"),
     ("lazy_loader", "0.6"),
     ("lxml", "6.1.3"),
@@ -62,13 +61,17 @@ FRONTEND_MANIFEST = {
 
 # Lock targets: the manifest packages (range prefix stripped) plus the lock-only ones.
 FRONTEND_LOCK = {k: v.lstrip("^~") for k, v in FRONTEND_MANIFEST.items()}
-FRONTEND_LOCK.update({"postcss": "8.5.28", "undici": "8.11.2", "ip-address": "10.7.2"})
+FRONTEND_LOCK.update({"postcss": "8.5.28", "undici": "8.11.2"})
+# ip-address is not a lock target: Dependabot #39 at head 3abbb6aca75e drops its only dependent (express-rate-limit,
+# via the Angular 22.2.0 tree), so the package leaves the lock and alert 150 is closed by absence.
+# The floor test below still fails if it ever returns below 10.7.1.
 
 TRUFFLEHOG_SHA = "4dd8831c5f12599465d4d45c3c447b4018a34c85"
 
 # Hard-coded from main at 05404929.
 HELD_KEEP = {
     "fsspec": "2025.10.0",
+    "anyio": "4.14.2",  # 4.15.1 needs typing_extensions>=4.16.0, which the sam3 0.1.4 ceiling (<4.16) forbids
     "setuptools": "78.1.1",
     "torch": "2.12.1",
     "torchvision": "0.27.1",
@@ -178,7 +181,7 @@ def test_frontend_lock_meets_security_floors():
     bad = []
     for name, floor in (("undici", "8.10.2"), ("ip-address", "10.7.1")):
         have = _lock_versions(name)
-        if not have:
+        if not have and name == "undici":
             bad.append(f"LANE-134: {name} has no entry in frontend/package-lock.json")
         for v in have:
             if _ver(v) < _ver(floor):

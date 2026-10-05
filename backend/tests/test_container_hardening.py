@@ -1725,14 +1725,19 @@ class TestTheOllamaPinIsReachable:
         block = _ollama_block()
         assert "must be set together" in block and "exit 1" in block
 
-    def test_the_digest_is_not_hardcoded_as_a_default(self):
-        """A checksum nobody verified reads as proof and is worse than none.
+    def test_the_digest_default_is_the_pinned_release_digest(self):
+        """LANE-135 reversed the 2026-09 "no hardcoded digest" rule.
 
-        It would also pin one release forever and be wrong for every other one
-        SILENTLY, because a mismatch reads as a corrupted download rather than
-        as a stale pin.
+        An empty default fell back to an unpinned ``curl | sh`` install; the
+        user's decision (interview Q1.1) pins v0.35.1 with its published
+        digest as the default instead. The digest must be a 64-hex value taken
+        from the release's own sha256sum.txt (cited in the Dockerfile comment)
+        and must sit next to a version default, never alone.
         """
-        assert re.search(r"OLLAMA_SHA256=[0-9a-f]{64}", _ollama_block()) is None
+        block = _ollama_block()
+        assert re.search(r"^ARG OLLAMA_SHA256=[0-9a-f]{64}$", block, re.M)
+        assert re.search(r"^ARG OLLAMA_VERSION=v\d+\.\d+\.\d+$", block, re.M)
+        assert "releases/download/v0.35.1/sha256sum.txt" in _dockerfile()
 
 
 class TestTheOllamaMatchersActuallyFail:

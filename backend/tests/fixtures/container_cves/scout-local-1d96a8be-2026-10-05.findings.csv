@@ -1,0 +1,5 @@
+severity,cve,purl,affected,fixed,score,locations
+HIGH,CVE-2026-57585,pkg:pypi/msgpack@1.1.2,<1.2.1,1.2.1,,/usr/local/lib/python3.12/dist-packages/pip/_vendor/bom.cdx.json
+HIGH,GHSA-6v7p-g79w-8964,pkg:pypi/msgpack@1.1.2,<=1.2.0,1.2.1,,/usr/local/lib/python3.12/dist-packages/pip/_vendor/bom.cdx.json
+HIGH,CVE-2025-47273,pkg:pypi/setuptools@70.3.0,<78.1.1,78.1.1,,/usr/local/lib/python3.12/dist-packages/pip/_vendor/bom.cdx.json
+MEDIUM,CVE-2026-59890,pkg:pypi/setuptools@70.3.0,<83.0.0,83.0.0,,/usr/local/lib/python3.12/dist-packages/pip/_vendor/bom.cdx.json

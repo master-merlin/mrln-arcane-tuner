@@ -105,6 +105,7 @@
             "buildTarget": "frontend:build:development",
             "tsConfig": "tsconfig.spec.json",
             "runner": "vitest",
+            "runnerConfig": "vitest-base.config.mts",
             "setupFiles": ["src/test-setup.ts"]
           }
         }

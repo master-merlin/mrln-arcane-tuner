@@ -70,6 +70,18 @@ if (typeof globalThis.matchMedia !== 'function') {
     }) as unknown as MediaQueryList;
 }
 
+// jsdom has no canvas package (the project does not depend on one): its getContext()
+// logs "Not implemented" through the virtual console on every call. Each line is a
+// console.error that rides the vitest worker's onUserConsoleLog rpc, and a line still
+// in flight when the worker closes surfaces as an unhandled EnvironmentTeardownError
+// (vitest 5). Return null instead: what a browser without 2d support returns, and what
+// every component guard tests. Specs that need a context spy on getContext themselves.
+if (typeof HTMLCanvasElement !== 'undefined') {
+  HTMLCanvasElement.prototype.getContext = function getContext() {
+    return null;
+  } as typeof HTMLCanvasElement.prototype.getContext;
+}
+
 if (typeof globalThis.ResizeObserver === 'undefined') {
   globalThis.ResizeObserver = class {
     observe() {}

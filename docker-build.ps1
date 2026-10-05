@@ -54,8 +54,8 @@ param(
     [string]$Repository = 'mastermerlin/mrln-arcane-tuner',
 
     # Pinned Ollama release. Both or neither, enforced by the Dockerfile.
-    [string]$OllamaVersion = '',
-    [string]$OllamaSha256 = '',
+    [string]$OllamaVersion = 'v0.35.1',
+    [string]$OllamaSha256 = '9fcd79ac4575b2bd31b992eee18b1000c8ad126b451627c8f8cd091714cfbb10',
 
     # Bypass the layer cache for the whole build. The clone layer is the one
     # that went wrong; --no-cache removes the ambiguity for a real release cut

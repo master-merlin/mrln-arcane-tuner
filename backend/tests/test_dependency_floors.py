@@ -72,7 +72,7 @@ TRUFFLEHOG_SHA = "4dd8831c5f12599465d4d45c3c447b4018a34c85"
 HELD_KEEP = {
     "fsspec": "2025.10.0",
     "anyio": "4.14.2",  # 4.15.1 needs typing_extensions>=4.16.0, which the sam3 0.1.4 ceiling (<4.16) forbids
-    "setuptools": "78.1.1",
+    "setuptools": "81.0.0",
     "torch": "2.12.1",
     "torchvision": "0.27.1",
     "torchaudio": "2.11.0",

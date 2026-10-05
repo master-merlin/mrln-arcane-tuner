@@ -65,6 +65,9 @@ RUN apt-get update && apt-get upgrade -y \
 # Node 24 LTS — enables runtime frontend rebuilds during self-update.
 RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
+    # nodesource bundles npm 11.19.0 (tar, ip-address, brace-expansion, undici
+    # findings); 11.21.0 bundles the fixed copies (LANE-135).
+    && npm install -g npm@11.21.0 \
     && rm -rf /var/lib/apt/lists/*
 
 # Install PyTorch (pinned versions, independent of the repo so this heavy layer
@@ -109,7 +112,7 @@ RUN python -m pip install --break-system-packages \
     # copies with --ignore-installed first; requirements.txt then sees the
     # pinned versions already satisfied.
     && python -m pip install --break-system-packages --ignore-installed \
-        setuptools==78.1.1 wheel==0.46.2 \
+        setuptools==81.0.0 wheel==0.46.2 pip==26.2.1 \
     # --ignore-installed leaves the old apt-managed setuptools/wheel on disk
     # alongside the pinned copies (it can't uninstall them — no pip RECORD), so
     # Docker Scout still flags the vulnerable 68.1.2/0.42.0 files. The pinned
@@ -118,7 +121,21 @@ RUN python -m pip install --break-system-packages \
     && rm -rf /usr/lib/python3/dist-packages/setuptools* \
               /usr/lib/python3/dist-packages/pkg_resources* \
               /usr/lib/python3/dist-packages/wheel* \
-              /usr/share/python-wheels/setuptools-*.whl
+              /usr/share/python-wheels/setuptools-*.whl \
+    # LANE-135: the apt pip 24.0 copy (and its dist-info) stays on disk after
+    # `--ignore-installed` and Scout keeps reporting it; remove it explicitly.
+    && rm -rf /usr/lib/python3/dist-packages/pip-24.0.dist-info \
+              /usr/lib/python3/dist-packages/pip \
+              /usr/lib/python3/dist-packages/wheel-*.dist-info \
+              /usr/lib/python3/dist-packages/wheel \
+    && python3 -c "import importlib.metadata as m; assert m.version('pip')=='26.2.1'" \
+    && test ! -e /usr/lib/python3/dist-packages/pip-24.0.dist-info \
+    # Drop the dpkg records too (pip-managed copies in /usr/local now serve
+    # pip and wheel); `! dpkg -s` proves the removal. If a later build check
+    # shows the purge breaks something, the 7 PURGE rows of
+    # backend/container-cve-dispositions.json become DISMISS rows.
+    && apt-get purge -y python3-pip python3-pip-whl python3-wheel \
+    && ! dpkg -s python3-pip python3-pip-whl python3-wheel >/dev/null 2>&1
 
 # Native shared libraries required by OpenCV (cv2) and friends at import time
 # — the slim CUDA runtime base lacks them. Placed after the pip layer so
@@ -144,26 +161,21 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #   * Set OLLAMA_VERSION *and* OLLAMA_SHA256 and the build fetches that exact
 #     release tarball and REFUSES to proceed if the digest does not match. This
 #     is the path release builds should use.
-#   * Leave them empty (the default) and the build falls back to piping
-#     ollama.com/install.sh into a root shell. That is an UNPINNED third party
-#     executing arbitrary code at build time. It is deliberately still the
-#     default so a plain `docker build` keeps working, and it is deliberately
-#     loud about it — but it is a real exposure, not a formality.
+#   * The defaults below pin v0.35.1 with its published digest (LANE-135);
+#     there is no unpinned installer fallback. Setting only one of the two
+#     fails the build.
 #   * INSTALL_OLLAMA=0 skips the layer entirely; the app degrades cleanly
 #     because the entrypoint already probes for the binary.
-# The asset is `ollama-linux-amd64.tar.zst` (zstd, NOT gzip): Ollama replaced the
-# old `ollama-linux-amd64.tgz` with split `.tar.zst` bundles and no longer ships
-# the `.tgz` at all — pinning against that stale name 404s on every current
-# release, which is why the extract below is `tar --zstd` and why zstd is
-# installed above for BOTH paths, not just the unpinned one.
-# Getting the digest: take it from the release's own `sha256sum.txt` asset
-# (`curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/sha256sum.txt`)
-# and use the `ollama-linux-amd64.tar.zst` line. No digest is hardcoded
-# here on purpose — a checksum nobody verified is worse than none, because it
-# reads as proof.
+# The asset is `ollama-linux-amd64.tar.zst` (zstd, NOT gzip): Ollama ships
+# split `.tar.zst` bundles, which is why the extract below is `tar --zstd` and
+# why zstd is installed above.
+# v0.35.1 digest: the `./ollama-linux-amd64.tar.zst` line of
+# https://github.com/ollama/ollama/releases/download/v0.35.1/sha256sum.txt
+# Bumping: take the new digest from the release's own `sha256sum.txt` asset
+# (`.../releases/download/<tag>/sha256sum.txt`), `ollama-linux-amd64.tar.zst` line.
 ARG INSTALL_OLLAMA=1
-ARG OLLAMA_VERSION=
-ARG OLLAMA_SHA256=
+ARG OLLAMA_VERSION=v0.35.1
+ARG OLLAMA_SHA256=9fcd79ac4575b2bd31b992eee18b1000c8ad126b451627c8f8cd091714cfbb10
 RUN if [ "$INSTALL_OLLAMA" != "1" ]; then \
         echo "[build] INSTALL_OLLAMA=$INSTALL_OLLAMA — skipping Ollama layer"; \
     else \
@@ -181,10 +193,9 @@ RUN if [ "$INSTALL_OLLAMA" != "1" ]; then \
              echo "       One without the other is an unverified download wearing a pin." >&2; \
              exit 1; \
          else \
-             echo "WARN: Ollama is being installed UNPINNED from ollama.com/install.sh."; \
-             echo "WARN: set OLLAMA_VERSION + OLLAMA_SHA256 for a verified build."; \
-             ( curl -fsSL https://ollama.com/install.sh | sh \
-               || echo "WARN: ollama install failed; sidecar will be skipped at runtime" ); \
+             echo "ERROR: OLLAMA_VERSION and OLLAMA_SHA256 are empty; an unpinned install is not supported." >&2; \
+             echo "       Pass both, or INSTALL_OLLAMA=0 to skip Ollama." >&2; \
+             exit 1; \
          fi; \
     fi
 

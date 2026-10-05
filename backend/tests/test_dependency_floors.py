@@ -253,7 +253,7 @@ def test_vitest_major_floor():
     have = str(lock.get("node_modules/vitest", {}).get("version", "0"))
     assert rng.startswith("^5.") and _ver(have) >= (5, 0, 3), (
         f"LANE-136: vitest is {rng} in frontend/package.json; the floor is ^5 "
-        f"(5.0.3 in the lock, lock has {have}), PR #31 superseded"
+        "(5.0.3 in the lock), PR #31 superseded"
     )
     stale = {
         k: v.get("version")

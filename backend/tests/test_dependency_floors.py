@@ -238,12 +238,90 @@ def test_held_pins_stay_put():
     assert not bad, "\n".join(bad)
 
 
-def test_majors_not_taken():
+def _ver(text: str) -> tuple[int, ...]:
+    """Leading numeric release tuple of a version string ('5.0.3' -> (5, 0, 3))."""
+    m = re.match(r"^\d+(?:\.\d+)*", text.strip())
+    assert m, f"LANE-136: cannot parse version {text!r}"
+    return tuple(int(p) for p in m.group(0).split("."))
+
+
+def test_vitest_major_floor():
     pkg = _json("frontend/package.json")
     dev = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
-    assert str(dev.get("typescript", "")).startswith("~6."), (
-        f"LANE-134: typescript is {dev.get('typescript')}; it stays ~6.x (majors are a separate lane)"
+    rng = str(dev.get("vitest", ""))
+    lock = _json("frontend/package-lock.json")["packages"]
+    have = str(lock.get("node_modules/vitest", {}).get("version", "0"))
+    assert rng.startswith("^5.") and _ver(have) >= (5, 0, 3), (
+        f"LANE-136: vitest is {rng} in frontend/package.json; the floor is ^5 "
+        "(5.0.3 in the lock), PR #31 superseded"
     )
-    assert str(dev.get("vitest", "")).startswith("^4."), (
-        f"LANE-134: vitest is {dev.get('vitest')}; it stays ^4.x (majors are a separate lane)"
+    stale = {
+        k: v.get("version")
+        for k, v in lock.items()
+        if re.fullmatch(r"node_modules/@vitest/[^/]+", k) and _ver(str(v.get("version", "0")))[0] != 5
+    }
+    assert not stale, f"LANE-136: @vitest/* entries not at major 5 in the lock: {stale}"
+
+
+_COMPARATOR = re.compile(r"(>=|<=|>|<|=)?\s*(\d+(?:\.\d+)*)")
+
+
+def _angular_ts_range_admits_7(rng: str) -> str | None:
+    """The first '||' alternative of an npm range that admits any TypeScript 7.x, else None.
+
+    Fails closed: an alternative with no '<'/'<=' upper bound, or one that cannot be parsed,
+    counts as admitting 7. '<7', '<7.0' and '<7.0.0' do not admit 7; '<=7.0.0' does.
+    """
+    for alt in rng.split("||"):
+        alt = alt.strip()
+        tokens = re.findall(r"(?:[<>]=?|=)?\s*[^\s<>=]+", alt)
+        parsed = [_COMPARATOR.fullmatch(t.strip()) for t in tokens]
+        if not tokens or any(m is None for m in parsed):
+            return alt or rng  # unparseable: fail closed
+        bounds = []  # one bool per upper bound: does it still admit 7?
+        for m in parsed:
+            op, ver = m.group(1), (_ver(m.group(2)) + (0, 0))[:3]
+            if op == "<":
+                bounds.append(ver > (7, 0, 0))
+            elif op == "<=":
+                bounds.append(ver >= (7, 0, 0))
+        # the alternative is the intersection of its comparators: it admits 7 only when
+        # every upper bound does (or when it has none)
+        if all(bounds):
+            return alt
+    return None
+
+
+def test_typescript_held_under_angular_range():
+    pkg = _json("frontend/package.json")
+    dev = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    ng = _json("frontend/package-lock.json")["packages"]["node_modules/@angular/build"]
+    rng = str(ng.get("peerDependencies", {}).get("typescript", ""))
+    offending = _angular_ts_range_admits_7(rng)
+    msg = (
+        f"LANE-136: typescript stays ~6.x while @angular/build {ng.get('version')} "
+        f"declares typescript {rng!r} (PR #30 closed); revisit when Angular widens the range"
+        f"; alternative admitting 7: {offending!r}"
     )
+    assert str(dev.get("typescript", "")).startswith("~6."), msg
+    assert offending is None, msg
+
+
+def test_ts_range_helper_current_range():
+    assert _angular_ts_range_admits_7(">=6.0 <6.1") is None
+
+
+def test_ts_range_helper_widened_bound():
+    assert _angular_ts_range_admits_7(">=6.0 <7.1") is not None
+
+
+def test_ts_range_helper_union_admits_7():
+    assert _angular_ts_range_admits_7(">=6.0 <6.1 || >=7.0 <7.1") is not None
+
+
+def test_ts_range_helper_no_upper_bound():
+    assert _angular_ts_range_admits_7(">=6.0") is not None
+
+
+def test_ts_range_helper_exact_7_bound():
+    assert _angular_ts_range_admits_7(">=6.0 <7") is None

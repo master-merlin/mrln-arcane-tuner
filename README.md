@@ -325,12 +325,14 @@ The commit must already be **pushed to the remote** — the build clones it, so 
 local-only commit fails the build rather than baking in code nobody else can
 retrieve.
 
-**Ollama** (the optional caption-refinement sidecar) is installed by piping
-`ollama.com/install.sh` into a root shell, which is an **unpinned third-party
-script executing at build time**. For a build you intend to publish, pin it:
+**Ollama** (the optional caption-refinement sidecar) is installed at a pinned
+release, **v0.35.1** by default. The build downloads `ollama-linux-amd64.tar.zst`
+from that release and checks it against the pinned sha256 before unpacking it;
+a mismatch fails the build. There is no unpinned fallback. To build against a
+different release, pass the tag and the digest together (one without the other
+is refused):
 
 ```powershell
-# Get the digest once, then pass both — one without the other is refused.
 # The published asset is a zstd tarball; the .tgz form no longer exists upstream.
 # Authoritative digests are in each release's sha256sum.txt.
 curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/ollama-linux-amd64.tar.zst | sha256sum
@@ -338,8 +340,8 @@ curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/ollama-linux
     -TokenPath <token-file> -OllamaVersion <tag> -OllamaSha256 <digest>
 ```
 
-`--build-arg INSTALL_OLLAMA=0` skips it entirely; the app starts fine without
-it and simply reports the sidecar as disabled.
+`--build-arg INSTALL_OLLAMA=0` skips the install entirely; the app starts fine
+without it and simply reports the sidecar as disabled.
 
 **The container runs as UID 10001, not root.** The entrypoint starts as root
 only long enough to take ownership of the mounted data volume, then drops. If

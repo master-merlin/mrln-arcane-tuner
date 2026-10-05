@@ -258,7 +258,7 @@ def test_vitest_major_floor():
     stale = {
         k: v.get("version")
         for k, v in lock.items()
-        if k.startswith("node_modules/@vitest/") and _ver(str(v.get("version", "0")))[0] != 5
+        if re.fullmatch(r"node_modules/@vitest/[^/]+", k) and _ver(str(v.get("version", "0")))[0] != 5
     }
     assert not stale, f"LANE-136: @vitest/* entries not at major 5 in the lock: {stale}"
 

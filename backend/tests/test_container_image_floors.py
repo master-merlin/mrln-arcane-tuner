@@ -22,6 +22,7 @@ DOCKERFILE = REPO / "Dockerfile"
 REQ = REPO / "backend" / "requirements.txt"
 BUILD_PS1 = REPO / "docker-build.ps1"
 SNAPSHOT = REPO / "backend" / "tests" / "fixtures" / "container_cves" / "scout-2026-10-04.findings.csv"
+SNAPSHOT_LOCAL = REPO / "backend" / "tests" / "fixtures" / "container_cves" / "scout-local-1d96a8be-2026-10-05.findings.csv"
 REGISTER = REPO / "backend" / "container-cve-dispositions.json"
 DISPOSITIONS = {"REBUILD", "PIN", "PURGE", "HELD", "DISMISS"}
 
@@ -154,9 +155,13 @@ def test_ollama_install_is_pinned():
 
 
 def test_every_scout_finding_has_one_disposition():
-    assert SNAPSHOT.is_file(), f"LANE-135: Scout snapshot {SNAPSHOT.name} is missing"
-    with SNAPSHOT.open(encoding="utf-8", newline="") as fh:
-        expected = {(r["cve"], r["purl"]) for r in csv.DictReader(fh)}
+    expected = set()
+    # The published-image snapshot, plus the findings that appear only after this
+    # lane's pins (pip's vendored SBOM; UAT round 1) -- each its own tracked fixture.
+    for snap in (SNAPSHOT, SNAPSHOT_LOCAL):
+        assert snap.is_file(), f"LANE-135: Scout snapshot {snap.name} is missing"
+        with snap.open(encoding="utf-8", newline="") as fh:
+            expected |= {(r["cve"], r["purl"]) for r in csv.DictReader(fh)}
     assert expected, "LANE-135: the Scout snapshot has no findings"
     assert REGISTER.is_file(), (
         "LANE-135: the register backend/container-cve-dispositions.json is missing; "

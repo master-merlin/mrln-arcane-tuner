@@ -238,12 +238,41 @@ def test_held_pins_stay_put():
     assert not bad, "\n".join(bad)
 
 
-def test_majors_not_taken():
+def _ver(text: str) -> tuple[int, ...]:
+    """Leading numeric release tuple of a version string ('5.0.3' -> (5, 0, 3))."""
+    m = re.match(r"^\d+(?:\.\d+)*", text.strip())
+    assert m, f"LANE-136: cannot parse version {text!r}"
+    return tuple(int(p) for p in m.group(0).split("."))
+
+
+def test_vitest_major_floor():
     pkg = _json("frontend/package.json")
     dev = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
-    assert str(dev.get("typescript", "")).startswith("~6."), (
-        f"LANE-134: typescript is {dev.get('typescript')}; it stays ~6.x (majors are a separate lane)"
+    rng = str(dev.get("vitest", ""))
+    lock = _json("frontend/package-lock.json")["packages"]
+    have = str(lock.get("node_modules/vitest", {}).get("version", "0"))
+    assert rng.startswith("^5.") and _ver(have) >= (5, 0, 3), (
+        f"LANE-136: vitest is {rng} in frontend/package.json; the floor is ^5 "
+        f"(5.0.3 in the lock, lock has {have}), PR #31 superseded"
     )
-    assert str(dev.get("vitest", "")).startswith("^4."), (
-        f"LANE-134: vitest is {dev.get('vitest')}; it stays ^4.x (majors are a separate lane)"
+    stale = {
+        k: v.get("version")
+        for k, v in lock.items()
+        if k.startswith("node_modules/@vitest/") and _ver(str(v.get("version", "0")))[0] != 5
+    }
+    assert not stale, f"LANE-136: @vitest/* entries not at major 5 in the lock: {stale}"
+
+
+def test_typescript_held_under_angular_range():
+    pkg = _json("frontend/package.json")
+    dev = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    ng = _json("frontend/package-lock.json")["packages"]["node_modules/@angular/build"]
+    rng = str(ng.get("peerDependencies", {}).get("typescript", ""))
+    upper = re.search(r"<\s*(\d+(?:\.\d+)*)", rng)
+    admits_7 = upper is None or (_ver(upper.group(1)) + (0, 0))[:3] > (7, 0, 0)
+    msg = (
+        f"LANE-136: typescript stays ~6.x while @angular/build {ng.get('version')} "
+        f"declares typescript {rng!r} (PR #30 closed); revisit when Angular widens the range"
     )
+    assert str(dev.get("typescript", "")).startswith("~6."), msg
+    assert not admits_7, msg

@@ -68,9 +68,9 @@ FRONTEND_LOCK.update({"postcss": "8.5.28", "undici": "8.11.2"})
 
 TRUFFLEHOG_SHA = "4dd8831c5f12599465d4d45c3c447b4018a34c85"
 
-# Hard-coded from main at 05404929.
+# Hard-coded from main at ee1c575a.
 HELD_KEEP = {
-    "fsspec": "2025.10.0",
+    "fsspec": "2026.6.0",  # datasets 5.0.1 declares fsspec[http]<=2026.6.0 (pip report, LANE-142)
     "anyio": "4.14.2",  # 4.15.1 needs typing_extensions>=4.16.0, which the sam3 0.1.4 ceiling (<4.16) forbids
     "setuptools": "81.0.0",
     "torch": "2.12.1",
@@ -82,9 +82,9 @@ HELD_KEEP = {
     "peft": "0.20.0",
 }
 HELD_COMMENTED = {
-    "dill": "0.4.0",
+    "dill": "0.4.1",
     "mpmath": "1.3.0",
-    "multiprocess": "0.70.18",
+    "multiprocess": "0.70.19",
     "numpy": "2.3.5",
     "pydantic_core": "2.46.5",
     "tokenizers": "0.22.2",

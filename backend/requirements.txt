@@ -16,10 +16,10 @@ click==8.5.0
 clint==0.5.1
 colorama==0.4.6; sys_platform == 'win32'
 coloredlogs==15.0.1
-datasets==4.5.0
+datasets==5.0.1  # Closes Dependabot alert 152 (GHSA-379c-qx7v-6h59, fixed in 5.0.1); LANE-142. Only sophia-optimizer requires it (no version bound); nothing in backend/ imports it.
 decord==0.6.0
 diffusers==0.40.0
-dill==0.4.0  # HELD with multiprocess below. Dependabot #18 proposed 0.4.1 and the install FAILS: multiprocess 0.70.19 declares dill>=0.4.1 while datasets 4.5.0 declares dill<0.4.1, so the pair cannot both move while datasets is pinned here. datasets 5.0.1 widens it to dill<0.4.2 — that bump is the unblocker, and it is a major, so it is its own decision.
+dill==0.4.1  # HELD with multiprocess below: datasets 5.0.1 declares dill<0.4.2, so the next dill release moves only with datasets (LANE-142 lifted the old 4.5.0 hold).
 duckduckgo_search==8.1.1
 einops==0.8.2
 execnet==2.1.2  # pytest-xdist's only dependency (LANE-63)
@@ -27,7 +27,7 @@ fastapi==0.141.1
 filelock==3.32.4
 flatbuffers==25.12.19
 frozenlist==1.8.0
-fsspec==2025.10.0
+fsspec==2026.6.0  # HELD: datasets 5.0.1 declares fsspec[http]<=2026.6.0, so 2026.7.0 / 2026.9.0 (Dependabot PR #35) stay out until datasets widens it (LANE-142).
 ftfy==6.3.1
 h11==0.16.0
 hf-xet==1.6.0
@@ -54,7 +54,7 @@ MarkupSafe==2.1.5
 mdurl==0.1.2
 mpmath==1.3.0  # HELD: sympy 1.14.0 declares mpmath<1.4. Dependabot #18 proposed 1.4.1 and the resolve fails.
 multidict==6.9.1
-multiprocess==0.70.18  # HELD with dill above: 0.70.19 declares dill>=0.4.1, which datasets==4.5.0 forbids.
+multiprocess==0.70.19  # HELD with dill above: datasets 5.0.1 declares multiprocess<0.70.20, so the next release moves only with datasets (LANE-142).
 networkx==3.7
 ninja==1.13.2
 numba==0.67.0

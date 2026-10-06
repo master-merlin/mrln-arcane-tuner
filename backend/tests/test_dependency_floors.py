@@ -68,9 +68,9 @@ FRONTEND_LOCK.update({"postcss": "8.5.28", "undici": "8.11.2"})
 
 TRUFFLEHOG_SHA = "4dd8831c5f12599465d4d45c3c447b4018a34c85"
 
-# Hard-coded from main at 05404929.
+# Hard-coded from main at ee1c575a.
 HELD_KEEP = {
-    "fsspec": "2025.10.0",
+    "fsspec": "2026.6.0",  # datasets 5.0.1 declares fsspec[http]<=2026.6.0 (pip report, LANE-142)
     "anyio": "4.14.2",  # 4.15.1 needs typing_extensions>=4.16.0, which the sam3 0.1.4 ceiling (<4.16) forbids
     "setuptools": "81.0.0",
     "torch": "2.12.1",
@@ -82,9 +82,9 @@ HELD_KEEP = {
     "peft": "0.20.0",
 }
 HELD_COMMENTED = {
-    "dill": "0.4.0",
+    "dill": "0.4.1",
     "mpmath": "1.3.0",
-    "multiprocess": "0.70.18",
+    "multiprocess": "0.70.19",
     "numpy": "2.3.5",
     "pydantic_core": "2.46.5",
     "tokenizers": "0.22.2",
@@ -236,6 +236,26 @@ def test_held_pins_stay_put():
         elif name in HELD_COMMENTED and "# HELD" not in line:
             bad.append(f"LANE-134: {name} lost its '# HELD' comment")
     assert not bad, "\n".join(bad)
+
+
+def test_datasets_floor_closes_alert_152():
+    pins = _pins()
+    have = pins.get("datasets", ("absent", ""))[0]
+    assert have != "absent" and _ver(have) >= (5, 0, 1), (
+        f"LANE-142: datasets is {have} in backend/requirements.txt; the floor is "
+        "5.0.1 (Dependabot alert 152, GHSA-379c-qx7v-6h59), PR #45 superseded"
+    )
+    # datasets 5.0.1 declares dill<0.4.2, multiprocess<0.70.20, fsspec[http]<=2026.6.0.
+    for name, want in {
+        "dill": "0.4.1",
+        "multiprocess": "0.70.19",
+        "fsspec": "2026.6.0",
+    }.items():
+        got = pins.get(name, ("absent", ""))[0]
+        assert got == want, (
+            f"LANE-142: {name} is {got} in backend/requirements.txt; "
+            f"datasets 5.0.1 lifts the hold to {want}"
+        )
 
 
 def _ver(text: str) -> tuple[int, ...]:

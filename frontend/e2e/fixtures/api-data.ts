@@ -28,6 +28,26 @@ export const version = { version: 'e2e' };
 export const projects: unknown[] = [];
 
 /**
+ * 12 JSON step lines for the running job so the Jobs KPI row renders (LANE-143
+ * UAT shots). `progress` is in PERCENT: `latestMetrics` derives
+ * total_steps = step / (progress/100) = 1200 / 0.24 = 5000, and requires
+ * `status === 'training'` (shared/job-metrics.ts).
+ */
+export const runningJobStepLogs: string[] = Array.from({ length: 12 }, (_, i) => {
+    const k = i + 1;
+    return JSON.stringify({
+        status: 'training',
+        step: 100 * k,
+        loss: 0.42 - 0.01 * k,
+        step_time: 1.8,
+        samples_per_sec: 2.2,
+        eta: 6840,
+        progress: Math.round((100 * k) / 50),
+        resolution: '1024x1024',
+    });
+});
+
+/**
  * GET /api/jobs — not fetched on the datasets boot path, but the Jobs screen
  * (Flow F) renders these directly into the queue's RUNNING/PENDING groups.
  * Two rows so `training-job-queue` renders both groups; see the Flow F
@@ -44,7 +64,7 @@ export const jobs = [
         created_at: Math.floor(Date.now() / 1000) - 600,
         started_at: Math.floor(Date.now() / 1000) - 600,
         pid: 4242,
-        logs: [] as string[],
+        logs: runningJobStepLogs,
         warnings: [] as string[],
     },
     {

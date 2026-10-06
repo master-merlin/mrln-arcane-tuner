@@ -105,6 +105,44 @@ async function settle(page: import('@playwright/test').Page, screen: string): Pr
     await page.waitForTimeout(1500); // KPI tween + route paint
 }
 
+/**
+ * VERIFY 1.01: the painted contrast of every visible status dot (`.sdot`), as the
+ * browser rendered it -- the file-based guard measured the recipe while an
+ * encapsulated component rule out-ranked it. The fill and the backdrop (the
+ * ancestors' backgrounds composited root-down) are resolved through a 1x1 canvas
+ * so `oklch()`/`color-mix()` computed values become sRGB the way they are painted.
+ */
+async function dotContrasts(page: import('@playwright/test').Page): Promise<{ cls: string; fill: number[]; back: number[]; ratio: number }[]> {
+    return page.evaluate(() => {
+        const ctx = document.createElement('canvas').getContext('2d', { willReadFrequently: true })!;
+        const px = (): number[] => Array.from(ctx.getImageData(0, 0, 1, 1).data.slice(0, 3));
+        const lum = ([r, g, b]: number[]): number => {
+            const f = (c: number) => ((c /= 255) <= 0.04045 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4);
+            return 0.2126 * f(r) + 0.7152 * f(g) + 0.0722 * f(b);
+        };
+        return Array.from(document.querySelectorAll<HTMLElement>('.sdot'))
+            .filter((el) => el.getClientRects().length > 0)
+            .map((el) => {
+                const chain: string[] = [];
+                for (let a = el.parentElement; a; a = a.parentElement) chain.unshift(getComputedStyle(a).backgroundColor);
+                ctx.clearRect(0, 0, 1, 1);
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, 1, 1);
+                for (const c of chain) {
+                    ctx.fillStyle = c;
+                    ctx.fillRect(0, 0, 1, 1);
+                }
+                const back = px();
+                ctx.fillStyle = getComputedStyle(el).backgroundColor;
+                ctx.fillRect(0, 0, 1, 1);
+                const fill = px();
+                const [hi, lo] = [lum(fill), lum(back)].sort((x, y) => y - x);
+                return { cls: el.className, fill, back, ratio: Math.round(((hi + 0.05) / (lo + 0.05)) * 100) / 100 };
+            });
+    });
+}
+
+const dotRows: string[] = [];
 const sweepRows: string[] = [];
 const baselineRows: string[] = [];
 const manifest: { file: string; px: string; bytes: number; sha256: string }[] = [];
@@ -145,6 +183,15 @@ for (const screen of SCREENS) {
                     expect(icons, `LANE-143: expected ${ICON_COUNTS[screen]} visible KPI tiles/icons on ${screen}`).toBe(
                         ICON_COUNTS[screen],
                     );
+                }
+                for (const d of await dotContrasts(page)) {
+                    dotRows.push(`| ${screen} | ${theme} | ${state} | ${d.cls} | rgb(${d.fill}) | rgb(${d.back}) | ${d.ratio} |`);
+                    if (state === 'on') {
+                        expect(
+                            d.ratio,
+                            `LANE-143: painted .sdot (${d.cls}) on ${screen}/${theme} measures ${d.ratio}:1 < 3:1 (rgb(${d.fill}) on rgb(${d.back}))`,
+                        ).toBeGreaterThanOrEqual(3);
+                    }
                 }
                 // OFF: the toggle leaves layout for the capture; ON: shown for the shot, hidden for the sweep.
                 const style = await page.addStyleTag({ content: HIDE_TOGGLE });
@@ -264,6 +311,10 @@ test('LANE-143 manifest', async () => {
     fs.writeFileSync(
         path.join(OUT, 'sweep.md'),
         ['| screen | theme | elements | height changes | structural diffs |', '|---|---|---|---|---|', ...sweepRows].join('\n') + '\n',
+    );
+    fs.writeFileSync(
+        path.join(OUT, 'dot-contrast.md'),
+        ['| screen | theme | state | class | fill | backdrop | ratio |', '|---|---|---|---|---|---|---|', ...dotRows].join('\n') + '\n',
     );
     if (BASELINE) {
         fs.writeFileSync(

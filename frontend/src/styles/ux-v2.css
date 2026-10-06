@@ -107,6 +107,13 @@ html[data-ux="v2"] .chip.brand { --p-fg: color-mix(in oklch, var(--color-brand),
 html[data-ux="v2"] .chip.violet { --p-fg: color-mix(in oklch, var(--color-violet), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-violet), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-violet), var(--ux-tint-line)); }
 html[data-ux="v2"] .chip.teal { --p-fg: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-chart-lr), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-line)); }
 html[data-ux="v2"] .chip.solid { --p-fg: var(--color-text-secondary); --p-bg: var(--color-surface-high); --p-line: var(--color-border-bright); }
+/* the paint again at role specificity (0,3,1): component styles are unlayered and
+   injected after this file, so an encapsulated `.chip.<variant>` (0,3,0) beat the
+   bare-.chip paint (0,2,1). test_status_contrast_guard.py's cascade rows pin it. */
+html[data-ux="v2"] .chip:is(.neutral, .success, .warning, .danger, .info, .running, .queued, .paused, .brand, .violet, .teal, .solid) {
+  background: var(--p-bg); color: var(--p-fg);
+  border-color: color-mix(in oklch, var(--p-line), transparent var(--ux-pill-fade));
+}
 html[data-ux="v2"] .chip .dot { background: var(--p-line); }
 
 /* tag = the mono uppercase variant of the same recipe (a 1px border, padding
@@ -166,6 +173,11 @@ html[data-ux="v2"] .sdot.running { --d: var(--st-running-line); }
 html[data-ux="v2"] .sdot.queued { --d: var(--st-queued-line); }
 html[data-ux="v2"] .sdot.paused { --d: var(--st-paused-line); }
 html[data-ux="v2"] .sdot.brand { --d: var(--color-brand); }
+/* the dot paint at role specificity (0,3,1): jobs-screen.css `.sdot.success` is
+   0,3,0 once encapsulated and painted the light dot 2.56:1 (VERIFY 1.01) */
+html[data-ux="v2"] .sdot:is(.neutral, .success, .warning, .danger, .info, .running, .queued, .paused, .brand) {
+  background: var(--d); box-shadow: 0 0 0 2px color-mix(in oklch, var(--d), transparent 78%);
+}
 html[data-ux="v2"] :is(.side-dot, .rs-dot, .tl-dot, .ttoc-dot, .kpi-status .dot) { box-shadow: 0 0 0 2px color-mix(in oklch, var(--st-neutral-line), transparent 78%); }
 
 /* P1 (c) · light: the semantic text utilities read at AA (closes DECISION-22) */

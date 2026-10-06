@@ -462,3 +462,235 @@ def test_the_border_guard_measures_the_composite() -> None:
     assert drawn < NON_TEXT_MIN, (
         f"LANE-143: the border guard must measure the composite (raw {raw:.2f}:1, painted {drawn:.2f}:1)"
     )
+
+
+# ───────────────────── the cascade: a recipe that loses is not painted ─────────
+#
+# VERIFY 1.01: the rows above measured the ``.sdot`` recipe, but the Jobs
+# screen's encapsulated ``.sdot.success`` rule (``jobs-screen.css``, scoped by
+# Angular to ``.sdot.success[_ngcontent-x]`` = 0,3,0) out-ranked the v2 rule that
+# declared the dot background (``html[data-ux="v2"] .sdot`` = 0,2,1), so the light
+# dot painted 2.56:1. Global ``styles.css``/``components.css`` live in ``@layer``
+# and always lose to the unlayered ``ux-v2.css``; component styles are unlayered
+# AND injected after it, so a v2 rule wins only on STRICTLY higher specificity.
+# This guard enumerates every component stylesheet (``*.css`` and inline
+# ``styles``) and fails on a rule that redeclares a COLOUR property of an element
+# a v2 recipe claims, with a specificity >= the most specific v2 rule that paints
+# that property there.
+#
+# "Claims": ux-v2.css has a rule whose subject names exactly the component rule's
+# subject classes (``.sdot.success`` claims ``.sdot.success``), and whose ancestor
+# classes, if any, the component selector names too (``.chip .dot`` does not
+# claim ``.kpi-status .dot``). A component variant v2 has no recipe for
+# (``.chip.violet``) is the component's own and is not judged. Interaction
+# states (``:hover``/``:focus``/``:active``) are the component's until L3 adds
+# them to the recipes.
+
+APP_DIR = REPO_ROOT / "frontend" / "src" / "app"
+# property -> the colour family the v2 recipes own (a shorthand overrides its longhand)
+OWNED = {
+    "color": "color",
+    "background": "background",
+    "background-color": "background",
+    "border": "border-color",
+    "border-color": "border-color",
+    "box-shadow": "box-shadow",
+    "outline": "outline",
+    "outline-color": "outline",
+}
+_STATE = re.compile(r":(hover|focus|focus-visible|focus-within|active)\b")
+Spec = tuple[int, int, int]
+_FUNC = re.compile(r"::?([\w-]+)\(")
+_NOT_OWN_BOX = re.compile(
+    r"::?(before|after|placeholder|selection|first-line|first-letter|-webkit-[\w-]+|-moz-[\w-]+)\b"
+)
+
+
+def _matching_paren(s: str, i: int) -> int:
+    depth = 0
+    for k in range(i, len(s)):
+        depth += {"(": 1, ")": -1}.get(s[k], 0)
+        if depth == 0:
+            return k
+    return len(s) - 1
+
+
+def specificity(sel: str) -> Spec:
+    """Selectors Level 4 specificity: ``:is/:not/:has`` take their most specific
+    argument, ``:where`` counts 0, any other pseudo-class 0,1,0."""
+    a = b = c = 0
+    i, n = 0, len(sel)
+    start = True  # at the start of a compound: a type selector may follow
+    while i < n:
+        ch = sel[i]
+        if ch in " >+~":
+            start = True
+            i += 1
+            continue
+        if ch in "#.":
+            m = re.match(r"[#.][\w-]+", sel[i:])
+            a, b = (a + 1, b) if ch == "#" else (a, b + 1)
+            i += len(m.group(0))
+        elif ch == "[":
+            b += 1
+            i = sel.index("]", i) + 1
+        elif ch == ":":
+            m = re.match(r"(::?)([\w-]+)(\()?", sel[i:])
+            colons, name, paren = m.groups()
+            j = i + len(m.group(0))
+            if paren:
+                end = _matching_paren(sel, j - 1)
+                if name in ("is", "not", "has", "matches"):
+                    sa = max(specificity(x) for x in _split_top(sel[j:end]))
+                    a, b, c = a + sa[0], b + sa[1], c + sa[2]
+                elif name != "where":
+                    b += 1
+                j = end + 1
+            elif colons == "::" or name in ("before", "after", "first-line", "first-letter"):
+                c += 1
+            else:
+                b += 1
+            i = j
+        elif ch == "*":
+            i += 1
+        else:
+            m = re.match(r"[\w-]+", sel[i:])
+            c += 1 if (m and start) else 0
+            i += len(m.group(0)) if m else 1
+        start = False
+    return (a, b, c)
+
+
+def compounds(sel: str) -> list[str]:
+    """A complex selector split at its top-level combinators."""
+    parts, depth, cur = [], 0, ""
+    for ch in sel.strip():
+        depth += {"(": 1, "[": 1, ")": -1, "]": -1}.get(ch, 0)
+        if depth == 0 and ch in " >+~":
+            if cur:
+                parts.append(cur)
+            cur = ""
+        else:
+            cur += ch
+    if cur:
+        parts.append(cur)
+    return parts
+
+
+def class_sets(sel: str) -> list[frozenset[str]]:
+    """The class sets the subject (last compound) of ``sel`` requires; a
+    ``:is(a, b)`` yields one alternative per argument, ``:not()`` adds none."""
+    comps = compounds(sel)
+    if not comps:
+        return []
+    comp, own, alts, i = comps[-1], "", [], 0
+    while i < len(comp):
+        m = _FUNC.match(comp, i)
+        if m:
+            end = _matching_paren(comp, m.end() - 1)
+            if m.group(1) in ("is", "matches"):
+                alts.extend(_split_top(comp[m.end() : end]))
+            i = end + 1
+        else:
+            own += comp[i]
+            i += 1
+    base = frozenset(re.findall(r"\.([\w-]+)", own))
+    if not alts:
+        return [base]
+    return [base | cs for alt in alts for cs in class_sets(alt)]
+
+
+def component_sheets() -> list[tuple[str, str]]:
+    """Every encapsulated stylesheet: ``*.css`` under ``src/app`` and the inline
+    ``styles`` of every component."""
+    sheets = [(p.relative_to(REPO_ROOT).as_posix(), p.read_text(encoding="utf-8")) for p in sorted(APP_DIR.rglob("*.css"))]
+    inline = re.compile(r"styles\s*:\s*\[?\s*`(.*?)`", re.S)
+    for p in sorted(APP_DIR.rglob("*.ts")):
+        if not p.name.endswith(".spec.ts"):
+            sheets += [(p.relative_to(REPO_ROOT).as_posix(), m.group(1)) for m in inline.finditer(p.read_text(encoding="utf-8"))]
+    return sheets
+
+
+def encapsulated(sel: str) -> tuple[str, Spec] | None:
+    """What Angular's emulated encapsulation makes of ``sel``: every compound
+    before ``::ng-deep`` gains one ``[_ngcontent-x]``. ``None`` for a rule that
+    paints a pseudo-element or the host, not the element a v2 recipe styles."""
+    if _NOT_OWN_BOX.search(sel.replace("::ng-deep", "")):
+        return None
+    head, deep, tail = sel.partition("::ng-deep")
+    plain = f"{head} {tail}" if deep else sel
+    comps = compounds(plain)
+    if not comps or ":host" in comps[-1]:
+        return None
+    a, b, c = specificity(re.sub(r":host(-context)?", ":h", plain))
+    return " ".join(comps), (a, b + len(compounds(head)), c)
+
+
+def _ancestor_classes(sel: str) -> frozenset[str]:
+    return frozenset(c for comp in compounds(sel)[:-1] for c in re.findall(r"\.([\w-]+)", comp))
+
+
+def v2_rules(theme: str, rules=None) -> list[tuple[str, frozenset[str], frozenset[str], Spec, set[str]]]:
+    """(selector, subject classes, ancestor classes, specificity, colour families)
+    of every v2 rule that applies in ``theme``, custom-property-only rules included
+    (they still claim their subject)."""
+    out = []
+    for heads, decls in _ux_rules() if rules is None else rules:
+        fams = {OWNED[p] for p in decls if p in OWNED}
+        for sel in heads:
+            if LIGHT_SCOPE in sel and theme != "light":
+                continue
+            anc, spec = _ancestor_classes(sel), specificity(sel)
+            out += [(sel, cs, anc, spec, fams) for cs in class_sets(sel) if cs]
+    return out
+
+
+def cascade_losses(theme: str, sheets: list[tuple[str, str]], rules=None) -> list[str]:
+    v2 = v2_rules(theme, rules)
+    bad = []
+    for path, css in sheets:
+        for head, body in parse_rules(css):
+            fams = {OWNED[p] for p in _decls(body) if p in OWNED}
+            for sel in split_selectors(head) if fams and not head.startswith("@") else ():
+                enc = encapsulated(sel)
+                if not enc or _STATE.search(compounds(enc[0])[-1]):
+                    continue
+                plain, comp_spec = enc
+                anc = _ancestor_classes(plain) | frozenset()
+                for subject in class_sets(plain):
+                    here = [r for r in v2 if r[1] <= subject and r[2] <= anc | subject]
+                    if not any(r[1] == subject for r in here):
+                        continue  # a variant v2 has no recipe for: the component's own
+                    for fam in sorted(fams):
+                        # the v2 side paints with its MOST specific matching rule
+                        mine = [(spec, s) for s, _cs, _a, spec, f in here if fam in f]
+                        if mine and comp_spec >= max(mine)[0]:
+                            v2_spec, v2_sel = max(mine)
+                            bad.append(f"{path} `{sel}` {comp_spec} >= `{v2_sel}` {v2_spec} on {fam} ({theme})")
+    return bad
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_no_component_rule_out_ranks_a_v2_recipe(theme: str) -> None:
+    bad = cascade_losses(theme, component_sheets())
+    assert not bad, "LANE-143: a component rule out-ranks the v2 recipe (VERIFY 1.01):\n" + "\n".join(bad)
+
+
+def test_the_cascade_guard_catches_the_jobs_dot() -> None:
+    """Positive control: the pre-fix dot recipe (background declared only on the
+    bare ``.sdot``) against the Jobs rule must be reported; the specificities are
+    the browser's (0,3,0 encapsulated vs 0,2,1)."""
+    assert specificity(f"{SCOPE} .sdot") == (0, 2, 1)
+    assert specificity(f"{SCOPE} :is(.a, .b .c)") == (0, 3, 1)
+    assert specificity(f"{SCOPE} :where(.a) .b:not(.c)") == (0, 3, 1)
+    assert encapsulated(".sdot.success") == (".sdot.success", (0, 3, 0))
+    assert encapsulated(".x ::ng-deep .sdot.success") == (".x .sdot.success", (0, 4, 0))
+    assert encapsulated(".sdot.success::before") is None
+    jobs = [("jobs-screen.css", ".sdot.success { background: var(--color-success); }")]
+    pre_fix = [([f"{SCOPE} .sdot"], {"background": "var(--d)"}), ([f"{SCOPE} .sdot.success"], {"--d": "x"})]
+    lost = cascade_losses("light", jobs, rules=pre_fix)
+    assert lost and "on background" in lost[0], f"LANE-143: the cascade guard must report the Jobs dot, got {lost}"
+    fixed = pre_fix + [([f"{SCOPE} .sdot:is(.success)"], {"background": "var(--d)"})]
+    assert cascade_losses("light", jobs, rules=fixed) == [], (
+        "LANE-143: a v2 role rule that out-ranks the component rule must clear it"
+    )

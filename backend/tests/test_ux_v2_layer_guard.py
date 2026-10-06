@@ -10,15 +10,27 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CSS_PATH = REPO_ROOT / "frontend" / "src" / "styles" / "ux-v2.css"
 ANGULAR_JSON = REPO_ROOT / "frontend" / "angular.json"
 SCOPE = 'html[data-ux="v2"]'
 
-# Box properties that would move/resize an element; only the overlay-measured
-# box-neutral selectors may declare them.
-BOX_PROPS = re.compile(r"(?<![\w-])(display|position|width|height|margin|padding)\s*:")
-BOX_ALLOW = (".kpi-icon", ".tag")
+# Properties that would hide, move or resize an element -- shorthands AND their
+# longhands / logical forms (VERIFY 1.02: a shorthand-only matcher passed
+# `.chip { margin-left: 100px }`). The allow-list is exactly what the spec names:
+# any of them on the new `.kpi-icon` element, and `.tag { padding: 0 5px }`, the
+# one box-neutral declaration the overlay measured (1px border + 1px less padding).
+BOX_PROP = re.compile(
+    r"(display|position|float|inset(-[\w-]+)?|top|right|bottom|left"
+    r"|(min-|max-)?(width|height|inline-size|block-size)"
+    r"|margin(-[\w-]+)?|padding(-[\w-]+)?|flex|flex-basis|flex-grow|flex-shrink"
+    r"|transform|translate|scale|rotate|font|font-size|line-height|gap|row-gap|column-gap"
+    r"|grid(-[\w-]+)?|visibility|zoom|aspect-ratio)"
+)
+BOX_ALLOW_ELEMENT = ".kpi-icon"
+BOX_ALLOW_DECL = (".tag", "padding", "0 5px")
 
 
 def _strip_comments(css: str) -> str:
@@ -111,14 +123,58 @@ def test_no_color_literals_outside_token_declarations() -> None:
     assert not bad, f"LANE-143: colour literal outside a --role-*/--ux-* declaration: {bad}"
 
 
-def test_no_box_properties_on_existing_elements() -> None:
+def box_violations(css: str) -> list[str]:
+    """``selector { prop: value }`` for every box-affecting declaration outside
+    the allow-list; a custom property (``--x``) never matches."""
     bad: list[str] = []
-    for head, body in parse_rules(_read()):
-        if head.startswith("@") or not BOX_PROPS.search(body):
+    for head, body in parse_rules(css):
+        if head.startswith("@"):
             continue
-        if not all(any(a in s for a in BOX_ALLOW) for s in split_selectors(head)):
-            bad.append(head)
+        for decl in (d.strip() for d in body.split(";")):
+            prop, _, value = decl.partition(":")
+            prop, value = prop.strip().lower(), " ".join(value.split())
+            if not BOX_PROP.fullmatch(prop):
+                continue
+            for sel in split_selectors(head):
+                subject = sel.split()[-1] if sel.split() else sel
+                if subject == BOX_ALLOW_ELEMENT:
+                    continue
+                if (subject, prop, value) == BOX_ALLOW_DECL:
+                    continue
+                bad.append(f"{sel} {{ {prop}: {value} }}")
+    return bad
+
+
+def test_no_box_properties_on_existing_elements() -> None:
+    bad = box_violations(_read())
     assert not bad, f"LANE-143: box property on an element the overlay never sized: {bad}"
+
+
+@pytest.mark.parametrize(
+    ("rule", "named"),
+    [
+        (f"{SCOPE} .tag {{ display: none }}", f"{SCOPE} .tag {{ display: none }}"),
+        (f"{SCOPE} .tag {{ width: 500px }}", f"{SCOPE} .tag {{ width: 500px }}"),
+        (f"{SCOPE} .chip {{ margin-left: 100px }}", f"{SCOPE} .chip {{ margin-left: 100px }}"),
+        (f"{SCOPE} .tag {{ padding: 0 6px }}", f"{SCOPE} .tag {{ padding: 0 6px }}"),
+        (f"{SCOPE} .tag {{ padding-left: 5px }}", f"{SCOPE} .tag {{ padding-left: 5px }}"),
+        (f"{SCOPE} .kpi {{ min-height: 0 }}", f"{SCOPE} .kpi {{ min-height: 0 }}"),
+        (f"{SCOPE} .card {{ transform: translateY(2px) }}", f"{SCOPE} .card {{ transform: translateY(2px) }}"),
+        (f"{SCOPE} .eyebrow {{ font-size: 12px; line-height: 2 }}", f"{SCOPE} .eyebrow {{ font-size: 12px }}"),
+        (f"{SCOPE} .row {{ gap: 4px }}", f"{SCOPE} .row {{ gap: 4px }}"),
+        (f"{SCOPE} .x {{ inset-inline-start: 0 }}", f"{SCOPE} .x {{ inset-inline-start: 0 }}"),
+    ],
+)
+def test_the_box_check_rejects_hiding_moving_and_resizing(rule: str, named: str) -> None:
+    """Negative controls (VERIFY 1.02's probes and their longhand siblings): each
+    must be reported, naming the selector and the property."""
+    assert named in box_violations(rule), f"LANE-143: the box guard let through {rule!r}: {box_violations(rule)}"
+
+
+def test_the_box_check_allows_exactly_the_spec_list() -> None:
+    allowed = f"{SCOPE} .tag {{ padding: 0 5px }}\n{SCOPE} .kpi .kpi-icon {{ position: absolute; width: 24px }}"
+    assert box_violations(allowed) == [], "LANE-143: the spec's allow-list must pass"
+    assert box_violations(f"{SCOPE} .chip {{ --pad: 4px; color: red; font-weight: 600 }}") == []
 
 
 def test_the_scope_check_rejects_an_unscoped_rule() -> None:

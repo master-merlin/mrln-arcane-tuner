@@ -162,7 +162,7 @@
                     <button class="card-head-toggle" type="button" (click)="toggle('curves')">
                         <span class="card-title">Training Curves</span>
                         @if (j.status === JobStatus.RUNNING) {
-                            <span class="chip success head-chip"><span class="dot"></span> live</span>
+                            <span class="chip success running head-chip"><span class="dot"></span> live</span>
                         }
                         <!-- Adaptive layer targeting sits here, right of "live",
                              rather than in a row of its own above the card: it

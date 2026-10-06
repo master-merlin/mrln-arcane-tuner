@@ -51,12 +51,26 @@ def parse_rules(css: str) -> list[tuple[str, str]]:
     return out
 
 
+def split_selectors(head: str) -> list[str]:
+    """Top-level selector list: a comma inside ``:is(...)`` does not split."""
+    parts, depth, cur = [], 0, ""
+    for ch in head:
+        depth += {"(": 1, ")": -1}.get(ch, 0)
+        if ch == "," and depth == 0:
+            parts.append(cur.strip())
+            cur = ""
+        else:
+            cur += ch
+    parts.append(cur.strip())
+    return parts
+
+
 def scope_violations(css: str) -> list[str]:
     bad: list[str] = []
     for head, _body in parse_rules(css):
         if head.startswith("@"):
             continue
-        for sel in (s.strip() for s in head.split(",")):
+        for sel in split_selectors(head):
             if sel and not sel.startswith(SCOPE):
                 bad.append(sel)
     return bad
@@ -102,7 +116,7 @@ def test_no_box_properties_on_existing_elements() -> None:
     for head, body in parse_rules(_read()):
         if head.startswith("@") or not BOX_PROPS.search(body):
             continue
-        if not all(any(a in s for a in BOX_ALLOW) for s in head.split(",")):
+        if not all(any(a in s for a in BOX_ALLOW) for s in split_selectors(head)):
             bad.append(head)
     assert not bad, f"LANE-143: box property on an element the overlay never sized: {bad}"
 
@@ -112,3 +126,5 @@ def test_the_scope_check_rejects_an_unscoped_rule() -> None:
     assert scope_violations(f"{SCOPE} .a {{ color: red }}\n.chip {{ color: red }}") == [".chip"]
     assert scope_violations(f"{SCOPE} .a, .b {{ color: red }}") == [".b"]
     assert scope_violations("@media (x) { .chip { color: red } }") == [".chip"]
+    # a comma inside :is() belongs to the scoped selector; a top-level one does not
+    assert scope_violations(f"{SCOPE} :is(.a, .b), .c {{ color: red }}") == [".c"]

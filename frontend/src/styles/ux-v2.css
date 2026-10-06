@@ -10,6 +10,170 @@
 
 /* L1 — status role tokens and the pill / tag / label / dot primitives */
 
+/* P1 · one hue per role, declared once; -fg / -bg / -line derive from it per
+   theme. Every value is a contrast contract measured by
+   backend/tests/test_status_contrast_guard.py (text 4.5:1, line and dot 3:1,
+   as composited). The -bg tint mixes in oklab so the role keeps its hue (an
+   oklch mix with a near-grey surface drags the hue toward the surface's). */
+html[data-ux="v2"] {
+  --role-success: oklch(0.68 0.14 155);
+  --role-warning: oklch(0.75 0.16 75);
+  --role-danger: oklch(0.63 0.17 25);
+  --role-info: oklch(0.70 0.13 240);
+  --role-neutral: oklch(0.66 0.02 265);
+  --role-running: oklch(0.72 0.12 185);
+  --role-queued: oklch(0.68 0.07 275);
+  --role-paused: oklch(0.68 0.16 300);
+  --ux-pill-fade: 20%;
+  --ux-tint-fg: white 12%;
+  --ux-tint-bg: var(--color-surface-low) 86%;
+  --ux-tint-line: transparent 0%;
+  --st-success-fg: color-mix(in oklch, var(--role-success), white 12%);
+  --st-success-bg: color-mix(in oklab, var(--role-success), var(--color-surface-low) 86%);
+  --st-success-line: var(--role-success);
+  --st-warning-fg: color-mix(in oklch, var(--role-warning), white 12%);
+  --st-warning-bg: color-mix(in oklab, var(--role-warning), var(--color-surface-low) 86%);
+  --st-warning-line: var(--role-warning);
+  --st-danger-fg: color-mix(in oklch, var(--role-danger), white 12%);
+  --st-danger-bg: color-mix(in oklab, var(--role-danger), var(--color-surface-low) 86%);
+  --st-danger-line: var(--role-danger);
+  --st-info-fg: color-mix(in oklch, var(--role-info), white 12%);
+  --st-info-bg: color-mix(in oklab, var(--role-info), var(--color-surface-low) 86%);
+  --st-info-line: var(--role-info);
+  --st-neutral-fg: color-mix(in oklch, var(--role-neutral), white 12%);
+  --st-neutral-bg: color-mix(in oklab, var(--role-neutral), var(--color-surface-low) 86%);
+  --st-neutral-line: var(--role-neutral);
+  --st-running-fg: color-mix(in oklch, var(--role-running), white 12%);
+  --st-running-bg: color-mix(in oklab, var(--role-running), var(--color-surface-low) 86%);
+  --st-running-line: var(--role-running);
+  --st-queued-fg: color-mix(in oklch, var(--role-queued), white 12%);
+  --st-queued-bg: color-mix(in oklab, var(--role-queued), var(--color-surface-low) 86%);
+  --st-queued-line: var(--role-queued);
+  --st-paused-fg: color-mix(in oklch, var(--role-paused), white 12%);
+  --st-paused-bg: color-mix(in oklab, var(--role-paused), var(--color-surface-low) 86%);
+  --st-paused-line: var(--role-paused);
+}
+html[data-ux="v2"][data-theme="light"] {
+  --ux-brand-text: oklch(0.50 0.13 55);
+  --color-brand-light: var(--ux-brand-text);
+  --ux-tint-fg: black 35%;
+  --ux-tint-bg: var(--color-base) 88%;
+  --ux-tint-line: black 15%;
+  --st-success-fg: color-mix(in oklch, var(--role-success), black 35%);
+  --st-success-bg: color-mix(in oklab, var(--role-success), var(--color-base) 88%);
+  --st-success-line: color-mix(in oklch, var(--role-success), black 20%);
+  --st-warning-fg: color-mix(in oklch, var(--role-warning), black 40%);
+  --st-warning-bg: color-mix(in oklab, var(--role-warning), var(--color-base) 88%);
+  --st-warning-line: color-mix(in oklch, var(--role-warning), black 25%);
+  --st-danger-fg: color-mix(in oklch, var(--role-danger), black 30%);
+  --st-danger-bg: color-mix(in oklab, var(--role-danger), var(--color-base) 88%);
+  --st-danger-line: color-mix(in oklch, var(--role-danger), black 10%);
+  --st-info-fg: color-mix(in oklch, var(--role-info), black 35%);
+  --st-info-bg: color-mix(in oklab, var(--role-info), var(--color-base) 88%);
+  --st-info-line: color-mix(in oklch, var(--role-info), black 20%);
+  --st-neutral-fg: color-mix(in oklch, var(--role-neutral), black 35%);
+  --st-neutral-bg: color-mix(in oklab, var(--role-neutral), var(--color-base) 88%);
+  --st-neutral-line: color-mix(in oklch, var(--role-neutral), black 15%);
+  --st-running-fg: color-mix(in oklch, var(--role-running), black 38%);
+  --st-running-bg: color-mix(in oklab, var(--role-running), var(--color-base) 88%);
+  --st-running-line: color-mix(in oklch, var(--role-running), black 22%);
+  --st-queued-fg: color-mix(in oklch, var(--role-queued), black 35%);
+  --st-queued-bg: color-mix(in oklab, var(--role-queued), var(--color-base) 88%);
+  --st-queued-line: color-mix(in oklch, var(--role-queued), black 15%);
+  --st-paused-fg: color-mix(in oklch, var(--role-paused), black 35%);
+  --st-paused-bg: color-mix(in oklab, var(--role-paused), var(--color-base) 88%);
+  --st-paused-line: color-mix(in oklch, var(--role-paused), black 15%);
+}
+
+/* P2 · ONE pill recipe: soft bg, 1px line, fg text, 600, +0.02em. Each role
+   rule only re-points --p-*; .running comes after .success so the additive
+   `chip success running` reads as running under v2 and as success without it. */
+html[data-ux="v2"] .chip {
+  --p-fg: var(--st-neutral-fg); --p-bg: var(--st-neutral-bg); --p-line: var(--st-neutral-line);
+  background: var(--p-bg); color: var(--p-fg);
+  border-color: color-mix(in oklch, var(--p-line), transparent var(--ux-pill-fade));
+  font-weight: 600; letter-spacing: 0.02em;
+}
+html[data-ux="v2"] .chip.neutral { --p-fg: var(--st-neutral-fg); --p-bg: var(--st-neutral-bg); --p-line: var(--st-neutral-line); }
+html[data-ux="v2"] .chip.success { --p-fg: var(--st-success-fg); --p-bg: var(--st-success-bg); --p-line: var(--st-success-line); }
+html[data-ux="v2"] .chip.warning { --p-fg: var(--st-warning-fg); --p-bg: var(--st-warning-bg); --p-line: var(--st-warning-line); }
+html[data-ux="v2"] .chip.danger { --p-fg: var(--st-danger-fg); --p-bg: var(--st-danger-bg); --p-line: var(--st-danger-line); }
+html[data-ux="v2"] .chip.info { --p-fg: var(--st-info-fg); --p-bg: var(--st-info-bg); --p-line: var(--st-info-line); }
+html[data-ux="v2"] .chip.running { --p-fg: var(--st-running-fg); --p-bg: var(--st-running-bg); --p-line: var(--st-running-line); }
+html[data-ux="v2"] .chip.queued { --p-fg: var(--st-queued-fg); --p-bg: var(--st-queued-bg); --p-line: var(--st-queued-line); }
+html[data-ux="v2"] .chip.paused { --p-fg: var(--st-paused-fg); --p-bg: var(--st-paused-bg); --p-line: var(--st-paused-line); }
+/* brand / violet / teal are domain hues, not status roles: the same tint recipe */
+html[data-ux="v2"] .chip.brand { --p-fg: color-mix(in oklch, var(--color-brand), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-brand), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-brand), var(--ux-tint-line)); }
+html[data-ux="v2"] .chip.violet { --p-fg: color-mix(in oklch, var(--color-violet), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-violet), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-violet), var(--ux-tint-line)); }
+html[data-ux="v2"] .chip.teal { --p-fg: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-chart-lr), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-line)); }
+html[data-ux="v2"] .chip.solid { --p-fg: var(--color-text-secondary); --p-bg: var(--color-surface-high); --p-line: var(--color-border-bright); }
+html[data-ux="v2"] .chip .dot { background: var(--p-line); }
+
+/* tag = the mono uppercase variant of the same recipe (a 1px border, padding
+   -1px, so the box is unchanged) */
+html[data-ux="v2"] .tag {
+  --p-fg: var(--st-neutral-fg); --p-bg: var(--st-neutral-bg); --p-line: var(--st-neutral-line);
+  background: var(--p-bg); color: var(--p-fg);
+  border: 1px solid color-mix(in oklch, var(--p-line), transparent var(--ux-pill-fade));
+  padding: 0 5px; font-weight: 600; border-radius: 4px;
+}
+html[data-ux="v2"] .tag.success { --p-fg: var(--st-success-fg); --p-bg: var(--st-success-bg); --p-line: var(--st-success-line); }
+html[data-ux="v2"] .tag.warning { --p-fg: var(--st-warning-fg); --p-bg: var(--st-warning-bg); --p-line: var(--st-warning-line); }
+html[data-ux="v2"] .tag.danger { --p-fg: var(--st-danger-fg); --p-bg: var(--st-danger-bg); --p-line: var(--st-danger-line); }
+html[data-ux="v2"] .tag.info { --p-fg: var(--st-info-fg); --p-bg: var(--st-info-bg); --p-line: var(--st-info-line); }
+html[data-ux="v2"] .tag.brand { --p-fg: color-mix(in oklch, var(--color-brand), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-brand), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-brand), var(--ux-tint-line)); }
+html[data-ux="v2"] .tag.violet { --p-fg: color-mix(in oklch, var(--color-violet), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-violet), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-violet), var(--ux-tint-line)); }
+html[data-ux="v2"] .tag.teal { --p-fg: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-chart-lr), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-line)); }
+
+/* ad-hoc look-alikes (AUDIT §2): their hue is set in component CSS, so the
+   recipe derives from the element's own currentColor. Box size untouched. */
+html[data-ux="v2"] :is(.df-chip, .dirty-chip, .cm-chip, .temp-chip, .head-chip, .head-chip-sm, .ta-chip, .ws-health-chip,
+  .badge-architecture, .ai-badge, .ds-missing-badge, .vtp-badge) {
+  background: color-mix(in oklab, currentColor 12%, var(--color-surface-low));
+  border-color: color-mix(in oklch, currentColor, transparent 62%);
+  font-weight: 600; letter-spacing: 0.02em;
+}
+html[data-ux="v2"] :is(.si-tag, .ca-ver-tag, .sample-prompt-tag) {
+  background: color-mix(in oklab, currentColor 10%, var(--color-surface-low));
+  border-color: color-mix(in oklch, currentColor, transparent 65%);
+  font-weight: 600; letter-spacing: 0.02em;
+}
+html[data-ux="v2"][data-theme="light"] :is(.df-chip, .dirty-chip, .cm-chip, .temp-chip, .head-chip, .head-chip-sm, .ta-chip, .ws-health-chip,
+  .badge-architecture, .ai-badge, .ds-missing-badge, .vtp-badge, .si-tag, .ca-ver-tag, .sample-prompt-tag) {
+  background-color: color-mix(in oklab, currentColor 9%, var(--color-base));
+}
+/* a look-alike that is also a role .chip: the role recipe wins */
+html[data-ux="v2"] :is(.temp-chip, .head-chip, .head-chip-sm).chip {
+  background: var(--p-bg);
+  border-color: color-mix(in oklch, var(--p-line), transparent var(--ux-pill-fade));
+}
+
+/* P2 · ONE label-caps recipe (600 / 0.08em / muted); sizes untouched */
+html[data-ux="v2"] :is(.kpi-label, .card-title) { font-weight: 600; letter-spacing: 0.08em; color: var(--color-text-muted); }
+html[data-ux="v2"] .eyebrow { font-weight: 600; letter-spacing: 0.08em; }
+html[data-ux="v2"] .field-label { font-weight: 600; letter-spacing: 0.01em; color: var(--color-text-muted); }
+/* Tailwind labels: weight only (0.08em tracking wrapped "Last Scanned", +15px) */
+html[data-ux="v2"] [class*="uppercase"][class*="tracking-"]:not(.tag):not(.chip):not(.btn):not(.eyebrow) { font-weight: 600; }
+
+/* P2 · ONE dot: the role line + a soft 2px ring (box-shadow, no layout) */
+html[data-ux="v2"] .sdot { --d: var(--st-neutral-line); background: var(--d); box-shadow: 0 0 0 2px color-mix(in oklch, var(--d), transparent 78%); }
+html[data-ux="v2"] .sdot.neutral { --d: var(--st-neutral-line); }
+html[data-ux="v2"] .sdot.success { --d: var(--st-success-line); }
+html[data-ux="v2"] .sdot.warning { --d: var(--st-warning-line); }
+html[data-ux="v2"] .sdot.danger { --d: var(--st-danger-line); }
+html[data-ux="v2"] .sdot.info { --d: var(--st-info-line); }
+html[data-ux="v2"] .sdot.running { --d: var(--st-running-line); }
+html[data-ux="v2"] .sdot.queued { --d: var(--st-queued-line); }
+html[data-ux="v2"] .sdot.paused { --d: var(--st-paused-line); }
+html[data-ux="v2"] .sdot.brand { --d: var(--color-brand); }
+html[data-ux="v2"] :is(.side-dot, .rs-dot, .tl-dot, .ttoc-dot, .kpi-status .dot) { box-shadow: 0 0 0 2px color-mix(in oklch, var(--st-neutral-line), transparent 78%); }
+
+/* P1 (c) · light: the semantic text utilities read at AA (closes DECISION-22) */
+html[data-ux="v2"][data-theme="light"] .text-success { color: var(--st-success-fg); }
+html[data-ux="v2"][data-theme="light"] .text-warning { color: var(--st-warning-fg); }
+html[data-ux="v2"][data-theme="light"] .text-danger { color: var(--st-danger-fg); }
+html[data-ux="v2"][data-theme="light"] :is(.text-brand, .text-brand-light) { color: var(--ux-brand-text); }
+
 /* L2 — cards and KPI tiles */
 
 /* L3 — buttons, focus ring and modals */

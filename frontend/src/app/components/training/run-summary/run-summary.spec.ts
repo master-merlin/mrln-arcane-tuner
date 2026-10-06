@@ -30,8 +30,8 @@ describe('RunSummaryComponent — status colours match the redesign', () => {
         expect(c['statusTone']()).toBe('warning');
     });
 
-    it('running → success', () => {
-        expect(comp('running')['statusTone']()).toBe('success');
+    it('running → success, plus the running role class for v2 (LANE-143, additive)', () => {
+        expect(comp('running')['statusTone']()).toBe('success running');
     });
 
     it('failed → danger', () => {

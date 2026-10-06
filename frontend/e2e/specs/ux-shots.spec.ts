@@ -26,6 +26,45 @@ const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const SHOTS_ROOT = path.join(REPO_ROOT, '.agent', 'workdir', 'lane-143', 'shots');
 const OUT = path.join(SHOTS_ROOT, SET);
 
+/**
+ * Pixels of two same-size PNGs whose largest channel delta exceeds `noise`.
+ * Chromium's GPU raster is not byte-stable between runs: two captures of the
+ * SAME build differ by +-1 on a few dozen anti-aliased edge pixels (measured:
+ * 35 px on L0 vs L0m training/dark). A real rendering change moves whole
+ * glyphs or fills by far more, so the compare tolerates +-NOISE per channel
+ * and still demands 0 pixels beyond it. Wall-clock text is excluded too: the
+ * mock's job timestamps are `Date.now()`-relative and the browser clock is
+ * real, so "11:21 elapsed" / "started 10:27 PM" / "finish 00:32" differ on
+ * every run of the SAME build (measured: 303 px beyond +-2 on L0 vs L0m
+ * jobs/dark, all inside the run header and the ETA tile). The skipped boxes
+ * are those of elements whose OWN text holds a clock time (h:mm), listed per
+ * file in baseline-diff.md.
+ */
+const NOISE = 2;
+type Rect = { x: number; y: number; w: number; h: number };
+function pixelDiff(a: Buffer, b: Buffer, skip: Rect[] = []): { size: string; beyond: number; noise: number } {
+    // The PNG codec Playwright itself ships; no new dependency.
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { PNG } = require('playwright-core/lib/utilsBundle');
+    const pa = PNG.sync.read(a);
+    const pb = PNG.sync.read(b);
+    if (pa.width !== pb.width || pa.height !== pb.height) {
+        return { size: `${pa.width}x${pa.height} vs ${pb.width}x${pb.height}`, beyond: -1, noise: 0 };
+    }
+    let beyond = 0;
+    let noise = 0;
+    for (let i = 0; i < pa.data.length; i += 4) {
+        const px = (i / 4) % pa.width;
+        const py = Math.floor(i / 4 / pa.width);
+        if (skip.some((r) => px >= r.x && px < r.x + r.w && py >= r.y && py < r.y + r.h)) continue;
+        let d = 0;
+        for (let c = 0; c < 4; c++) d = Math.max(d, Math.abs(pa.data[i + c] - pb.data[i + c]));
+        if (d > NOISE) beyond++;
+        else if (d > 0) noise++;
+    }
+    return { size: `${pa.width}x${pa.height}`, beyond, noise };
+}
+
 const SCREENS = ['datasets', 'training', 'templates', 'server', 'jobs', ...(WITH_ICONS ? ['projects'] : [])];
 const THEMES = ['dark', 'light'] as const;
 const ICON_COUNTS: Record<string, number> = { jobs: 6, datasets: 6, server: 4, projects: 4, training: 6 };
@@ -67,6 +106,7 @@ async function settle(page: import('@playwright/test').Page, screen: string): Pr
 }
 
 const sweepRows: string[] = [];
+const baselineRows: string[] = [];
 const manifest: { file: string; px: string; bytes: number; sha256: string }[] = [];
 
 test.beforeAll(() => {
@@ -114,10 +154,26 @@ for (const screen of SCREENS) {
                 await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
                 if (state === 'off' && BASELINE) {
                     const base = path.join(SHOTS_ROOT, BASELINE, file);
+                    const clocks: Rect[] = await page.evaluate(() =>
+                        Array.from(document.body.querySelectorAll('*'))
+                            .filter((el) =>
+                                Array.from(el.childNodes).some(
+                                    (n) => n.nodeType === Node.TEXT_NODE && /\b\d{1,2}:\d{2}\b/.test(n.textContent ?? ''),
+                                ),
+                            )
+                            .map((el) => {
+                                const r = el.getBoundingClientRect();
+                                return { x: Math.floor(r.x) - 1, y: Math.floor(r.y) - 1, w: Math.ceil(r.width) + 3, h: Math.ceil(r.height) + 3 };
+                            })
+                            .filter((r) => r.w > 3 && r.h > 3),
+                    );
+                    const d = pixelDiff(fs.readFileSync(path.join(OUT, file)), fs.readFileSync(base), clocks);
+                    const skipped = clocks.map((r) => `${r.w}x${r.h}@${r.x},${r.y}`).join(' ') || '-';
+                    baselineRows.push(`| ${file} | ${d.size} | ${d.beyond} | ${d.noise} | ${skipped} |`);
                     expect(
-                        fs.readFileSync(path.join(OUT, file)).equals(fs.readFileSync(base)),
-                        `LANE-143: ${file} differs from baseline ${BASELINE}`,
-                    ).toBe(true);
+                        d.beyond,
+                        `LANE-143: ${file} differs from baseline ${BASELINE} in ${d.beyond} px beyond +-${NOISE} (${d.size})`,
+                    ).toBe(0);
                 }
                 return heights;
             };
@@ -209,5 +265,11 @@ test('LANE-143 manifest', async () => {
         path.join(OUT, 'sweep.md'),
         ['| screen | theme | elements | height changes | structural diffs |', '|---|---|---|---|---|', ...sweepRows].join('\n') + '\n',
     );
+    if (BASELINE) {
+        fs.writeFileSync(
+            path.join(OUT, 'baseline-diff.md'),
+            [`OFF vs ${BASELINE} (tolerance +-${NOISE} per channel)`, '', '| file | px | beyond | noise | clock text skipped |', '|---|---|---|---|---|', ...baselineRows].join('\n') + '\n',
+        );
+    }
     expect(manifest.length).toBe(expected);
 });

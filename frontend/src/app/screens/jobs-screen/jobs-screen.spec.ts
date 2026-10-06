@@ -881,6 +881,10 @@ describe('JobsScreen adaptive status chip (T11)', () => {
         const chips = [...head!.querySelectorAll('.chip')] as HTMLElement[];
         const live = chips.find(c => c.textContent!.trim().endsWith('live'));
         expect(live).toBeTruthy();
+        // LANE-143: the live chip carries the running role additively over success.
+        expect([...live!.classList], 'LANE-143: live chip must carry success AND running').toEqual(
+            expect.arrayContaining(['success', 'running']),
+        );
         expect(chips.indexOf(chip)).toBe(chips.indexOf(live!) + 1);
     });
 });

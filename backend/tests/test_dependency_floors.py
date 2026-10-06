@@ -238,6 +238,26 @@ def test_held_pins_stay_put():
     assert not bad, "\n".join(bad)
 
 
+def test_datasets_floor_closes_alert_152():
+    pins = _pins()
+    have = pins.get("datasets", ("absent", ""))[0]
+    assert have != "absent" and _ver(have) >= (5, 0, 1), (
+        f"LANE-142: datasets is {have} in backend/requirements.txt; the floor is "
+        "5.0.1 (Dependabot alert 152, GHSA-379c-qx7v-6h59), PR #45 superseded"
+    )
+    # datasets 5.0.1 declares dill<0.4.2, multiprocess<0.70.20, fsspec[http]<=2026.6.0.
+    for name, want in {
+        "dill": "0.4.1",
+        "multiprocess": "0.70.19",
+        "fsspec": "2026.6.0",
+    }.items():
+        got = pins.get(name, ("absent", ""))[0]
+        assert got == want, (
+            f"LANE-142: {name} is {got} in backend/requirements.txt; "
+            f"datasets 5.0.1 lifts the hold to {want}"
+        )
+
+
 def _ver(text: str) -> tuple[int, ...]:
     """Leading numeric release tuple of a version string ('5.0.3' -> (5, 0, 3))."""
     m = re.match(r"^\d+(?:\.\d+)*", text.strip())

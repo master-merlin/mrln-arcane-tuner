@@ -1,0 +1,15 @@
+/*
+ * LANE-143 — the v2 design language, one stylesheet layer.
+ *
+ * Invariant: EVERY rule below is scoped under `html[data-ux="v2"]` (theme
+ * variants `html[data-ux="v2"][data-theme="light"]`), unlayered so it
+ * out-ranks `@layer components`, with no `!important`. With no `data-ux`
+ * attribute this file contributes nothing. Colour, border colour, shadow,
+ * weight and tracking only: nothing moves, shrinks or disappears.
+ */
+
+/* L1 — status role tokens and the pill / tag / label / dot primitives */
+
+/* L2 — cards and KPI tiles */
+
+/* L3 — buttons, focus ring and modals */

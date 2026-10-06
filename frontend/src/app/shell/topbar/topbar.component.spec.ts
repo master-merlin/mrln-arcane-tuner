@@ -7,6 +7,7 @@ import { provideHttpClientTesting, HttpTestingController } from '@angular/common
 import { TopbarComponent } from './topbar.component';
 import { ScopeStore } from '../../state/scope.store';
 import { ThemeStore } from '../../state/theme.store';
+import { UxStore } from '../../state/ux.store';
 import { ProjectService } from '../../services/project.service';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { TaskCenterComponent } from './task-center.component';
@@ -130,4 +131,43 @@ describe('TopbarComponent — LLM availability icon', () => {
     });
 
     afterEach(() => drainLlmProbe());
+});
+
+describe('TopbarComponent — design-language switch', () => {
+    function mountSwitch() {
+        localStorage.clear();
+        const toggle = vi.fn();
+        TestBed.configureTestingModule({
+            imports: [TopbarComponent],
+            providers: [
+                { provide: Router, useValue: { url: '/datasets', events: of() } },
+                { provide: ScopeStore, useValue: { projectId: () => null, scope: () => ({ kind: 'global' }) } },
+                { provide: ThemeStore, useValue: { theme: () => 'dark', toggle: vi.fn() } },
+                { provide: UxStore, useValue: { v2: () => false, toggle } },
+                { provide: ProjectService, useValue: { allProjects: () => [] } },
+                provideHttpClient(withFetch()),
+                provideHttpClientTesting(),
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
+            ],
+        }).overrideComponent(TopbarComponent, {
+            remove: { imports: [TaskCenterComponent, DownloadIndicatorComponent, NotificationPanelComponent] },
+            add: { schemas: [NO_ERRORS_SCHEMA] },
+        });
+        const fixture = TestBed.createComponent(TopbarComponent);
+        fixture.detectChanges();
+        return { fixture, toggle };
+    }
+
+    afterEach(() => drainLlmProbe());
+
+    it('renders the ux-toggle button immediately before the theme toggle and clicks UxStore.toggle()', () => {
+        const { fixture, toggle } = mountSwitch();
+        const el: HTMLElement = fixture.nativeElement;
+        const btn = el.querySelector<HTMLButtonElement>('[data-testid="ux-toggle"]');
+        expect(btn, 'LANE-143: the topbar must carry [data-testid="ux-toggle"]').toBeTruthy();
+        const next = btn!.nextElementSibling as HTMLElement | null;
+        expect(next?.getAttribute('aria-label'), 'LANE-143: ux-toggle must precede the theme toggle').toBe('Switch to light theme');
+        btn!.click();
+        expect(toggle, 'LANE-143: clicking ux-toggle must call UxStore.toggle()').toHaveBeenCalledTimes(1);
+    });
 });

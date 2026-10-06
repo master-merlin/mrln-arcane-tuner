@@ -18,6 +18,7 @@ import { GpuUnloadButtonComponent } from './gpu-unload-button.component';
 import { GpuResidencyStore } from '../../state/gpu-residency.store';
 import { ScopeStore } from '../../state/scope.store';
 import { ThemeStore } from '../../state/theme.store';
+import { UxStore } from '../../state/ux.store';
 import { ProjectService } from '../../services/project.service';
 import { LlmAvailabilityStore } from '../../state/llm-availability.store';
 
@@ -46,6 +47,7 @@ export class TopbarComponent {
     private router = inject(Router);
     protected scope = inject(ScopeStore);
     protected theme = inject(ThemeStore);
+    protected ux = inject(UxStore);
     protected projects = inject(ProjectService);
     protected llm = inject(LlmAvailabilityStore);
     private gpu = inject(GpuResidencyStore);
@@ -79,6 +81,9 @@ export class TopbarComponent {
 
     /** Icon shows the theme you'll switch TO: Sun in dark, Moon in light. */
     protected themeIcon = computed(() => (this.theme.theme() === 'dark' ? 'Sun' : 'Moon'));
+    protected uxLabel = computed(() =>
+        this.ux.v2() ? 'Switch to the classic design language' : 'Switch to the v2 design language',
+    );
     protected themeLabel = computed(() =>
         this.theme.theme() === 'dark' ? 'Switch to light theme' : 'Switch to dark theme',
     );

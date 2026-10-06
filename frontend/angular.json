@@ -52,7 +52,8 @@
             ],
             "styles": [
               "node_modules/uplot/dist/uPlot.min.css",
-              "src/styles.css"
+              "src/styles.css",
+              "src/styles/ux-v2.css"
             ]
           },
           "configurations": {

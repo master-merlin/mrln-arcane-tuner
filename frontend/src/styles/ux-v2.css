@@ -276,11 +276,21 @@ html[data-ux="v2"] .kpi .kpi-icon {
   pointer-events: none;
 }
 html[data-ux="v2"] .kpi.compact .kpi-icon { top: 8px; right: 8px; width: 22px; height: 22px; }
-/* a tile that projects its own top-right badge (the Datasets HPS "i", 15 px at
-   top 10 / right 12) keeps it where it is: the square steps left of it with a
-   6 px gap (12 + 15 + 6 = 33 px), same top as every other square in the rail.
-   The shot script's overlap check (painted boxes and glyphs per tile) decides. */
-html[data-ux="v2"] .kpi:has(> .ds-hps-info) .kpi-icon { right: 33px; }
+/* the Datasets HPS help badge (projected into the label, absolutely placed at the
+   tile's top-right in the classic rendering) sits directly after the eyebrow text:
+   its offsets go to auto, so an absolutely positioned box takes its STATIC position
+   -- inline, right after "HPS - MEDIAN" -- and adds nothing to the label's line
+   height. The icon square then sits top-right like every other tile.
+   Recorded user override 2026-10-07. */
+html[data-ux="v2"] .kpi-label .ds-hps-info { top: auto; right: auto; margin-left: 6px; margin-top: -2px; }
+
+/* the Datasets library card's "N suppressed" chip overflowed its card on main (the
+   counts row cannot hold it: measured 50 px past the card OFF, v2's 600 weight adds
+   4 px). Recorded user override 2026-10-07: it moves to the card's top-right corner,
+   one rule; a card whose preview already carries the project pill (top 8 / right 8)
+   gets it one line lower. */
+html[data-ux="v2"] .ds-card-excluded { position: absolute; top: 8px; right: 8px; z-index: 1; }
+html[data-ux="v2"] .ds-card:has(.ds-card-project) .ds-card-excluded { top: 38px; }
 
 /* L3 — buttons, focus ring and modals */
 

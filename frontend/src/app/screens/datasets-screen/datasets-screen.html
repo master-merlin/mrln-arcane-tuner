@@ -69,7 +69,7 @@
         <app-kpi-tile label="MASKED" icon="Crop" [value]="kpis().masked" accent="danger" [sub]="maskedSub()"/>
         <app-kpi-tile label="CACHED" icon="HardDrive" [value]="kpis().cached" accent="violet" [sub]="cachedSub()"/>
         <app-kpi-tile label="HPS — MEDIAN" icon="Sparkles" [value]="hpsMedianLabel()" accent="warning" [sub]="hpsRangeLabel()">
-            <span class="ds-hps-info" role="img" tabindex="0"
+            <span class="ds-hps-info" kpiLabelAddon role="img" tabindex="0"
                   aria-label="What is HPS?"
                   [title]="hpsLegend">i</span>
             <div class="ds-mini-histo">

@@ -30,7 +30,20 @@ BOX_PROP = re.compile(
     r"|grid(-[\w-]+)?|visibility|zoom|aspect-ratio)"
 )
 BOX_ALLOW_ELEMENT = ".kpi-icon"
-BOX_ALLOW_DECL = (".tag", "padding", "0 5px")
+BOX_ALLOW_DECLS = {
+    (".tag", "padding", "0 5px"),
+    # the user's two recorded overrides of 2026-10-07 (exact declarations, nothing else):
+    # the HPS help badge sits inline after the eyebrow text (static position, no height)...
+    (".ds-hps-info", "top", "auto"),
+    (".ds-hps-info", "right", "auto"),
+    (".ds-hps-info", "margin-left", "6px"),
+    (".ds-hps-info", "margin-top", "-2px"),
+    # ...and the library card's "N suppressed" chip moves to the card's top-right corner.
+    (".ds-card-excluded", "position", "absolute"),
+    (".ds-card-excluded", "top", "8px"),
+    (".ds-card-excluded", "right", "8px"),
+    (".ds-card-excluded", "top", "38px"),
+}
 
 
 def _strip_comments(css: str) -> str:
@@ -139,7 +152,7 @@ def box_violations(css: str) -> list[str]:
                 subject = sel.split()[-1] if sel.split() else sel
                 if subject == BOX_ALLOW_ELEMENT:
                     continue
-                if (subject, prop, value) == BOX_ALLOW_DECL:
+                if (subject, prop, value) in BOX_ALLOW_DECLS:
                     continue
                 bad.append(f"{sel} {{ {prop}: {value} }}")
     return bad
@@ -161,6 +174,8 @@ def test_no_box_properties_on_existing_elements() -> None:
         (f"{SCOPE} .kpi {{ min-height: 0 }}", f"{SCOPE} .kpi {{ min-height: 0 }}"),
         (f"{SCOPE} .card {{ transform: translateY(2px) }}", f"{SCOPE} .card {{ transform: translateY(2px) }}"),
         (f"{SCOPE} .eyebrow {{ font-size: 12px; line-height: 2 }}", f"{SCOPE} .eyebrow {{ font-size: 12px }}"),
+        (f"{SCOPE} .ds-hps-info {{ display: none }}", f"{SCOPE} .ds-hps-info {{ display: none }}"),
+        (f"{SCOPE} .ds-card-excluded {{ margin-left: 9px }}", f"{SCOPE} .ds-card-excluded {{ margin-left: 9px }}"),
         (f"{SCOPE} .row {{ gap: 4px }}", f"{SCOPE} .row {{ gap: 4px }}"),
         (f"{SCOPE} .x {{ inset-inline-start: 0 }}", f"{SCOPE} .x {{ inset-inline-start: 0 }}"),
     ],

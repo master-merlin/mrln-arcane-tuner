@@ -43,7 +43,7 @@ export type KpiAccent = 'brand' | 'success' | 'warning' | 'danger' | 'teal' | 'v
             @if (ux.v2() && icon(); as i) {
                 <span class="kpi-icon" aria-hidden="true"><app-ico [name]="i" [size]="14"/></span>
             }
-            <div class="kpi-label" data-testid="kpi-tile-label">{{ label() }}</div>
+            <div class="kpi-label" data-testid="kpi-tile-label">{{ label() }}<ng-content select="[kpiLabelAddon]"/></div>
             <div class="kpi-value" data-testid="kpi-tile-value">
                 {{ displayValue() ?? value() }}@if (unit(); as u) {<span class="unit">{{ u }}</span>}
             </div>

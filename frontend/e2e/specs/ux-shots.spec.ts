@@ -181,6 +181,35 @@ function iconOverlaps(): string[] {
     return hits;
 }
 
+/**
+ * User polish 2026-10-07: no `.chip`/`.tag` inside a `.ds-card` may extend past its card's
+ * box. Measured on main (switch OFF) the "N suppressed" chip already overflowed by 50 px, so
+ * the guard is asserted for the ON state only (the fix lives in ux-v2.css). Runs in the page.
+ */
+function cardChipOverflows(): string[] {
+    const hits: string[] = [];
+    for (const card of Array.from(document.querySelectorAll('.ds-card'))) {
+        const b = card.getBoundingClientRect();
+        for (const c of Array.from(card.querySelectorAll('.chip, .tag'))) {
+            const r = c.getBoundingClientRect();
+            if (r.width > 0 && (r.right > b.right + 0.5 || r.left < b.left - 0.5)) {
+                hits.push(`${(c.textContent ?? '').trim().slice(0, 24)} [${Math.round(r.left)}..${Math.round(r.right)}] past card [${Math.round(b.left)}..${Math.round(b.right)}]`);
+            }
+        }
+    }
+    return hits;
+}
+
+/** Runs without UX_SHOTS: the overflow check fires on a chip past its card and stays quiet inside it. */
+test('LANE-143 the card chip overflow check fires on an overflowing chip (negative control)', async ({ page }) => {
+    const card = (chipLeft: number) => `
+        <div class="ds-card" style="position:relative;width:200px;height:80px"><span class="chip" style="position:absolute;top:4px;left:${chipLeft}px;width:60px">x suppressed</span></div>`;
+    await page.setContent(card(170));
+    expect((await page.evaluate(cardChipOverflows)).length, 'LANE-143: a chip past its card must be reported').toBeGreaterThan(0);
+    await page.setContent(card(10));
+    expect(await page.evaluate(cardChipOverflows), 'LANE-143: a chip inside its card must not be reported').toEqual([]);
+});
+
 /** Runs without UX_SHOTS: the overlap check fires on an overlap and stays quiet without one. */
 test('LANE-143 the icon overlap check fires on an overlap (negative control)', async ({ page }) => {
     const tile = (badgeRight: number) => `
@@ -273,6 +302,11 @@ async function sweep(page: import('@playwright/test').Page): Promise<Box> {
         };
         for (const el of Array.from(document.body.querySelectorAll('*'))) {
             if (el.closest('.kpi-icon')) continue;
+            // The ONE recorded exception (user override 2026-10-07): a Datasets card whose counts
+            // row holds the "N suppressed" chip loses the wrapped second line when v2 lifts the chip
+            // to the card's corner; the row and its three count spans change height, the CARD does not.
+            const counts = el.closest('.ds-card-counts');
+            if (counts && counts.querySelector('.ds-card-excluded')) continue;
             out[key(el)] = Math.round(el.getBoundingClientRect().height * 100) / 100;
         }
         return out;
@@ -407,6 +441,10 @@ test.describe('LANE-143 UX shots', () => {
                         expect(outside, `LANE-143: ${outside} icon square(s) outside their tile on ${screen}`).toBe(0);
                         const overlaps = await page.evaluate(iconOverlaps);
                         expect(overlaps, `LANE-143: a .kpi-icon overlaps tile content on ${screen}/${theme}: ${overlaps.join('; ')}`).toEqual([]);
+                    }
+                    if (state === 'on' && screen === 'datasets') {
+                        const over = await page.evaluate(cardChipOverflows);
+                        expect(over, `LANE-143: a chip/tag extends past its .ds-card on ${screen}/${theme}: ${over.join('; ')}`).toEqual([]);
                     }
                     for (const d of await dotContrasts(page)) {
                         dotRows.push(`| ${screen} | ${theme} | ${state} | ${d.cls} | rgb(${d.fill}) | rgb(${d.back}) | ${d.ratio} |`);
@@ -561,7 +599,10 @@ test.describe('LANE-143 UX shots', () => {
         fs.writeFileSync(path.join(OUT, 'shots-manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(
             path.join(OUT, 'sweep.md'),
-            ['| screen | theme | elements | height changes | structural diffs |', '|---|---|---|---|---|', ...sweepRows].join('\n') + '\n',
+            ['| screen | theme | elements | height changes | structural diffs |', '|---|---|---|---|---|', ...sweepRows,
+                '',
+                'Recorded exception (user override 2026-10-07): the `.ds-card-counts` row of a Datasets card holding the "N suppressed" chip, and its children, are not swept; v2 lifts the chip to the card corner and the row drops its wrapped line (33 -> 16.5 px). The card itself IS swept.',
+            ].join('\n') + '\n',
         );
         fs.writeFileSync(
             path.join(OUT, 'dot-contrast.md'),

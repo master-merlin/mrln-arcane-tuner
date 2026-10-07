@@ -861,3 +861,64 @@ def test_the_cascade_guard_covers_label_weight_and_tracking() -> None:
     assert cascade_losses("dark", [("ws.css", ".ws-x .eyebrow { font-weight: 600; }")], rules=v2) == []
     lifted = v2 + [([f"{SCOPE} .ws-x .eyebrow.eyebrow"], {"font-weight": "600", "letter-spacing": "0.08em"})]
     assert cascade_losses("dark", sheet, rules=lifted) == []
+
+
+# ───────────────────────── L3 · buttons, ink and the focus ring ─────────────────────────
+
+def _btn(theme: str, classes: tuple[str, ...], state: str | None = None, rules=None) -> Painted:
+    """A button recipe as painted: the cascade's winners for the classes, then the
+    declared state rule (hover / pressed) on top, composited over the card surface."""
+    sels = (".btn", *(f".btn.{c}" for c in classes))
+    decls, _hit = recipe(theme, *sels, rules=rules)
+    if state:
+        head = ".btn" + "".join(f".{c}" for c in classes) + f":not(:disabled):{state}"
+        decls = {**decls, **_decls(rule_body(head, rules))}
+    return Painted(decls, theme, rules)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+@pytest.mark.parametrize("state", (None, "hover", "active"))
+def test_primary_ink_on_the_brand_fill(theme: str, state: str | None) -> None:
+    ratio = _btn(theme, ("primary",), state).text_on_bg()
+    assert ratio >= TEXT_MIN, (
+        f"LANE-143: .btn.primary ink on --color-brand ({theme}, {state or 'rest'}) measures {ratio:.2f}:1 < {TEXT_MIN}:1"
+    )
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_primary_ink_white_is_rejected(theme: str) -> None:
+    """Negative control (the row's mutant): white ink on the brand fill must fail."""
+    rules = _ux_rules() + [([f"{SCOPE} .btn.primary"], {"color": "white"})]
+    ratio = _btn(theme, ("primary",), rules=rules).text_on_bg()
+    assert ratio < TEXT_MIN, f"LANE-143: white ink on --color-brand ({theme}) must fail the guard, measured {ratio:.2f}:1"
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_primary_carries_no_brand_glow(theme: str) -> None:
+    shadow = _btn(theme, ("primary",)).decls.get("box-shadow", "")
+    assert "--color-brand" not in shadow, f"LANE-143: .btn.primary box-shadow must carry no brand glow ({theme}): {shadow}"
+
+
+@pytest.mark.parametrize("theme", THEMES)
+@pytest.mark.parametrize(("classes", "state"), [
+    ((), None), ((), "hover"), ((), "active"),
+    (("ghost",), None), (("ghost",), "hover"),
+    (("danger-out",), None), (("danger-out",), "hover"), (("danger-out",), "active"),
+    (("success",), None),
+])
+def test_button_text_on_its_own_fill(theme: str, classes: tuple[str, ...], state: str | None) -> None:
+    ratio = _btn(theme, classes, state).text_on_bg()
+    name = ".btn" + "".join(f".{c}" for c in classes)
+    assert ratio >= TEXT_MIN, f"LANE-143: {name} text on its fill ({theme}, {state or 'rest'}) measures {ratio:.2f}:1 < {TEXT_MIN}:1"
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_focus_ring_on_the_page(theme: str) -> None:
+    body = rule_body(":is(.btn, .icon-btn, .q-icon, .ctx-pill, .tc-pill, .side-item, button, a):focus-visible")
+    assert "var(--ux-ring)" in body, f"LANE-143: the focus-visible outline must name --ux-ring: {body}"
+    env = theme_env(theme)
+    for surface in ("--color-base", SURFACE[theme]):
+        back = to_rgb(evaluate(f"var({surface})", env), (0, 0, 0))
+        ring = to_rgb(evaluate("var(--ux-ring)", env), back)
+        ratio = contrast_ratio(ring, back)
+        assert ratio >= NON_TEXT_MIN, f"LANE-143: the focus ring on {surface} ({theme}) measures {ratio:.2f}:1 < 3:1"

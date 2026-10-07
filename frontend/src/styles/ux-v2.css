@@ -283,3 +283,55 @@ html[data-ux="v2"] .kpi.compact .kpi-icon { top: 8px; right: 8px; width: 22px; h
 html[data-ux="v2"] .kpi:has(> .ds-hps-info) .kpi-icon { right: 33px; }
 
 /* L3 — buttons, focus ring and modals */
+
+/* P4/P5 tokens: the ring, the modal backdrop and the dark ink of the primary
+   button are declared once per theme (RULE-21); test_status_contrast_guard.py
+   measures the ink on the composited brand fill and the ring on the page. */
+html[data-ux="v2"] {
+  --ux-ring: var(--color-brand);
+  --ux-backdrop: oklch(0 0 0 / 0.62);
+  --ux-ink-on-brand: oklch(0.12 0.02 55);
+}
+html[data-ux="v2"][data-theme="light"] {
+  --ux-ring: oklch(0.50 0.13 55);
+  --ux-backdrop: oklch(0.20 0.01 265 / 0.38);
+}
+
+/* buttons: secondary / primary (dark ink, no glow) / ghost / danger-out / success;
+   hover and pressed are fixed mixes, not opacity */
+html[data-ux="v2"] .btn {
+  background: var(--color-surface-mid);
+  border-color: color-mix(in oklch, var(--color-border-default), transparent 15%);
+  color: var(--color-text-primary); font-weight: 500;
+}
+html[data-ux="v2"] .btn:not(:disabled):hover  { background: color-mix(in oklch, var(--color-surface-mid), var(--color-text-primary) 7%); border-color: var(--color-border-bright); }
+html[data-ux="v2"] .btn:not(:disabled):active { background: color-mix(in oklch, var(--color-surface-mid), var(--color-text-primary) 12%); }
+html[data-ux="v2"] .btn.primary {
+  background: var(--color-brand); color: var(--ux-ink-on-brand);
+  border-color: color-mix(in oklch, var(--color-brand), black 15%); font-weight: 600;
+  box-shadow: inset 0 1px 0 color-mix(in oklch, white 22%, transparent), 0 1px 2px color-mix(in oklch, black 25%, transparent);
+}
+html[data-ux="v2"] .btn.primary:not(:disabled):hover  { background: color-mix(in oklch, var(--color-brand), white 10%); }
+html[data-ux="v2"] .btn.primary:not(:disabled):active { background: color-mix(in oklch, var(--color-brand), black 8%); }
+html[data-ux="v2"] .btn.ghost { background: transparent; border-color: transparent; color: var(--color-text-secondary); }
+html[data-ux="v2"] .btn.ghost:not(:disabled):hover { background: var(--color-surface-mid); color: var(--color-text-primary); }
+html[data-ux="v2"] .btn.danger-out { font-weight: 500; background: transparent; color: var(--st-danger-fg); border-color: color-mix(in oklch, var(--st-danger-line), transparent 40%); }
+html[data-ux="v2"] .btn.danger-out:not(:disabled):hover  { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
+html[data-ux="v2"] .btn.danger-out:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); }
+html[data-ux="v2"] .btn.success { background: var(--st-success-bg); color: var(--st-success-fg); border-color: color-mix(in oklch, var(--st-success-line), transparent 40%); }
+
+/* the focus ring: 2 px brand (dark) / darker brand (light), visible in both themes */
+html[data-ux="v2"] :is(.btn, .icon-btn, .q-icon, .ctx-pill, .tc-pill, .side-item, button, a):focus-visible { outline: 2px solid var(--ux-ring); outline-offset: 2px; }
+html[data-ux="v2"] :is(.input, .select):focus { border-color: var(--ux-ring); box-shadow: 0 0 0 2px color-mix(in oklch, var(--ux-ring), transparent 72%); }
+
+/* light: white-on-brand utilities (templates carry text-white and cannot be edited) */
+html[data-ux="v2"][data-theme="light"] .bg-brand { color: var(--ux-ink-on-brand); }
+html[data-ux="v2"][data-theme="light"] .bg-brand :is(.ico, svg) { color: var(--ux-ink-on-brand); }
+html[data-ux="v2"][data-theme="light"] .btn.primary .ico { color: inherit; }
+
+/* modals: soft hairlines between head / body / foot, the themed backdrop */
+html[data-ux="v2"] :is(.card-head, .modal-head, .modal-foot) { border-color: color-mix(in oklch, var(--color-border-default), transparent 55%); }
+html[data-ux="v2"] .modal-backdrop { background: var(--ux-backdrop); }
+
+/* the topbar toggle's active state: the existing .icon-btn.brand class, set while v2 is on */
+html[data-ux="v2"] .icon-btn.brand { color: var(--color-brand); }

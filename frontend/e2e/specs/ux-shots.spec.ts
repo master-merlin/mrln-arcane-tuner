@@ -23,8 +23,17 @@ import { jobs, runningJobStepLogs } from '../fixtures/api-data';
  * page's scroll height), so content below the 1440x900 fold is in the pack.
  */
 const SET = process.env['UX_SHOTS_SET'] ?? 'L0';
-const BASELINE = process.env['UX_SHOTS_BASELINE'];
 const STAGE = /^L(\d+)/.exec(SET)?.[1];
+/**
+ * VERIFY round 2 (e85b2d8c) 1.01: the OFF-vs-main compare is not optional. Every set
+ * except the baseline-generating L0 compares its OFF shots to a baseline set: the
+ * named `UX_SHOTS_BASELINE`, else `L0`. L0 (stage 0) is exempt -- it IS the baseline.
+ */
+function resolveBaseline(stage: string | undefined, env: string | undefined): string | undefined {
+    if (stage === '0') return undefined;
+    return env && env.trim() ? env.trim() : 'L0';
+}
+const BASELINE = resolveBaseline(STAGE, process.env['UX_SHOTS_BASELINE']);
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const SHOTS_ROOT = path.join(REPO_ROOT, '.agent', 'workdir', 'lane-143', 'shots');
 const OUT = path.join(SHOTS_ROOT, SET);
@@ -74,15 +83,34 @@ const FIVE = ['datasets', 'training', 'templates', 'server', 'jobs'];
 /** Icons ON per screen once L2 lands (spec: 6 datasets, 4 server, 6 jobs, 4 projects, 6 training = 26). */
 const KPI_ICONS: Record<string, number> = { datasets: 6, training: 6, templates: 0, server: 4, jobs: 6, projects: 4 };
 const NO_ICONS: Record<string, number> = Object.fromEntries(Object.keys(KPI_ICONS).map((k) => [k, 0]));
-type SetSpec = { screens: string[]; shots: number; iconsOn: Record<string, number> };
+type SetSpec = { screens: string[]; shots: number; iconsOn: Record<string, number>; extra?: string[] };
 /** The ONE table: a round's evidence is whatever its row says, nothing derived elsewhere. */
 const SETS: Record<string, SetSpec> = {
     L0: { screens: FIVE, shots: 20, iconsOn: NO_ICONS },
     L1: { screens: FIVE, shots: 20, iconsOn: NO_ICONS },
     L2: { screens: [...FIVE, 'projects'], shots: 24, iconsOn: KPI_ICONS },
-    L3: { screens: FIVE, shots: 20, iconsOn: KPI_ICONS },
+    L3: { screens: FIVE, shots: 20, iconsOn: KPI_ICONS, extra: ['on-modal-dark.png', 'on-modal-light.png'] },
 };
 const HIDE_TOGGLE = '[data-testid="ux-toggle"]{display:none}';
+
+/**
+ * Fails BEFORE any capture when the baseline set has no shots on disk (the compare
+ * would otherwise be skipped or die late): every OFF image its SETS row promises
+ * must exist. Throws a `LANE-143:` message naming the first missing file.
+ */
+function assertBaselineOnDisk(root: string, baseline: string): void {
+    const stage = /^L(\d+)/.exec(baseline)?.[1];
+    const row = stage === undefined ? undefined : SETS[`L${stage}`];
+    if (!row) throw new Error(`LANE-143: unknown baseline set ${baseline}`);
+    for (const screen of row.screens) {
+        for (const theme of THEMES) {
+            const file = `off-${screen}-${theme}.png`;
+            if (!fs.existsSync(path.join(root, baseline, file))) {
+                throw new Error(`LANE-143: baseline set ${baseline} has no shots on disk (missing ${file}); shoot ${baseline} first or name UX_SHOTS_BASELINE`);
+            }
+        }
+    }
+}
 
 /**
  * VERIFY round 1 (68cdc6ef) 1.02: a missing baseline image is a FAILURE unless the
@@ -185,6 +213,25 @@ test('LANE-143 a missing required baseline image fails (negative control)', () =
     }
 });
 
+/** Runs without UX_SHOTS: an OMITTED baseline on a non-L0 set compares against L0; L0 is exempt; absent shots fail up front. */
+test('LANE-143 an omitted baseline defaults to L0 and absent baseline shots fail before capture (negative control)', () => {
+    expect(resolveBaseline('3', undefined), 'LANE-143: an omitted baseline on L3 must compare against L0').toBe('L0');
+    expect(resolveBaseline('1', ''), 'LANE-143: an empty baseline on L1 must compare against L0').toBe('L0');
+    expect(resolveBaseline('2', 'L1')).toBe('L1');
+    expect(resolveBaseline('0', undefined), 'LANE-143: L0 generates the baseline and is exempt').toBeUndefined();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lane143-pre-'));
+    try {
+        expect(() => assertBaselineOnDisk(root, 'L0'), 'LANE-143: a baseline set without shots must fail before capture').toThrow(
+            /^LANE-143: baseline set L0 has no shots on disk/,
+        );
+        fs.mkdirSync(path.join(root, 'L0'));
+        for (const screen of FIVE) for (const theme of THEMES) fs.writeFileSync(path.join(root, 'L0', `off-${screen}-${theme}.png`), '');
+        expect(() => assertBaselineOnDisk(root, 'L0')).not.toThrow();
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
+
 /** Runs without UX_SHOTS: the table is consistent with itself and with the spec. */
 test('LANE-143 the shot table is self-consistent', () => {
     for (const [name, spec] of Object.entries(SETS)) {
@@ -196,6 +243,7 @@ test('LANE-143 the shot table is self-consistent', () => {
     expect(SETS['L1'].shots).toBe(20);
     expect(SETS['L2'].shots).toBe(24);
     expect(SETS['L3'].shots).toBe(20);
+    expect(SETS['L3'].extra, 'LANE-143: L3 adds the two on-modal shots').toEqual(['on-modal-dark.png', 'on-modal-light.png']);
     const sum = (n: string) => SETS[n].screens.reduce((a, s) => a + SETS[n].iconsOn[s], 0);
     expect(sum('L0') + sum('L1'), 'LANE-143: no icon may render before L2').toBe(0);
     expect(sum('L2'), 'LANE-143: L2 renders 26 icons ON').toBe(26);
@@ -312,6 +360,7 @@ test.describe('LANE-143 UX shots', () => {
     test.skip(!process.env['UX_SHOTS'], 'UX_SHOTS=1 required: this spec produces UAT evidence');
 
     test.beforeAll(() => {
+        if (BASELINE) assertBaselineOnDisk(SHOTS_ROOT, BASELINE);
         fs.mkdirSync(path.join(OUT, 'full'), { recursive: true });
     });
 
@@ -474,10 +523,30 @@ test.describe('LANE-143 UX shots', () => {
         }
     });
 
+    for (const theme of THEMES) {
+        if (!SPEC.extra) break;
+        test(`LANE-143 modal ${theme}`, async ({ page }) => {
+            await page.goto('/');
+            await page.evaluate((t) => {
+                localStorage.setItem('mrln.theme', t);
+                localStorage.setItem('mrln.ux', 'v2');
+            }, theme);
+            await page.goto('/datasets');
+            await settle(page, 'datasets');
+            await page.getByRole('button', { name: /new dataset/i }).first().click();
+            const dialog = page.locator('.modal').first();
+            await expect(dialog, 'LANE-143: the New dataset dialog must open for the modal shot').toBeVisible();
+            await page.waitForTimeout(500);
+            const file = `on-modal-${theme}.png`;
+            await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
+            await fullCapture(page, path.join(OUT, 'full', file));
+        });
+    }
+
     test('LANE-143 manifest', async () => {
         const files = fs.readdirSync(OUT).filter((f) => f.endsWith('.png')).sort();
         const full = fs.readdirSync(path.join(OUT, 'full')).filter((f) => f.endsWith('.png')).sort();
-        const expected = SPEC.shots; // from the SETS row, never re-derived here
+        const expected = SPEC.shots + (SPEC.extra?.length ?? 0); // from the SETS row, never re-derived here
         expect(files.length, `LANE-143: expected ${expected} shots, got ${files.length}`).toBe(expected);
         expect(full, `LANE-143: every shot has its full-length twin under full/`).toEqual(files);
         for (const f of [...files, ...full.map((x) => `full/${x}`)]) {
@@ -498,7 +567,10 @@ test.describe('LANE-143 UX shots', () => {
             path.join(OUT, 'dot-contrast.md'),
             ['| screen | theme | state | class | fill | backdrop | ratio |', '|---|---|---|---|---|---|---|', ...dotRows].join('\n') + '\n',
         );
-        if (BASELINE) {
+        if (!BASELINE) {
+            fs.writeFileSync(path.join(OUT, 'baseline-diff.md'), `Set ${SET} generates the baseline: exempt from the OFF-vs-baseline compare.
+`);
+        } else {
             fs.writeFileSync(
                 path.join(OUT, 'baseline-diff.md'),
                 [`OFF vs ${BASELINE} (tolerance +-${NOISE} per channel)`, '', '| file | px | beyond | noise | clock text skipped |', '|---|---|---|---|---|', ...baselineRows].join('\n') + '\n',

@@ -134,7 +134,7 @@ describe('TopbarComponent — LLM availability icon', () => {
 });
 
 describe('TopbarComponent — design-language switch', () => {
-    function mountSwitch() {
+    function mountSwitch(v2 = false) {
         localStorage.clear();
         const toggle = vi.fn();
         TestBed.configureTestingModule({
@@ -143,7 +143,7 @@ describe('TopbarComponent — design-language switch', () => {
                 { provide: Router, useValue: { url: '/datasets', events: of() } },
                 { provide: ScopeStore, useValue: { projectId: () => null, scope: () => ({ kind: 'global' }) } },
                 { provide: ThemeStore, useValue: { theme: () => 'dark', toggle: vi.fn() } },
-                { provide: UxStore, useValue: { v2: () => false, toggle } },
+                { provide: UxStore, useValue: { v2: () => v2, toggle } },
                 { provide: ProjectService, useValue: { allProjects: () => [] } },
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
@@ -169,5 +169,13 @@ describe('TopbarComponent — design-language switch', () => {
         expect(next?.getAttribute('aria-label'), 'LANE-143: ux-toggle must precede the theme toggle').toBe('Switch to light theme');
         btn!.click();
         expect(toggle, 'LANE-143: clicking ux-toggle must call UxStore.toggle()').toHaveBeenCalledTimes(1);
+    });
+
+    it('marks the ux-toggle active (.brand) only while v2 is on', () => {
+        const off = mountSwitch(false).fixture.nativeElement.querySelector('[data-testid="ux-toggle"]') as HTMLElement;
+        expect(off.classList.contains('brand'), 'LANE-143: ux-toggle must not carry .brand with v2 off').toBe(false);
+        TestBed.resetTestingModule();
+        const on = mountSwitch(true).fixture.nativeElement.querySelector('[data-testid="ux-toggle"]') as HTMLElement;
+        expect(on.classList.contains('brand'), 'LANE-143: ux-toggle must carry .brand while v2 is on').toBe(true);
     });
 });

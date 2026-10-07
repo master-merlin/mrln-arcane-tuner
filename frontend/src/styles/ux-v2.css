@@ -276,5 +276,10 @@ html[data-ux="v2"] .kpi .kpi-icon {
   pointer-events: none;
 }
 html[data-ux="v2"] .kpi.compact .kpi-icon { top: 8px; right: 8px; width: 22px; height: 22px; }
+/* a tile that projects its own top-right badge (the Datasets HPS "i", 15 px at
+   top 10 / right 12) keeps it where it is: the square steps left of it with a
+   6 px gap (12 + 15 + 6 = 33 px), same top as every other square in the rail.
+   The shot script's overlap check (painted boxes and glyphs per tile) decides. */
+html[data-ux="v2"] .kpi:has(> .ds-hps-info) .kpi-icon { right: 33px; }
 
 /* L3 — buttons, focus ring and modals */

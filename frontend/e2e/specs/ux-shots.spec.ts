@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { test, expect } from '../fixtures/test';
 import { latestMetrics } from '../../src/app/shared/job-metrics';
@@ -82,6 +83,107 @@ const SETS: Record<string, SetSpec> = {
     L3: { screens: FIVE, shots: 20, iconsOn: KPI_ICONS },
 };
 const HIDE_TOGGLE = '[data-testid="ux-toggle"]{display:none}';
+
+/**
+ * VERIFY round 1 (68cdc6ef) 1.02: a missing baseline image is a FAILURE unless the
+ * baseline SET lacks that screen by design (its `SETS` row never shot it: `projects`
+ * joins at L2, so L0 has no projects shots). Returns the exception text to record in
+ * baseline-diff.md, `null` when the image must be compared, and throws `LANE-143:`
+ * when a required image is missing -- the old fail-open treated ANY missing file as
+ * "not in baseline" and compared nothing.
+ */
+function baselineException(root: string, baseline: string, screen: string, file: string): string | null {
+    const stage = /^L(\d+)/.exec(baseline)?.[1];
+    const row = stage === undefined ? undefined : SETS[`L${stage}`];
+    if (!row) throw new Error(`LANE-143: unknown baseline set ${baseline}`);
+    if (!row.screens.includes(screen)) return `${screen} not in ${baseline} by design (its SETS row shoots ${row.screens.join(', ')})`;
+    if (!fs.existsSync(path.join(root, baseline, file))) {
+        throw new Error(`LANE-143: baseline ${baseline} lacks required ${file} (${screen} is in its SETS row)`);
+    }
+    return null;
+}
+
+/**
+ * VERIFY round 1 (68cdc6ef) 1.01: every `.kpi-icon` must sit clear of everything
+ * else painted in its tile. Measured against what is PAINTED, not block boxes (a
+ * full-width label div would "overlap" any corner): the glyph rects of every
+ * non-blank text node and the boxes of leaf elements (no element children, or an
+ * svg/img/canvas) in the same `.kpi`, the icon's own subtree excluded. Self-contained
+ * so it runs in the page (`page.evaluate(iconOverlaps)`).
+ */
+function iconOverlaps(): string[] {
+    const hits: string[] = [];
+    const meet = (a: DOMRect, b: DOMRect) =>
+        a.width > 0 && a.height > 0 && b.width > 0 && b.height > 0 &&
+        a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
+    const name = (el: Element) => el.tagName.toLowerCase() + (el.getAttribute('class') ? '.' + el.getAttribute('class')!.trim().split(/\s+/).join('.') : '');
+    for (const icon of Array.from(document.querySelectorAll('.kpi-icon'))) {
+        const tile = icon.closest('.kpi');
+        if (!tile) continue;
+        const r = icon.getBoundingClientRect();
+        const label = tile.querySelector('.kpi-label')?.textContent?.trim() ?? '?';
+        for (const el of Array.from(tile.querySelectorAll('*'))) {
+            if (el === icon || icon.contains(el) || el.contains(icon)) continue;
+            if (getComputedStyle(el).visibility === 'hidden') continue;
+            const tag = el.tagName.toLowerCase();
+            if (tag !== 'svg' && el.closest('svg')) continue; // an svg's parts are covered by the svg
+            const cs = getComputedStyle(el);
+            const hasText = Array.from(el.childNodes).some((n) => n.nodeType === Node.TEXT_NODE && (n.textContent ?? '').trim());
+            const paintsBox =
+                !/rgba\(0, 0, 0, 0\)|transparent/.test(cs.backgroundColor) ||
+                (parseFloat(cs.borderTopWidth) > 0 && !/rgba\(0, 0, 0, 0\)|transparent/.test(cs.borderTopColor)) ||
+                cs.backgroundImage !== 'none';
+            // a box counts when it paints itself (fill, border, image) or is a text-less leaf (bar, svg, img);
+            // a text-only block (a full-width label div) counts only by its glyphs, below
+            const leaf = (el.children.length === 0 && !hasText) || ['svg', 'img', 'canvas'].includes(tag);
+            if ((leaf || paintsBox) && meet(r, el.getBoundingClientRect())) {
+                hits.push(`${label}: .kpi-icon overlaps ${name(el)}`);
+                continue;
+            }
+            for (const n of Array.from(el.childNodes)) {
+                if (n.nodeType !== Node.TEXT_NODE || !(n.textContent ?? '').trim()) continue;
+                const range = document.createRange();
+                range.selectNodeContents(n);
+                if (Array.from(range.getClientRects()).some((t) => meet(r, t))) {
+                    hits.push(`${label}: .kpi-icon overlaps the text "${(n.textContent ?? '').trim().slice(0, 24)}" of ${name(el)}`);
+                }
+            }
+        }
+    }
+    return hits;
+}
+
+/** Runs without UX_SHOTS: the overlap check fires on an overlap and stays quiet without one. */
+test('LANE-143 the icon overlap check fires on an overlap (negative control)', async ({ page }) => {
+    const tile = (badgeRight: number) => `
+        <div class="kpi" style="position:relative;width:200px;height:90px;padding:14px 16px;box-sizing:border-box">
+          <span class="kpi-icon" style="position:absolute;top:10px;right:10px;width:24px;height:24px"><svg width="14" height="14"></svg></span>
+          <div class="kpi-label">HPS</div><div class="kpi-value">5.1</div>
+          <span class="badge" style="position:absolute;top:10px;right:${badgeRight}px;width:15px;height:15px;border:1px solid #888;border-radius:50%">i</span>
+        </div>`;
+    await page.setContent(tile(12));
+    const hit = await page.evaluate(iconOverlaps);
+    expect(hit.length, `LANE-143: an icon on a corner badge must be reported, got ${JSON.stringify(hit)}`).toBeGreaterThan(0);
+    await page.setContent(tile(140));
+    expect(await page.evaluate(iconOverlaps), 'LANE-143: a clear icon must not be reported').toEqual([]);
+});
+
+/** Runs without UX_SHOTS: a missing REQUIRED baseline image fails; a screen the set lacks by design is an exception. */
+test('LANE-143 a missing required baseline image fails (negative control)', () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'lane143-base-'));
+    try {
+        fs.mkdirSync(path.join(root, 'L0'));
+        expect(() => baselineException(root, 'L0', 'datasets', 'off-datasets-dark.png'), 'LANE-143: a missing required baseline image must fail the run').toThrow(
+            /^LANE-143: baseline L0 lacks required off-datasets-dark\.png/,
+        );
+        expect(baselineException(root, 'L0', 'projects', 'off-projects-dark.png')).toMatch(/^projects not in L0 by design/);
+        fs.writeFileSync(path.join(root, 'L0', 'off-datasets-dark.png'), '');
+        expect(baselineException(root, 'L0', 'datasets', 'off-datasets-dark.png')).toBeNull();
+        expect(() => baselineException(root, 'X9', 'datasets', 'off-datasets-dark.png')).toThrow(/^LANE-143: unknown baseline set/);
+    } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+    }
+});
 
 /** Runs without UX_SHOTS: the table is consistent with itself and with the spec. */
 test('LANE-143 the shot table is self-consistent', () => {
@@ -254,6 +356,8 @@ test.describe('LANE-143 UX shots', () => {
                             }).length,
                         );
                         expect(outside, `LANE-143: ${outside} icon square(s) outside their tile on ${screen}`).toBe(0);
+                        const overlaps = await page.evaluate(iconOverlaps);
+                        expect(overlaps, `LANE-143: a .kpi-icon overlaps tile content on ${screen}/${theme}: ${overlaps.join('; ')}`).toEqual([]);
                     }
                     for (const d of await dotContrasts(page)) {
                         dotRows.push(`| ${screen} | ${theme} | ${state} | ${d.cls} | rgb(${d.fill}) | rgb(${d.back}) | ${d.ratio} |`);
@@ -271,9 +375,10 @@ test.describe('LANE-143 UX shots', () => {
                     const file = `${state}-${screen}-${theme}.png`;
                     await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
                     const base = BASELINE ? path.join(SHOTS_ROOT, BASELINE, file) : '';
-                    if (state === 'off' && BASELINE && !fs.existsSync(base)) {
-                        // a screen the baseline set never shot (projects joins at L2): recorded, not compared
-                        baselineRows.push(`| ${file} | - | not in ${BASELINE} | - | - |`);
+                    const exception = state === 'off' && BASELINE ? baselineException(SHOTS_ROOT, BASELINE, screen, file) : null;
+                    if (exception !== null) {
+                        // only a screen the baseline SET lacks by design (its SETS row): recorded, not compared
+                        baselineRows.push(`| ${file} | - | exception: ${exception} | - | - |`);
                     } else if (state === 'off' && BASELINE) {
                         const clocks: Rect[] = await page.evaluate(() =>
                             Array.from(document.body.querySelectorAll('*'))

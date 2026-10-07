@@ -158,6 +158,12 @@ html[data-ux="v2"] :is(.temp-chip, .head-chip, .head-chip-sm).chip {
 /* P2 · ONE label-caps recipe (600 / 0.08em / muted); sizes untouched */
 html[data-ux="v2"] :is(.kpi-label, .card-title) { font-weight: 600; letter-spacing: 0.08em; color: var(--color-text-muted); }
 html[data-ux="v2"] .eyebrow { font-weight: 600; letter-spacing: 0.08em; }
+/* the recipe again over two encapsulated caps eyebrows of the workspace
+   (`.ws-health-pop .eyebrow` 700/0.12em, `.filmstrip-meta .eyebrow` 0.12em are
+   0,4,0 once scoped); the doubled class lifts these to 0,4,1. Eyebrows that opt
+   out of caps (`text-transform: none`) keep their own type. */
+html[data-ux="v2"] .ws-health-pop .eyebrow.eyebrow,
+html[data-ux="v2"] .filmstrip-meta .eyebrow.eyebrow { font-weight: 600; letter-spacing: 0.08em; }
 html[data-ux="v2"] .field-label { font-weight: 600; letter-spacing: 0.01em; color: var(--color-text-muted); }
 /* Tailwind labels: weight only (0.08em tracking wrapped "Last Scanned", +15px) */
 html[data-ux="v2"] [class*="uppercase"][class*="tracking-"]:not(.tag):not(.chip):not(.btn):not(.eyebrow) { font-weight: 600; }
@@ -187,5 +193,88 @@ html[data-ux="v2"][data-theme="light"] .text-danger { color: var(--st-danger-fg)
 html[data-ux="v2"][data-theme="light"] :is(.text-brand, .text-brand-light) { color: var(--ux-brand-text); }
 
 /* L2 — cards and KPI tiles */
+
+/* P5 · surface tokens. --ux-kpi-wash is the tile's accent tint at its corner:
+   the user's correction 2 asked for a VISIBLE tint (the overlay's 7 % / 5 % was
+   too subtle); test_ux_v2_layer_guard.py pins it >= 12 % per theme. */
+html[data-ux="v2"] {
+  --ux-hl: color-mix(in oklch, white 6%, transparent);
+  --ux-card-shadow: 0 1px 2px color-mix(in oklch, black 40%, transparent);
+  --ux-kpi-wash: 14%;
+  --ux-kpi-shadow: inset 0 1px 0 color-mix(in oklch, white 7%, transparent),
+    0 1px 0 color-mix(in oklch, black 40%, transparent),
+    0 8px 24px -12px color-mix(in oklch, black 60%, transparent);
+  --ux-glass-bg: color-mix(in oklch, var(--color-surface-high), transparent 35%);
+}
+html[data-ux="v2"][data-theme="light"] {
+  --ux-hl: transparent;
+  --ux-card-shadow: 0 1px 2px color-mix(in oklch, black 6%, transparent);
+  --ux-kpi-wash: 12%;
+  --ux-kpi-shadow: 0 1px 2px color-mix(in oklch, black 6%, transparent),
+    0 8px 24px -16px color-mix(in oklch, black 18%, transparent);
+  --ux-glass-bg: color-mix(in oklch, white, transparent 25%);
+}
+
+/* P5 · cards and the modal: a soft 1px border (colour only, width unchanged),
+   a dark-only top highlight and one shadow tier */
+html[data-ux="v2"] .card {
+  border-color: color-mix(in oklch, var(--color-border-default), transparent 40%);
+  box-shadow: inset 0 1px 0 var(--ux-hl), var(--ux-card-shadow);
+}
+html[data-ux="v2"] .card.elev { box-shadow: inset 0 1px 0 var(--ux-hl), var(--shadow-sm); }
+html[data-ux="v2"] .modal {
+  border-color: color-mix(in oklch, var(--color-border-default), transparent 40%);
+  box-shadow: inset 0 1px 0 var(--ux-hl), var(--shadow-lg);
+}
+
+/* P5 · KPI tiles. DOM: div.kpi[.compact] > .kpi-accent.<tone> + .kpi-label +
+   .kpi-value + .kpi-sub (+ projected content); raw copies .ew-grid > .kpi.compact
+   and the LIVE ESTIMATE .kpi.compact. --kx = the tile's own accent (read from its
+   .kpi-accent bar, brand when it has none); --kend = the hero stroke's far end. */
+html[data-ux="v2"] .kpi {
+  --kx: var(--color-brand);
+  --kend: color-mix(in oklch, var(--color-brand), var(--color-warning) 55%);
+  --kx-ink: var(--kx);
+  border-color: color-mix(in oklch, var(--kx), transparent 60%);
+  background-image: radial-gradient(130% 95% at 0% 0%, color-mix(in oklch, var(--kx), transparent calc(100% - var(--ux-kpi-wash))), transparent 70%);
+  box-shadow: var(--ux-kpi-shadow);
+}
+html[data-ux="v2"][data-theme="light"] .kpi { --kx-ink: color-mix(in oklch, var(--kx), black 22%); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.success) { --kx: var(--color-success); --kend: var(--color-success); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.warning) { --kx: var(--color-warning); --kend: var(--color-warning); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.danger) { --kx: var(--color-danger); --kend: var(--color-danger); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.teal) { --kx: var(--color-chart-lr); --kend: var(--color-chart-lr); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.violet) { --kx: var(--color-violet); --kend: var(--color-violet); }
+/* the top bar keeps its 2px box; it reads in the hairline's hue */
+html[data-ux="v2"] .kpi > .kpi-accent { background: color-mix(in oklch, var(--kx), transparent 45%); }
+
+/* ONE hero per rail: a 1px gradient stroke (brand -> accent) on the first tile
+   only; the Training wall's hero is WALL TIME, PEAK VRAM stays plain */
+html[data-ux="v2"] :is(.ds-kpi-rail, .server-kpi-rail, .kpi-row, .ps-kpi-rail) > app-kpi-tile:first-child > .kpi,
+html[data-ux="v2"] .ew-grid > .kpi:first-child {
+  border-color: transparent;
+  background:
+    radial-gradient(130% 95% at 0% 0%, color-mix(in oklch, var(--kx), transparent calc(100% - var(--ux-kpi-wash))), transparent 70%) padding-box,
+    linear-gradient(var(--color-surface-low), var(--color-surface-low)) padding-box,
+    linear-gradient(135deg, var(--color-brand), var(--kend)) border-box;
+}
+
+/* type: value 700 tabular (was 800), label = the label-caps recipe (L1) */
+html[data-ux="v2"] .kpi .kpi-value { font-weight: 700; letter-spacing: -0.01em; }
+
+/* the glass icon square (the user's correction 1): the one new element, in the
+   tile's top-right inside the existing padding, absolutely positioned so no
+   tile changes height; rendered only under v2 (KpiTileComponent, the raw copies) */
+html[data-ux="v2"] .kpi .kpi-icon {
+  position: absolute; top: 10px; right: 10px;
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  color: var(--kx-ink);
+  background: var(--ux-glass-bg);
+  border: 1px solid color-mix(in oklch, var(--kx), transparent 55%);
+  border-radius: 6px;
+  pointer-events: none;
+}
+html[data-ux="v2"] .kpi.compact .kpi-icon { top: 8px; right: 8px; width: 22px; height: 22px; }
 
 /* L3 — buttons, focus ring and modals */

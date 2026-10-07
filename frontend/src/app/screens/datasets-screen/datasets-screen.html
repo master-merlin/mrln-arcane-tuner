@@ -35,7 +35,7 @@
     <app-thumbnail-migration-banner/>
 
     <div class="ds-kpi-rail">
-        <app-kpi-tile label="DATASETS" [value]="kpis().datasets" accent="brand" [sub]="datasetsSub()">
+        <app-kpi-tile label="DATASETS" icon="Database" [value]="kpis().datasets" accent="brand" [sub]="datasetsSub()">
             @if (kpis().datasets > 0) {
                 <span class="kpi-corner" title="Total size on disk (full dataset folders)">
                     Total size on disk:
@@ -51,7 +51,7 @@
                 </span>
             }
         </app-kpi-tile>
-        <app-kpi-tile label="IMAGES" [value]="kpis().images" accent="teal" [sub]="imagesSub()">
+        <app-kpi-tile label="IMAGES" icon="Image" [value]="kpis().images" accent="teal" [sub]="imagesSub()">
             @if (mpxStats(); as m) {
                 @if (m.buckets.length > 0) {
                     <div class="ds-mini-histo tone-teal" [title]="'Median ' + m.median_megapixels.toFixed(1) + ' MP'">
@@ -65,10 +65,10 @@
                 }
             }
         </app-kpi-tile>
-        <app-kpi-tile label="CAPTIONED" [value]="kpis().captioned" accent="success" [sub]="captionedSub()"/>
-        <app-kpi-tile label="MASKED" [value]="kpis().masked" accent="danger" [sub]="maskedSub()"/>
-        <app-kpi-tile label="CACHED" [value]="kpis().cached" accent="violet" [sub]="cachedSub()"/>
-        <app-kpi-tile label="HPS — MEDIAN" [value]="hpsMedianLabel()" accent="warning" [sub]="hpsRangeLabel()">
+        <app-kpi-tile label="CAPTIONED" icon="Check" [value]="kpis().captioned" accent="success" [sub]="captionedSub()"/>
+        <app-kpi-tile label="MASKED" icon="Scissors" [value]="kpis().masked" accent="danger" [sub]="maskedSub()"/>
+        <app-kpi-tile label="CACHED" icon="HardDrive" [value]="kpis().cached" accent="violet" [sub]="cachedSub()"/>
+        <app-kpi-tile label="HPS — MEDIAN" icon="Sparkles" [value]="hpsMedianLabel()" accent="warning" [sub]="hpsRangeLabel()">
             <span class="ds-hps-info" role="img" tabindex="0"
                   aria-label="What is HPS?"
                   [title]="hpsLegend">i</span>

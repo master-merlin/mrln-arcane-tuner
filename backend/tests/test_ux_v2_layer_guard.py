@@ -177,6 +177,41 @@ def test_the_box_check_allows_exactly_the_spec_list() -> None:
     assert box_violations(f"{SCOPE} .chip {{ --pad: 4px; color: red; font-weight: 600 }}") == []
 
 
+WASH_MIN = 12.0  # the user's correction 2 (2026-10-06): a visible tint, never below 12 %
+
+
+def kpi_wash(css: str) -> dict[str, float]:
+    """``--ux-kpi-wash`` per theme: the dark value from the bare scope, the
+    light value from the light scope (falling back to the dark one)."""
+    out: dict[str, float] = {}
+    for head, body in parse_rules(css):
+        m = re.search(r"--ux-kpi-wash\s*:\s*([0-9.]+)%", body)
+        if not m:
+            continue
+        for sel in split_selectors(head):
+            if sel == SCOPE:
+                out["dark"] = float(m.group(1))
+            elif sel == f'{SCOPE}[data-theme="light"]':
+                out["light"] = float(m.group(1))
+    if "dark" in out:
+        out.setdefault("light", out["dark"])
+    return out
+
+
+@pytest.mark.parametrize("theme", ["dark", "light"])
+def test_kpi_wash_is_a_visible_tint(theme: str) -> None:
+    wash = kpi_wash(_read())
+    assert theme in wash, f"LANE-143: --ux-kpi-wash is not declared for the {theme} theme"
+    assert wash[theme] >= WASH_MIN, (
+        f"LANE-143: --ux-kpi-wash ({theme}) is {wash[theme]:g}% < {WASH_MIN:g}% (the user's correction 2)"
+    )
+
+
+def test_the_wash_pin_reads_each_theme() -> None:
+    css = f'{SCOPE} {{ --ux-kpi-wash: 5%; }}\n{SCOPE}[data-theme="light"] {{ --ux-kpi-wash: 12%; }}'
+    assert kpi_wash(css) == {"dark": 5.0, "light": 12.0}
+
+
 def test_the_scope_check_rejects_an_unscoped_rule() -> None:
     """Positive control: a guard that cannot fail is not a guard."""
     assert scope_violations(f"{SCOPE} .a {{ color: red }}\n.chip {{ color: red }}") == [".chip"]

@@ -238,19 +238,129 @@ def theme_env(theme: str, rules=None) -> dict[str, str]:
     return env
 
 
-def recipe(theme: str, *selectors: str, rules=None) -> tuple[dict[str, str], list[str]]:
-    """Merged declarations of the rules for ``selectors`` (in cascade order), and
-    the names of the rules that contributed (for the wiring assertions)."""
+def _compound_matches(comp: str, classes: frozenset[str]) -> bool:
+    """Does one compound selector match an element that carries ``classes``?
+
+    The element model is class-only and at rest: a type selector, a state
+    pseudo-class (``:hover``), a pseudo-element or ``:has()`` never matches;
+    ``:is()``/``:where()`` match on any argument, ``:not()`` on none;
+    ``[class*="x"]`` on a class containing ``x``."""
+    i, n = 0, len(comp)
+    while i < n:
+        ch = comp[i]
+        if ch == ".":
+            m = re.match(r"\.([\w-]+)", comp[i:])
+            if m.group(1) not in classes:
+                return False
+            i += len(m.group(0))
+        elif ch == ":":
+            m = re.match(r"(::?)([\w-]+)(\()?", comp[i:])
+            j = i + len(m.group(0))
+            if not m.group(3):
+                return False
+            end = _matching_paren(comp, j - 1)
+            args = _split_top(comp[j:end])
+            name = m.group(2)
+            if name in ("is", "matches", "where"):
+                ok = any(_compound_matches(a, classes) for a in args)
+            elif name == "not":
+                ok = not any(_compound_matches(a, classes) for a in args)
+            else:
+                ok = False
+            if not ok:
+                return False
+            i = end + 1
+        elif ch == "[":
+            end = comp.index("]", i)
+            m = re.fullmatch(r'class\*="([^"]+)"', comp[i + 1 : end])
+            if not m or not any(m.group(1) in c for c in classes):
+                return False
+            i = end + 1
+        elif ch == "*":
+            i += 1
+        else:
+            return False
+    return True
+
+
+def selector_matches(sel: str, theme: str, classes: frozenset[str], ancestors: tuple[frozenset[str], ...] = ()) -> bool:
+    """``sel`` (a full ux-v2.css selector) applies to an element with ``classes``
+    whose ancestors (outermost first) carry ``ancestors``, in ``theme``."""
+    if sel.startswith(LIGHT_SCOPE):
+        if theme != "light":
+            return False
+        rest = sel[len(LIGHT_SCOPE):]
+    elif sel.startswith(SCOPE):
+        rest = sel[len(SCOPE):]
+    else:
+        return False
+    if not rest[:1].isspace():
+        return False  # a rule on <html> itself: tokens, not an element paint
+    comps = compounds(rest)
+    if any(c in "+~" for c in rest.replace(" > ", " ")) or not comps:
+        return False
+    if not _compound_matches(comps[-1], classes):
+        return False
+    k = 0
+    for comp in comps[:-1]:
+        while k < len(ancestors) and not _compound_matches(comp, ancestors[k]):
+            k += 1
+        if k == len(ancestors):
+            return False
+        k += 1
+    return True
+
+
+def cascade(theme: str, classes, ancestors=(), rules=None) -> tuple[dict[str, str], list[str]]:
+    """The declarations the cascade gives an element, from ux-v2.css alone (the
+    global sheets are layered and always lose to it): every matching rule in
+    (specificity, source order), each property's last declaration winning,
+    a shorthand resetting its longhand. Returns (declarations, winning selectors)."""
     rules = _ux_rules() if rules is None else rules
+    classes, ancestors = frozenset(classes), tuple(frozenset(a) for a in ancestors)
+    hits = []
+    for idx, (heads, decls) in enumerate(rules):
+        best = [specificity(s) for s in heads if selector_matches(s, theme, classes, ancestors)]
+        if best:
+            hits.append((max(best), idx, heads, decls))
     merged: dict[str, str] = {}
-    hit: list[str] = []
+    for _spec, _idx, _heads, decls in sorted(hits, key=lambda h: (h[0], h[1])):
+        for prop, val in decls.items():
+            if prop == "background":
+                merged.pop("background-color", None)
+            elif prop == "background-color":
+                prop = "background"
+            elif prop == "border":
+                merged.pop("border-color", None)
+            merged[prop] = val
+    return merged, [s for h in sorted(hits, key=lambda h: (h[0], h[1])) for s in h[2]]
+
+
+def recipe(theme: str, *selectors: str, rules=None) -> tuple[dict[str, str], list[str]]:
+    """The painted declarations of the element the ``selectors`` describe, and
+    which of those selectors exist as ux-v2.css rules (the wiring checks).
+
+    The single-compound selectors name the element's classes (``.chip``,
+    ``.chip.success`` -> an element ``chip success``); a descendant selector
+    (``.chip .dot``) makes them the ancestor and its subject the element, which
+    inherits the ancestor's custom properties. The declarations are the
+    CASCADE's winners, not the named rules' (VERIFY round 2, MAJOR 1.01)."""
+    rules = _ux_rules() if rules is None else rules
+    own = frozenset(c for sel in selectors if len(compounds(sel)) == 1 for c in re.findall(r"\.([\w-]+)", sel))
+    desc = [sel for sel in selectors if len(compounds(sel)) > 1]
+    if desc:
+        anc_decls, _ = cascade(theme, own, rules=rules)
+        el = frozenset(re.findall(r"\.([\w-]+)", compounds(desc[-1])[-1]))
+        decls, _ = cascade(theme, el, (own,), rules=rules)
+        decls = {**{k: v for k, v in anc_decls.items() if k.startswith("--")}, **decls}
+    else:
+        decls, _ = cascade(theme, own, rules=rules)
+    present = []
     for sel in selectors:
-        for heads, decls in rules:
-            wanted = [f"{SCOPE} {sel}"] + ([f"{LIGHT_SCOPE} {sel}"] if theme == "light" else [])
-            if any(w in heads for w in wanted):
-                merged.update(decls)
-                hit.append(sel)
-    return merged, hit
+        wanted = [f"{SCOPE} {sel}"] + ([f"{LIGHT_SCOPE} {sel}"] if theme == "light" else [])
+        if any(w in heads for heads, _d in rules for w in wanted):
+            present.append(sel)
+    return decls, present
 
 
 def rule_body(sel: str, rules=None) -> str:
@@ -299,10 +409,10 @@ class Painted:
         return contrast_ratio(to_rgb(evaluate("var(--p-line)", self.env), self.surface), self.surface)
 
 
-def _chip(theme: str, role: str) -> Painted:
-    decls, hit = recipe(theme, ".chip", f".chip.{role}")
+def _chip(theme: str, role: str, rules=None) -> Painted:
+    decls, hit = recipe(theme, ".chip", f".chip.{role}", rules=rules)
     assert f".chip.{role}" in hit, f"LANE-143: no .chip.{role} recipe in ux-v2.css"
-    return Painted(decls, theme)
+    return Painted(decls, theme, rules)
 
 
 # ──────────────────────────────── the guard ─────────────────────────────────
@@ -497,6 +607,12 @@ OWNED = {
     "box-shadow": "box-shadow",
     "outline": "outline",
     "outline-color": "outline",
+    # the label-caps recipe (VERIFY round 1 residual, round 2 scope D): weight and
+    # tracking are paint too -- five workspace `.eyebrow` rules and
+    # `.ca-model .card-title` out-ranked the v2 label weight
+    "font": "font-weight",
+    "font-weight": "font-weight",
+    "letter-spacing": "letter-spacing",
 }
 _STATE = re.compile(r":(hover|focus|focus-visible|focus-within|active)\b")
 Spec = tuple[int, int, int]
@@ -641,8 +757,11 @@ def v2_rules(theme: str, rules=None) -> list[tuple[str, frozenset[str], frozense
             if LIGHT_SCOPE in sel and theme != "light":
                 continue
             anc, spec = _ancestor_classes(sel), specificity(sel)
-            out += [(sel, cs, anc, spec, fams) for cs in class_sets(sel) if cs]
+            out += [(sel, cs, anc, spec, fams, decls) for cs in class_sets(sel) if cs]
     return out
+
+
+TYPE_FAMS = ("font-weight", "letter-spacing")
 
 
 def cascade_losses(theme: str, sheets: list[tuple[str, str]], rules=None) -> list[str]:
@@ -650,7 +769,13 @@ def cascade_losses(theme: str, sheets: list[tuple[str, str]], rules=None) -> lis
     bad = []
     for path, css in sheets:
         for head, body in parse_rules(css):
-            fams = {OWNED[p] for p in _decls(body) if p in OWNED}
+            comp_decls = _decls(body)
+            fams = {OWNED[p] for p in comp_decls if p in OWNED}
+            if comp_decls.get("text-transform") == "none":
+                # a label that opts OUT of the caps look (`.ws-hps .eyebrow`, `.ca-model
+                # .card-title`: sentence case, tracking 0) is the component's own
+                # variant, not a label-caps recipe the v2 weight/tracking must win on
+                fams -= set(TYPE_FAMS)
             for sel in split_selectors(head) if fams and not head.startswith("@") else ():
                 enc = encapsulated(sel)
                 if not enc or _STATE.search(compounds(enc[0])[-1]):
@@ -663,9 +788,11 @@ def cascade_losses(theme: str, sheets: list[tuple[str, str]], rules=None) -> lis
                         continue  # a variant v2 has no recipe for: the component's own
                     for fam in sorted(fams):
                         # the v2 side paints with its MOST specific matching rule
-                        mine = [(spec, s) for s, _cs, _a, spec, f in here if fam in f]
+                        mine = [(spec, s, d) for s, _cs, _a, spec, f, d in here if fam in f]
                         if mine and comp_spec >= max(mine)[0]:
-                            v2_spec, v2_sel = max(mine)
+                            v2_spec, v2_sel, v2_decls = max(mine, key=lambda m: m[0])
+                            if fam in TYPE_FAMS and comp_decls.get(fam) == v2_decls.get(fam):
+                                continue  # the same weight/tracking: nothing visible is lost
                             bad.append(f"{path} `{sel}` {comp_spec} >= `{v2_sel}` {v2_spec} on {fam} ({theme})")
     return bad
 
@@ -694,3 +821,43 @@ def test_the_cascade_guard_catches_the_jobs_dot() -> None:
     assert cascade_losses("light", jobs, rules=fixed) == [], (
         "LANE-143: a v2 role rule that out-ranks the component rule must clear it"
     )
+
+
+# ─────────────── the winning rule: what the browser paints is the cascade's ───────────────
+#
+# VERIFY round 2, MAJOR 1.01: the rows above once read the rules by EXACT selector
+# string (`.chip` then `.chip.<role>`), while the paint the browser applies comes
+# from the role-specificity override `.chip:is(.neutral, .success, ...)`. A
+# transparent text colour in that rule passed every row. The guard now resolves
+# the cascade per element: every v2 rule whose selector MATCHES the element
+# (``:is()`` expanded, ``:not()`` honoured), ordered by specificity then source
+# order, each property's last declaration winning.
+
+
+@pytest.mark.parametrize("theme", THEMES)
+@pytest.mark.parametrize("role", ("success", "danger"))
+def test_a_transparent_winning_colour_fails_the_guard(role: str, theme: str) -> None:
+    """Negative control: the override rule that WINS paints the text transparent;
+    the guard must measure that rule and fail it."""
+    rules = _ux_rules() + [([f"{SCOPE} .chip:is(.{role}, .neutral)"], {"color": "transparent"})]
+    ratio = _chip(theme, role, rules).text_on_bg()
+    assert ratio < TEXT_MIN, (
+        f"LANE-143: the guard must measure the WINNING rule: a transparent .chip:is(.{role}) colour "
+        f"still measured {ratio:.2f}:1 ({theme})"
+    )
+
+
+def test_the_cascade_guard_covers_label_weight_and_tracking() -> None:
+    """Positive control (scope D): an encapsulated caps eyebrow that out-ranks the
+    v2 label recipe on weight or tracking is reported; a sentence-case opt-out and
+    an identical value are not; the doubled-class lift clears it."""
+    v2 = [([f"{SCOPE} .eyebrow"], {"font-weight": "600", "letter-spacing": "0.08em"})]
+    sheet = [("ws.css", ".ws-x .eyebrow { font-weight: 700; letter-spacing: 0.12em; }")]
+    lost = cascade_losses("dark", sheet, rules=v2)
+    assert any("on font-weight" in x for x in lost) and any("on letter-spacing" in x for x in lost), (
+        f"LANE-143: the cascade guard must report weight and tracking losses, got {lost}"
+    )
+    assert cascade_losses("dark", [("ws.css", ".ws-x .eyebrow { text-transform: none; font-weight: 400; }")], rules=v2) == []
+    assert cascade_losses("dark", [("ws.css", ".ws-x .eyebrow { font-weight: 600; }")], rules=v2) == []
+    lifted = v2 + [([f"{SCOPE} .ws-x .eyebrow.eyebrow"], {"font-weight": "600", "letter-spacing": "0.08em"})]
+    assert cascade_losses("dark", sheet, rules=lifted) == []

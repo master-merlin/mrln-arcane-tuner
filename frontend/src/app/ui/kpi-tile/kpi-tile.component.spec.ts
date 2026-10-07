@@ -1,6 +1,7 @@
-import { describe, it, expect } from 'vitest';
+import { afterEach, describe, it, expect } from 'vitest';
 import { TestBed } from '@angular/core/testing';
 import { KpiTileComponent } from './kpi-tile.component';
+import { UxStore } from '../../state/ux.store';
 
 function valueText(fixture: { nativeElement: HTMLElement }): string {
     return (
@@ -78,5 +79,52 @@ describe('KpiTileComponent value rendering', () => {
             globalThis.cancelAnimationFrame = origCancel;
             (performance as unknown as { now: () => number }).now = origNow;
         }
+    });
+});
+
+describe('KpiTileComponent icon slot (LANE-143)', () => {
+    afterEach(() => {
+        TestBed.inject(UxStore).set(false);
+        localStorage.removeItem('mrln.ux');
+    });
+
+    function tile(icon: string | undefined, v2: boolean) {
+        TestBed.inject(UxStore).set(v2);
+        const fixture = TestBed.createComponent(KpiTileComponent);
+        fixture.componentRef.setInput('label', 'DATASETS');
+        fixture.componentRef.setInput('value', 79);
+        if (icon) fixture.componentRef.setInput('icon', icon);
+        fixture.detectChanges();
+        return fixture.nativeElement as HTMLElement;
+    }
+
+    it('renders the icon on the glass square under v2', () => {
+        const el = tile('Database', true);
+        expect(el.querySelectorAll('.kpi-icon svg').length, 'LANE-143: a tile with icon="Database" renders .kpi-icon svg').toBe(1);
+        expect(el.querySelectorAll('app-ico').length).toBe(1);
+    });
+
+    it('renders nothing for the icon with v2 off', () => {
+        const el = tile('Database', false);
+        expect(el.querySelectorAll('.kpi-icon').length, 'LANE-143: with v2 off a tile renders 0 .kpi-icon').toBe(0);
+        expect(el.querySelectorAll('app-ico').length, 'LANE-143: with v2 off a tile renders 0 app-ico').toBe(0);
+    });
+
+    it('renders no icon square without an icon, even under v2', () => {
+        const el = tile(undefined, true);
+        expect(el.querySelectorAll('.kpi-icon').length, 'LANE-143: a tile without icon renders 0 .kpi-icon').toBe(0);
+    });
+
+    it('follows the switch live: flipping v2 off removes the square', () => {
+        TestBed.inject(UxStore).set(true);
+        const fixture = TestBed.createComponent(KpiTileComponent);
+        fixture.componentRef.setInput('label', 'DATASETS');
+        fixture.componentRef.setInput('value', 79);
+        fixture.componentRef.setInput('icon', 'Database');
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelectorAll('.kpi-icon').length).toBe(1);
+        TestBed.inject(UxStore).set(false);
+        fixture.detectChanges();
+        expect(fixture.nativeElement.querySelectorAll('.kpi-icon').length, 'LANE-143: the slot must follow UxStore.v2() live').toBe(0);
     });
 });

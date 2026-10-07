@@ -922,3 +922,72 @@ def test_focus_ring_on_the_page(theme: str) -> None:
         ring = to_rgb(evaluate("var(--ux-ring)", env), back)
         ratio = contrast_ratio(ring, back)
         assert ratio >= NON_TEXT_MIN, f"LANE-143: the focus ring on {surface} ({theme}) measures {ratio:.2f}:1 < 3:1"
+
+
+# ──────────── the dataset workspace "Mass ..." buttons (user remark, round 3) ────────────
+#
+# `.ws-mass-mask` (success green) and `.ws-mass-edit` (violet) are coloured ON PURPOSE
+# by the workspace component's own (0,2,0) rules; the v2 secondary `.btn` recipe
+# out-ranks them, so under v2 they must carry a role treatment of their own, measured
+# as rendered like every other button.
+
+MASS_BUTTONS = {"ws-mass-mask": "success", "ws-mass-edit": "ux-violet"}
+WORKSPACE_HTML = REPO_ROOT / "frontend" / "src" / "app" / "workspace" / "dataset-workspace.component.html"
+
+
+def mass_button_problems(classes: tuple[str, ...], rules=None) -> list[str]:
+    """The muted-button check: each mass button's painted colour, fill and border
+    must name its own role tokens (a missing v2 rule paints the plain secondary)."""
+    problems = []
+    for cls in classes:
+        token = MASS_BUTTONS[cls]
+        for theme in THEMES:
+            decls = _btn(theme, (cls,), rules=rules).decls
+            for prop, suffix in (("color", "fg"), ("background", "bg")):
+                if f"--st-{token}-{suffix}" not in decls.get(prop, "") and f"--{token}-{suffix}" not in decls.get(prop, ""):
+                    problems.append(f"LANE-143: .btn.{cls} paints the muted secondary button ({theme}): {prop}={decls.get(prop)}")
+    return problems
+
+
+def workspace_mass_classes(html: str) -> list[str]:
+    return sorted({c for attr in re.findall(r'class="([^"]*)"', html) for c in attr.split() if c.startswith("ws-mass-") and c != "ws-mass-caption"})
+
+
+@pytest.mark.parametrize("theme", THEMES)
+@pytest.mark.parametrize("cls", sorted(MASS_BUTTONS))
+@pytest.mark.parametrize("state", (None, "hover", "active"))
+def test_mass_button_text_on_its_own_fill(theme: str, cls: str, state: str | None) -> None:
+    painted = _btn(theme, (cls,), state)
+    ratio = painted.text_on_bg()
+    assert ratio >= TEXT_MIN, f"LANE-143: .btn.{cls} text on its fill ({theme}, {state or 'rest'}) measures {ratio:.2f}:1 < {TEXT_MIN}:1"
+
+
+@pytest.mark.parametrize("theme", THEMES)
+@pytest.mark.parametrize("cls", sorted(MASS_BUTTONS))
+def test_mass_button_text_on_the_bare_surface_and_border(theme: str, cls: str) -> None:
+    painted = _btn(theme, (cls,))
+    assert painted.text_on_surface() >= TEXT_MIN, f"LANE-143: .btn.{cls} text on the bare surface ({theme}) measures {painted.text_on_surface():.2f}:1 < {TEXT_MIN}:1"
+    assert painted.border() >= NON_TEXT_MIN, f"LANE-143: .btn.{cls} composited border ({theme}) measures {painted.border():.2f}:1 < {NON_TEXT_MIN}:1"
+
+
+def test_mass_buttons_are_not_muted_under_v2() -> None:
+    assert mass_button_problems(tuple(MASS_BUTTONS)) == []
+
+
+def test_removing_a_mass_button_rule_is_caught() -> None:
+    """Negative control: with the v2 rules of the two buttons removed the guard names the muted buttons."""
+    rules = [(h, d) for h, d in _ux_rules() if not any("ws-mass-" in s for s in h)]
+    problems = mass_button_problems(tuple(MASS_BUTTONS), rules=rules)
+    assert any("ws-mass-mask" in p for p in problems) and any("ws-mass-edit" in p for p in problems), problems
+
+
+def test_every_workspace_mass_button_carries_a_v2_rule() -> None:
+    classes = workspace_mass_classes(WORKSPACE_HTML.read_text(encoding="utf-8"))
+    assert classes, "LANE-143: no .ws-mass-* button found in dataset-workspace.component.html"
+    heads = [h for hs, _d in _ux_rules() for h in hs]
+    for cls in classes:
+        assert f"{SCOPE} .btn.{cls}" in heads, f"LANE-143: .btn.{cls} is coloured by the workspace but has no v2 rule (it paints muted under v2)"
+
+
+def test_the_mass_scan_sees_a_planted_button() -> None:
+    assert workspace_mass_classes('<button class="btn sm ws-mass-new"></button>') == ["ws-mass-new"]

@@ -89,7 +89,7 @@ const SETS: Record<string, SetSpec> = {
     L0: { screens: FIVE, shots: 20, iconsOn: NO_ICONS },
     L1: { screens: FIVE, shots: 20, iconsOn: NO_ICONS },
     L2: { screens: [...FIVE, 'projects'], shots: 24, iconsOn: KPI_ICONS },
-    L3: { screens: FIVE, shots: 20, iconsOn: KPI_ICONS, extra: ['on-modal-dark.png', 'on-modal-light.png'] },
+    L3: { screens: FIVE, shots: 20, iconsOn: KPI_ICONS, extra: ['on-modal-dark.png', 'on-modal-light.png', 'on-workspace-dark.png', 'on-workspace-light.png'] },
 };
 const HIDE_TOGGLE = '[data-testid="ux-toggle"]{display:none}';
 
@@ -272,7 +272,7 @@ test('LANE-143 the shot table is self-consistent', () => {
     expect(SETS['L1'].shots).toBe(20);
     expect(SETS['L2'].shots).toBe(24);
     expect(SETS['L3'].shots).toBe(20);
-    expect(SETS['L3'].extra, 'LANE-143: L3 adds the two on-modal shots').toEqual(['on-modal-dark.png', 'on-modal-light.png']);
+    expect(SETS['L3'].extra, 'LANE-143: L3 adds the on-modal and on-workspace shots').toEqual(['on-modal-dark.png', 'on-modal-light.png', 'on-workspace-dark.png', 'on-workspace-light.png']);
     const sum = (n: string) => SETS[n].screens.reduce((a, s) => a + SETS[n].iconsOn[s], 0);
     expect(sum('L0') + sum('L1'), 'LANE-143: no icon may render before L2').toBe(0);
     expect(sum('L2'), 'LANE-143: L2 renders 26 icons ON').toBe(26);
@@ -576,6 +576,39 @@ test.describe('LANE-143 UX shots', () => {
             await expect(dialog, 'LANE-143: the New dataset dialog must open for the modal shot').toBeVisible();
             await page.waitForTimeout(500);
             const file = `on-modal-${theme}.png`;
+            await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
+            await fullCapture(page, path.join(OUT, 'full', file));
+        });
+    }
+
+    for (const theme of THEMES) {
+        if (!SPEC.extra) break;
+        test(`LANE-143 workspace toolbar ${theme}`, async ({ page }) => {
+            await page.goto('/');
+            await page.evaluate((t) => {
+                localStorage.setItem('mrln.theme', t);
+                localStorage.setItem('mrln.ux', 'v2');
+            }, theme);
+            await page.goto('/datasets');
+            await settle(page, 'datasets');
+            await page.getByTestId('dataset-card-alpha').click();
+            const mask = page.getByTestId('ws-mass-mask-btn');
+            const edit = page.getByTestId('ws-mass-edit-btn');
+            await expect(mask, 'LANE-143: the workspace Mass mask button must be visible').toBeVisible();
+            await page.waitForTimeout(500);
+            // the three Mass buttons are coloured on purpose: caption (brand fill), mask (green), edit (violet)
+            const paint = (loc: typeof mask) => loc.evaluate((el) => {
+                const cs = getComputedStyle(el);
+                return `${cs.color}|${cs.backgroundColor}`;
+            });
+            const caption = await paint(page.getByTestId('ws-mass-caption-btn'));
+            const plain = await page.locator('.ws-secondary .btn:not(.primary):not(.ws-mass-mask):not(.ws-mass-edit)').first().evaluate((el) => `${getComputedStyle(el).color}|${getComputedStyle(el).backgroundColor}`).catch(() => '');
+            const m = await paint(mask);
+            const e = await paint(edit);
+            expect(new Set([caption, m, e]).size, `LANE-143: Mass caption/mask/edit must be three distinct paints under v2: ${caption} / ${m} / ${e}`).toBe(3);
+            expect(m, 'LANE-143: Mass mask must not paint the plain secondary button').not.toBe(plain);
+            expect(e, 'LANE-143: Mass edit must not paint the plain secondary button').not.toBe(plain);
+            const file = `on-workspace-${theme}.png`;
             await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
             await fullCapture(page, path.join(OUT, 'full', file));
         });

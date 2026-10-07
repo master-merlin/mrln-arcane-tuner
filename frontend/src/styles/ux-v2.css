@@ -301,10 +301,17 @@ html[data-ux="v2"] {
   --ux-ring: var(--color-brand);
   --ux-backdrop: oklch(0 0 0 / 0.62);
   --ux-ink-on-brand: oklch(0.12 0.02 55);
+  /* violet is not one of the 8 status roles: the workspace "Mass edit" button's own treatment */
+  --ux-violet-fg: color-mix(in oklch, var(--color-violet), white 12%);
+  --ux-violet-bg: color-mix(in oklab, var(--color-violet), var(--color-surface-low) 86%);
+  --ux-violet-line: var(--color-violet);
 }
 html[data-ux="v2"][data-theme="light"] {
   --ux-ring: oklch(0.50 0.13 55);
   --ux-backdrop: oklch(0.20 0.01 265 / 0.38);
+  --ux-violet-fg: color-mix(in oklch, var(--color-violet), black 35%);
+  --ux-violet-bg: color-mix(in oklab, var(--color-violet), var(--color-base) 88%);
+  --ux-violet-line: color-mix(in oklch, var(--color-violet), black 15%);
 }
 
 /* buttons: secondary / primary (dark ink, no glow) / ghost / danger-out / success;
@@ -329,6 +336,15 @@ html[data-ux="v2"] .btn.danger-out { font-weight: 500; background: transparent; 
 html[data-ux="v2"] .btn.danger-out:not(:disabled):hover  { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
 html[data-ux="v2"] .btn.danger-out:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); }
 html[data-ux="v2"] .btn.success { background: var(--st-success-bg); color: var(--st-success-fg); border-color: color-mix(in oklch, var(--st-success-line), transparent 40%); }
+
+/* the workspace "Mass ..." buttons are coloured on purpose (component CSS, (0,2,0)):
+   mask = the success role, edit = violet; same recipe shape as .btn.success, fixed-mix hover and pressed */
+html[data-ux="v2"] .btn.ws-mass-mask { background: var(--st-success-bg); color: var(--st-success-fg); border-color: color-mix(in oklch, var(--st-success-line), transparent var(--ux-pill-fade)); }
+html[data-ux="v2"] .btn.ws-mass-mask:not(:disabled):hover  { background: color-mix(in oklab, var(--st-success-bg), var(--st-success-line) 14%); color: var(--st-success-fg); border-color: var(--st-success-line); }
+html[data-ux="v2"] .btn.ws-mass-mask:not(:disabled):active { background: color-mix(in oklab, var(--st-success-bg), var(--st-success-line) 24%); color: var(--st-success-fg); }
+html[data-ux="v2"] .btn.ws-mass-edit { background: var(--ux-violet-bg); color: var(--ux-violet-fg); border-color: color-mix(in oklch, var(--ux-violet-line), transparent var(--ux-pill-fade)); }
+html[data-ux="v2"] .btn.ws-mass-edit:not(:disabled):hover  { background: color-mix(in oklab, var(--ux-violet-bg), var(--ux-violet-line) 14%); color: var(--ux-violet-fg); border-color: var(--ux-violet-line); }
+html[data-ux="v2"] .btn.ws-mass-edit:not(:disabled):active { background: color-mix(in oklab, var(--ux-violet-bg), var(--ux-violet-line) 24%); color: var(--ux-violet-fg); }
 
 /* the focus ring: 2 px brand (dark) / darker brand (light), visible in both themes */
 html[data-ux="v2"] :is(.btn, .icon-btn, .q-icon, .ctx-pill, .tc-pill, .side-item, button, a):focus-visible { outline: 2px solid var(--ux-ring); outline-offset: 2px; }

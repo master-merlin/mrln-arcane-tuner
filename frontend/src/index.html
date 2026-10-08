@@ -18,7 +18,10 @@
   <script>
     // Apply the persisted theme before first paint so a returning light-mode
     // user never sees a flash of the dark theme. Mirrors ThemeStore's key.
+    // The v2 design language is the only rendering: data-ux="v2" is set
+    // before first paint, unconditionally (UxStore re-asserts it).
     (function () {
+      document.documentElement.setAttribute('data-ux', 'v2');
       try {
         if (localStorage.getItem('mrln.theme') === 'light') {
           document.documentElement.setAttribute('data-theme', 'light');

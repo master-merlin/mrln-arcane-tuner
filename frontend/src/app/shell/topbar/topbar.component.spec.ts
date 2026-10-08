@@ -134,16 +134,15 @@ describe('TopbarComponent — LLM availability icon', () => {
 });
 
 describe('TopbarComponent — design-language switch', () => {
-    function mountSwitch(v2 = false) {
+    function mountSwitch() {
         localStorage.clear();
-        const toggle = vi.fn();
         TestBed.configureTestingModule({
             imports: [TopbarComponent],
             providers: [
                 { provide: Router, useValue: { url: '/datasets', events: of() } },
                 { provide: ScopeStore, useValue: { projectId: () => null, scope: () => ({ kind: 'global' }) } },
                 { provide: ThemeStore, useValue: { theme: () => 'dark', toggle: vi.fn() } },
-                { provide: UxStore, useValue: { v2: () => v2, toggle } },
+                { provide: UxStore, useValue: { v2: () => true } },
                 { provide: ProjectService, useValue: { allProjects: () => [] } },
                 provideHttpClient(withFetch()),
                 provideHttpClientTesting(),
@@ -155,27 +154,20 @@ describe('TopbarComponent — design-language switch', () => {
         });
         const fixture = TestBed.createComponent(TopbarComponent);
         fixture.detectChanges();
-        return { fixture, toggle };
+        return { fixture };
     }
 
     afterEach(() => drainLlmProbe());
 
-    it('renders the ux-toggle button immediately before the theme toggle and clicks UxStore.toggle()', () => {
-        const { fixture, toggle } = mountSwitch();
-        const el: HTMLElement = fixture.nativeElement;
-        const btn = el.querySelector<HTMLButtonElement>('[data-testid="ux-toggle"]');
-        expect(btn, 'LANE-143: the topbar must carry [data-testid="ux-toggle"]').toBeTruthy();
-        const next = btn!.nextElementSibling as HTMLElement | null;
-        expect(next?.getAttribute('aria-label'), 'LANE-143: ux-toggle must precede the theme toggle').toBe('Switch to light theme');
-        btn!.click();
-        expect(toggle, 'LANE-143: clicking ux-toggle must call UxStore.toggle()').toHaveBeenCalledTimes(1);
-    });
-
-    it('marks the ux-toggle active (.brand) only while v2 is on', () => {
-        const off = mountSwitch(false).fixture.nativeElement.querySelector('[data-testid="ux-toggle"]') as HTMLElement;
-        expect(off.classList.contains('brand'), 'LANE-143: ux-toggle must not carry .brand with v2 off').toBe(false);
-        TestBed.resetTestingModule();
-        const on = mountSwitch(true).fixture.nativeElement.querySelector('[data-testid="ux-toggle"]') as HTMLElement;
-        expect(on.classList.contains('brand'), 'LANE-143: ux-toggle must carry .brand while v2 is on').toBe(true);
+    it('carries no ux-toggle: V2 is the only rendering and the theme toggle is the last action', () => {
+        const el: HTMLElement = mountSwitch().fixture.nativeElement;
+        expect(el.querySelector('[data-testid="ux-toggle"]'), 'LANE-143: no ux-toggle in the topbar').toBeNull();
+        const actions = el.querySelectorAll('.topbar-actions > .icon-btn');
+        expect(
+            Array.from(actions).some(b => (b.getAttribute('title') ?? '').includes('design language')),
+            'LANE-143: no ux-toggle in the topbar',
+        ).toBe(false);
+        const last = actions[actions.length - 1] as HTMLElement | undefined;
+        expect(last?.getAttribute('aria-label'), 'LANE-143: the theme toggle is the last topbar action').toBe('Switch to light theme');
     });
 });

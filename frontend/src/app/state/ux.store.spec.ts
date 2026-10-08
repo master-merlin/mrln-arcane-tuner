@@ -4,7 +4,7 @@ import { UxStore } from './ux.store';
 const KEY = 'mrln.ux';
 const attr = () => document.documentElement.getAttribute('data-ux');
 
-describe('UxStore', () => {
+describe('UxStore (closing round: V2 is the only rendering)', () => {
     function make(): UxStore {
         TestBed.configureTestingModule({ providers: [UxStore] });
         return TestBed.inject(UxStore);
@@ -20,35 +20,36 @@ describe('UxStore', () => {
         document.documentElement.removeAttribute('data-ux');
     });
 
-    it('defaults to OFF: no key, no attribute', () => {
+    it('sets data-ux="v2" with no stored key', () => {
         const store = make();
-        expect(store.v2(), 'LANE-143: v2() must be false with no stored key').toBe(false);
-        expect(attr(), 'LANE-143: <html data-ux> must be absent with no stored key').toBeNull();
+        expect(store.v2(), 'LANE-143: v2() is true on a fresh profile').toBe(true);
+        expect(attr(), 'LANE-143: data-ux is "v2" regardless of mrln.ux').toBe('v2');
     });
 
-    it('hydrates v2 from localStorage and sets the attribute', () => {
-        localStorage.setItem(KEY, 'v2');
-        const store = make();
-        expect(store.v2()).toBe(true);
-        expect(attr(), 'LANE-143: <html data-ux> must be "v2" when hydrated from storage').toBe('v2');
+    for (const stored of ['v1', 'v2', 'off', '']) {
+        it(`ignores a stored mrln.ux=${JSON.stringify(stored)} and leaves it in place`, () => {
+            localStorage.setItem(KEY, stored);
+            const store = make();
+            expect(attr(), 'LANE-143: data-ux is "v2" regardless of mrln.ux').toBe('v2');
+            expect(store.v2(), 'LANE-143: v2() is true regardless of mrln.ux').toBe(true);
+            expect(localStorage.getItem(KEY), 'LANE-143: a stored mrln.ux is left in place, not rewritten').toBe(stored);
+        });
+    }
+
+    it('re-asserts data-ux="v2" even if the attribute was removed before bootstrap', () => {
+        document.documentElement.setAttribute('data-ux', 'v1');
+        make();
+        expect(attr(), 'LANE-143: data-ux is "v2" regardless of mrln.ux').toBe('v2');
     });
 
-    it('treats an unknown stored value as OFF', () => {
-        localStorage.setItem(KEY, 'v1');
+    it('has no toggle() any more and set() never writes mrln.ux', () => {
         const store = make();
-        expect(store.v2()).toBe(false);
-        expect(attr()).toBeNull();
-    });
-
-    it('toggle() persists v2 and sets the attribute; a second toggle() clears both', () => {
-        const store = make();
-        store.toggle();
-        expect(store.v2()).toBe(true);
-        expect(localStorage.getItem(KEY)).toBe('v2');
-        expect(attr(), 'LANE-143: <html data-ux> must be "v2" after toggle()').toBe('v2');
-        store.toggle();
-        expect(store.v2()).toBe(false);
-        expect(localStorage.getItem(KEY), 'LANE-143: the key must be removed on switching off').toBeNull();
-        expect(attr(), 'LANE-143: <html data-ux> must be removed on switching off').toBeNull();
+        expect((store as unknown as { toggle?: unknown }).toggle, 'LANE-143: the V1/V2 toggle is retired').toBeUndefined();
+        store.set(false);
+        expect(attr(), 'LANE-143: set(false) is the in-memory V1 seam (tests only)').toBeNull();
+        expect(localStorage.getItem(KEY), 'LANE-143: set() never persists').toBeNull();
+        store.set(true);
+        expect(attr()).toBe('v2');
+        expect(localStorage.getItem(KEY), 'LANE-143: set() never persists').toBeNull();
     });
 });

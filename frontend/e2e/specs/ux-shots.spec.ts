@@ -9,18 +9,20 @@ import { jobs, runningJobStepLogs } from '../fixtures/api-data';
 /**
  * LANE-143 UAT evidence producer. Runs ONLY with `UX_SHOTS=1`.
  *
- *   UX_SHOTS=1 UX_SHOTS_SET=L1 [UX_SHOTS_BASELINE=L0] \
+ *   UX_SHOTS=1 UX_SHOTS_SET=L5 [UX_SHOTS_BASELINE=L4] \
  *     npm --prefix frontend run e2e -- ux-shots --workers=1
  *
- * Writes `.agent/workdir/lane-143/shots/<set>/<off|on>-<screen>-<theme>.png`
- * (1440x900), `shots-manifest.json`, `sweep.md` and `toggle-displacement.txt`.
- * Every OFF capture and every box sweep hides `[data-testid="ux-toggle"]` (the
- * one element this branch adds to the OFF rendering) so the topbar sits where
- * `main` puts it. What a set shoots and asserts is ONE table, `SETS`, keyed by
- * the set's layer (`L2b` = a remediation re-shoot of L2): its screens, its PNG
- * count and the ON icon count of every screen (OFF is always 0). Every capture
- * also has a full-length twin under `<set>/full/` (the viewport grown to the
- * page's scroll height), so content below the 1440x900 fold is in the pack.
+ * Writes `.agent/workdir/lane-143/shots/<set>/on-<screen>-<theme>.png`
+ * (1440x900), `shots-manifest.json`, `sweep.md` and `baseline-diff.md`.
+ * Closing round (T6): V2 is the only rendering, so this head shoots the ON
+ * state only (set L5) and compares every ON shot to the L4 ON shot at
+ * +-NOISE per channel, the topbar actions row masked (the retired ux-toggle
+ * leaves that row 40px narrower). Sets L0-L4 shot OFF and ON on earlier heads;
+ * their rows stay in `SETS` as the record and as baselines, but this head
+ * refuses to re-shoot them (it no longer renders OFF). What a set shoots and
+ * asserts is ONE table, `SETS`, keyed by the set's layer: its states, screens,
+ * PNG count and the ON icon count of every screen. Every capture also has a
+ * full-length twin under `<set>/full/`.
  */
 const SET = process.env['UX_SHOTS_SET'] ?? 'L0';
 const STAGE = /^L(\d+)/.exec(SET)?.[1];
@@ -29,11 +31,10 @@ const STAGE = /^L(\d+)/.exec(SET)?.[1];
  * except the baseline-generating L0 compares its OFF shots to a baseline set: the
  * named `UX_SHOTS_BASELINE`, else `L0`. L0 (stage 0) is exempt -- it IS the baseline.
  */
-function resolveBaseline(stage: string | undefined, env: string | undefined): string | undefined {
+function resolveBaseline(stage: string | undefined, env: string | undefined, dflt = 'L0'): string | undefined {
     if (stage === '0') return undefined;
-    return env && env.trim() ? env.trim() : 'L0';
+    return env && env.trim() ? env.trim() : dflt;
 }
-const BASELINE = resolveBaseline(STAGE, process.env['UX_SHOTS_BASELINE']);
 const REPO_ROOT = path.resolve(__dirname, '..', '..', '..');
 const SHOTS_ROOT = path.join(REPO_ROOT, '.agent', 'workdir', 'lane-143', 'shots');
 const OUT = path.join(SHOTS_ROOT, SET);
@@ -78,12 +79,21 @@ function pixelDiff(a: Buffer, b: Buffer, skip: Rect[] = []): { size: string; bey
 }
 
 const THEMES = ['dark', 'light'] as const;
-const STATES = ['off', 'on'] as const;
+type State = 'off' | 'on';
+const BOTH: State[] = ['off', 'on'];
 const FIVE = ['datasets', 'training', 'templates', 'server', 'jobs'];
 /** Icons ON per screen once L2 lands (spec: 6 datasets, 4 server, 6 jobs, 4 projects, 6 training = 26). */
 const KPI_ICONS: Record<string, number> = { datasets: 6, training: 6, templates: 0, server: 4, jobs: 6, projects: 4 };
 const NO_ICONS: Record<string, number> = Object.fromEntries(Object.keys(KPI_ICONS).map((k) => [k, 0]));
-type SetSpec = { screens: string[]; shots: number; iconsOn: Record<string, number>; extra?: string[] };
+/**
+ * `states` defaults to OFF + ON; `compare` is the state compared to the baseline set
+ * (`baseline`, default L0): OFF-vs-main for L1-L4, ON-vs-L4 for the closing round L5.
+ */
+type SetSpec = {
+    screens: string[]; shots: number; iconsOn: Record<string, number>; extra?: string[];
+    states?: State[]; compare?: State; baseline?: string;
+};
+const statesOf = (spec: SetSpec): State[] => spec.states ?? BOTH;
 /** The ONE table: a round's evidence is whatever its row says, nothing derived elsewhere. */
 const SETS: Record<string, SetSpec> = {
     L0: { screens: FIVE, shots: 20, iconsOn: NO_ICONS },
@@ -99,20 +109,26 @@ SETS['L3c'] = { ...SETS['L3'] };
 SETS['L3d'] = { ...SETS['L3'], extra: [...(SETS['L3'].extra ?? []), 'on-modal-hover-dark.png', 'on-modal-hover-light.png'] };
 /** L4 = L3d after the user's round-4 answer (live-peak-vram-card=match-estimate-card-layout): same screens, same extras. */
 SETS['L4'] = { ...SETS['L3d'] };
-const HIDE_TOGGLE ='[data-testid="ux-toggle"]{display:none}';
+/**
+ * L5 = the closing round (the user's decision 2026-10-08, UAT-LANE-143.4 ok): V2 is the
+ * only rendering and the toggle is gone. ON only, 6 screens (projects joins so all 26 icons
+ * are shot; L4 has no projects shot, recorded as an exception by design); every ON shot and
+ * every extra is compared to L4's at +-NOISE with the topbar actions row masked.
+ */
+SETS['L5'] = { ...SETS['L4'], screens: [...FIVE, 'projects'], states: ['on'], shots: 12, compare: 'on', baseline: 'L4' };
 
 /**
  * Fails BEFORE any capture when the baseline set has no shots on disk (the compare
  * would otherwise be skipped or die late): every OFF image its SETS row promises
  * must exist. Throws a `LANE-143:` message naming the first missing file.
  */
-function assertBaselineOnDisk(root: string, baseline: string): void {
+function assertBaselineOnDisk(root: string, baseline: string, state: State = 'off'): void {
     const stage = /^L(\d+)/.exec(baseline)?.[1];
     const row = stage === undefined ? undefined : SETS[`L${stage}`];
     if (!row) throw new Error(`LANE-143: unknown baseline set ${baseline}`);
     for (const screen of row.screens) {
         for (const theme of THEMES) {
-            const file = `off-${screen}-${theme}.png`;
+            const file = `${state}-${screen}-${theme}.png`;
             if (!fs.existsSync(path.join(root, baseline, file))) {
                 throw new Error(`LANE-143: baseline set ${baseline} has no shots on disk (missing ${file}); shoot ${baseline} first or name UX_SHOTS_BASELINE`);
             }
@@ -314,7 +330,7 @@ test('LANE-143 an omitted baseline defaults to L0 and absent baseline shots fail
 /** Runs without UX_SHOTS: the table is consistent with itself and with the spec. */
 test('LANE-143 the shot table is self-consistent', () => {
     for (const [name, spec] of Object.entries(SETS)) {
-        expect(spec.shots, `LANE-143: ${name} shots = screens x themes x states`).toBe(spec.screens.length * THEMES.length * STATES.length);
+        expect(spec.shots, `LANE-143: ${name} shots = screens x themes x states`).toBe(spec.screens.length * THEMES.length * statesOf(spec).length);
         for (const screen of spec.screens) {
             expect(typeof spec.iconsOn[screen], `LANE-143: ${name} has no ON icon count for ${screen}`).toBe('number');
         }
@@ -328,47 +344,20 @@ test('LANE-143 the shot table is self-consistent', () => {
     expect(sum('L2'), 'LANE-143: L2 renders 26 icons ON').toBe(26);
     expect(SETS['L3d'].extra, 'LANE-143: L3d adds one hovered modal CTA per theme').toEqual([...(SETS['L3'].extra ?? []), 'on-modal-hover-dark.png', 'on-modal-hover-light.png']);
     expect(STAGE === undefined || SETS[`L${STAGE}`] !== undefined, `LANE-143: unknown shot set ${SET}`).toBe(true);
+    expect(statesOf(SETS['L5']), 'LANE-143: the closing round shoots ON only').toEqual(['on']);
+    expect(SETS['L5'].shots, 'LANE-143: L5 = 6 screens (incl. projects) x 2 themes, ON only').toBe(12);
+    expect(sum('L5'), 'LANE-143: L5 renders 26 icons').toBe(26);
+    expect(resolveBaseline('5', undefined, SETS['L5'].baseline), 'LANE-143: an omitted baseline on L5 compares against L4').toBe('L4');
 });
 
 /** A set with its own row (L3d) uses it; a re-shoot without one (L3b, L3c) takes its layer's. */
 const SPEC = SETS[SET] ?? SETS[`L${STAGE}`] ?? SETS['L0'];
 const SCREENS = SPEC.screens;
+const BASELINE = resolveBaseline(STAGE, process.env['UX_SHOTS_BASELINE'], SPEC.baseline);
+const COMPARE: State = SPEC.compare ?? 'off';
 
 test.describe.configure({ mode: 'serial' });
 test.use({ viewport: { width: 1440, height: 900 } });
-
-type Box = Record<string, number>;
-
-/** Heights of every `body *` element keyed by a structural path that ignores `.kpi-icon` nodes. */
-async function sweep(page: import('@playwright/test').Page): Promise<Box> {
-    return page.evaluate(() => {
-        const out: Record<string, number> = {};
-        const key = (el: Element): string => {
-            const parts: string[] = [];
-            for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
-                const p = n.parentElement!;
-                const sibs = Array.from(p.children).filter((c) => !c.classList.contains('kpi-icon'));
-                parts.unshift(`${n.tagName.toLowerCase()}:${sibs.indexOf(n)}`);
-            }
-            return parts.join('>');
-        };
-        for (const el of Array.from(document.body.querySelectorAll('*'))) {
-            if (el.closest('.kpi-icon')) continue;
-            // The ONE recorded exception (user override 2026-10-07): a Datasets card whose counts
-            // row holds the "N suppressed" chip loses the wrapped second line when v2 lifts the chip
-            // to the card's corner; the row and its three count spans change height, the CARD does not.
-            const counts = el.closest('.ds-card-counts');
-            if (counts && counts.querySelector('.ds-card-excluded')) continue;
-            // The ONE named exception of the user's UAT round 3 answer (2026-10-08, ew-grid-padding=12px):
-            // v2 pads the estimate wall's tile grid by 12px, so the grid and its ancestors up to the
-            // wall's card grow by 24px. Every other element still must not change.
-            const grid = document.querySelector('.ew-grid');
-            if (grid && el.contains(grid) && (el === grid || el.tagName === 'APP-ESTIMATE-WALL' || el.classList.contains('card') && el.parentElement?.tagName === 'APP-ESTIMATE-WALL')) continue;
-            out[key(el)] = Math.round(el.getBoundingClientRect().height * 100) / 100;
-        }
-        return out;
-    });
-}
 
 /**
  * The full-length twin of a capture (UAT round 1 item 3: the Server log-level
@@ -501,6 +490,98 @@ async function statesRead(page: import('@playwright/test').Page, selector: strin
     return out;
 }
 
+/**
+ * Opens `route` in `theme` as a RETURNING V1 user: `mrln.ux` is stored as `v1`, which this
+ * head must ignore and leave in place (closing round) -- the page renders V2 regardless.
+ */
+async function openAs(page: import('@playwright/test').Page, theme: string, route: string): Promise<void> {
+    await page.goto('/');
+    await page.evaluate((t) => {
+        localStorage.setItem('mrln.theme', t);
+        localStorage.setItem('mrln.ux', 'v1');
+    }, theme);
+    await page.goto(route);
+    const state = await page.evaluate(() => ({ ux: document.documentElement.getAttribute('data-ux'), stored: localStorage.getItem('mrln.ux') }));
+    expect(state.ux, 'LANE-143: data-ux is "v2" regardless of mrln.ux').toBe('v2');
+    expect(state.stored, 'LANE-143: a stored mrln.ux is left in place').toBe('v1');
+}
+
+/**
+ * The closing round's compare: this ON capture vs the baseline set's ON capture at +-NOISE.
+ * Masked: clock text (as the OFF-vs-L0 compare did) and the topbar actions row grown 40 px to
+ * the left -- the ONE layout change of T6 (the ux-toggle removed from a right-anchored row).
+ */
+async function compareToBaseline(page: import('@playwright/test').Page, file: string, screen: string): Promise<void> {
+    if (!BASELINE) return;
+    const exception = baselineException(SHOTS_ROOT, BASELINE, screen, file);
+    if (exception !== null) {
+        baselineRows.push(`| ${file} | - | exception: ${exception} | - | - |`);
+        return;
+    }
+    const masks: Rect[] = await page.evaluate(() => {
+        const out = Array.from(document.body.querySelectorAll('*'))
+            .filter((el) =>
+                Array.from(el.childNodes).some(
+                    (n) => n.nodeType === Node.TEXT_NODE && /\b\d{1,2}:\d{2}\b/.test(n.textContent ?? ''),
+                ),
+            )
+            .map((el) => {
+                const r = el.getBoundingClientRect();
+                return { x: Math.floor(r.x) - 1, y: Math.floor(r.y) - 1, w: Math.ceil(r.width) + 3, h: Math.ceil(r.height) + 3 };
+            })
+            .filter((r) => r.w > 3 && r.h > 3);
+        const bar = document.querySelector('.topbar-actions')?.getBoundingClientRect();
+        // 40 px for the retired toggle + 8 px each side for the buttons' shadow halo, which
+        // paints outside their boxes (measured: 4 px past the row on on-modal-light).
+        if (bar) out.push({ x: Math.floor(bar.x) - 48, y: Math.floor(bar.y) - 8, w: Math.ceil(bar.width) + 56, h: Math.ceil(bar.height) + 16 });
+        return out;
+    });
+    const d = pixelDiff(fs.readFileSync(path.join(OUT, file)), fs.readFileSync(path.join(SHOTS_ROOT, BASELINE, file)), masks);
+    const masked = masks.map((r) => `${r.w}x${r.h}@${r.x},${r.y}`).join(' ') || '-';
+    baselineRows.push(`| ${file} | ${d.size} | ${d.beyond} | ${d.noise} | ${masked} |`);
+    sweepRows.push(`| ${file} | ${d.size} | ${d.beyond} | ${d.noise} | ${masks.length} boxes |`);
+    expect(d.beyond, `LANE-143: ${file} differs from baseline ${BASELINE} in ${d.beyond} px beyond +-${NOISE} (${d.size})`).toBe(0);
+}
+
+/**
+ * Runs WITHOUT UX_SHOTS (an ordinary e2e test): the pre-paint guard in index.html sets
+ * `data-ux="v2"` before the body exists and before the parse ends. The bundle is a deferred
+ * module script, so a value present at those two moments came from the inline guard, never
+ * from UxStore -- and nothing can paint before the body exists.
+ */
+test('LANE-143 data-ux is set before first paint by the inline guard', async ({ page }) => {
+    await page.addInitScript(() => {
+        const w = window as unknown as Record<string, unknown>;
+        const obs = new MutationObserver(() => {
+            if (document.body && !('__uxAtBody' in w)) {
+                w['__uxAtBody'] = document.documentElement?.getAttribute('data-ux') ?? null;
+                obs.disconnect();
+            }
+        });
+        obs.observe(document, { childList: true, subtree: true });
+        document.addEventListener('readystatechange', () => {
+            if (document.readyState === 'interactive') w['__uxAtInteractive'] = document.documentElement.getAttribute('data-ux');
+        });
+    });
+    await page.goto('/');
+    await page.evaluate(() => localStorage.setItem('mrln.ux', 'v1'));
+    await page.goto('/datasets');
+    await page.waitForLoadState('networkidle');
+    const r = await page.evaluate(() => {
+        const w = window as unknown as Record<string, unknown>;
+        return {
+            atBody: w['__uxAtBody'] ?? 'unrecorded',
+            atInteractive: w['__uxAtInteractive'] ?? 'unrecorded',
+            bundleIsModule: Array.from(document.querySelectorAll<HTMLScriptElement>('script[src]')).some(
+                (el) => /main/.test(el.getAttribute('src') ?? '') && el.type === 'module',
+            ),
+        };
+    });
+    expect(r.bundleIsModule, 'LANE-143: the app bundle must be a deferred module script, or the parse-time check proves nothing').toBe(true);
+    expect(r.atBody, 'LANE-143: data-ux must be set before first paint').toBe('v2');
+    expect(r.atInteractive, 'LANE-143: data-ux must be set before first paint').toBe('v2');
+});
+
 const dotRows: string[] = [];
 const sweepRows: string[] = [];
 const baselineRows: string[] = [];
@@ -510,7 +591,10 @@ test.describe('LANE-143 UX shots', () => {
     test.skip(!process.env['UX_SHOTS'], 'UX_SHOTS=1 required: this spec produces UAT evidence');
 
     test.beforeAll(() => {
-        if (BASELINE) assertBaselineOnDisk(SHOTS_ROOT, BASELINE);
+        if (statesOf(SPEC).includes('off')) {
+            throw new Error(`LANE-143: set ${SET} shoots the OFF state, which this head no longer renders (V2 is the only rendering); shoot L5`);
+        }
+        if (BASELINE) assertBaselineOnDisk(SHOTS_ROOT, BASELINE, COMPARE);
         fs.mkdirSync(path.join(OUT, 'full'), { recursive: true });
         fs.writeFileSync(path.join(OUT, 'button-contrast.md'), '| button | state | ratio | text on fill (sRGB) | >= 4.5 |\n|---|---|---|---|---|\n');
     });
@@ -527,170 +611,55 @@ test.describe('LANE-143 UX shots', () => {
     for (const screen of SCREENS) {
         for (const theme of THEMES) {
             test(`LANE-143 shots ${screen} ${theme}`, async ({ page }) => {
-                const run = async (state: 'off' | 'on') => {
-                    await page.goto('/');
-                    await page.evaluate(
-                        ([t, ux]) => {
-                            localStorage.setItem('mrln.theme', t);
-                            if (ux) localStorage.setItem('mrln.ux', 'v2');
-                            else localStorage.removeItem('mrln.ux');
-                        },
-                        [theme, state === 'on'] as const,
+                await openAs(page, theme, `/${screen}`);
+                await settle(page, screen);
+                const want = SPEC.iconsOn[screen];
+                const squares = await page.locator('.kpi-icon').count();
+                const icons = await page.locator('.kpi-icon svg').count();
+                const stray = await page.locator('.kpi app-ico').count();
+                expect(squares, `LANE-143: expected ${want} visible KPI tiles/icons on ${screen} (set ${SET})`).toBe(want);
+                expect(icons, `LANE-143: expected ${want} KPI icon svgs on ${screen} (set ${SET})`).toBe(want);
+                expect(stray, `LANE-143: an <app-ico> in a KPI tile outside .kpi-icon on ${screen}`).toBe(want);
+                if (want > 0) {
+                    // every square sits inside its tile's padding box (no overflow, no collision with the label row height)
+                    const outside = await page.evaluate(() =>
+                        Array.from(document.querySelectorAll('.kpi-icon')).filter((el) => {
+                            const r = el.getBoundingClientRect();
+                            const k = el.closest('.kpi')!.getBoundingClientRect();
+                            return r.right > k.right || r.top < k.top || r.bottom > k.bottom || r.width === 0;
+                        }).length,
                     );
-                    await page.goto(`/${screen}`);
-                    await settle(page, screen);
-                    const want = state === 'on' ? SPEC.iconsOn[screen] : 0;
-                    const squares = await page.locator('.kpi-icon').count();
-                    const icons = await page.locator('.kpi-icon svg').count();
-                    const stray = await page.locator('.kpi app-ico').count();
-                    expect(squares, `LANE-143: expected ${want} visible KPI tiles/icons on ${screen} (${state}, set ${SET})`).toBe(want);
-                    expect(icons, `LANE-143: expected ${want} KPI icon svgs on ${screen} (${state}, set ${SET})`).toBe(want);
-                    expect(stray, `LANE-143: an <app-ico> in a KPI tile outside .kpi-icon on ${screen}`).toBe(want);
-                    if (want > 0) {
-                        // every square sits inside its tile's padding box (no overflow, no collision with the label row height)
-                        const outside = await page.evaluate(() =>
-                            Array.from(document.querySelectorAll('.kpi-icon')).filter((el) => {
-                                const r = el.getBoundingClientRect();
-                                const k = el.closest('.kpi')!.getBoundingClientRect();
-                                return r.right > k.right || r.top < k.top || r.bottom > k.bottom || r.width === 0;
-                            }).length,
-                        );
-                        expect(outside, `LANE-143: ${outside} icon square(s) outside their tile on ${screen}`).toBe(0);
-                        const overlaps = await page.evaluate(iconOverlaps);
-                        expect(overlaps, `LANE-143: a .kpi-icon overlaps tile content on ${screen}/${theme}: ${overlaps.join('; ')}`).toEqual([]);
-                    }
-                    if (state === 'on' && screen === 'training' && SPEC.iconsOn['training'] > 0) {
-                        const mis = await page.evaluate(estimateTileMismatches);
-                        expect(mis, `LANE-143: a Training rail KPI tile does not match the estimate wall's card layout on ${theme}: ${mis.join('; ')}`).toEqual([]);
-                    }
-                    if (state === 'on' && screen === 'datasets') {
-                        const over = await page.evaluate(cardChipOverflows);
-                        expect(over, `LANE-143: a chip/tag extends past its .ds-card on ${screen}/${theme}: ${over.join('; ')}`).toEqual([]);
-                    }
-                    for (const d of await dotContrasts(page)) {
-                        dotRows.push(`| ${screen} | ${theme} | ${state} | ${d.cls} | rgb(${d.fill}) | rgb(${d.back}) | ${d.ratio} |`);
-                        if (state === 'on') {
-                            expect(
-                                d.ratio,
-                                `LANE-143: painted .sdot (${d.cls}) on ${screen}/${theme} measures ${d.ratio}:1 < 3:1 (rgb(${d.fill}) on rgb(${d.back}))`,
-                            ).toBeGreaterThanOrEqual(3);
-                        }
-                    }
-                    // OFF: the toggle leaves layout for the capture; ON: shown for the shot, hidden for the sweep.
-                    const style = await page.addStyleTag({ content: HIDE_TOGGLE });
-                    const heights = await sweep(page);
-                    if (state === 'on') await style.evaluate((el) => el.remove());
-                    const file = `${state}-${screen}-${theme}.png`;
-                    await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
-                    const base = BASELINE ? path.join(SHOTS_ROOT, BASELINE, file) : '';
-                    const exception = state === 'off' && BASELINE ? baselineException(SHOTS_ROOT, BASELINE, screen, file) : null;
-                    if (exception !== null) {
-                        // only a screen the baseline SET lacks by design (its SETS row): recorded, not compared
-                        baselineRows.push(`| ${file} | - | exception: ${exception} | - | - |`);
-                    } else if (state === 'off' && BASELINE) {
-                        const clocks: Rect[] = await page.evaluate(() =>
-                            Array.from(document.body.querySelectorAll('*'))
-                                .filter((el) =>
-                                    Array.from(el.childNodes).some(
-                                        (n) => n.nodeType === Node.TEXT_NODE && /\b\d{1,2}:\d{2}\b/.test(n.textContent ?? ''),
-                                    ),
-                                )
-                                .map((el) => {
-                                    const r = el.getBoundingClientRect();
-                                    return { x: Math.floor(r.x) - 1, y: Math.floor(r.y) - 1, w: Math.ceil(r.width) + 3, h: Math.ceil(r.height) + 3 };
-                                })
-                                .filter((r) => r.w > 3 && r.h > 3),
-                        );
-                        const d = pixelDiff(fs.readFileSync(path.join(OUT, file)), fs.readFileSync(base), clocks);
-                        const skipped = clocks.map((r) => `${r.w}x${r.h}@${r.x},${r.y}`).join(' ') || '-';
-                        baselineRows.push(`| ${file} | ${d.size} | ${d.beyond} | ${d.noise} | ${skipped} |`);
-                        expect(
-                            d.beyond,
-                            `LANE-143: ${file} differs from baseline ${BASELINE} in ${d.beyond} px beyond +-${NOISE} (${d.size})`,
-                        ).toBe(0);
-                    }
-                    await fullCapture(page, path.join(OUT, 'full', file));
-                    return heights;
-                };
-                const off = await run('off');
-                const on = await run('on');
-                const changed = Object.keys(off).filter((k) => k in on && off[k] !== on[k]);
-                const missing = Object.keys(off).filter((k) => !(k in on)).length + Object.keys(on).filter((k) => !(k in off)).length;
-                sweepRows.push(
-                    `| ${screen} | ${theme} | ${Object.keys(off).length} | ${changed.length} | ${missing} |` +
-                        (changed.length ? ` ${changed.slice(0, 5).join(', ')}` : ''),
-                );
-                expect(changed, `LANE-143: ${screen}/${theme} height changes OFF vs ON`).toEqual([]);
+                    expect(outside, `LANE-143: ${outside} icon square(s) outside their tile on ${screen}`).toBe(0);
+                    const overlaps = await page.evaluate(iconOverlaps);
+                    expect(overlaps, `LANE-143: a .kpi-icon overlaps tile content on ${screen}/${theme}: ${overlaps.join('; ')}`).toEqual([]);
+                }
+                if (screen === 'training' && SPEC.iconsOn['training'] > 0) {
+                    const mis = await page.evaluate(estimateTileMismatches);
+                    expect(mis, `LANE-143: a Training rail KPI tile does not match the estimate wall's card layout on ${theme}: ${mis.join('; ')}`).toEqual([]);
+                }
+                if (screen === 'datasets') {
+                    const over = await page.evaluate(cardChipOverflows);
+                    expect(over, `LANE-143: a chip/tag extends past its .ds-card on ${screen}/${theme}: ${over.join('; ')}`).toEqual([]);
+                }
+                for (const d of await dotContrasts(page)) {
+                    dotRows.push(`| ${screen} | ${theme} | on | ${d.cls} | rgb(${d.fill}) | rgb(${d.back}) | ${d.ratio} |`);
+                    expect(
+                        d.ratio,
+                        `LANE-143: painted .sdot (${d.cls}) on ${screen}/${theme} measures ${d.ratio}:1 < 3:1 (rgb(${d.fill}) on rgb(${d.back}))`,
+                    ).toBeGreaterThanOrEqual(3);
+                }
+                const file = `on-${screen}-${theme}.png`;
+                await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
+                await compareToBaseline(page, file, screen);
+                await fullCapture(page, path.join(OUT, 'full', file));
             });
         }
     }
 
-    test('LANE-143 toggle displacement is exactly the 32px button plus 8px gap', async ({ page }) => {
-        await page.goto('/');
-        await page.evaluate(() => {
-            localStorage.setItem('mrln.theme', 'dark');
-            localStorage.removeItem('mrln.ux');
-        });
-        await page.goto('/datasets');
-        await settle(page, 'datasets');
-        const boxes = () =>
-            page.evaluate(() => {
-                const out: Record<string, number[]> = {};
-                const toggle = document.querySelector('[data-testid="ux-toggle"]')!;
-                for (const el of Array.from(document.body.querySelectorAll('*'))) {
-                    if (el === toggle || toggle.contains(el)) continue;
-                    const p: string[] = [];
-                    for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
-                        p.unshift(n.tagName.toLowerCase() + ':' + Array.from(n.parentElement!.children).indexOf(n));
-                    }
-                    const r = el.getBoundingClientRect();
-                    out[p.join('>')] = [r.x, r.y, r.width, r.height].map((v) => Math.round(v * 100) / 100);
-                }
-                return out;
-            });
-        const themeBtn = page.locator('[data-testid="ux-toggle"] + button');
-        const shown = await boxes();
-        const shownTheme = (await themeBtn.boundingBox())!;
-        const shownToggle = (await page.getByTestId('ux-toggle').boundingBox())!;
-        await page.addStyleTag({ content: HIDE_TOGGLE });
-        const hidden = await boxes();
-        const hiddenTheme = (await themeBtn.boundingBox())!;
-        const diffs = Object.keys(hidden).filter((k) => JSON.stringify(hidden[k]) !== JSON.stringify(shown[k]));
-        const lines = [
-            `toggle box: ${shownToggle.width}x${shownToggle.height}`,
-            `theme toggle x shown=${shownTheme.x} hidden=${hiddenTheme.x} delta=${shownTheme.x - hiddenTheme.x}`,
-            `other element boxes differing (toggle excluded, theme toggle included): ${diffs.length}`,
-            ...diffs.slice(0, 20).map((k) => `  ${k}: shown ${JSON.stringify(shown[k])} hidden ${JSON.stringify(hidden[k])}`),
-        ];
-        fs.writeFileSync(path.join(OUT, 'toggle-displacement.txt'), lines.join('\n') + '\n');
-        expect(shownToggle.width, 'LANE-143: toggle width').toBe(32);
-        expect(shownToggle.height, 'LANE-143: toggle height').toBe(32);
-        // The row is right-aligned (`margin-left:auto`), so showing the 32px toggle + 8px gap
-        // grows the row LEFTWARD: the theme toggle (after it) stays put and every element before
-        // it moves 40px left. (The spec's "theme toggle x is 40px smaller" has the direction
-        // backwards; the invariant that matters is that the displacement is exactly 40px.)
-        expect(hiddenTheme.x - shownTheme.x, 'LANE-143: theme toggle stays anchored right').toBe(0);
-        expect(diffs.length, 'LANE-143: showing the toggle displaced nothing').toBeGreaterThan(0);
-        for (const k of diffs) {
-            const [sx, sy, sw, sh] = shown[k];
-            const [hx, hy, hw, hh] = hidden[k];
-            expect(hx - sx, `LANE-143: ${k} x displacement`).toBe(40);
-            expect(sy, `LANE-143: ${k} y`).toBe(hy);
-            expect(sh, `LANE-143: ${k} height`).toBe(hh);
-            // only the row container itself changes width (+40)
-            expect(sw - hw === 0 || sw - hw === 40, `LANE-143: ${k} width`).toBe(true);
-        }
-    });
-
     for (const theme of THEMES) {
         if (!SPEC.extra) break;
         test(`LANE-143 modal ${theme}`, async ({ page }) => {
-            await page.goto('/');
-            await page.evaluate((t) => {
-                localStorage.setItem('mrln.theme', t);
-                localStorage.setItem('mrln.ux', 'v2');
-            }, theme);
-            await page.goto('/datasets');
+            await openAs(page, theme, '/datasets');
             await settle(page, 'datasets');
             await page.getByRole('button', { name: /new dataset/i }).first().click();
             const dialog = page.locator('.modal').first();
@@ -698,6 +667,7 @@ test.describe('LANE-143 UX shots', () => {
             await page.waitForTimeout(500);
             const file = `on-modal-${theme}.png`;
             await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
+            await compareToBaseline(page, file, 'datasets');
             await fullCapture(page, path.join(OUT, 'full', file));
         });
     }
@@ -705,12 +675,7 @@ test.describe('LANE-143 UX shots', () => {
     for (const theme of THEMES) {
         if (!SPEC.extra) break;
         test(`LANE-143 workspace toolbar ${theme}`, async ({ page }) => {
-            await page.goto('/');
-            await page.evaluate((t) => {
-                localStorage.setItem('mrln.theme', t);
-                localStorage.setItem('mrln.ux', 'v2');
-            }, theme);
-            await page.goto('/datasets');
+            await openAs(page, theme, '/datasets');
             await settle(page, 'datasets');
             await page.getByTestId('dataset-card-alpha').click();
             const mask = page.getByTestId('ws-mass-mask-btn');
@@ -731,6 +696,7 @@ test.describe('LANE-143 UX shots', () => {
             expect(e, 'LANE-143: Mass edit must not paint the plain secondary button').not.toBe(plain);
             const file = `on-workspace-${theme}.png`;
             await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
+            await compareToBaseline(page, file, 'datasets');
             await fullCapture(page, path.join(OUT, 'full', file));
         });
     }
@@ -738,11 +704,7 @@ test.describe('LANE-143 UX shots', () => {
     for (const theme of THEMES) {
         if (!SPEC.extra) break;
         test(`LANE-143 component buttons read hovered and pressed ${theme}`, async ({ page }) => {
-            await page.goto('/');
-            await page.evaluate((t) => {
-                localStorage.setItem('mrln.theme', t);
-                localStorage.setItem('mrln.ux', 'v2');
-            }, theme);
+            await openAs(page, theme, '/');
             const rows: string[] = [];
             const openWorkspace = async () => {
                 await page.goto('/datasets');
@@ -773,6 +735,7 @@ test.describe('LANE-143 UX shots', () => {
                     await btn.hover();
                     await page.waitForTimeout(300);
                     await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
+                    await compareToBaseline(page, file, 'datasets');
                     await fullCapture(page, path.join(OUT, 'full', file));
                 }
             }
@@ -800,25 +763,20 @@ test.describe('LANE-143 UX shots', () => {
         fs.writeFileSync(path.join(OUT, 'shots-manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(
             path.join(OUT, 'sweep.md'),
-            ['| screen | theme | elements | height changes | structural diffs |', '|---|---|---|---|---|', ...sweepRows,
+            [`ON vs ${BASELINE ?? '-'} ON (tolerance +-${NOISE} per channel; replaces the OFF-vs-ON height sweep: this head renders no OFF state)`, '',
+                '| file | px | beyond | noise | masked |', '|---|---|---|---|---|', ...sweepRows,
                 '',
-                'Recorded exception (user answer 2026-10-08, ew-grid-padding=12px): `.ew-grid` and its ancestors up to the estimate wall card (`app-estimate-wall > .card`) are not swept; v2 pads the grid by 12px (+24 px). Every other element IS swept.',
-                'Recorded exception (user override 2026-10-07): the `.ds-card-counts` row of a Datasets card holding the "N suppressed" chip, and its children, are not swept; v2 lifts the chip to the card corner and the row drops its wrapped line (33 -> 16.5 px). The card itself IS swept.',
+                'Masked in every compare: the `.topbar-actions` row widened 40 px leftward plus 8 px on every side for the button shadow halo (the retired ux-toggle: 32 px button + 8 px gap; the row is right-anchored, so the elements before the theme toggle move 40 px right), and the boxes of elements whose own text holds a clock time (h:mm).',
             ].join('\n') + '\n',
         );
         fs.writeFileSync(
             path.join(OUT, 'dot-contrast.md'),
             ['| screen | theme | state | class | fill | backdrop | ratio |', '|---|---|---|---|---|---|---|', ...dotRows].join('\n') + '\n',
         );
-        if (!BASELINE) {
-            fs.writeFileSync(path.join(OUT, 'baseline-diff.md'), `Set ${SET} generates the baseline: exempt from the OFF-vs-baseline compare.
-`);
-        } else {
-            fs.writeFileSync(
-                path.join(OUT, 'baseline-diff.md'),
-                [`OFF vs ${BASELINE} (tolerance +-${NOISE} per channel)`, '', '| file | px | beyond | noise | clock text skipped |', '|---|---|---|---|---|', ...baselineRows].join('\n') + '\n',
-            );
-        }
+        fs.writeFileSync(
+            path.join(OUT, 'baseline-diff.md'),
+            [`${COMPARE.toUpperCase()} vs ${BASELINE ?? '-'} (tolerance +-${NOISE} per channel)`, '', '| file | px | beyond | noise | masked |', '|---|---|---|---|---|', ...baselineRows].join('\n') + '\n',
+        );
         expect(manifest.length).toBe(2 * expected);
     });
 });

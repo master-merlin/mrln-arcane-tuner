@@ -43,6 +43,8 @@ BOX_ALLOW_DECLS = {
     (".ds-card-excluded", "top", "8px"),
     (".ds-card-excluded", "right", "8px"),
     (".ds-card-excluded", "top", "38px"),
+    # the user's UAT round 3 answer of 2026-10-08 (`UAT-LANE-143.3 no: ew-grid-padding=12px`):
+    (".ew-grid", "padding", "12px"),
 }
 
 
@@ -176,6 +178,8 @@ def test_no_box_properties_on_existing_elements() -> None:
         (f"{SCOPE} .eyebrow {{ font-size: 12px; line-height: 2 }}", f"{SCOPE} .eyebrow {{ font-size: 12px }}"),
         (f"{SCOPE} .ds-hps-info {{ display: none }}", f"{SCOPE} .ds-hps-info {{ display: none }}"),
         (f"{SCOPE} .ds-card-excluded {{ margin-left: 9px }}", f"{SCOPE} .ds-card-excluded {{ margin-left: 9px }}"),
+        (f"{SCOPE} .ew-grid {{ padding: 14px }}", f"{SCOPE} .ew-grid {{ padding: 14px }}"),
+        (f"{SCOPE} .ew-grid {{ margin-top: 12px }}", f"{SCOPE} .ew-grid {{ margin-top: 12px }}"),
         (f"{SCOPE} .row {{ gap: 4px }}", f"{SCOPE} .row {{ gap: 4px }}"),
         (f"{SCOPE} .x {{ inset-inline-start: 0 }}", f"{SCOPE} .x {{ inset-inline-start: 0 }}"),
     ],

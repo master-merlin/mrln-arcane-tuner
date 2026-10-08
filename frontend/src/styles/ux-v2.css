@@ -259,6 +259,10 @@ html[data-ux="v2"] .ew-grid > .kpi:first-child {
     linear-gradient(135deg, var(--color-brand), var(--kend)) border-box;
 }
 
+/* the user's UAT round 3 answer (2026-10-08, ew-grid-padding=12px): the estimate wall's tile
+   grid breathes inside its card, which today sits 0 px from the card edge */
+html[data-ux="v2"] .ew-grid { padding: 12px; }
+
 /* type: value 700 tabular (was 800), label = the label-caps recipe (L1) */
 html[data-ux="v2"] .kpi .kpi-value { font-weight: 700; letter-spacing: -0.01em; }
 

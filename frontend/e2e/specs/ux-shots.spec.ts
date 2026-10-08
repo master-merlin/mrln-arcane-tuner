@@ -91,6 +91,8 @@ const SETS: Record<string, SetSpec> = {
     L2: { screens: [...FIVE, 'projects'], shots: 24, iconsOn: KPI_ICONS },
     L3: { screens: FIVE, shots: 20, iconsOn: KPI_ICONS, extra: ['on-modal-dark.png', 'on-modal-light.png', 'on-workspace-dark.png', 'on-workspace-light.png'] },
 };
+/** L3b = L3 after the user's round-3 answer (ew-grid-padding=12px): same screens, same extras. */
+SETS['L3b'] = { ...SETS['L3'] };
 const HIDE_TOGGLE = '[data-testid="ux-toggle"]{display:none}';
 
 /**
@@ -307,6 +309,11 @@ async function sweep(page: import('@playwright/test').Page): Promise<Box> {
             // to the card's corner; the row and its three count spans change height, the CARD does not.
             const counts = el.closest('.ds-card-counts');
             if (counts && counts.querySelector('.ds-card-excluded')) continue;
+            // The ONE named exception of the user's UAT round 3 answer (2026-10-08, ew-grid-padding=12px):
+            // v2 pads the estimate wall's tile grid by 12px, so the grid and its ancestors up to the
+            // wall's card grow by 24px. Every other element still must not change.
+            const grid = document.querySelector('.ew-grid');
+            if (grid && el.contains(grid) && (el === grid || el.tagName === 'APP-ESTIMATE-WALL' || el.classList.contains('card') && el.parentElement?.tagName === 'APP-ESTIMATE-WALL')) continue;
             out[key(el)] = Math.round(el.getBoundingClientRect().height * 100) / 100;
         }
         return out;
@@ -634,6 +641,7 @@ test.describe('LANE-143 UX shots', () => {
             path.join(OUT, 'sweep.md'),
             ['| screen | theme | elements | height changes | structural diffs |', '|---|---|---|---|---|', ...sweepRows,
                 '',
+                'Recorded exception (user answer 2026-10-08, ew-grid-padding=12px): `.ew-grid` and its ancestors up to the estimate wall card (`app-estimate-wall > .card`) are not swept; v2 pads the grid by 12px (+24 px). Every other element IS swept.',
                 'Recorded exception (user override 2026-10-07): the `.ds-card-counts` row of a Datasets card holding the "N suppressed" chip, and its children, are not swept; v2 lifts the chip to the card corner and the row drops its wrapped line (33 -> 16.5 px). The card itself IS swept.',
             ].join('\n') + '\n',
         );

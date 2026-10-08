@@ -346,6 +346,11 @@ html[data-ux="v2"] .btn.ghost:not(:disabled):hover { background: var(--color-sur
 html[data-ux="v2"] .btn.danger-out { font-weight: 500; background: transparent; color: var(--st-danger-fg); border-color: color-mix(in oklch, var(--st-danger-line), transparent var(--ux-pill-fade)); }
 html[data-ux="v2"] .btn.danger-out:not(:disabled):hover  { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
 html[data-ux="v2"] .btn.danger-out:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); }
+/* the datasets bulk-bar Delete / Remove button (`.btn.ds-bulk-danger`, coloured danger by its
+   component): the danger-out recipe, so the generic `.btn` rules do not paint it neutral */
+html[data-ux="v2"] .btn.ds-bulk-danger { background: transparent; color: var(--st-danger-fg); border-color: color-mix(in oklch, var(--st-danger-line), transparent var(--ux-pill-fade)); }
+html[data-ux="v2"] .btn.ds-bulk-danger:not(:disabled):hover  { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
+html[data-ux="v2"] .btn.ds-bulk-danger:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); }
 html[data-ux="v2"] .btn.success { background: var(--st-success-bg); color: var(--st-success-fg); border-color: color-mix(in oklch, var(--st-success-line), transparent var(--ux-pill-fade)); }
 
 /* the workspace "Mass ..." buttons are coloured on purpose (component CSS, (0,2,0)):

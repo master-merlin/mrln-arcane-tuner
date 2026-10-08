@@ -1092,13 +1092,50 @@ def _norm(prop: str) -> str:
     return "background" if prop == "background-color" else prop
 
 
+_TEMPLATE_INLINE = re.compile(r"template\s*:\s*`(.*?)`", re.S)
+_TEMPLATE_URL = re.compile(r"templateUrl\s*:\s*['\"]([^'\"]+)['\"]")
+_CLASS_ATTR = re.compile(r'(?<![\w.\[-])class="([^"]*)"')
+
+
+def component_template(path: str) -> str:
+    """The template(s) of the component that owns the sheet at ``path`` (repo-relative):
+    ``x.css`` -> ``x.html`` and the inline/linked template of ``x.ts``; ``x.ts`` -> the same."""
+    stem = (REPO_ROOT / path).with_suffix("")
+    out = []
+    html = stem.with_suffix(".html")
+    if html.is_file():
+        out.append(html.read_text(encoding="utf-8"))
+    ts = stem.with_suffix(".ts")
+    if ts.is_file():
+        src = ts.read_text(encoding="utf-8")
+        out += _TEMPLATE_INLINE.findall(src)
+        for url in _TEMPLATE_URL.findall(src):
+            linked = (ts.parent / url).resolve()
+            if linked.is_file() and linked != html.resolve():
+                out.append(linked.read_text(encoding="utf-8"))
+    return "\n".join(out)
+
+
+def template_buttons(template: str) -> list[frozenset[str]]:
+    """The static class sets of every element of ``template`` that carries ``btn``."""
+    sets = {frozenset(attr.split()) for attr in _CLASS_ATTR.findall(template)}
+    return sorted((s for s in sets if "btn" in s), key=sorted)
+
+
 def component_button_models(sheets: list[tuple[str, str]]) -> list[tuple[str, str, str, frozenset[str], tuple[frozenset[str], ...]]]:
-    """(path, sheet css, selector, classes, ancestors) of every component rule whose
-    subject is a `.btn` and that declares a colour or a fill, in any state."""
+    """(path, sheet css, selector, element classes, ancestors) of every component rule
+    whose subject is a `.btn` ELEMENT and that declares a colour or a fill, in any state.
+
+    VERIFY 20261008T195032Z, MAJOR 1.01: a rule is judged by the element it styles, not
+    by its selector text -- `.ds-bulk-danger` names no `.btn`, but the element it paints
+    is `<button class="btn ds-bulk-danger">`; a subject without `btn` is matched against
+    the static class sets of the component's own template, and every `.btn` element it
+    styles becomes a model with that element's full class set."""
     out = []
     for path, css in sheets:
+        buttons: list[frozenset[str]] | None = None
         for head, body in parse_rules(css):
-            if head.startswith("@") or not any(_norm(p) in PAINT for p in _decls(body)):
+            if head.startswith("@") or not any(_norm(p) in PAINT + ("border-color", "border") for p in _decls(body)):
                 continue
             for sel in split_selectors(head):
                 enc = encapsulated(sel)
@@ -1109,19 +1146,26 @@ def component_button_models(sheets: list[tuple[str, str]]) -> list[tuple[str, st
                 for subject in class_sets(plain):
                     if "btn" in subject:
                         out.append((path, css, sel, subject, (anc,) if anc else ()))
+                    elif subject:
+                        if buttons is None:
+                            buttons = template_buttons(component_template(path))
+                        out += [(path, css, sel, el, (anc,) if anc else ()) for el in buttons if subject <= el]
     return out
 
 
-def painted_button(theme: str, css: str, classes: frozenset[str], ancestors, states: frozenset[str], rules=None):
+def painted_button(theme: str, css: str, classes: frozenset[str], ancestors, states: frozenset[str], rules=None, winners=None):
     """The (declarations, origin per paint property) the browser gives the element:
     every matching rule of ux-v2.css and of the component sheet, in (specificity,
-    origin, source order); origin 0 = v2, 1 = the component."""
+    origin, source order); origin 0 = v2, 1 = the component. ``winners`` (a dict),
+    when given, receives (origin, selector) of the rule that wins each property and
+    ``("declared", ...)`` the properties any component rule declares."""
     rules = _ux_rules() if rules is None else rules
     hits = []
     for idx, (heads, decls) in enumerate(rules):
-        best = [specificity(s) for s in heads if selector_matches(s, theme, classes, ancestors, states)]
+        best = [(specificity(s), s) for s in heads if selector_matches(s, theme, classes, ancestors, states)]
         if best:
-            hits.append((max(best), 0, idx, decls))
+            spec, sel = max(best)
+            hits.append((spec, 0, idx, decls, sel))
     for idx, (head, body) in enumerate(parse_rules(css)):
         if head.startswith("@"):
             continue
@@ -1129,19 +1173,71 @@ def painted_button(theme: str, css: str, classes: frozenset[str], ancestors, sta
         for sel in split_selectors(head):
             enc = encapsulated(sel)
             if enc and plain_matches(enc[0], classes, ancestors, states):
-                best.append(enc[1])
+                best.append((enc[1], sel))
         if best:
-            hits.append((max(best), 1, idx, _decls(body)))
+            spec, sel = max(best)
+            hits.append((spec, 1, idx, _decls(body), sel))
     merged: dict[str, str] = {}
     origin: dict[str, int] = {}
-    for _spec, org, _idx, decls in sorted(hits, key=lambda h: (h[0], h[1], h[2])):
+    declared: dict[str, str] = {}
+    for _spec, org, _idx, decls, sel in sorted(hits, key=lambda h: (h[0], h[1], h[2])):
         for prop, val in decls.items():
             if prop == "border":
                 merged.pop("border-color", None)
             prop = _norm(prop)
             merged[prop] = val
             origin[prop] = org
+            if winners is not None:
+                key = "border-color" if prop == "border" else prop
+                winners[key] = (org, sel)
+                if org == 1:
+                    declared[key] = val
+                    if prop in ("border", "border-style"):
+                        declared["border-style"] = val
+    if winners is not None:
+        winners["declared"] = declared
     return merged, origin
+
+
+MUTE_PROPS = ("color", "background", "border-color")
+# a component paint that carries MEANING: a status / brand / accent colour, not a surface,
+# border or text token (a neutral `.btn.sm` taking the generic hover loses nothing)
+_PURPOSE = re.compile(r"--color-(danger|success|warning|info|violet|brand)\b|--st-|--role-|oklch\(|#[0-9a-f]{3}|\bwhite\b", re.I)
+_NO_BORDER = re.compile(r"^\s*(none|0(px)?)\b", re.I)
+
+
+def component_button_mutes(theme: str, sheets=None, rules=None) -> list[str]:
+    """A component button whose OWN purpose colour, fill or border (declared by its
+    component rules, in any state) is won by a v2 rule that does not name any of the
+    component's classes: a generic `.btn` recipe painting over it (the bulk Delete
+    button turned neutral). A v2 rule written FOR the variant (it names one of the
+    element's non-`btn` classes) is the deliberate recipe, judged by the rows above.
+    A border the component switched off (`border: none`) paints no colour."""
+    sheets = component_sheets() if sheets is None else sheets
+    bad, seen = [], set()
+    for path, css, sel, classes, ancestors in component_button_models(sheets):
+        key = (path, classes, ancestors)
+        if key in seen:
+            continue
+        seen.add(key)
+        purpose = classes - {"btn"}
+        for states in BUTTON_STATES:
+            winners: dict = {}
+            painted_button(theme, css, classes, ancestors, states, rules, winners)
+            own = winners["declared"]
+            for prop in MUTE_PROPS:
+                if prop not in own or winners.get(prop, (1,))[0] != 0 or not _PURPOSE.search(own[prop]):
+                    continue
+                if prop == "border-color" and _NO_BORDER.match(own.get("border-style", "")):
+                    continue
+                v2_sel = winners[prop][1]
+                named = {c for cs in class_sets(v2_sel[len(SCOPE):] if v2_sel.startswith(SCOPE) else v2_sel) for c in cs}
+                if not named & purpose:
+                    bad.append(
+                        f"{path} .{'.'.join(sorted(classes))} ({theme}, {_state_name(states)}): its own {prop} "
+                        f"is painted over by the generic `{v2_sel}`"
+                    )
+    return bad
 
 
 def component_button_rows(theme: str, sheets: list[tuple[str, str]], rules=None) -> list[tuple[str, float, bool]]:
@@ -1198,6 +1294,81 @@ def test_the_generic_hover_on_a_component_cta_is_caught(theme: str, path: str, s
     bad = component_button_failures(theme, rules=rules)
     hit = [b for b in bad if path in b and f"`{sel}`" in b and "hover" in b]
     assert hit, f"LANE-143: the generic v2 hover on {path} {sel} ({theme}) must fail the guard, got {bad}"
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_no_component_button_is_muted_by_a_generic_v2_rule(theme: str) -> None:
+    bad = component_button_mutes(theme)
+    assert not bad, "LANE-143: a generic v2 button rule paints over a component button's own colour (VERIFY 1.01):\n" + "\n".join(bad)
+
+
+BULK_DANGER_SHEET = "frontend/src/app/screens/datasets-screen/datasets-screen.css"
+BULK_DANGER = frozenset({"btn", "ds-bulk-danger"})
+
+
+def test_the_button_scan_models_the_bulk_danger_element() -> None:
+    """Wiring: `.ds-bulk-danger` names no `.btn`, yet the scan models its element
+    `<button class="btn ds-bulk-danger">` from the datasets-screen template."""
+    models = [(p, c) for p, _css, _s, c, _a in component_button_models(component_sheets())]
+    assert (BULK_DANGER_SHEET, BULK_DANGER) in models, "LANE-143: the button scan does not model .btn.ds-bulk-danger"
+
+
+def _bulk_danger(theme: str, states: frozenset[str], rules=None) -> Painted:
+    css = dict(component_sheets())[BULK_DANGER_SHEET]
+    decls, _origin = painted_button(theme, css, BULK_DANGER, (), states, rules)
+    return Painted(decls, theme, rules)
+
+
+@pytest.mark.parametrize("theme", THEMES)
+@pytest.mark.parametrize("states", BUTTON_STATES, ids=_state_name)
+def test_bulk_danger_reads_as_danger(theme: str, states: frozenset[str]) -> None:
+    """The bulk Delete / Remove button keeps its danger paint under v2: text on its fill
+    and on the bare surface >= 4.5:1, the composited border >= 3:1, every colour from
+    the danger role tokens."""
+    p = _bulk_danger(theme, states)
+    st = _state_name(states)
+    for prop in ("color", "border-color"):
+        assert "--st-danger-" in p.decls.get(prop, ""), (
+            f"LANE-143: .btn.ds-bulk-danger {prop} ({theme}, {st}) is not the danger role: {p.decls.get(prop)}"
+        )
+    assert p.text_on_bg() >= TEXT_MIN, f"LANE-143: .btn.ds-bulk-danger text on its fill ({theme}, {st}) measures {p.text_on_bg():.2f}:1 < {TEXT_MIN}:1"
+    assert p.text_on_surface() >= TEXT_MIN, f"LANE-143: .btn.ds-bulk-danger text on the surface ({theme}, {st}) measures {p.text_on_surface():.2f}:1 < {TEXT_MIN}:1"
+    assert p.border() >= NON_TEXT_MIN, f"LANE-143: .btn.ds-bulk-danger composited border ({theme}, {st}) measures {p.border():.2f}:1 < {NON_TEXT_MIN}:1"
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_removing_the_bulk_danger_rules_is_caught(theme: str) -> None:
+    """Negative control (the finding): without its v2 rules the bulk danger button is
+    painted by the generic secondary recipe, and the mute check names it."""
+    rules = [(h, d) for h, d in _ux_rules() if not any("ds-bulk-danger" in s for s in h)]
+    bad = component_button_mutes(theme, rules=rules)
+    for st in ("rest", "hover", "pressed"):
+        assert any("ds-bulk-danger" in b and f"({theme}, {st})" in b for b in bad), (
+            f"LANE-143: a generic v2 rule over .ds-bulk-danger ({theme}, {st}) must fail the mute check, got {bad}"
+        )
+
+
+def test_the_mute_check_sees_a_planted_component_button(monkeypatch) -> None:
+    """Positive control on synthetic sources: a component colour rule whose selector
+    names no `.btn` is modelled through its template and caught when a generic v2
+    `.btn` rule out-ranks it; a v2 rule naming the variant clears it."""
+    monkeypatch.setattr(
+        __import__(__name__, fromlist=["_"]), "component_template",
+        lambda _path: '<div class="bar"><button class="btn x-warn" type="button">go</button></div>',
+    )
+    sheets = [("x.css", ".x-warn { color: var(--color-danger); }")]
+    generic = [([f"{SCOPE} .btn"], {"color": "var(--color-text-primary)"})]
+    bad = component_button_mutes("dark", sheets, rules=generic)
+    assert len(bad) == 3 and all("x-warn" in b and "color" in b for b in bad), (
+        f"LANE-143: a generic .btn colour over a planted .x-warn button must be caught in 3 states, got {bad}"
+    )
+    own = generic + [([f"{SCOPE} .btn.x-warn"], {"color": "var(--st-danger-fg)"})]
+    assert component_button_mutes("dark", sheets, rules=own) == []
+    # a neutral component paint, and a border the component switched off, lose nothing
+    neutral = [("x.css", ".x-warn { color: var(--color-text-secondary); }")]
+    assert component_button_mutes("dark", neutral, rules=generic) == []
+    unbordered = [("x.css", ".x-warn { border: none; border-color: var(--color-brand); }")]
+    assert component_button_mutes("dark", unbordered, rules=[([f"{SCOPE} .btn"], {"border-color": "var(--color-border-bright)"})]) == []
 
 
 def test_a_declared_button_family_is_still_judged() -> None:

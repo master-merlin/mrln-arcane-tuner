@@ -116,6 +116,8 @@ SETS['L4'] = { ...SETS['L3d'] };
  * every extra is compared to L4's at +-NOISE with the topbar actions row masked.
  */
 SETS['L5'] = { ...SETS['L4'], screens: [...FIVE, 'projects'], states: ['on'], shots: 12, compare: 'on', baseline: 'L4' };
+/** L5b = L5 after the verify remediation of the bulk Delete button (verify 20261008T195032Z 1.01): same shots, vs L4. */
+SETS['L5b'] = { ...SETS['L5'] };
 
 /**
  * Fails BEFORE any capture when the baseline set has no shots on disk (the compare
@@ -713,6 +715,36 @@ test.describe('LANE-143 UX shots', () => {
                 await expect(page.getByTestId('ws-mass-mask-btn'), 'LANE-143: the workspace must open').toBeVisible();
                 await page.waitForTimeout(500);
             };
+            // verify 20261008T195032Z 1.01: the datasets bulk-bar Delete button is coloured danger by
+            // its component; under v2 it must keep a danger paint (not the plain secondary) and read
+            await page.goto('/datasets');
+            await settle(page, 'datasets');
+            await page.getByTestId('dataset-select-alpha').click();
+            const del = page.getByTestId('btn-bulk-delete');
+            await expect(del, 'LANE-143: the bulk bar Delete button must show after selecting a dataset').toBeVisible();
+            await page.mouse.move(1, 1);
+            await page.waitForTimeout(250);
+            // computed colours may serialize as oklch(): read them as painted sRGB through a 1x1 canvas
+            const paintOf = (sel: string) => page.locator(sel).first().evaluate((el) => {
+                const cs = getComputedStyle(el);
+                const cv = document.createElement('canvas');
+                cv.width = cv.height = 1;
+                const cx = cv.getContext('2d', { willReadFrequently: true })!;
+                const px = (c: string) => {
+                    cx.clearRect(0, 0, 1, 1);
+                    cx.fillStyle = c;
+                    cx.fillRect(0, 0, 1, 1);
+                    return Array.from(cx.getImageData(0, 0, 1, 1).data).slice(0, 3);
+                };
+                return { color: cs.color, border: cs.borderTopColor, rgb: px(cs.color) };
+            });
+            const danger = await paintOf('[data-testid="btn-bulk-delete"]');
+            const plainBulk = await paintOf('[data-testid="btn-bulk-rescan"]');
+            const [dr, dg, db] = danger.rgb;
+            rows.push(`| btn-bulk-delete paint (${theme}) | rest | - | color ${danger.color}, border ${danger.border} vs rescan ${plainBulk.color} | ${danger.color !== plainBulk.color && dr > dg && dr > db ? 'ok' : 'FAIL'} |`);
+            expect(danger.color, 'LANE-143: the bulk Delete button must not paint the plain secondary button').not.toBe(plainBulk.color);
+            expect(dr > dg && dr > db, `LANE-143: the bulk Delete button text must be the danger red, got ${danger.color}`).toBe(true);
+            rows.push(...await statesRead(page, '[data-testid="btn-bulk-delete"]', `btn-bulk-delete (${theme})`));
             await openWorkspace();
             for (const id of ['ws-mass-caption-btn', 'ws-mass-mask-btn', 'ws-mass-edit-btn']) {
                 rows.push(...await statesRead(page, `[data-testid="${id}"]`, `${id} (${theme})`));

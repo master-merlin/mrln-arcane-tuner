@@ -45,6 +45,10 @@ BOX_ALLOW_DECLS = {
     (".ds-card-excluded", "top", "38px"),
     # the user's UAT round 3 answer of 2026-10-08 (`UAT-LANE-143.3 no: ew-grid-padding=12px`):
     (".ew-grid", "padding", "12px"),
+    # the user's UAT round 4 answer of 2026-10-08 (`UAT-LANE-143.4 no:
+    # live-peak-vram-card=match-estimate-card-layout`): the LIVE ESTIMATE PEAK VRAM tile takes the
+    # wall's 12px inset inside its card (its hook class names exactly that one tile):
+    (".ter-kpi", "margin", "0 12px"),
 }
 
 
@@ -180,6 +184,8 @@ def test_no_box_properties_on_existing_elements() -> None:
         (f"{SCOPE} .ds-card-excluded {{ margin-left: 9px }}", f"{SCOPE} .ds-card-excluded {{ margin-left: 9px }}"),
         (f"{SCOPE} .ew-grid {{ padding: 14px }}", f"{SCOPE} .ew-grid {{ padding: 14px }}"),
         (f"{SCOPE} .ew-grid {{ margin-top: 12px }}", f"{SCOPE} .ew-grid {{ margin-top: 12px }}"),
+        (f"{SCOPE} .ter-kpi {{ margin: 0 14px }}", f"{SCOPE} .ter-kpi {{ margin: 0 14px }}"),
+        (f"{SCOPE} .kpi.compact {{ margin: 0 12px }}", f"{SCOPE} .kpi.compact {{ margin: 0 12px }}"),
         (f"{SCOPE} .row {{ gap: 4px }}", f"{SCOPE} .row {{ gap: 4px }}"),
         (f"{SCOPE} .x {{ inset-inline-start: 0 }}", f"{SCOPE} .x {{ inset-inline-start: 0 }}"),
     ],

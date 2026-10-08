@@ -262,6 +262,11 @@ html[data-ux="v2"] .ew-grid > .kpi:first-child {
 /* the user's UAT round 3 answer (2026-10-08, ew-grid-padding=12px): the estimate wall's tile
    grid breathes inside its card, which today sits 0 px from the card edge */
 html[data-ux="v2"] .ew-grid { padding: 12px; }
+/* the user's UAT round 4 answer (2026-10-08, live-peak-vram-card=match-estimate-card-layout):
+   the LIVE ESTIMATE PEAK VRAM tile (training-estimate-rail, hook class .ter-kpi) takes the
+   same 12px inset inside its card as the wall's tiles above it; the rail's eyebrow gap
+   (14px) already stands in for the grid's top padding, so only the sides move */
+html[data-ux="v2"] .ter-kpi { margin: 0 12px; }
 
 /* type: value 700 tabular (was 800), label = the label-caps recipe (L1) */
 html[data-ux="v2"] .kpi .kpi-value { font-weight: 700; letter-spacing: -0.01em; }

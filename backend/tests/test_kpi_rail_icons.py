@@ -49,9 +49,10 @@ def tiles_without_icon(name: str, text: str) -> list[str]:
 
 
 def raw_tiles(text: str) -> list[str]:
-    """The bodies of every ``<div class="kpi compact">`` (balanced ``div`` count)."""
+    """The bodies of every ``<div class="kpi compact[ hook…]">`` (balanced ``div`` count); a hook
+    class after ``compact`` (the round-4 ``ter-kpi``) must not hide a tile from the scan."""
     out = []
-    for m in re.finditer(r'<div class="kpi compact">', text):
+    for m in re.finditer(r'<div class="kpi compact(?: [\w-]+)*">', text):
         depth, i = 1, m.end()
         while depth and i < len(text):
             nxt = re.search(r"<div\b|</div>", text[i:])

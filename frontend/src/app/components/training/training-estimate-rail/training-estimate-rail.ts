@@ -24,7 +24,7 @@ import { BreakdownPart, vramBreakdownParts } from '../vram-breakdown';
 
             @if (report(); as r) {
                 <!-- Hero — full-width KPI tile (matches the estimate wall) -->
-                <div class="kpi compact">
+                <div class="kpi compact ter-kpi">
                     <div class="kpi-accent" [class.success]="r.fits" [class.danger]="!r.fits"></div>
                     @if (ux.v2()) { <span class="kpi-icon" aria-hidden="true"><app-ico name="HardDrive" [size]="14"/></span> }
                     <div class="kpi-label">PEAK VRAM</div>

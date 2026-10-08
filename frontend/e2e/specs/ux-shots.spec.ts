@@ -97,7 +97,9 @@ SETS['L3b'] = { ...SETS['L3'] };
 SETS['L3c'] = { ...SETS['L3'] };
 /** L3d = L3c after the verify-r2 component-CTA remediation: plus one hovered modal CTA per theme. */
 SETS['L3d'] = { ...SETS['L3'], extra: [...(SETS['L3'].extra ?? []), 'on-modal-hover-dark.png', 'on-modal-hover-light.png'] };
-const HIDE_TOGGLE = '[data-testid="ux-toggle"]{display:none}';
+/** L4 = L3d after the user's round-4 answer (live-peak-vram-card=match-estimate-card-layout): same screens, same extras. */
+SETS['L4'] = { ...SETS['L3d'] };
+const HIDE_TOGGLE ='[data-testid="ux-toggle"]{display:none}';
 
 /**
  * Fails BEFORE any capture when the baseline set has no shots on disk (the compare
@@ -205,6 +207,48 @@ function cardChipOverflows(): string[] {
     }
     return hits;
 }
+
+/**
+ * The user's UAT round 4 answer (2026-10-08, live-peak-vram-card=match-estimate-card-layout):
+ * every KPI tile in the Training right rail (the ESTIMATE wall's five and the LIVE ESTIMATE
+ * PEAK VRAM tile) sits in its card with the SAME horizontal inset and the same inner padding
+ * as the wall's first tile. Returns one line per tile that differs. Runs in the page.
+ */
+function estimateTileMismatches(): string[] {
+    const tiles = Array.from(document.querySelectorAll<HTMLElement>('.ts-estimate-rail .kpi.compact'));
+    const ref = document.querySelector<HTMLElement>('.ew-grid > .kpi');
+    if (!ref) return tiles.length ? ['no .ew-grid > .kpi reference tile'] : [];
+    const geom = (k: HTMLElement) => {
+        const r = k.getBoundingClientRect();
+        const c = k.parentElement!.closest('.card')!.getBoundingClientRect();
+        const cs = getComputedStyle(k);
+        return { left: Math.round(r.left - c.left), right: Math.round(c.right - r.right), pad: cs.padding };
+    };
+    const want = geom(ref);
+    const hits: string[] = [];
+    for (const k of tiles) {
+        const g = geom(k);
+        if (g.left !== want.left || g.right !== want.right || g.pad !== want.pad) {
+            const label = (k.querySelector('.kpi-label')?.textContent ?? '?').trim();
+            hits.push(`${label}: inset ${g.left}/${g.right} pad ${g.pad} vs wall ${want.left}/${want.right} pad ${want.pad}`);
+        }
+    }
+    return hits;
+}
+
+/** Runs without UX_SHOTS: the rail-inset check fires on an edge-to-edge tile and stays quiet on an inset one. */
+test('LANE-143 the estimate rail inset check fires on an edge-to-edge live tile (negative control)', async ({ page }) => {
+    const rail = (liveMargin: number) => `
+        <aside class="ts-estimate-rail" style="width:250px">
+          <div class="card"><div class="ew-grid" style="padding:12px"><div class="kpi compact" style="padding:10px"><div class="kpi-label">WALL TIME</div></div></div></div>
+          <div class="card"><div class="rail"><div class="kpi compact" style="padding:10px;margin:0 ${liveMargin}px"><div class="kpi-label">PEAK VRAM</div></div></div></div>
+        </aside>`;
+    await page.setContent(rail(0));
+    const hit = await page.evaluate(estimateTileMismatches);
+    expect(hit.length, `LANE-143: an edge-to-edge live tile must be reported, got ${JSON.stringify(hit)}`).toBeGreaterThan(0);
+    await page.setContent(rail(12));
+    expect(await page.evaluate(estimateTileMismatches), 'LANE-143: a live tile inset like the wall must not be reported').toEqual([]);
+});
 
 /** Runs without UX_SHOTS: the overflow check fires on a chip past its card and stays quiet inside it. */
 test('LANE-143 the card chip overflow check fires on an overflowing chip (negative control)', async ({ page }) => {
@@ -514,6 +558,10 @@ test.describe('LANE-143 UX shots', () => {
                         expect(outside, `LANE-143: ${outside} icon square(s) outside their tile on ${screen}`).toBe(0);
                         const overlaps = await page.evaluate(iconOverlaps);
                         expect(overlaps, `LANE-143: a .kpi-icon overlaps tile content on ${screen}/${theme}: ${overlaps.join('; ')}`).toEqual([]);
+                    }
+                    if (state === 'on' && screen === 'training' && SPEC.iconsOn['training'] > 0) {
+                        const mis = await page.evaluate(estimateTileMismatches);
+                        expect(mis, `LANE-143: a Training rail KPI tile does not match the estimate wall's card layout on ${theme}: ${mis.join('; ')}`).toEqual([]);
                     }
                     if (state === 'on' && screen === 'datasets') {
                         const over = await page.evaluate(cardChipOverflows);

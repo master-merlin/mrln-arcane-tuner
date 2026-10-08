@@ -336,10 +336,10 @@ html[data-ux="v2"] .btn.primary:not(:disabled):hover  { background: color-mix(in
 html[data-ux="v2"] .btn.primary:not(:disabled):active { background: color-mix(in oklch, var(--color-brand), black 8%); }
 html[data-ux="v2"] .btn.ghost { background: transparent; border-color: transparent; color: var(--color-text-secondary); }
 html[data-ux="v2"] .btn.ghost:not(:disabled):hover { background: var(--color-surface-mid); color: var(--color-text-primary); }
-html[data-ux="v2"] .btn.danger-out { font-weight: 500; background: transparent; color: var(--st-danger-fg); border-color: color-mix(in oklch, var(--st-danger-line), transparent 40%); }
+html[data-ux="v2"] .btn.danger-out { font-weight: 500; background: transparent; color: var(--st-danger-fg); border-color: color-mix(in oklch, var(--st-danger-line), transparent var(--ux-pill-fade)); }
 html[data-ux="v2"] .btn.danger-out:not(:disabled):hover  { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
 html[data-ux="v2"] .btn.danger-out:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); }
-html[data-ux="v2"] .btn.success { background: var(--st-success-bg); color: var(--st-success-fg); border-color: color-mix(in oklch, var(--st-success-line), transparent 40%); }
+html[data-ux="v2"] .btn.success { background: var(--st-success-bg); color: var(--st-success-fg); border-color: color-mix(in oklch, var(--st-success-line), transparent var(--ux-pill-fade)); }
 
 /* the workspace "Mass ..." buttons are coloured on purpose (component CSS, (0,2,0)):
    mask = the success role, edit = violet; same recipe shape as .btn.success, fixed-mix hover and pressed */

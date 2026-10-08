@@ -913,15 +913,64 @@ def test_button_text_on_its_own_fill(theme: str, classes: tuple[str, ...], state
 
 
 @pytest.mark.parametrize("theme", THEMES)
+@pytest.mark.parametrize(("cls", "state"), [("danger-out", None), ("danger-out", "hover"), ("success", None)])
+def test_button_border_composited(theme: str, cls: str, state: str | None) -> None:
+    """The painted border (the line, faded by its own mix, composited over the
+    button's fill and measured against the surface next to it) clears 3:1."""
+    ratio = _btn(theme, (cls,), state).border()
+    assert ratio >= NON_TEXT_MIN, (
+        f"LANE-143: .btn.{cls} composited border ({theme}, {state or 'rest'}) measures {ratio:.2f}:1 < {NON_TEXT_MIN}:1"
+    )
+
+
+@pytest.mark.parametrize(("cls", "theme"), [("danger-out", "dark"), ("danger-out", "light"), ("success", "light")])
+def test_button_border_fade_is_rejected(theme: str, cls: str) -> None:
+    """Negative control: the 40 % fade re-applied in memory must fail, naming the button and the ratio
+    (measured 2.50 / 2.40 / 2.39:1 on the three; dark success clears 3:1 even faded, so it is no control)."""
+    role = "danger" if cls == "danger-out" else "success"
+    faded = f"color-mix(in oklch, var(--st-{role}-line), transparent 40%)"
+    rules = _ux_rules() + [([f"{SCOPE} .btn.{cls}"], {"border-color": faded})]
+    ratio = _btn(theme, (cls,), rules=rules).border()
+    assert ratio < NON_TEXT_MIN, f"LANE-143: .btn.{cls} with the 40% fade must fail the border guard ({theme}), measured {ratio:.2f}:1"
+
+
+FOCUS_RING_RULE = ":is(.btn, .icon-btn, .q-icon, .ctx-pill, .tc-pill, .side-item, button, a):focus-visible"
+
+
+def focus_ring_ratio(theme: str, surface: str, rules=None) -> float:
+    """The ring as the browser paints it: the WINNING outline declaration of the
+    :focus-visible rule resolved (mix, alpha), composited over the surface."""
+    rules = _ux_rules() if rules is None else rules
+    decls: dict[str, str] = {}
+    for heads, d in rules:
+        if f"{SCOPE} {FOCUS_RING_RULE}" in heads:
+            decls.update(d)
+    assert decls, "LANE-143: no :focus-visible rule in ux-v2.css"
+    if "outline-color" in decls:
+        colour = decls["outline-color"]
+    else:
+        m = re.match(r"^\S+\s+\w+\s+(.+)$", decls.get("outline", ""))
+        assert m, f"LANE-143: the focus-visible rule declares no outline colour: {decls}"
+        colour = m.group(1)
+    env = theme_env(theme, rules)
+    back = to_rgb(evaluate(f"var({surface})", env), (0, 0, 0))
+    return contrast_ratio(to_rgb(evaluate(colour, env), back), back)
+
+
+@pytest.mark.parametrize("theme", THEMES)
 def test_focus_ring_on_the_page(theme: str) -> None:
-    body = rule_body(":is(.btn, .icon-btn, .q-icon, .ctx-pill, .tc-pill, .side-item, button, a):focus-visible")
-    assert "var(--ux-ring)" in body, f"LANE-143: the focus-visible outline must name --ux-ring: {body}"
-    env = theme_env(theme)
     for surface in ("--color-base", SURFACE[theme]):
-        back = to_rgb(evaluate(f"var({surface})", env), (0, 0, 0))
-        ring = to_rgb(evaluate("var(--ux-ring)", env), back)
-        ratio = contrast_ratio(ring, back)
+        ratio = focus_ring_ratio(theme, surface)
         assert ratio >= NON_TEXT_MIN, f"LANE-143: the focus ring on {surface} ({theme}) measures {ratio:.2f}:1 < 3:1"
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_a_transparent_focus_ring_is_rejected(theme: str) -> None:
+    """Negative control: an outline of ``color-mix(in oklch, var(--ux-ring), transparent 99%)`` must fail."""
+    ghost = "2px solid color-mix(in oklch, var(--ux-ring), transparent 99%)"
+    rules = _ux_rules() + [([f"{SCOPE} {FOCUS_RING_RULE}"], {"outline": ghost})]
+    ratio = focus_ring_ratio(theme, "--color-base", rules)
+    assert ratio < NON_TEXT_MIN, f"LANE-143: a 99%-transparent focus ring must fail ({theme}), measured {ratio:.2f}:1"
 
 
 # ──────────── the dataset workspace "Mass ..." buttons (user remark, round 3) ────────────

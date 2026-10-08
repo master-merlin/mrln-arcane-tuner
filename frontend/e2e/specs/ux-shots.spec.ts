@@ -93,6 +93,8 @@ const SETS: Record<string, SetSpec> = {
 };
 /** L3b = L3 after the user's round-3 answer (ew-grid-padding=12px): same screens, same extras. */
 SETS['L3b'] = { ...SETS['L3'] };
+/** L3c = L3b after the verify-r1 border/ring remediation: same screens, same extras. */
+SETS['L3c'] = { ...SETS['L3'] };
 const HIDE_TOGGLE = '[data-testid="ux-toggle"]{display:none}';
 
 /**

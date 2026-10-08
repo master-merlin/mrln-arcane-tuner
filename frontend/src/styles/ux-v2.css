@@ -309,6 +309,8 @@ html[data-ux="v2"] {
   --ux-violet-fg: color-mix(in oklch, var(--color-violet), white 12%);
   --ux-violet-bg: color-mix(in oklab, var(--color-violet), var(--color-surface-low) 86%);
   --ux-violet-line: var(--color-violet);
+  /* the mass-edit modal CTA: white ink kept, so the fill darkens until white reads at 4.5:1 */
+  --ux-violet-cta: color-mix(in oklch, var(--color-violet), black 28%);
 }
 html[data-ux="v2"][data-theme="light"] {
   --ux-ring: oklch(0.50 0.13 55);
@@ -349,6 +351,26 @@ html[data-ux="v2"] .btn.ws-mass-mask:not(:disabled):active { background: color-m
 html[data-ux="v2"] .btn.ws-mass-edit { background: var(--ux-violet-bg); color: var(--ux-violet-fg); border-color: color-mix(in oklch, var(--ux-violet-line), transparent var(--ux-pill-fade)); }
 html[data-ux="v2"] .btn.ws-mass-edit:not(:disabled):hover  { background: color-mix(in oklab, var(--ux-violet-bg), var(--ux-violet-line) 14%); color: var(--ux-violet-fg); border-color: var(--ux-violet-line); }
 html[data-ux="v2"] .btn.ws-mass-edit:not(:disabled):active { background: color-mix(in oklab, var(--ux-violet-bg), var(--ux-violet-line) 24%); color: var(--ux-violet-fg); }
+
+/* component-filled buttons: a modal CTA (`.btn.cta`, `.cta.success`, `.cta.violet`) and the
+   edit panel's `.btn.warn` / pair-health's `.btn.danger` paint their own fill or ink at
+   (0,3,0)-(0,4,0), which out-ranks the v2 base at rest but NOT the generic hover/pressed
+   (0,4,1): that once put a surface-grey fill under their ink (1.26:1). Each takes its
+   hover/pressed from ITS OWN fill (--ux-cta-fill, the fixed mixes of .btn.primary) and an
+   ink that reads on it; a white-ink fill darkens on hover instead of lightening. */
+html[data-ux="v2"] .btn.cta { --ux-cta-fill: var(--color-brand); background: var(--ux-cta-fill); color: var(--ux-ink-on-brand); }
+html[data-ux="v2"] .btn.cta.success { --ux-cta-fill: var(--color-success); background: var(--ux-cta-fill); }
+html[data-ux="v2"] .btn.cta:not(:disabled):hover  { background: color-mix(in oklch, var(--ux-cta-fill), white 10%); }
+html[data-ux="v2"] .btn.cta:not(:disabled):active { background: color-mix(in oklch, var(--ux-cta-fill), black 8%); }
+html[data-ux="v2"] .btn.cta.violet { --ux-cta-fill: var(--ux-violet-cta); background: var(--ux-cta-fill); }
+html[data-ux="v2"] .btn.cta.violet:not(:disabled):hover  { background: color-mix(in oklch, var(--ux-cta-fill), black 10%); }
+html[data-ux="v2"] .btn.cta.violet:not(:disabled):active { background: color-mix(in oklch, var(--ux-cta-fill), black 18%); }
+html[data-ux="v2"] .btn.warn { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: color-mix(in oklch, var(--st-danger-line), transparent var(--ux-pill-fade)); }
+html[data-ux="v2"] .btn.danger { color: var(--st-danger-fg); }
+html[data-ux="v2"] .btn.danger:not(:disabled):hover  { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
+html[data-ux="v2"] .btn.danger:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); color: var(--st-danger-fg); }
+html[data-ux="v2"] .btn.warn:not(:disabled):hover  { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
+html[data-ux="v2"] .btn.warn:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 18%); color: var(--st-danger-fg); }
 
 /* the focus ring: 2 px brand (dark) / darker brand (light), visible in both themes */
 html[data-ux="v2"] :is(.btn, .icon-btn, .q-icon, .ctx-pill, .tc-pill, .side-item, button, a):focus-visible { outline: 2px solid var(--ux-ring); outline-offset: 2px; }

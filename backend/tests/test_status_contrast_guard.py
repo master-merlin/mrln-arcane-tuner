@@ -156,16 +156,19 @@ def _color_and_pct(text: str) -> tuple[str, float | None]:
 
 def resolve_vars(value: str, env: dict[str, str], depth: int = 0) -> str:
     assert depth < 20, f"LANE-143: var() cycle while resolving {value!r}"
-    m = re.search(r"var\(\s*(--[\w-]+)\s*(?:,\s*([^()]*))?\)", value)
+    m = re.search(r"var\(\s*(--[\w-]+)\s*", value)
     if not m:
         return value
-    name, fallback = m.group(1), m.group(2)
+    # the fallback may hold parentheses itself (`var(--x, oklch(0.6 0.18 30))`, a component rule)
+    end = _matching_paren(value, m.start() + 3)
+    name, rest = m.group(1), value[m.end():end].strip()
+    fallback = rest[1:].strip() if rest.startswith(",") else None
     if name in env:
         sub = env[name]
     else:
         assert fallback is not None, f"LANE-143: token {name} is not defined"
         sub = fallback
-    return resolve_vars(value[: m.start()] + sub + value[m.end():], env, depth + 1)
+    return resolve_vars(value[: m.start()] + sub + value[end + 1:], env, depth + 1)
 
 
 def parse_color(text: str) -> Color:
@@ -238,11 +241,12 @@ def theme_env(theme: str, rules=None) -> dict[str, str]:
     return env
 
 
-def _compound_matches(comp: str, classes: frozenset[str]) -> bool:
+def _compound_matches(comp: str, classes: frozenset[str], states: frozenset[str] = frozenset()) -> bool:
     """Does one compound selector match an element that carries ``classes``?
 
-    The element model is class-only and at rest: a type selector, a state
-    pseudo-class (``:hover``), a pseudo-element or ``:has()`` never matches;
+    The element model is class-only and enabled, at rest unless ``states``
+    names the interaction state it is in (``hover``, ``active``): a type
+    selector, any other pseudo-class, a pseudo-element or ``:has()`` never matches;
     ``:is()``/``:where()`` match on any argument, ``:not()`` on none;
     ``[class*="x"]`` on a class containing ``x``."""
     i, n = 0, len(comp)
@@ -257,14 +261,17 @@ def _compound_matches(comp: str, classes: frozenset[str]) -> bool:
             m = re.match(r"(::?)([\w-]+)(\()?", comp[i:])
             j = i + len(m.group(0))
             if not m.group(3):
+                if m.group(1) == ":" and m.group(2) in states:
+                    i = j
+                    continue
                 return False
             end = _matching_paren(comp, j - 1)
             args = _split_top(comp[j:end])
             name = m.group(2)
             if name in ("is", "matches", "where"):
-                ok = any(_compound_matches(a, classes) for a in args)
+                ok = any(_compound_matches(a, classes, states) for a in args)
             elif name == "not":
-                ok = not any(_compound_matches(a, classes) for a in args)
+                ok = not any(_compound_matches(a, classes, states) for a in args)
             else:
                 ok = False
             if not ok:
@@ -283,7 +290,10 @@ def _compound_matches(comp: str, classes: frozenset[str]) -> bool:
     return True
 
 
-def selector_matches(sel: str, theme: str, classes: frozenset[str], ancestors: tuple[frozenset[str], ...] = ()) -> bool:
+def selector_matches(
+    sel: str, theme: str, classes: frozenset[str], ancestors: tuple[frozenset[str], ...] = (),
+    states: frozenset[str] = frozenset(),
+) -> bool:
     """``sel`` (a full ux-v2.css selector) applies to an element with ``classes``
     whose ancestors (outermost first) carry ``ancestors``, in ``theme``."""
     if sel.startswith(LIGHT_SCOPE):
@@ -296,10 +306,19 @@ def selector_matches(sel: str, theme: str, classes: frozenset[str], ancestors: t
         return False
     if not rest[:1].isspace():
         return False  # a rule on <html> itself: tokens, not an element paint
+    return plain_matches(rest, classes, ancestors, states)
+
+
+def plain_matches(
+    rest: str, classes: frozenset[str], ancestors: tuple[frozenset[str], ...] = (),
+    states: frozenset[str] = frozenset(),
+) -> bool:
+    """An unscoped selector (a component rule, or a v2 rule past its scope)
+    applies to the element model."""
     comps = compounds(rest)
     if any(c in "+~" for c in rest.replace(" > ", " ")) or not comps:
         return False
-    if not _compound_matches(comps[-1], classes):
+    if not _compound_matches(comps[-1], classes, states):
         return False
     k = 0
     for comp in comps[:-1]:
@@ -311,7 +330,7 @@ def selector_matches(sel: str, theme: str, classes: frozenset[str], ancestors: t
     return True
 
 
-def cascade(theme: str, classes, ancestors=(), rules=None) -> tuple[dict[str, str], list[str]]:
+def cascade(theme: str, classes, ancestors=(), rules=None, states=frozenset()) -> tuple[dict[str, str], list[str]]:
     """The declarations the cascade gives an element, from ux-v2.css alone (the
     global sheets are layered and always lose to it): every matching rule in
     (specificity, source order), each property's last declaration winning,
@@ -320,7 +339,7 @@ def cascade(theme: str, classes, ancestors=(), rules=None) -> tuple[dict[str, st
     classes, ancestors = frozenset(classes), tuple(frozenset(a) for a in ancestors)
     hits = []
     for idx, (heads, decls) in enumerate(rules):
-        best = [specificity(s) for s in heads if selector_matches(s, theme, classes, ancestors)]
+        best = [specificity(s) for s in heads if selector_matches(s, theme, classes, ancestors, frozenset(states))]
         if best:
             hits.append((max(best), idx, heads, decls))
     merged: dict[str, str] = {}
@@ -787,6 +806,12 @@ def cascade_losses(theme: str, sheets: list[tuple[str, str]], rules=None) -> lis
                     if not any(r[1] == subject for r in here):
                         continue  # a variant v2 has no recipe for: the component's own
                     for fam in sorted(fams):
+                        if "btn" in subject and not any(r[1] == subject and fam in r[4] for r in here):
+                            # a component button v2 restyles only in part (`.btn.cta.violet`:
+                            # its fill, not its white ink or 800 weight): the families no exact
+                            # v2 rule declares stay the component's, and the paint they make
+                            # is MEASURED per state by component_button_failures below
+                            continue
                         # the v2 side paints with its MOST specific matching rule
                         mine = [(spec, s, d) for s, _cs, _a, spec, f, d in here if fam in f]
                         if mine and comp_spec >= max(mine)[0]:
@@ -1040,3 +1065,145 @@ def test_every_workspace_mass_button_carries_a_v2_rule() -> None:
 
 def test_the_mass_scan_sees_a_planted_button() -> None:
     assert workspace_mass_classes('<button class="btn sm ws-mass-new"></button>') == ["ws-mass-new"]
+
+
+# ─────── component-painted buttons: the WHOLE cascade per state (VERIFY r2, T4) ───────
+#
+# verify-lane-LANE-143-20261008T101628Z, MAJOR 1.01: the generic v2 `.btn:hover`
+# (0,4,1) out-ranks a component CTA's own (0,3,0)/(0,4,0) fill but not its ink, so
+# the mass-mask CTA hovered at 1.26:1 (dark) and the mass-caption CTA at 1.43:1
+# (light). The cascade check above skips a component variant v2 has no recipe for,
+# and the button rows read the v2 rules alone. Here every component rule that paints
+# a `.btn` is the subject of an element model, and that element's colour and fill
+# are resolved from BOTH sheets -- ux-v2.css and the component's own (encapsulated
+# specificity; on a tie the component wins, its styles load after the global ones)
+# -- at rest, hovered and pressed. Wherever v2 paints the colour or the fill, the
+# text must read at 4.5:1 on the fill.
+
+BUTTON_STATES: tuple[frozenset[str], ...] = (frozenset(), frozenset({"hover"}), frozenset({"hover", "active"}))
+PAINT = ("color", "background")
+
+
+def _state_name(states: frozenset[str]) -> str:
+    return "pressed" if "active" in states else "hover" if "hover" in states else "rest"
+
+
+def _norm(prop: str) -> str:
+    return "background" if prop == "background-color" else prop
+
+
+def component_button_models(sheets: list[tuple[str, str]]) -> list[tuple[str, str, str, frozenset[str], tuple[frozenset[str], ...]]]:
+    """(path, sheet css, selector, classes, ancestors) of every component rule whose
+    subject is a `.btn` and that declares a colour or a fill, in any state."""
+    out = []
+    for path, css in sheets:
+        for head, body in parse_rules(css):
+            if head.startswith("@") or not any(_norm(p) in PAINT for p in _decls(body)):
+                continue
+            for sel in split_selectors(head):
+                enc = encapsulated(sel)
+                if not enc:
+                    continue
+                plain = _STATE.sub("", enc[0])
+                anc = _ancestor_classes(plain)
+                for subject in class_sets(plain):
+                    if "btn" in subject:
+                        out.append((path, css, sel, subject, (anc,) if anc else ()))
+    return out
+
+
+def painted_button(theme: str, css: str, classes: frozenset[str], ancestors, states: frozenset[str], rules=None):
+    """The (declarations, origin per paint property) the browser gives the element:
+    every matching rule of ux-v2.css and of the component sheet, in (specificity,
+    origin, source order); origin 0 = v2, 1 = the component."""
+    rules = _ux_rules() if rules is None else rules
+    hits = []
+    for idx, (heads, decls) in enumerate(rules):
+        best = [specificity(s) for s in heads if selector_matches(s, theme, classes, ancestors, states)]
+        if best:
+            hits.append((max(best), 0, idx, decls))
+    for idx, (head, body) in enumerate(parse_rules(css)):
+        if head.startswith("@"):
+            continue
+        best = []
+        for sel in split_selectors(head):
+            enc = encapsulated(sel)
+            if enc and plain_matches(enc[0], classes, ancestors, states):
+                best.append(enc[1])
+        if best:
+            hits.append((max(best), 1, idx, _decls(body)))
+    merged: dict[str, str] = {}
+    origin: dict[str, int] = {}
+    for _spec, org, _idx, decls in sorted(hits, key=lambda h: (h[0], h[1], h[2])):
+        for prop, val in decls.items():
+            if prop == "border":
+                merged.pop("border-color", None)
+            prop = _norm(prop)
+            merged[prop] = val
+            origin[prop] = org
+    return merged, origin
+
+
+def component_button_rows(theme: str, sheets: list[tuple[str, str]], rules=None) -> list[tuple[str, float, bool]]:
+    """(label, text-on-fill ratio, v2 paints part of it) per component button x state."""
+    rows, seen = [], set()
+    for path, css, sel, classes, ancestors in component_button_models(sheets):
+        key = (path, classes, ancestors)
+        if key in seen:
+            continue
+        seen.add(key)
+        for states in BUTTON_STATES:
+            decls, origin = painted_button(theme, css, classes, ancestors, states, rules)
+            if not all(p in decls for p in PAINT):
+                continue
+            ratio = Painted(decls, theme, rules).text_on_bg()
+            v2_paints = any(origin.get(p) == 0 for p in PAINT)
+            rows.append((f"{path} `{sel}` .{'.'.join(sorted(classes))} ({theme}, {_state_name(states)})", ratio, v2_paints))
+    return rows
+
+
+def component_button_failures(theme: str, sheets=None, rules=None) -> list[str]:
+    sheets = component_sheets() if sheets is None else sheets
+    return [
+        f"{label} measures {ratio:.2f}:1 < {TEXT_MIN}:1"
+        for label, ratio, v2_paints in component_button_rows(theme, sheets, rules)
+        if v2_paints and ratio < TEXT_MIN
+    ]
+
+
+@pytest.mark.parametrize("theme", THEMES)
+def test_component_painted_buttons_read_in_every_state(theme: str) -> None:
+    bad = component_button_failures(theme)
+    assert not bad, "LANE-143: a v2 rule paints part of a component button and its text no longer reads:\n" + "\n".join(bad)
+
+
+def test_the_component_button_scan_measures_the_modal_ctas() -> None:
+    """Wiring: the two CTAs of the finding are element models of the scan, in every state."""
+    labels = [label for label, _r, _v in component_button_rows("dark", component_sheets())]
+    for path, sel in (("mass-mask.component.ts", ".btn.cta.success"), ("mass-caption.component.ts", ".btn.cta")):
+        for state in ("rest", "hover", "pressed"):
+            assert any(path in lb and f"`{sel}`" in lb and f"(dark, {state})" in lb for lb in labels), (
+                f"LANE-143: the component button scan does not measure {path} {sel} ({state})"
+            )
+
+
+@pytest.mark.parametrize(("theme", "path", "sel"), [
+    ("dark", "mass-mask.component.ts", ".btn.cta.success"),
+    ("light", "mass-caption.component.ts", ".btn.cta"),
+])
+def test_the_generic_hover_on_a_component_cta_is_caught(theme: str, path: str, sel: str) -> None:
+    """Negative control (the finding): ux-v2.css without its `.cta` rules re-applies
+    the generic hover to the component CTAs; the guard must name the CTA and its ratio."""
+    rules = [(h, d) for h, d in _ux_rules() if not any(".cta" in s for s in h)]
+    bad = component_button_failures(theme, rules=rules)
+    hit = [b for b in bad if path in b and f"`{sel}`" in b and "hover" in b]
+    assert hit, f"LANE-143: the generic v2 hover on {path} {sel} ({theme}) must fail the guard, got {bad}"
+
+
+def test_a_declared_button_family_is_still_judged() -> None:
+    """Positive control for the per-family button claim: a component rule that
+    out-ranks a v2 button rule on a family that rule DECLARES is still a loss."""
+    v2 = [([f"{SCOPE} .btn.cta"], {"color": "var(--ux-ink-on-brand)", "background": "var(--color-brand)"})]
+    assert cascade_losses("dark", [("m.ts", ".btn.cta { color: white; }")], rules=v2) == []
+    lost = cascade_losses("dark", [("m.ts", ".foot .btn.cta { color: white; }")], rules=v2)
+    assert lost and "on color" in lost[0], f"LANE-143: a (0,4,0) ink over the v2 .btn.cta ink must be reported, got {lost}"

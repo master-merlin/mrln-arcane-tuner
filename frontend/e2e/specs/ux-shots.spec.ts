@@ -95,6 +95,8 @@ const SETS: Record<string, SetSpec> = {
 SETS['L3b'] = { ...SETS['L3'] };
 /** L3c = L3b after the verify-r1 border/ring remediation: same screens, same extras. */
 SETS['L3c'] = { ...SETS['L3'] };
+/** L3d = L3c after the verify-r2 component-CTA remediation: plus one hovered modal CTA per theme. */
+SETS['L3d'] = { ...SETS['L3'], extra: [...(SETS['L3'].extra ?? []), 'on-modal-hover-dark.png', 'on-modal-hover-light.png'] };
 const HIDE_TOGGLE = '[data-testid="ux-toggle"]{display:none}';
 
 /**
@@ -280,10 +282,12 @@ test('LANE-143 the shot table is self-consistent', () => {
     const sum = (n: string) => SETS[n].screens.reduce((a, s) => a + SETS[n].iconsOn[s], 0);
     expect(sum('L0') + sum('L1'), 'LANE-143: no icon may render before L2').toBe(0);
     expect(sum('L2'), 'LANE-143: L2 renders 26 icons ON').toBe(26);
+    expect(SETS['L3d'].extra, 'LANE-143: L3d adds one hovered modal CTA per theme').toEqual([...(SETS['L3'].extra ?? []), 'on-modal-hover-dark.png', 'on-modal-hover-light.png']);
     expect(STAGE === undefined || SETS[`L${STAGE}`] !== undefined, `LANE-143: unknown shot set ${SET}`).toBe(true);
 });
 
-const SPEC = SETS[`L${STAGE}`] ?? SETS['L0'];
+/** A set with its own row (L3d) uses it; a re-shoot without one (L3b, L3c) takes its layer's. */
+const SPEC = SETS[SET] ?? SETS[`L${STAGE}`] ?? SETS['L0'];
 const SCREENS = SPEC.screens;
 
 test.describe.configure({ mode: 'serial' });
@@ -394,6 +398,65 @@ async function dotContrasts(page: import('@playwright/test').Page): Promise<{ cl
     });
 }
 
+/**
+ * Verify-r2 1.01: the text-on-fill contrast of a button at rest, hovered and
+ * pressed, as painted (1x1 canvas over the ancestors' backgrounds, root-down).
+ * Hover = the real pointer over it; pressed = `:hover:active` forced through the
+ * DevTools protocol (a held mouse released elsewhere clicks the common ancestor,
+ * the modal backdrop, and closes the modal).
+ */
+async function statesRead(page: import('@playwright/test').Page, selector: string, label: string): Promise<string[]> {
+    const btn = page.locator(selector).first();
+    const read = () => btn.evaluate((el) => {
+        const cv = document.createElement('canvas');
+        cv.width = cv.height = 1;
+        const cx = cv.getContext('2d', { willReadFrequently: true })!;
+        const chain: Element[] = [];
+        for (let e: Element | null = el; e; e = e.parentElement) chain.unshift(e);
+        cx.fillStyle = '#fff';
+        cx.fillRect(0, 0, 1, 1);
+        for (const e of chain) {
+            cx.fillStyle = getComputedStyle(e).backgroundColor;
+            cx.fillRect(0, 0, 1, 1);
+        }
+        const bg = Array.from(cx.getImageData(0, 0, 1, 1).data).slice(0, 3);
+        cx.fillStyle = getComputedStyle(el).color;
+        cx.fillRect(0, 0, 1, 1);
+        const fg = Array.from(cx.getImageData(0, 0, 1, 1).data).slice(0, 3);
+        const lum = (c: number[]) => {
+            const [r, g, b] = c.map((v) => (v / 255 <= 0.04045 ? v / 255 / 12.92 : ((v / 255 + 0.055) / 1.055) ** 2.4));
+            return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        };
+        const a = lum(fg), b = lum(bg);
+        return { ratio: (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05), fg: fg.join(','), bg: bg.join(',') };
+    });
+    const out: string[] = [];
+    const row = (state: string, m: { ratio: number; fg: string; bg: string }) =>
+        out.push(`| ${label} | ${state} | ${m.ratio.toFixed(2)} | ${m.fg} on ${m.bg} | ${m.ratio >= 4.5 ? 'ok' : 'FAIL'} |`);
+    await page.mouse.move(1, 1);
+    await page.waitForTimeout(250);
+    row('rest', await read());
+    await btn.hover();
+    await page.waitForTimeout(250);
+    row('hover', await read());
+    const cdp = await page.context().newCDPSession(page);
+    try {
+        await cdp.send('DOM.enable');
+        await cdp.send('CSS.enable');
+        const { root } = await cdp.send('DOM.getDocument', { depth: 0 });
+        const { nodeId } = await cdp.send('DOM.querySelector', { nodeId: root.nodeId, selector });
+        expect(nodeId, `LANE-143: ${selector} not found for the pressed state`).toBeGreaterThan(0);
+        await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: ['hover', 'active'] });
+        await page.waitForTimeout(150);
+        row('pressed', await read());
+        await cdp.send('CSS.forcePseudoState', { nodeId, forcedPseudoClasses: [] });
+    } finally {
+        await cdp.detach();
+    }
+    await page.mouse.move(1, 1);
+    return out;
+}
+
 const dotRows: string[] = [];
 const sweepRows: string[] = [];
 const baselineRows: string[] = [];
@@ -405,6 +468,7 @@ test.describe('LANE-143 UX shots', () => {
     test.beforeAll(() => {
         if (BASELINE) assertBaselineOnDisk(SHOTS_ROOT, BASELINE);
         fs.mkdirSync(path.join(OUT, 'full'), { recursive: true });
+        fs.writeFileSync(path.join(OUT, 'button-contrast.md'), '| button | state | ratio | text on fill (sRGB) | >= 4.5 |\n|---|---|---|---|---|\n');
     });
 
     test('LANE-143 the seeded running job yields step 1200 / total 5000 / 1024x1024', () => {
@@ -620,6 +684,53 @@ test.describe('LANE-143 UX shots', () => {
             const file = `on-workspace-${theme}.png`;
             await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
             await fullCapture(page, path.join(OUT, 'full', file));
+        });
+    }
+
+    for (const theme of THEMES) {
+        if (!SPEC.extra) break;
+        test(`LANE-143 component buttons read hovered and pressed ${theme}`, async ({ page }) => {
+            await page.goto('/');
+            await page.evaluate((t) => {
+                localStorage.setItem('mrln.theme', t);
+                localStorage.setItem('mrln.ux', 'v2');
+            }, theme);
+            const rows: string[] = [];
+            const openWorkspace = async () => {
+                await page.goto('/datasets');
+                await settle(page, 'datasets');
+                await page.getByTestId('dataset-card-alpha').click();
+                await expect(page.getByTestId('ws-mass-mask-btn'), 'LANE-143: the workspace must open').toBeVisible();
+                await page.waitForTimeout(500);
+            };
+            await openWorkspace();
+            for (const id of ['ws-mass-caption-btn', 'ws-mass-mask-btn', 'ws-mass-edit-btn']) {
+                rows.push(...await statesRead(page, `[data-testid="${id}"]`, `${id} (${theme})`));
+            }
+            // the two modal CTAs of verify-r2 1.01, enabled the way a user enables them
+            for (const [mass, cta, enable] of [
+                ['mask', '.modal .btn.cta.success', null],
+                ['caption', '.modal .btn.cta', '.modal .mc-choice:has-text("Destructive")'],
+            ] as const) {
+                await openWorkspace();
+                await page.getByTestId(`ws-mass-${mass}-btn`).click();
+                await expect(page.locator('.modal').first(), `LANE-143: the mass-${mass} modal must open`).toBeVisible();
+                if (enable) await page.locator(enable).first().click();
+                const btn = page.locator(cta).first();
+                await expect(btn, `LANE-143: the mass-${mass} CTA must be enabled to be hovered`).toBeEnabled({ timeout: 10_000 });
+                await page.waitForTimeout(400);
+                rows.push(...await statesRead(page, cta, `mass-${mass} modal CTA (${theme})`));
+                const file = `on-modal-hover-${theme}.png`;
+                if (mass === 'mask' && SPEC.extra?.includes(file)) {
+                    await btn.hover();
+                    await page.waitForTimeout(300);
+                    await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
+                    await fullCapture(page, path.join(OUT, 'full', file));
+                }
+            }
+            fs.appendFileSync(path.join(OUT, 'button-contrast.md'), rows.map((r) => `${r}\n`).join(''));
+            const bad = rows.filter((r) => r.includes('FAIL'));
+            expect(bad, `LANE-143: a component button's text no longer reads on its v2 fill:\n${bad.join('\n')}`).toEqual([]);
         });
     }
 

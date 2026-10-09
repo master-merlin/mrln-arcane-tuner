@@ -1099,13 +1099,16 @@ _CLASS_ATTR = re.compile(r'(?<![\w.\[-])class="([^"]*)"')
 
 def component_template(path: str) -> str:
     """The template(s) of the component that owns the sheet at ``path`` (repo-relative):
-    ``x.css`` -> ``x.html`` and the inline/linked template of ``x.ts``; ``x.ts`` -> the same."""
-    stem = (REPO_ROOT / path).with_suffix("")
+    ``x.css`` -> ``x.html`` and the inline/linked template of ``x.ts``; ``x.ts`` -> the same.
+    Only the LAST suffix is replaced: ``x.component.css`` -> ``x.component.html`` (VERIFY
+    20261008T225306Z 1.01: stripping ``.component`` too resolved nothing for every
+    ``.component`` sheet). A sheet no template owns raises, never yields an empty scan."""
+    sheet = REPO_ROOT / path
     out = []
-    html = stem.with_suffix(".html")
+    html = sheet.with_suffix(".html")
     if html.is_file():
         out.append(html.read_text(encoding="utf-8"))
-    ts = stem.with_suffix(".ts")
+    ts = sheet.with_suffix(".ts")
     if ts.is_file():
         src = ts.read_text(encoding="utf-8")
         out += _TEMPLATE_INLINE.findall(src)
@@ -1113,6 +1116,8 @@ def component_template(path: str) -> str:
             linked = (ts.parent / url).resolve()
             if linked.is_file() and linked != html.resolve():
                 out.append(linked.read_text(encoding="utf-8"))
+    if not out:
+        raise LookupError(f"LANE-143: no component template owns {path} (looked for {html.name} and {ts.name})")
     return "\n".join(out)
 
 
@@ -1304,6 +1309,39 @@ def test_no_component_button_is_muted_by_a_generic_v2_rule(theme: str) -> None:
 
 BULK_DANGER_SHEET = "frontend/src/app/screens/datasets-screen/datasets-screen.css"
 BULK_DANGER = frozenset({"btn", "ds-bulk-danger"})
+
+# VERIFY 20261008T225306Z, MAJOR 1.01: the resolver stripped `.component` with the
+# extension, so `x.component.css` looked for `x.html` and every one of the `.component`
+# sheets resolved to NO template -- the element models it should feed were silently
+# absent. These rows use REAL files of the tree, never a stubbed component_template.
+WORKSPACE_SHEET = "frontend/src/app/workspace/dataset-workspace.component.css"
+INLINE_SHEET = "frontend/src/app/modals/mass-mask/mass-mask.component.ts"
+
+
+@pytest.mark.parametrize(("sheet", "needle"), [
+    (WORKSPACE_SHEET, "ws-mass-mask"),
+    (INLINE_SHEET, "btn"),
+    (BULK_DANGER_SHEET, "ds-bulk-danger"),
+])
+def test_a_component_sheet_resolves_its_own_template(sheet: str, needle: str) -> None:
+    assert (REPO_ROOT / sheet).is_file(), f"LANE-143: fixture sheet {sheet} moved"
+    assert needle in component_template(sheet), f"LANE-143: component_template resolved no template for {sheet}"
+
+
+def test_the_button_scan_models_the_workspace_mass_buttons() -> None:
+    """The workspace `.ws-mass-*` rules name no `.btn`; their elements come from the
+    `.component.html` template, so the models exist only if the resolver keeps `.component`."""
+    models = {(p, c) for p, _css, _s, c, _a in component_button_models(component_sheets())}
+    for cls in workspace_mass_classes(WORKSPACE_HTML.read_text(encoding="utf-8")):
+        assert any(p == WORKSPACE_SHEET and cls in c for p, c in models), (
+            f"LANE-143: the button scan does not model .btn.{cls} from {WORKSPACE_SHEET}"
+        )
+
+
+def test_an_unowned_sheet_is_reported_not_emptied(tmp_path) -> None:
+    """Unresolved ownership is an error naming the sheet, never an empty template."""
+    with pytest.raises(LookupError, match="LANE-143: no component template owns"):
+        component_template("frontend/src/app/__no_such_dir__/orphan.component.css")
 
 
 def test_the_button_scan_models_the_bulk_danger_element() -> None:

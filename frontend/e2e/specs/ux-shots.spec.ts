@@ -92,6 +92,8 @@ const NO_ICONS: Record<string, number> = Object.fromEntries(Object.keys(KPI_ICON
 type SetSpec = {
     screens: string[]; shots: number; iconsOn: Record<string, number>; extra?: string[];
     states?: State[]; compare?: State; baseline?: string;
+    /** shot with the pointer parked (`parkPointer`) before every state capture: L5c on */
+    pointerParked?: boolean;
 };
 const statesOf = (spec: SetSpec): State[] => spec.states ?? BOTH;
 /** The ONE table: a round's evidence is whatever its row says, nothing derived elsewhere. */
@@ -118,6 +120,32 @@ SETS['L4'] = { ...SETS['L3d'] };
 SETS['L5'] = { ...SETS['L4'], screens: [...FIVE, 'projects'], states: ['on'], shots: 12, compare: 'on', baseline: 'L4' };
 /** L5b = L5 after the verify remediation of the bulk Delete button (verify 20261008T195032Z 1.01): same shots, vs L4. */
 SETS['L5b'] = { ...SETS['L5'] };
+/** L5c = L5b with the pointer parked before every state shot (verify 20261008T225306Z G2-1): same shots, vs L4. */
+SETS['L5c'] = { ...SETS['L5'], pointerParked: true };
+
+/**
+ * Verify 20261008T225306Z G2-1: a baseline set shot BEFORE the pointer was parked captured
+ * the workspace with the viewer tile under the `dataset-card-alpha` click hovered (action
+ * buttons shown, image at full opacity). Comparing a parked shot to it masks exactly that
+ * tile (plus its hover-shadow halo) and records why; a parked baseline masks nothing.
+ * Throws when the mask is required and no tile sits under the click point (never fail-open).
+ */
+// The halo is the hover shadow's reach: Tailwind `shadow-xl` = `0 20px 25px -5px`; a CSS blur
+// radius B is a Gaussian of sigma B/2, visible to ~3 sigma = 37.5 px past the spread edge (-5):
+// ~33 px to the sides and above-offset, 20 + 33 = ~53 px below. Measured: the L4 shadow reached
+// 34 px left of the tile (the neighbour's corner at x 346, the original 2x5 px flake).
+const HOVER_HALO = { side: 40, top: 16, bottom: 56 };
+function pointerHoverMask(baseline: string | undefined, tile: Rect | null): { rects: Rect[]; why: string } | null {
+    if (!baseline) return null;
+    const stage = /^L(\d+[a-z]?)$/.exec(baseline)?.[1];
+    const row = stage === undefined ? undefined : SETS[`L${stage}`];
+    if (!row) throw new Error(`LANE-143: unknown baseline set ${baseline}`);
+    if (row.pointerParked) return null;
+    if (!tile) throw new Error(`LANE-143: baseline ${baseline} was shot with a hovered workspace tile, but no .tile sits under the click point to mask`);
+    const h = HOVER_HALO;
+    const r = { x: tile.x - h.side, y: tile.y - h.top, w: tile.w + 2 * h.side, h: tile.h + h.top + h.bottom };
+    return { rects: [r], why: `pointer-hovered tile in ${baseline} (shot before the pointer park) masked ${r.w}x${r.h}@${r.x},${r.y}` };
+}
 
 /**
  * Fails BEFORE any capture when the baseline set has no shots on disk (the compare
@@ -310,6 +338,22 @@ test('LANE-143 a missing required baseline image fails (negative control)', () =
     }
 });
 
+/** Runs without UX_SHOTS: the pointer-hover mask applies only against a pre-park baseline, and never fails open. */
+test('LANE-143 the pointer-hover mask is limited to pre-park baselines (negative control)', () => {
+    const tile = { x: 346, y: 171, w: 358, h: 480 };
+    expect(pointerHoverMask('L5c', tile), 'LANE-143: a parked baseline must mask nothing').toBeNull();
+    expect(pointerHoverMask(undefined, tile)).toBeNull();
+    const m = pointerHoverMask('L4', tile);
+    expect(m?.rects, 'LANE-143: a pre-park baseline masks exactly the hovered tile plus its halo').toEqual([
+        { x: 346 - HOVER_HALO.side, y: 171 - HOVER_HALO.top, w: 358 + 2 * HOVER_HALO.side, h: 480 + HOVER_HALO.top + HOVER_HALO.bottom },
+    ]);
+    expect(m?.why).toMatch(/^pointer-hovered tile in L4/);
+    expect(() => pointerHoverMask('L4', null), 'LANE-143: a required mask without a tile must fail, never compare unmasked or skip').toThrow(
+        /^LANE-143: baseline L4 was shot with a hovered workspace tile/,
+    );
+    expect(() => pointerHoverMask('X9', tile)).toThrow(/^LANE-143: unknown baseline set/);
+});
+
 /** Runs without UX_SHOTS: an OMITTED baseline on a non-L0 set compares against L0; L0 is exempt; absent shots fail up front. */
 test('LANE-143 an omitted baseline defaults to L0 and absent baseline shots fail before capture (negative control)', () => {
     expect(resolveBaseline('3', undefined), 'LANE-143: an omitted baseline on L3 must compare against L0').toBe('L0');
@@ -386,6 +430,18 @@ async function fullCapture(page: import('@playwright/test').Page, file: string):
         await page.setViewportSize(size);
         await page.waitForTimeout(200);
     }
+}
+
+/**
+ * Verify 20261008T225306Z G2-1: the pointer stays where the last click left it, so the
+ * workspace shot captured a hovered viewer tile (`hover:border-brand/50 hover:shadow-xl`,
+ * `transition-all`) whose corner rasterised differently run to run. Every state shot is
+ * taken with the pointer parked at the viewport origin and the hover transitions settled;
+ * the one deliberate hover shot (on-modal-hover-*) hovers its button explicitly.
+ */
+async function parkPointer(page: import('@playwright/test').Page): Promise<void> {
+    await page.mouse.move(0, 0);
+    await page.waitForTimeout(300);
 }
 
 async function settle(page: import('@playwright/test').Page, screen: string): Promise<void> {
@@ -513,7 +569,9 @@ async function openAs(page: import('@playwright/test').Page, theme: string, rout
  * Masked: clock text (as the OFF-vs-L0 compare did) and the topbar actions row grown 40 px to
  * the left -- the ONE layout change of T6 (the ux-toggle removed from a right-anchored row).
  */
-async function compareToBaseline(page: import('@playwright/test').Page, file: string, screen: string): Promise<void> {
+async function compareToBaseline(
+    page: import('@playwright/test').Page, file: string, screen: string, extra: { rects: Rect[]; why: string } | null = null,
+): Promise<void> {
     if (!BASELINE) return;
     const exception = baselineException(SHOTS_ROOT, BASELINE, screen, file);
     if (exception !== null) {
@@ -538,11 +596,15 @@ async function compareToBaseline(page: import('@playwright/test').Page, file: st
         if (bar) out.push({ x: Math.floor(bar.x) - 48, y: Math.floor(bar.y) - 8, w: Math.ceil(bar.width) + 56, h: Math.ceil(bar.height) + 16 });
         return out;
     });
+    if (extra) {
+        masks.push(...extra.rects);
+        baselineRows.push(`| ${file} | - | exception: ${extra.why} | - | - |`);
+    }
     const d = pixelDiff(fs.readFileSync(path.join(OUT, file)), fs.readFileSync(path.join(SHOTS_ROOT, BASELINE, file)), masks);
     const masked = masks.map((r) => `${r.w}x${r.h}@${r.x},${r.y}`).join(' ') || '-';
     baselineRows.push(`| ${file} | ${d.size} | ${d.beyond} | ${d.noise} | ${masked} |`);
     sweepRows.push(`| ${file} | ${d.size} | ${d.beyond} | ${d.noise} | ${masks.length} boxes |`);
-    expect(d.beyond, `LANE-143: ${file} differs from baseline ${BASELINE} in ${d.beyond} px beyond +-${NOISE} (${d.size})`).toBe(0);
+    expect(d.beyond, `LANE-143: ${file} differs from baseline ${BASELINE} in ${d.beyond} px beyond +-${NOISE} (${d.size})${extra ? `; ${extra.why}` : ''}`).toBe(0);
 }
 
 /**
@@ -651,6 +713,7 @@ test.describe('LANE-143 UX shots', () => {
                     ).toBeGreaterThanOrEqual(3);
                 }
                 const file = `on-${screen}-${theme}.png`;
+                await parkPointer(page);
                 await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
                 await compareToBaseline(page, file, screen);
                 await fullCapture(page, path.join(OUT, 'full', file));
@@ -668,6 +731,7 @@ test.describe('LANE-143 UX shots', () => {
             await expect(dialog, 'LANE-143: the New dataset dialog must open for the modal shot').toBeVisible();
             await page.waitForTimeout(500);
             const file = `on-modal-${theme}.png`;
+            await parkPointer(page);
             await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
             await compareToBaseline(page, file, 'datasets');
             await fullCapture(page, path.join(OUT, 'full', file));
@@ -679,7 +743,8 @@ test.describe('LANE-143 UX shots', () => {
         test(`LANE-143 workspace toolbar ${theme}`, async ({ page }) => {
             await openAs(page, theme, '/datasets');
             await settle(page, 'datasets');
-            await page.getByTestId('dataset-card-alpha').click();
+            const card = await page.getByTestId('dataset-card-alpha').boundingBox();
+            await page.getByTestId('dataset-card-alpha').click(); // the pointer lands at the card's centre
             const mask = page.getByTestId('ws-mass-mask-btn');
             const edit = page.getByTestId('ws-mass-edit-btn');
             await expect(mask, 'LANE-143: the workspace Mass mask button must be visible').toBeVisible();
@@ -697,8 +762,16 @@ test.describe('LANE-143 UX shots', () => {
             expect(m, 'LANE-143: Mass mask must not paint the plain secondary button').not.toBe(plain);
             expect(e, 'LANE-143: Mass edit must not paint the plain secondary button').not.toBe(plain);
             const file = `on-workspace-${theme}.png`;
+            await parkPointer(page);
+            expect(await page.locator('.tile:hover').count(), 'LANE-143: a viewer tile is still hovered after the pointer park').toBe(0);
+            const hovered = await page.evaluate(([x, y]) => {
+                const t = document.elementFromPoint(x, y)?.closest('.tile');
+                if (!t) return null;
+                const r = t.getBoundingClientRect();
+                return { x: Math.floor(r.x), y: Math.floor(r.y), w: Math.ceil(r.width), h: Math.ceil(r.height) };
+            }, [card!.x + card!.width / 2, card!.y + card!.height / 2] as const);
             await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
-            await compareToBaseline(page, file, 'datasets');
+            await compareToBaseline(page, file, 'datasets', pointerHoverMask(BASELINE, hovered));
             await fullCapture(page, path.join(OUT, 'full', file));
         });
     }

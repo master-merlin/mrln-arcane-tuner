@@ -40,7 +40,8 @@ BACKEND_TAKE = [
     ("yarl", "1.25.1"),
 ]
 
-NG = "22.2.0"
+# LANE-148: re-pinned 22.2.0 -> 22.2.1 and @lucide/angular 1.48.0 -> 1.50.0 (Dependabot PR #46 taken, frontend gate green).
+NG = "22.2.1"
 FRONTEND_MANIFEST = {
     "@angular/common": NG,
     "@angular/compiler": NG,
@@ -54,7 +55,7 @@ FRONTEND_MANIFEST = {
     "@codemirror/commands": "^6.11.1",
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.13",
-    "@lucide/angular": "1.48.0",
+    "@lucide/angular": "1.50.0",
     "@playwright/test": "^1.63.0",
     "jsdom": "^30.1.1",
 }

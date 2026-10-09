@@ -40,7 +40,8 @@ BACKEND_TAKE = [
     ("yarl", "1.25.1"),
 ]
 
-NG = "22.2.0"
+# LANE-148: re-pinned 22.2.0 -> 22.2.1 and @lucide/angular 1.48.0 -> 1.50.0 (Dependabot PR #46 taken, frontend gate green).
+NG = "22.2.1"
 FRONTEND_MANIFEST = {
     "@angular/common": NG,
     "@angular/compiler": NG,
@@ -54,7 +55,7 @@ FRONTEND_MANIFEST = {
     "@codemirror/commands": "^6.11.1",
     "@codemirror/state": "^6.7.6",
     "@codemirror/view": "^6.43.13",
-    "@lucide/angular": "1.48.0",
+    "@lucide/angular": "1.50.0",
     "@playwright/test": "^1.63.0",
     "jsdom": "^30.1.1",
 }
@@ -141,7 +142,11 @@ def _lock_versions(name: str) -> list[str]:
 
 
 # (package, floor, must_be_present)
-SECURITY_FLOORS = (("undici", "8.10.2", True), ("ip-address", "10.7.2", False))
+SECURITY_FLOORS = (
+    ("undici", "8.10.2", True),
+    ("ip-address", "10.7.2", False),
+    ("source-map-js", "1.2.2", False),  # alert 153, GHSA-68fv-2mgg-jv7q (LANE-148)
+)
 
 
 def _security_floor_problems(lock: dict) -> list[str]:
@@ -216,6 +221,16 @@ def test_security_floor_rejects_ip_address_10_7_1():
     assert bad and bad[0].startswith("LANE-134"), bad
     assert not _security_floor_problems(_fake_lock(None))
     assert not _security_floor_problems(_fake_lock("10.7.2"))
+
+
+def test_security_floor_rejects_source_map_js_1_2_1():
+    # alert 153 is fixed only from 1.2.2; 1.2.1 must be refused naming the package.
+    lock = _fake_lock(None)
+    lock["packages"]["node_modules/source-map-js"] = {"version": "1.2.1"}
+    bad = _security_floor_problems(lock)
+    assert bad and "source-map-js" in bad[0], bad
+    lock["packages"]["node_modules/source-map-js"] = {"version": "1.2.2"}
+    assert not _security_floor_problems(lock)
 
 
 def test_trufflehog_action_is_v3_97_9():
@@ -345,3 +360,14 @@ def test_ts_range_helper_no_upper_bound():
 
 def test_ts_range_helper_exact_7_bound():
     assert _angular_ts_range_admits_7(">=6.0 <7") is None
+
+
+def test_source_map_js_floor_closes_alert_153():
+    have = _lock_versions("source-map-js")
+    assert have and _ver(have[0]) >= (1, 2, 2), (
+        f"LANE-148: source-map-js is {have[0] if have else 'absent'} in frontend/package-lock.json; "
+        "the floor is 1.2.2 (Dependabot alert 153, GHSA-68fv-2mgg-jv7q), PR #48 superseded"
+    )
+    assert len(have) == 1, (
+        f"LANE-148: source-map-js resolves {have} in frontend/package-lock.json; expected one entry"
+    )

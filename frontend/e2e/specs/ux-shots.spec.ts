@@ -19,7 +19,10 @@ import { jobs, runningJobStepLogs } from '../fixtures/api-data';
  * +-NOISE per channel, the topbar actions row masked (the retired ux-toggle
  * leaves that row 40px narrower). Sets L0-L4 shot OFF and ON on earlier heads;
  * their rows stay in `SETS` as the record and as baselines, but this head
- * refuses to re-shoot them (it no longer renders OFF). What a set shoots and
+ * refuses to re-shoot them (it no longer renders OFF). The full/ twins are compared
+ * to the baseline's twins too, and every screen x theme runs the all-element HEIGHT
+ * SWEEP V2 vs V1 on the same page through the in-memory `UxStore.set()` seam
+ * (verify 20261009T074536Z 1.01). What a set shoots and
  * asserts is ONE table, `SETS`, keyed by the set's layer: its states, screens,
  * PNG count and the ON icon count of every screen. Every capture also has a
  * full-length twin under `<set>/full/`.
@@ -122,6 +125,10 @@ SETS['L5'] = { ...SETS['L4'], screens: [...FIVE, 'projects'], states: ['on'], sh
 SETS['L5b'] = { ...SETS['L5'] };
 /** L5c = L5b with the pointer parked before every state shot (verify 20261008T225306Z G2-1): same shots, vs L4. */
 SETS['L5c'] = { ...SETS['L5'], pointerParked: true };
+/** L5d = L5c with the height sweep restored and the full/ twins compared (verify 20261009T074536Z 1.01): same shots, vs L4. */
+SETS['L5d'] = { ...SETS['L5c'] };
+/** L5e = L5d re-shot after the twin-compare manifest check landed (L5d is the pre-check run). */
+SETS['L5e'] = { ...SETS['L5d'] };
 
 /**
  * Verify 20261008T225306Z G2-1: a baseline set shot BEFORE the pointer was parked captured
@@ -411,7 +418,9 @@ test.use({ viewport: { width: 1440, height: 900 } });
  * containers, so `fullPage` alone would stop at the viewport: the viewport is
  * grown by the largest scroll overflow on the page, captured, and restored.
  */
-async function fullCapture(page: import('@playwright/test').Page, file: string): Promise<void> {
+async function fullCapture(
+    page: import('@playwright/test').Page, file: string, screen: string, mask: MaskFn = null,
+): Promise<void> {
     const extra = await page.evaluate(() => {
         let most = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
         for (const el of Array.from(document.querySelectorAll<HTMLElement>('body *'))) {
@@ -425,7 +434,10 @@ async function fullCapture(page: import('@playwright/test').Page, file: string):
         await page.setViewportSize({ width: size.width, height: Math.min(size.height + extra, 8000) });
         await page.waitForTimeout(400);
     }
-    await page.screenshot({ path: file, fullPage: true, animations: 'disabled' });
+    await page.screenshot({ path: path.join(OUT, 'full', file), fullPage: true, animations: 'disabled' });
+    // VERIFY round 3 (7f5c91e9) 1.01: the full-length twin is COMPARED to the baseline's twin,
+    // at the grown viewport (masks measured on this layout), so a change below the fold fails.
+    await compareToBaseline(page, `full/${file}`, screen, mask);
     if (extra > 0) {
         await page.setViewportSize(size);
         await page.waitForTimeout(200);
@@ -569,8 +581,9 @@ async function openAs(page: import('@playwright/test').Page, theme: string, rout
  * Masked: clock text (as the OFF-vs-L0 compare did) and the topbar actions row grown 40 px to
  * the left -- the ONE layout change of T6 (the ux-toggle removed from a right-anchored row).
  */
+type MaskFn = (() => Promise<{ rects: Rect[]; why: string } | null>) | null;
 async function compareToBaseline(
-    page: import('@playwright/test').Page, file: string, screen: string, extra: { rects: Rect[]; why: string } | null = null,
+    page: import('@playwright/test').Page, file: string, screen: string, mask: MaskFn = null,
 ): Promise<void> {
     if (!BASELINE) return;
     const exception = baselineException(SHOTS_ROOT, BASELINE, screen, file);
@@ -596,6 +609,7 @@ async function compareToBaseline(
         if (bar) out.push({ x: Math.floor(bar.x) - 48, y: Math.floor(bar.y) - 8, w: Math.ceil(bar.width) + 56, h: Math.ceil(bar.height) + 16 });
         return out;
     });
+    const extra = mask ? await mask() : null;
     if (extra) {
         masks.push(...extra.rects);
         baselineRows.push(`| ${file} | - | exception: ${extra.why} | - | - |`);
@@ -603,9 +617,104 @@ async function compareToBaseline(
     const d = pixelDiff(fs.readFileSync(path.join(OUT, file)), fs.readFileSync(path.join(SHOTS_ROOT, BASELINE, file)), masks);
     const masked = masks.map((r) => `${r.w}x${r.h}@${r.x},${r.y}`).join(' ') || '-';
     baselineRows.push(`| ${file} | ${d.size} | ${d.beyond} | ${d.noise} | ${masked} |`);
-    sweepRows.push(`| ${file} | ${d.size} | ${d.beyond} | ${d.noise} | ${masks.length} boxes |`);
     expect(d.beyond, `LANE-143: ${file} differs from baseline ${BASELINE} in ${d.beyond} px beyond +-${NOISE} (${d.size})${extra ? `; ${extra.why}` : ''}`).toBe(0);
 }
+
+type Box = Record<string, number>;
+
+/**
+ * VERIFY round 3 (7f5c91e9) 1.01: the all-element HEIGHT SWEEP, restored. Heights of every
+ * `body *` element -- on screen or below the fold, in a scroll container or not -- keyed by a
+ * structural path that ignores `.kpi-icon` nodes (the one element v2 adds). Named exceptions
+ * only: the estimate wall's `.ew-grid` and its ancestors up to the wall's card (the user's
+ * round-3 answer ew-grid-padding=12px) and the `.ds-card-counts` row of a card holding the
+ * "N suppressed" chip (the user's 2026-10-07 override). Self-contained: runs in the page.
+ */
+function sweep(): Box {
+    const out: Record<string, number> = {};
+    const key = (el: Element): string => {
+        const parts: string[] = [];
+        for (let n: Element | null = el; n && n !== document.body; n = n.parentElement) {
+            const p = n.parentElement!;
+            const sibs = Array.from(p.children).filter((c) => !c.classList.contains('kpi-icon'));
+            parts.unshift(`${n.tagName.toLowerCase()}:${sibs.indexOf(n)}`);
+        }
+        return parts.join('>');
+    };
+    const grid = document.querySelector('.ew-grid');
+    for (const el of Array.from(document.body.querySelectorAll('*'))) {
+        if (el.closest('.kpi-icon')) continue;
+        const counts = el.closest('.ds-card-counts');
+        if (counts && counts.querySelector('.ds-card-excluded')) continue;
+        if (grid && el.contains(grid) && (el === grid || el.tagName === 'APP-ESTIMATE-WALL' || (el.classList.contains('card') && el.parentElement?.tagName === 'APP-ESTIMATE-WALL'))) continue;
+        out[key(el)] = Math.round(el.getBoundingClientRect().height * 100) / 100;
+    }
+    return out;
+}
+
+/**
+ * Switches the rendering through the REAL seam, `UxStore.set()` (an in-memory toggle: it
+ * flips the `v2()` gates and the `data-ux` attribute, never persists), reached through the
+ * topbar's component instance with Angular's dev-mode debug API (`ng serve`, which the e2e
+ * web server runs). Fails closed: no debug API or no store -> a LANE-143 error, never a
+ * silent skip. Waits until the attribute and the `.kpi-icon` count agree with the state.
+ */
+async function setUx(page: import('@playwright/test').Page, on: boolean): Promise<void> {
+    const err = await page.evaluate((v) => {
+        const ng = (window as unknown as { ng?: { getComponent?: (el: Element) => unknown } }).ng;
+        const bar = document.querySelector('app-topbar');
+        const store = bar && ng?.getComponent ? (ng.getComponent(bar) as { ux?: { set?: (x: boolean) => void } } | null)?.ux : undefined;
+        if (!store?.set) return 'LANE-143: UxStore.set() is unreachable (no ng debug API or no app-topbar); the height sweep cannot render V1';
+        store.set(v);
+        return '';
+    }, on);
+    if (err) throw new Error(err);
+    await expect
+        .poll(() => page.evaluate(() => document.documentElement.getAttribute('data-ux')), { message: `LANE-143: data-ux after UxStore.set(${on})` })
+        .toBe(on ? 'v2' : null);
+    if (!on) await expect(page.locator('.kpi-icon'), 'LANE-143: V1 (UxStore.set(false)) renders no .kpi-icon').toHaveCount(0);
+    await page.waitForTimeout(400); // layout + the KPI tween settle
+}
+
+/** ON heights vs V1 heights (via the seam) on the SAME page; returns to V2. */
+async function heightSweep(page: import('@playwright/test').Page): Promise<{ elements: number; changed: string[]; missing: number }> {
+    const on = await page.evaluate(sweep);
+    await setUx(page, false);
+    const off = await page.evaluate(sweep);
+    await setUx(page, true);
+    const changed = Object.keys(off).filter((k) => k in on && off[k] !== on[k]).map((k) => `${k} ${off[k]}->${on[k]}`);
+    const missing = Object.keys(off).filter((k) => !(k in on)).length + Object.keys(on).filter((k) => !(k in off)).length;
+    return { elements: Object.keys(on).length, changed, missing };
+}
+
+/**
+ * VERIFY round 3 (7f5c91e9) 1.01 negative control (prove the negative): a v2-only rule that
+ * grows ONE element lying BELOW the 1440x900 viewport must fail the sweep -- a viewport pixel
+ * compare cannot see it. Runs without UX_SHOTS (an ordinary e2e test).
+ */
+test('LANE-143 the height sweep fails on a change below the viewport (negative control)', async ({ page }) => {
+    await page.goto('/server');
+    await page.waitForLoadState('networkidle');
+    await page.waitForTimeout(800);
+    const probe = await page.evaluate(() => {
+        const el = Array.from(document.body.querySelectorAll<HTMLElement>('*')).find((e) => {
+            const r = e.getBoundingClientRect();
+            // an HTML block-level leaf (an svg <path> or an inline span takes no padding height)
+            return r.top >= window.innerHeight && r.height > 0 && e.children.length === 0 &&
+                !e.closest('svg') && !getComputedStyle(e).display.startsWith('inline');
+        });
+        if (!el) return null;
+        el.setAttribute('data-l143-probe', '');
+        return { tag: el.tagName.toLowerCase(), top: Math.round(el.getBoundingClientRect().top) };
+    });
+    expect(probe, 'LANE-143: the control needs an element below the fold on /server').not.toBeNull();
+    const clean = await heightSweep(page);
+    expect(clean.changed, 'LANE-143: the sweep must be clean before the probe rule').toEqual([]);
+    await page.addStyleTag({ content: 'html[data-ux="v2"] [data-l143-probe] { padding-bottom: 7px; }' });
+    const hit = await heightSweep(page);
+    expect(probe!.top, 'LANE-143: the probe lies below the viewport').toBeGreaterThanOrEqual(900);
+    expect(hit.changed.length, `LANE-143: a v2 rule growing a <${probe!.tag}> at y=${probe!.top} (below the fold) must fail the height sweep`).toBeGreaterThan(0);
+});
 
 /**
  * Runs WITHOUT UX_SHOTS (an ordinary e2e test): the pre-paint guard in index.html sets
@@ -716,7 +825,11 @@ test.describe('LANE-143 UX shots', () => {
                 await parkPointer(page);
                 await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
                 await compareToBaseline(page, file, screen);
-                await fullCapture(page, path.join(OUT, 'full', file));
+                const s = await heightSweep(page);
+                sweepRows.push(`| ${screen} | ${theme} | ${s.elements} | ${s.changed.length} | ${s.missing} |` + (s.changed.length ? ` ${s.changed.slice(0, 5).join(', ')}` : ''));
+                expect(s.changed, `LANE-143: ${screen}/${theme} height changes V1 vs V2`).toEqual([]);
+                await parkPointer(page);
+                await fullCapture(page, file, screen);
             });
         }
     }
@@ -734,7 +847,7 @@ test.describe('LANE-143 UX shots', () => {
             await parkPointer(page);
             await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
             await compareToBaseline(page, file, 'datasets');
-            await fullCapture(page, path.join(OUT, 'full', file));
+            await fullCapture(page, file, 'datasets');
         });
     }
 
@@ -764,15 +877,16 @@ test.describe('LANE-143 UX shots', () => {
             const file = `on-workspace-${theme}.png`;
             await parkPointer(page);
             expect(await page.locator('.tile:hover').count(), 'LANE-143: a viewer tile is still hovered after the pointer park').toBe(0);
-            const hovered = await page.evaluate(([x, y]) => {
+            // the tile under the click point, measured on the CURRENT layout (the full twin grows the viewport)
+            const hoverMask: MaskFn = async () => pointerHoverMask(BASELINE, await page.evaluate(([x, y]) => {
                 const t = document.elementFromPoint(x, y)?.closest('.tile');
                 if (!t) return null;
                 const r = t.getBoundingClientRect();
                 return { x: Math.floor(r.x), y: Math.floor(r.y), w: Math.ceil(r.width), h: Math.ceil(r.height) };
-            }, [card!.x + card!.width / 2, card!.y + card!.height / 2] as const);
+            }, [card!.x + card!.width / 2, card!.y + card!.height / 2] as const));
             await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
-            await compareToBaseline(page, file, 'datasets', pointerHoverMask(BASELINE, hovered));
-            await fullCapture(page, path.join(OUT, 'full', file));
+            await compareToBaseline(page, file, 'datasets', hoverMask);
+            await fullCapture(page, file, 'datasets', hoverMask);
         });
     }
 
@@ -841,7 +955,7 @@ test.describe('LANE-143 UX shots', () => {
                     await page.waitForTimeout(300);
                     await page.screenshot({ path: path.join(OUT, file), animations: 'disabled' });
                     await compareToBaseline(page, file, 'datasets');
-                    await fullCapture(page, path.join(OUT, 'full', file));
+                    await fullCapture(page, file, 'datasets');
                 }
             }
             fs.appendFileSync(path.join(OUT, 'button-contrast.md'), rows.map((r) => `${r}\n`).join(''));
@@ -856,6 +970,12 @@ test.describe('LANE-143 UX shots', () => {
         const expected = SPEC.shots + (SPEC.extra?.length ?? 0); // from the SETS row, never re-derived here
         expect(files.length, `LANE-143: expected ${expected} shots, got ${files.length}`).toBe(expected);
         expect(full, `LANE-143: every shot has its full-length twin under full/`).toEqual(files);
+        if (BASELINE) {
+            // verify 20261009T074536Z 1.01: a twin captured but never compared is a dead guard
+            const judged = full.filter((f) => !baselineRows.some((r) => r.startsWith(`| full/${f} |`)));
+            expect(judged, `LANE-143: full-length twins never compared to ${BASELINE}: ${judged.join(', ')}`).toEqual([]);
+            expect(sweepRows.length, `LANE-143: the height sweep ran on ${sweepRows.length} of ${SPEC.screens.length * THEMES.length} screen/theme pages`).toBe(SPEC.screens.length * THEMES.length);
+        }
         for (const f of [...files, ...full.map((x) => `full/${x}`)]) {
             const buf = fs.readFileSync(path.join(OUT, f));
             manifest.push({
@@ -868,10 +988,13 @@ test.describe('LANE-143 UX shots', () => {
         fs.writeFileSync(path.join(OUT, 'shots-manifest.json'), JSON.stringify(manifest, null, 2));
         fs.writeFileSync(
             path.join(OUT, 'sweep.md'),
-            [`ON vs ${BASELINE ?? '-'} ON (tolerance +-${NOISE} per channel; replaces the OFF-vs-ON height sweep: this head renders no OFF state)`, '',
-                '| file | px | beyond | noise | masked |', '|---|---|---|---|---|', ...sweepRows,
+            ['Height sweep: every `body *` element (on screen and below the fold), V2 vs V1 rendered on the same page through `UxStore.set()`; `.kpi-icon` nodes are the one added element and are keyed out.', '',
+                '| screen | theme | elements | height changes | structural diffs |', '|---|---|---|---|---|', ...sweepRows,
                 '',
-                'Masked in every compare: the `.topbar-actions` row widened 40 px leftward plus 8 px on every side for the button shadow halo (the retired ux-toggle: 32 px button + 8 px gap; the row is right-anchored, so the elements before the theme toggle move 40 px right), and the boxes of elements whose own text holds a clock time (h:mm).',
+                'Recorded exception (user answer 2026-10-08, ew-grid-padding=12px): `.ew-grid` and its ancestors up to the estimate wall card (`app-estimate-wall > .card`) are not swept; v2 pads the grid by 12px (+24 px). Every other element IS swept.',
+                'Recorded exception (user override 2026-10-07): the `.ds-card-counts` row of a Datasets card holding the "N suppressed" chip, and its children, are not swept; v2 lifts the chip to the card corner and the row drops its wrapped line. The card itself IS swept.',
+                '',
+                `Pixel compares (viewport shots AND their full/ twins) vs ${BASELINE ?? '-'} are in baseline-diff.md. Masked there: the \`.topbar-actions\` row widened 40 px leftward plus 8 px on every side for the button shadow halo (the retired ux-toggle), the boxes of elements whose own text holds a clock time (h:mm), and the pointer-hovered workspace tile of a pre-park baseline.`,
             ].join('\n') + '\n',
         );
         fs.writeFileSync(

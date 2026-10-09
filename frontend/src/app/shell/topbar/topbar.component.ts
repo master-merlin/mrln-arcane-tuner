@@ -18,6 +18,7 @@ import { GpuUnloadButtonComponent } from './gpu-unload-button.component';
 import { GpuResidencyStore } from '../../state/gpu-residency.store';
 import { ScopeStore } from '../../state/scope.store';
 import { ThemeStore } from '../../state/theme.store';
+import { UxStore } from '../../state/ux.store';
 import { ProjectService } from '../../services/project.service';
 import { LlmAvailabilityStore } from '../../state/llm-availability.store';
 
@@ -46,6 +47,9 @@ export class TopbarComponent {
     private router = inject(Router);
     protected scope = inject(ScopeStore);
     protected theme = inject(ThemeStore);
+    // Instantiated with the shell (as ThemeStore is) so `data-ux="v2"` is
+    // re-asserted at bootstrap even on a screen with no KPI tile.
+    private ux = inject(UxStore);
     protected projects = inject(ProjectService);
     protected llm = inject(LlmAvailabilityStore);
     private gpu = inject(GpuResidencyStore);

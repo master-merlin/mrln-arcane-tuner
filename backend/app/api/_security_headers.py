@@ -36,7 +36,7 @@ from starlette.responses import Response
 #: sha256 of the inline theme-bootstrap script in ``frontend/src/index.html``.
 #: It runs before first paint by design (a bundled script would not), so it
 #: stays inline and is hashed instead of removed.
-INLINE_BOOTSTRAP_SHA256 = "sha256-vbT0RDOhM7BAG5/XwAtJ1SNpPpMfoAUGkZnL9f8UWQ8="
+INLINE_BOOTSTRAP_SHA256 = "sha256-92dHL1OHuBM+247mpOlWcfk3DCwb6eysPNYfWqOste0="
 
 CSP_DIRECTIVES: dict[str, tuple[str, ...]] = {
     "default-src": ("'self'",),

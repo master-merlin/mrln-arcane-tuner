@@ -52,7 +52,7 @@
               @if (getLossStatus(job); as s) {
                 <span class="chip head-chip-sm shrink-0" [class.success]="s.tone === 'success'" [class.warning]="s.tone === 'warning'" [class.danger]="s.tone === 'danger'" [title]="s.tooltip"><span class="dot"></span>{{ s.text }}</span>
               } @else {
-                <span class="chip success head-chip-sm shrink-0"><span class="dot"></span>{{ job.status }}</span>
+                <span class="chip success running head-chip-sm shrink-0"><span class="dot"></span>{{ job.status }}</span>
               }
             </div>
           </div>

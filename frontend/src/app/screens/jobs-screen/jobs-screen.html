@@ -113,11 +113,11 @@
             <!-- ── KPI row ───────────────────────────────────────────── -->
             @if (metrics(); as m) {
                 <div class="kpi-row">
-                    <app-kpi-tile label="Step" [value]="m.step" [unit]="stepUnit()" [sub]="progressLabel()" accent="brand" [compact]="true" [animate]="true">
+                    <app-kpi-tile label="Step" icon="Play" [value]="m.step" [unit]="stepUnit()" [sub]="progressLabel()" accent="brand" [compact]="true" [animate]="true">
                         <div class="kpi-viz"><div class="bar lg"><i [style.width.%]="progressPct()"></i></div></div>
                     </app-kpi-tile>
 
-                    <app-kpi-tile label="Loss (raw)" [value]="lossLabel()" accent="success" [compact]="true">
+                    <app-kpi-tile label="Loss (raw)" icon="Activity" [value]="lossLabel()" accent="success" [compact]="true">
                         @if (status(); as st) {
                             <div class="kpi-status"
                                  [class.success]="st.tone === 'success'"
@@ -130,21 +130,21 @@
                         <div class="kpi-viz"><app-sparkline [data]="lossSparkData()" color="var(--color-success)" [height]="22"/></div>
                     </app-kpi-tile>
 
-                    <app-kpi-tile label="Best Loss" [value]="bestLabel()" [sub]="bestSub()" accent="violet" [compact]="true">
+                    <app-kpi-tile label="Best Loss" icon="Sparkles" [value]="bestLabel()" [sub]="bestSub()" accent="violet" [compact]="true">
                         <div class="kpi-viz"><app-sparkline [data]="bestSparkData()" color="var(--color-violet)" [height]="22"/></div>
                     </app-kpi-tile>
 
-                    <app-kpi-tile label="Step Time" [value]="stepTimeLabel()" unit="s" [sub]="throughputSub()" accent="teal" [compact]="true">
+                    <app-kpi-tile label="Step Time" icon="Clock" [value]="stepTimeLabel()" unit="s" [sub]="throughputSub()" accent="teal" [compact]="true">
                         <div class="kpi-viz"><app-sparkline [data]="stepTimeSparkData()" color="var(--color-chart-lr)" [height]="22"/></div>
                     </app-kpi-tile>
 
                     @if (m.resolution) {
-                        <app-kpi-tile label="Resolution" [value]="m.resolution" [sub]="resolutionMpxLabel()" accent="warning" [compact]="true">
+                        <app-kpi-tile label="Resolution" icon="Image" [value]="m.resolution" [sub]="resolutionMpxLabel()" accent="warning" [compact]="true">
                             <div class="kpi-viz"><app-sparkline [data]="resolutionSparkData()" color="var(--color-warning)" [height]="22"/></div>
                         </app-kpi-tile>
                     }
 
-                    <app-kpi-tile label="ETA" [value]="etaLabel()" [compact]="true">
+                    <app-kpi-tile label="ETA" icon="Clock" [value]="etaLabel()" [compact]="true">
                         @if (finishLabel()) {
                             <div class="kpi-finish">
                                 <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><polyline points="12 6 12 12 16 14"/></svg>
@@ -162,7 +162,7 @@
                     <button class="card-head-toggle" type="button" (click)="toggle('curves')">
                         <span class="card-title">Training Curves</span>
                         @if (j.status === JobStatus.RUNNING) {
-                            <span class="chip success head-chip"><span class="dot"></span> live</span>
+                            <span class="chip success running head-chip"><span class="dot"></span> live</span>
                         }
                         <!-- Adaptive layer targeting sits here, right of "live",
                              rather than in a row of its own above the card: it

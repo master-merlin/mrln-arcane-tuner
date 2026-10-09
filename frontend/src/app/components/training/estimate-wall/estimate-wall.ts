@@ -1,4 +1,6 @@
-import { ChangeDetectionStrategy, Component, input, output } from '@angular/core';
+import { ChangeDetectionStrategy, Component, inject, input, output } from '@angular/core';
+import { IcoComponent } from '../../../icons/ico.component';
+import { UxStore } from '../../../state/ux.store';
 import { TrainingEstimate } from '../../../services/job';
 
 /**
@@ -13,6 +15,7 @@ import { TrainingEstimate } from '../../../services/job';
 @Component({
     selector: 'app-estimate-wall',
     standalone: true,
+    imports: [IcoComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     templateUrl: './estimate-wall.html',
     styleUrl: './estimate-wall.css',
@@ -28,6 +31,8 @@ export class EstimateWallComponent {
     emptyText = input<string>('Select a template to estimate.');
     /** Emitted when the user clicks "Update stats from history". */
     updateStats = output<void>();
+    /** The v2 design-language switch: the KPI icon square renders only under it (LANE-143). */
+    protected readonly ux = inject(UxStore);
 
     /** Sub-label describing a metric's confidence (calibrated runs vs defaults). */
     protected confidenceSub(

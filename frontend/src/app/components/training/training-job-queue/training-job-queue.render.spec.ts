@@ -160,6 +160,21 @@ describe('TrainingJobQueueComponent — rendered DOM', () => {
         expect(btn!.title.toLowerCase()).toContain('stop');
     });
 
+    it('marks the running row status chip with the running role, additively over success (LANE-143)', () => {
+        const { fixture } = setup();
+        fixture.detectChanges();
+        fixture.componentInstance.jobs.set([makeJob(RUNNING_ID, JobStatus.RUNNING)]);
+        fixture.detectChanges();
+
+        const row = (fixture.nativeElement as HTMLElement).querySelector(`[data-testid="job-item-${RUNNING_ID}"]`)!;
+        const chip = row.querySelector<HTMLElement>('.chip.head-chip-sm')!;
+        expect(chip, 'LANE-143: the running row renders a status chip').not.toBeNull();
+        // success stays (the rendering with the v2 switch OFF is unchanged); running is added for v2.
+        expect([...chip.classList], 'LANE-143: running chip must carry success AND running').toEqual(
+            expect.arrayContaining(['chip', 'success', 'running']),
+        );
+    });
+
     // ── T8: keyboard-operable rows + optimistic reorder ────────────────
     function pending(id: string, priority: number): Job {
         return { id, plugin_id: 'p', config: { lora_name: id }, status: JobStatus.PENDING, created_at: 0, priority };

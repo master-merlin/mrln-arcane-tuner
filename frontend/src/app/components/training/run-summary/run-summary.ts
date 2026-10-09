@@ -41,14 +41,15 @@ export class RunSummaryComponent {
 
     /**
      * Tone class for the global `.chip` styles, matching the Projects → Runs
-     * redesign (`screen-extras.jsx` ProjectRuns): running = success (+ dot),
+     * redesign (`screen-extras.jsx` ProjectRuns): running = success (+ dot)
+     * plus the additive `running` role class that only the v2 layer styles,
      * queued/pending = warning, failed = danger. `completed` is handled
      * separately by {@link isDone} (neutral chip + green check), so it returns
      * '' here.
      */
     protected readonly statusTone = computed<string>(() => {
         switch (this.job().status) {
-            case 'running': return 'success';
+            case 'running': return 'success running';
             case 'failed': return 'danger';
             case 'stopped':
             case 'paused':

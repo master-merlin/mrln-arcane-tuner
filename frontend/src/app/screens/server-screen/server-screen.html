@@ -30,10 +30,10 @@
 
 <!-- Health KPI rail — fed by GET /system/health + the live WS connection -->
 <div class="server-kpi-rail">
-    <app-kpi-tile label="STATUS" [value]="statusValue()" [accent]="statusAccent()" [sub]="statusSub()"/>
-    <app-kpi-tile label="UPTIME" [value]="uptimeValue()" accent="brand" sub="this process"/>
-    <app-kpi-tile label="MODELS" [value]="modelsValue()" accent="teal" sub="definitions"/>
-    <app-kpi-tile label="ACTIVE JOBS" [value]="activeJobsValue()" accent="warning" sub="running + paused"/>
+    <app-kpi-tile label="STATUS" icon="Activity" [value]="statusValue()" [accent]="statusAccent()" [sub]="statusSub()"/>
+    <app-kpi-tile label="UPTIME" icon="Clock" [value]="uptimeValue()" accent="brand" sub="this process"/>
+    <app-kpi-tile label="MODELS" icon="Box" [value]="modelsValue()" accent="teal" sub="definitions"/>
+    <app-kpi-tile label="ACTIVE JOBS" icon="Zap" [value]="activeJobsValue()" accent="warning" sub="running + paused"/>
 </div>
 
 <!-- Settings: Connection + Models cards (rendered by server-control) -->

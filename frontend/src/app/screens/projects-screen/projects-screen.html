@@ -22,10 +22,10 @@
     </div>
 
     <div class="ps-kpi-rail">
-        <app-kpi-tile label="PROJECTS" [value]="kpis().projects" accent="brand" sub="in this workspace"/>
-        <app-kpi-tile label="ACTIVE JOBS" [value]="kpis().jobs ?? '—'" accent="success" sub="across projects"/>
-        <app-kpi-tile label="TEMPLATES" [value]="kpis().templates ?? '—'" accent="teal" sub="caption · mask · training"/>
-        <app-kpi-tile label="DATASETS" [value]="kpis().datasets ?? '—'" accent="violet" sub="linked in projects"/>
+        <app-kpi-tile label="PROJECTS" icon="Layers" [value]="kpis().projects" accent="brand" sub="in this workspace"/>
+        <app-kpi-tile label="ACTIVE JOBS" icon="Zap" [value]="kpis().jobs ?? '—'" accent="success" sub="across projects"/>
+        <app-kpi-tile label="TEMPLATES" icon="Box" [value]="kpis().templates ?? '—'" accent="teal" sub="caption · mask · training"/>
+        <app-kpi-tile label="DATASETS" icon="Database" [value]="kpis().datasets ?? '—'" accent="violet" sub="linked in projects"/>
     </div>
 
     @if (showSkeleton()) {

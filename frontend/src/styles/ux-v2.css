@@ -1,0 +1,399 @@
+/*
+ * LANE-143 — the v2 design language, one stylesheet layer.
+ *
+ * Invariant: EVERY rule below is scoped under `html[data-ux="v2"]` (theme
+ * variants `html[data-ux="v2"][data-theme="light"]`), unlayered so it
+ * out-ranks `@layer components`, with no `!important`. With no `data-ux`
+ * attribute this file contributes nothing. Colour, border colour, shadow,
+ * weight and tracking only: nothing moves, shrinks or disappears.
+ */
+
+/* L1 — status role tokens and the pill / tag / label / dot primitives */
+
+/* P1 · one hue per role, declared once; -fg / -bg / -line derive from it per
+   theme. Every value is a contrast contract measured by
+   backend/tests/test_status_contrast_guard.py (text 4.5:1, line and dot 3:1,
+   as composited). The -bg tint mixes in oklab so the role keeps its hue (an
+   oklch mix with a near-grey surface drags the hue toward the surface's). */
+html[data-ux="v2"] {
+  --role-success: oklch(0.68 0.14 155);
+  --role-warning: oklch(0.75 0.16 75);
+  --role-danger: oklch(0.63 0.17 25);
+  --role-info: oklch(0.70 0.13 240);
+  --role-neutral: oklch(0.66 0.02 265);
+  --role-running: oklch(0.72 0.12 185);
+  --role-queued: oklch(0.68 0.07 275);
+  --role-paused: oklch(0.68 0.16 300);
+  --ux-pill-fade: 20%;
+  --ux-tint-fg: white 12%;
+  --ux-tint-bg: var(--color-surface-low) 86%;
+  --ux-tint-line: transparent 0%;
+  --st-success-fg: color-mix(in oklch, var(--role-success), white 12%);
+  --st-success-bg: color-mix(in oklab, var(--role-success), var(--color-surface-low) 86%);
+  --st-success-line: var(--role-success);
+  --st-warning-fg: color-mix(in oklch, var(--role-warning), white 12%);
+  --st-warning-bg: color-mix(in oklab, var(--role-warning), var(--color-surface-low) 86%);
+  --st-warning-line: var(--role-warning);
+  --st-danger-fg: color-mix(in oklch, var(--role-danger), white 12%);
+  --st-danger-bg: color-mix(in oklab, var(--role-danger), var(--color-surface-low) 86%);
+  --st-danger-line: var(--role-danger);
+  --st-info-fg: color-mix(in oklch, var(--role-info), white 12%);
+  --st-info-bg: color-mix(in oklab, var(--role-info), var(--color-surface-low) 86%);
+  --st-info-line: var(--role-info);
+  --st-neutral-fg: color-mix(in oklch, var(--role-neutral), white 12%);
+  --st-neutral-bg: color-mix(in oklab, var(--role-neutral), var(--color-surface-low) 86%);
+  --st-neutral-line: var(--role-neutral);
+  --st-running-fg: color-mix(in oklch, var(--role-running), white 12%);
+  --st-running-bg: color-mix(in oklab, var(--role-running), var(--color-surface-low) 86%);
+  --st-running-line: var(--role-running);
+  --st-queued-fg: color-mix(in oklch, var(--role-queued), white 12%);
+  --st-queued-bg: color-mix(in oklab, var(--role-queued), var(--color-surface-low) 86%);
+  --st-queued-line: var(--role-queued);
+  --st-paused-fg: color-mix(in oklch, var(--role-paused), white 12%);
+  --st-paused-bg: color-mix(in oklab, var(--role-paused), var(--color-surface-low) 86%);
+  --st-paused-line: var(--role-paused);
+}
+html[data-ux="v2"][data-theme="light"] {
+  --ux-brand-text: oklch(0.50 0.13 55);
+  --color-brand-light: var(--ux-brand-text);
+  --ux-tint-fg: black 35%;
+  --ux-tint-bg: var(--color-base) 88%;
+  --ux-tint-line: black 15%;
+  --st-success-fg: color-mix(in oklch, var(--role-success), black 35%);
+  --st-success-bg: color-mix(in oklab, var(--role-success), var(--color-base) 88%);
+  --st-success-line: color-mix(in oklch, var(--role-success), black 20%);
+  --st-warning-fg: color-mix(in oklch, var(--role-warning), black 40%);
+  --st-warning-bg: color-mix(in oklab, var(--role-warning), var(--color-base) 88%);
+  --st-warning-line: color-mix(in oklch, var(--role-warning), black 25%);
+  --st-danger-fg: color-mix(in oklch, var(--role-danger), black 30%);
+  --st-danger-bg: color-mix(in oklab, var(--role-danger), var(--color-base) 88%);
+  --st-danger-line: color-mix(in oklch, var(--role-danger), black 10%);
+  --st-info-fg: color-mix(in oklch, var(--role-info), black 35%);
+  --st-info-bg: color-mix(in oklab, var(--role-info), var(--color-base) 88%);
+  --st-info-line: color-mix(in oklch, var(--role-info), black 20%);
+  --st-neutral-fg: color-mix(in oklch, var(--role-neutral), black 35%);
+  --st-neutral-bg: color-mix(in oklab, var(--role-neutral), var(--color-base) 88%);
+  --st-neutral-line: color-mix(in oklch, var(--role-neutral), black 15%);
+  --st-running-fg: color-mix(in oklch, var(--role-running), black 38%);
+  --st-running-bg: color-mix(in oklab, var(--role-running), var(--color-base) 88%);
+  --st-running-line: color-mix(in oklch, var(--role-running), black 22%);
+  --st-queued-fg: color-mix(in oklch, var(--role-queued), black 35%);
+  --st-queued-bg: color-mix(in oklab, var(--role-queued), var(--color-base) 88%);
+  --st-queued-line: color-mix(in oklch, var(--role-queued), black 15%);
+  --st-paused-fg: color-mix(in oklch, var(--role-paused), black 35%);
+  --st-paused-bg: color-mix(in oklab, var(--role-paused), var(--color-base) 88%);
+  --st-paused-line: color-mix(in oklch, var(--role-paused), black 15%);
+}
+
+/* P2 · ONE pill recipe: soft bg, 1px line, fg text, 600, +0.02em. Each role
+   rule only re-points --p-*; .running comes after .success so the additive
+   `chip success running` reads as running under v2 and as success without it. */
+html[data-ux="v2"] .chip {
+  --p-fg: var(--st-neutral-fg); --p-bg: var(--st-neutral-bg); --p-line: var(--st-neutral-line);
+  background: var(--p-bg); color: var(--p-fg);
+  border-color: color-mix(in oklch, var(--p-line), transparent var(--ux-pill-fade));
+  font-weight: 600; letter-spacing: 0.02em;
+}
+html[data-ux="v2"] .chip.neutral { --p-fg: var(--st-neutral-fg); --p-bg: var(--st-neutral-bg); --p-line: var(--st-neutral-line); }
+html[data-ux="v2"] .chip.success { --p-fg: var(--st-success-fg); --p-bg: var(--st-success-bg); --p-line: var(--st-success-line); }
+html[data-ux="v2"] .chip.warning { --p-fg: var(--st-warning-fg); --p-bg: var(--st-warning-bg); --p-line: var(--st-warning-line); }
+html[data-ux="v2"] .chip.danger { --p-fg: var(--st-danger-fg); --p-bg: var(--st-danger-bg); --p-line: var(--st-danger-line); }
+html[data-ux="v2"] .chip.info { --p-fg: var(--st-info-fg); --p-bg: var(--st-info-bg); --p-line: var(--st-info-line); }
+html[data-ux="v2"] .chip.running { --p-fg: var(--st-running-fg); --p-bg: var(--st-running-bg); --p-line: var(--st-running-line); }
+html[data-ux="v2"] .chip.queued { --p-fg: var(--st-queued-fg); --p-bg: var(--st-queued-bg); --p-line: var(--st-queued-line); }
+html[data-ux="v2"] .chip.paused { --p-fg: var(--st-paused-fg); --p-bg: var(--st-paused-bg); --p-line: var(--st-paused-line); }
+/* brand / violet / teal are domain hues, not status roles: the same tint recipe */
+html[data-ux="v2"] .chip.brand { --p-fg: color-mix(in oklch, var(--color-brand), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-brand), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-brand), var(--ux-tint-line)); }
+html[data-ux="v2"] .chip.violet { --p-fg: color-mix(in oklch, var(--color-violet), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-violet), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-violet), var(--ux-tint-line)); }
+html[data-ux="v2"] .chip.teal { --p-fg: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-chart-lr), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-line)); }
+html[data-ux="v2"] .chip.solid { --p-fg: var(--color-text-secondary); --p-bg: var(--color-surface-high); --p-line: var(--color-border-bright); }
+/* the paint again at role specificity (0,3,1): component styles are unlayered and
+   injected after this file, so an encapsulated `.chip.<variant>` (0,3,0) beat the
+   bare-.chip paint (0,2,1). test_status_contrast_guard.py's cascade rows pin it. */
+html[data-ux="v2"] .chip:is(.neutral, .success, .warning, .danger, .info, .running, .queued, .paused, .brand, .violet, .teal, .solid) {
+  background: var(--p-bg); color: var(--p-fg);
+  border-color: color-mix(in oklch, var(--p-line), transparent var(--ux-pill-fade));
+}
+html[data-ux="v2"] .chip .dot { background: var(--p-line); }
+
+/* tag = the mono uppercase variant of the same recipe (a 1px border, padding
+   -1px, so the box is unchanged) */
+html[data-ux="v2"] .tag {
+  --p-fg: var(--st-neutral-fg); --p-bg: var(--st-neutral-bg); --p-line: var(--st-neutral-line);
+  background: var(--p-bg); color: var(--p-fg);
+  border: 1px solid color-mix(in oklch, var(--p-line), transparent var(--ux-pill-fade));
+  padding: 0 5px; font-weight: 600; border-radius: 4px;
+}
+html[data-ux="v2"] .tag.success { --p-fg: var(--st-success-fg); --p-bg: var(--st-success-bg); --p-line: var(--st-success-line); }
+html[data-ux="v2"] .tag.warning { --p-fg: var(--st-warning-fg); --p-bg: var(--st-warning-bg); --p-line: var(--st-warning-line); }
+html[data-ux="v2"] .tag.danger { --p-fg: var(--st-danger-fg); --p-bg: var(--st-danger-bg); --p-line: var(--st-danger-line); }
+html[data-ux="v2"] .tag.info { --p-fg: var(--st-info-fg); --p-bg: var(--st-info-bg); --p-line: var(--st-info-line); }
+html[data-ux="v2"] .tag.brand { --p-fg: color-mix(in oklch, var(--color-brand), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-brand), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-brand), var(--ux-tint-line)); }
+html[data-ux="v2"] .tag.violet { --p-fg: color-mix(in oklch, var(--color-violet), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-violet), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-violet), var(--ux-tint-line)); }
+html[data-ux="v2"] .tag.teal { --p-fg: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-fg)); --p-bg: color-mix(in oklab, var(--color-chart-lr), var(--ux-tint-bg)); --p-line: color-mix(in oklch, var(--color-chart-lr), var(--ux-tint-line)); }
+
+/* ad-hoc look-alikes (AUDIT §2): their hue is set in component CSS, so the
+   recipe derives from the element's own currentColor. Box size untouched. */
+html[data-ux="v2"] :is(.df-chip, .dirty-chip, .cm-chip, .temp-chip, .head-chip, .head-chip-sm, .ta-chip, .ws-health-chip,
+  .badge-architecture, .ai-badge, .ds-missing-badge, .vtp-badge) {
+  background: color-mix(in oklab, currentColor 12%, var(--color-surface-low));
+  border-color: color-mix(in oklch, currentColor, transparent 62%);
+  font-weight: 600; letter-spacing: 0.02em;
+}
+html[data-ux="v2"] :is(.si-tag, .ca-ver-tag, .sample-prompt-tag) {
+  background: color-mix(in oklab, currentColor 10%, var(--color-surface-low));
+  border-color: color-mix(in oklch, currentColor, transparent 65%);
+  font-weight: 600; letter-spacing: 0.02em;
+}
+html[data-ux="v2"][data-theme="light"] :is(.df-chip, .dirty-chip, .cm-chip, .temp-chip, .head-chip, .head-chip-sm, .ta-chip, .ws-health-chip,
+  .badge-architecture, .ai-badge, .ds-missing-badge, .vtp-badge, .si-tag, .ca-ver-tag, .sample-prompt-tag) {
+  background-color: color-mix(in oklab, currentColor 9%, var(--color-base));
+}
+/* a look-alike that is also a role .chip: the role recipe wins */
+html[data-ux="v2"] :is(.temp-chip, .head-chip, .head-chip-sm).chip {
+  background: var(--p-bg);
+  border-color: color-mix(in oklch, var(--p-line), transparent var(--ux-pill-fade));
+}
+
+/* P2 · ONE label-caps recipe (600 / 0.08em / muted); sizes untouched */
+html[data-ux="v2"] :is(.kpi-label, .card-title) { font-weight: 600; letter-spacing: 0.08em; color: var(--color-text-muted); }
+html[data-ux="v2"] .eyebrow { font-weight: 600; letter-spacing: 0.08em; }
+/* the recipe again over two encapsulated caps eyebrows of the workspace
+   (`.ws-health-pop .eyebrow` 700/0.12em, `.filmstrip-meta .eyebrow` 0.12em are
+   0,4,0 once scoped); the doubled class lifts these to 0,4,1. Eyebrows that opt
+   out of caps (`text-transform: none`) keep their own type. */
+html[data-ux="v2"] .ws-health-pop .eyebrow.eyebrow,
+html[data-ux="v2"] .filmstrip-meta .eyebrow.eyebrow { font-weight: 600; letter-spacing: 0.08em; }
+html[data-ux="v2"] .field-label { font-weight: 600; letter-spacing: 0.01em; color: var(--color-text-muted); }
+/* Tailwind labels: weight only (0.08em tracking wrapped "Last Scanned", +15px) */
+html[data-ux="v2"] [class*="uppercase"][class*="tracking-"]:not(.tag):not(.chip):not(.btn):not(.eyebrow) { font-weight: 600; }
+
+/* P2 · ONE dot: the role line + a soft 2px ring (box-shadow, no layout) */
+html[data-ux="v2"] .sdot { --d: var(--st-neutral-line); background: var(--d); box-shadow: 0 0 0 2px color-mix(in oklch, var(--d), transparent 78%); }
+html[data-ux="v2"] .sdot.neutral { --d: var(--st-neutral-line); }
+html[data-ux="v2"] .sdot.success { --d: var(--st-success-line); }
+html[data-ux="v2"] .sdot.warning { --d: var(--st-warning-line); }
+html[data-ux="v2"] .sdot.danger { --d: var(--st-danger-line); }
+html[data-ux="v2"] .sdot.info { --d: var(--st-info-line); }
+html[data-ux="v2"] .sdot.running { --d: var(--st-running-line); }
+html[data-ux="v2"] .sdot.queued { --d: var(--st-queued-line); }
+html[data-ux="v2"] .sdot.paused { --d: var(--st-paused-line); }
+html[data-ux="v2"] .sdot.brand { --d: var(--color-brand); }
+/* the dot paint at role specificity (0,3,1): jobs-screen.css `.sdot.success` is
+   0,3,0 once encapsulated and painted the light dot 2.56:1 (VERIFY 1.01) */
+html[data-ux="v2"] .sdot:is(.neutral, .success, .warning, .danger, .info, .running, .queued, .paused, .brand) {
+  background: var(--d); box-shadow: 0 0 0 2px color-mix(in oklch, var(--d), transparent 78%);
+}
+html[data-ux="v2"] :is(.side-dot, .rs-dot, .tl-dot, .ttoc-dot, .kpi-status .dot) { box-shadow: 0 0 0 2px color-mix(in oklch, var(--st-neutral-line), transparent 78%); }
+
+/* P1 (c) · light: the semantic text utilities read at AA (closes DECISION-22) */
+html[data-ux="v2"][data-theme="light"] .text-success { color: var(--st-success-fg); }
+html[data-ux="v2"][data-theme="light"] .text-warning { color: var(--st-warning-fg); }
+html[data-ux="v2"][data-theme="light"] .text-danger { color: var(--st-danger-fg); }
+html[data-ux="v2"][data-theme="light"] :is(.text-brand, .text-brand-light) { color: var(--ux-brand-text); }
+
+/* L2 — cards and KPI tiles */
+
+/* P5 · surface tokens. --ux-kpi-wash is the tile's accent tint at its corner:
+   the user's correction 2 asked for a VISIBLE tint (the overlay's 7 % / 5 % was
+   too subtle); test_ux_v2_layer_guard.py pins it >= 12 % per theme. */
+html[data-ux="v2"] {
+  --ux-hl: color-mix(in oklch, white 6%, transparent);
+  --ux-card-shadow: 0 1px 2px color-mix(in oklch, black 40%, transparent);
+  --ux-kpi-wash: 14%;
+  --ux-kpi-shadow: inset 0 1px 0 color-mix(in oklch, white 7%, transparent),
+    0 1px 0 color-mix(in oklch, black 40%, transparent),
+    0 8px 24px -12px color-mix(in oklch, black 60%, transparent);
+  --ux-glass-bg: color-mix(in oklch, var(--color-surface-high), transparent 35%);
+}
+html[data-ux="v2"][data-theme="light"] {
+  --ux-hl: transparent;
+  --ux-card-shadow: 0 1px 2px color-mix(in oklch, black 6%, transparent);
+  --ux-kpi-wash: 12%;
+  --ux-kpi-shadow: 0 1px 2px color-mix(in oklch, black 6%, transparent),
+    0 8px 24px -16px color-mix(in oklch, black 18%, transparent);
+  --ux-glass-bg: color-mix(in oklch, white, transparent 25%);
+}
+
+/* P5 · cards and the modal: a soft 1px border (colour only, width unchanged),
+   a dark-only top highlight and one shadow tier */
+html[data-ux="v2"] .card {
+  border-color: color-mix(in oklch, var(--color-border-default), transparent 40%);
+  box-shadow: inset 0 1px 0 var(--ux-hl), var(--ux-card-shadow);
+}
+html[data-ux="v2"] .card.elev { box-shadow: inset 0 1px 0 var(--ux-hl), var(--shadow-sm); }
+html[data-ux="v2"] .modal {
+  border-color: color-mix(in oklch, var(--color-border-default), transparent 40%);
+  box-shadow: inset 0 1px 0 var(--ux-hl), var(--shadow-lg);
+}
+
+/* P5 · KPI tiles. DOM: div.kpi[.compact] > .kpi-accent.<tone> + .kpi-label +
+   .kpi-value + .kpi-sub (+ projected content); raw copies .ew-grid > .kpi.compact
+   and the LIVE ESTIMATE .kpi.compact. --kx = the tile's own accent (read from its
+   .kpi-accent bar, brand when it has none); --kend = the hero stroke's far end. */
+html[data-ux="v2"] .kpi {
+  --kx: var(--color-brand);
+  --kend: color-mix(in oklch, var(--color-brand), var(--color-warning) 55%);
+  --kx-ink: var(--kx);
+  border-color: color-mix(in oklch, var(--kx), transparent 60%);
+  background-image: radial-gradient(130% 95% at 0% 0%, color-mix(in oklch, var(--kx), transparent calc(100% - var(--ux-kpi-wash))), transparent 70%);
+  box-shadow: var(--ux-kpi-shadow);
+}
+html[data-ux="v2"][data-theme="light"] .kpi { --kx-ink: color-mix(in oklch, var(--kx), black 22%); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.success) { --kx: var(--color-success); --kend: var(--color-success); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.warning) { --kx: var(--color-warning); --kend: var(--color-warning); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.danger) { --kx: var(--color-danger); --kend: var(--color-danger); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.teal) { --kx: var(--color-chart-lr); --kend: var(--color-chart-lr); }
+html[data-ux="v2"] .kpi:has(> .kpi-accent.violet) { --kx: var(--color-violet); --kend: var(--color-violet); }
+/* the top bar keeps its 2px box; it reads in the hairline's hue */
+html[data-ux="v2"] .kpi > .kpi-accent { background: color-mix(in oklch, var(--kx), transparent 45%); }
+
+/* ONE hero per rail: a 1px gradient stroke (brand -> accent) on the first tile
+   only; the Training wall's hero is WALL TIME, PEAK VRAM stays plain */
+html[data-ux="v2"] :is(.ds-kpi-rail, .server-kpi-rail, .kpi-row, .ps-kpi-rail) > app-kpi-tile:first-child > .kpi,
+html[data-ux="v2"] .ew-grid > .kpi:first-child {
+  border-color: transparent;
+  background:
+    radial-gradient(130% 95% at 0% 0%, color-mix(in oklch, var(--kx), transparent calc(100% - var(--ux-kpi-wash))), transparent 70%) padding-box,
+    linear-gradient(var(--color-surface-low), var(--color-surface-low)) padding-box,
+    linear-gradient(135deg, var(--color-brand), var(--kend)) border-box;
+}
+
+/* the user's UAT round 3 answer (2026-10-08, ew-grid-padding=12px): the estimate wall's tile
+   grid breathes inside its card, which today sits 0 px from the card edge */
+html[data-ux="v2"] .ew-grid { padding: 12px; }
+/* the user's UAT round 4 answer (2026-10-08, live-peak-vram-card=match-estimate-card-layout):
+   the LIVE ESTIMATE PEAK VRAM tile (training-estimate-rail, hook class .ter-kpi) takes the
+   same 12px inset inside its card as the wall's tiles above it; the rail's eyebrow gap
+   (14px) already stands in for the grid's top padding, so only the sides move */
+html[data-ux="v2"] .ter-kpi { margin: 0 12px; }
+
+/* type: value 700 tabular (was 800), label = the label-caps recipe (L1) */
+html[data-ux="v2"] .kpi .kpi-value { font-weight: 700; letter-spacing: -0.01em; }
+
+/* the glass icon square (the user's correction 1): the one new element, in the
+   tile's top-right inside the existing padding, absolutely positioned so no
+   tile changes height; rendered only under v2 (KpiTileComponent, the raw copies) */
+html[data-ux="v2"] .kpi .kpi-icon {
+  position: absolute; top: 10px; right: 10px;
+  width: 24px; height: 24px;
+  display: grid; place-items: center;
+  color: var(--kx-ink);
+  background: var(--ux-glass-bg);
+  border: 1px solid color-mix(in oklch, var(--kx), transparent 55%);
+  border-radius: 6px;
+  pointer-events: none;
+}
+html[data-ux="v2"] .kpi.compact .kpi-icon { top: 8px; right: 8px; width: 22px; height: 22px; }
+/* the Datasets HPS help badge (projected into the label, absolutely placed at the
+   tile's top-right in the classic rendering) sits directly after the eyebrow text:
+   its offsets go to auto, so an absolutely positioned box takes its STATIC position
+   -- inline, right after "HPS - MEDIAN" -- and adds nothing to the label's line
+   height. The icon square then sits top-right like every other tile.
+   Recorded user override 2026-10-07. */
+html[data-ux="v2"] .kpi-label .ds-hps-info { top: auto; right: auto; margin-left: 6px; margin-top: -2px; }
+
+/* the Datasets library card's "N suppressed" chip overflowed its card on main (the
+   counts row cannot hold it: measured 50 px past the card OFF, v2's 600 weight adds
+   4 px). Recorded user override 2026-10-07: it moves to the card's top-right corner,
+   one rule; a card whose preview already carries the project pill (top 8 / right 8)
+   gets it one line lower. */
+html[data-ux="v2"] .ds-card-excluded { position: absolute; top: 8px; right: 8px; z-index: 1; }
+html[data-ux="v2"] .ds-card:has(.ds-card-project) .ds-card-excluded { top: 38px; }
+
+/* L3 — buttons, focus ring and modals */
+
+/* P4/P5 tokens: the ring, the modal backdrop and the dark ink of the primary
+   button are declared once per theme (RULE-21); test_status_contrast_guard.py
+   measures the ink on the composited brand fill and the ring on the page. */
+html[data-ux="v2"] {
+  --ux-ring: var(--color-brand);
+  --ux-backdrop: oklch(0 0 0 / 0.62);
+  --ux-ink-on-brand: oklch(0.12 0.02 55);
+  /* violet is not one of the 8 status roles: the workspace "Mass edit" button's own treatment */
+  --ux-violet-fg: color-mix(in oklch, var(--color-violet), white 12%);
+  --ux-violet-bg: color-mix(in oklab, var(--color-violet), var(--color-surface-low) 86%);
+  --ux-violet-line: var(--color-violet);
+  /* the mass-edit modal CTA: white ink kept, so the fill darkens until white reads at 4.5:1 */
+  --ux-violet-cta: color-mix(in oklch, var(--color-violet), black 28%);
+}
+html[data-ux="v2"][data-theme="light"] {
+  --ux-ring: oklch(0.50 0.13 55);
+  --ux-backdrop: oklch(0.20 0.01 265 / 0.38);
+  --ux-violet-fg: color-mix(in oklch, var(--color-violet), black 35%);
+  --ux-violet-bg: color-mix(in oklab, var(--color-violet), var(--color-base) 88%);
+  --ux-violet-line: color-mix(in oklch, var(--color-violet), black 15%);
+}
+
+/* buttons: secondary / primary (dark ink, no glow) / ghost / danger-out / success;
+   hover and pressed are fixed mixes, not opacity */
+html[data-ux="v2"] .btn {
+  background: var(--color-surface-mid);
+  border-color: color-mix(in oklch, var(--color-border-default), transparent 15%);
+  color: var(--color-text-primary); font-weight: 500;
+}
+html[data-ux="v2"] .btn:not(:disabled):hover  { background: color-mix(in oklch, var(--color-surface-mid), var(--color-text-primary) 7%); border-color: var(--color-border-bright); }
+html[data-ux="v2"] .btn:not(:disabled):active { background: color-mix(in oklch, var(--color-surface-mid), var(--color-text-primary) 12%); }
+html[data-ux="v2"] .btn.primary {
+  background: var(--color-brand); color: var(--ux-ink-on-brand);
+  border-color: color-mix(in oklch, var(--color-brand), black 15%); font-weight: 600;
+  box-shadow: inset 0 1px 0 color-mix(in oklch, white 22%, transparent), 0 1px 2px color-mix(in oklch, black 25%, transparent);
+}
+html[data-ux="v2"] .btn.primary:not(:disabled):hover  { background: color-mix(in oklch, var(--color-brand), white 10%); }
+html[data-ux="v2"] .btn.primary:not(:disabled):active { background: color-mix(in oklch, var(--color-brand), black 8%); }
+html[data-ux="v2"] .btn.ghost { background: transparent; border-color: transparent; color: var(--color-text-secondary); }
+html[data-ux="v2"] .btn.ghost:not(:disabled):hover { background: var(--color-surface-mid); color: var(--color-text-primary); }
+html[data-ux="v2"] .btn.danger-out { font-weight: 500; background: transparent; color: var(--st-danger-fg); border-color: color-mix(in oklch, var(--st-danger-line), transparent var(--ux-pill-fade)); }
+html[data-ux="v2"] .btn.danger-out:not(:disabled):hover  { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
+html[data-ux="v2"] .btn.danger-out:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); }
+/* the datasets bulk-bar Delete / Remove button (`.btn.ds-bulk-danger`, coloured danger by its
+   component): the danger-out recipe, so the generic `.btn` rules do not paint it neutral */
+html[data-ux="v2"] .btn.ds-bulk-danger { background: transparent; color: var(--st-danger-fg); border-color: color-mix(in oklch, var(--st-danger-line), transparent var(--ux-pill-fade)); }
+html[data-ux="v2"] .btn.ds-bulk-danger:not(:disabled):hover  { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
+html[data-ux="v2"] .btn.ds-bulk-danger:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); }
+html[data-ux="v2"] .btn.success { background: var(--st-success-bg); color: var(--st-success-fg); border-color: color-mix(in oklch, var(--st-success-line), transparent var(--ux-pill-fade)); }
+
+/* the workspace "Mass ..." buttons are coloured on purpose (component CSS, (0,2,0)):
+   mask = the success role, edit = violet; same recipe shape as .btn.success, fixed-mix hover and pressed */
+html[data-ux="v2"] .btn.ws-mass-mask { background: var(--st-success-bg); color: var(--st-success-fg); border-color: color-mix(in oklch, var(--st-success-line), transparent var(--ux-pill-fade)); }
+html[data-ux="v2"] .btn.ws-mass-mask:not(:disabled):hover  { background: color-mix(in oklab, var(--st-success-bg), var(--st-success-line) 14%); color: var(--st-success-fg); border-color: var(--st-success-line); }
+html[data-ux="v2"] .btn.ws-mass-mask:not(:disabled):active { background: color-mix(in oklab, var(--st-success-bg), var(--st-success-line) 24%); color: var(--st-success-fg); }
+html[data-ux="v2"] .btn.ws-mass-edit { background: var(--ux-violet-bg); color: var(--ux-violet-fg); border-color: color-mix(in oklch, var(--ux-violet-line), transparent var(--ux-pill-fade)); }
+html[data-ux="v2"] .btn.ws-mass-edit:not(:disabled):hover  { background: color-mix(in oklab, var(--ux-violet-bg), var(--ux-violet-line) 14%); color: var(--ux-violet-fg); border-color: var(--ux-violet-line); }
+html[data-ux="v2"] .btn.ws-mass-edit:not(:disabled):active { background: color-mix(in oklab, var(--ux-violet-bg), var(--ux-violet-line) 24%); color: var(--ux-violet-fg); }
+
+/* component-filled buttons: a modal CTA (`.btn.cta`, `.cta.success`, `.cta.violet`) and the
+   edit panel's `.btn.warn` / pair-health's `.btn.danger` paint their own fill or ink at
+   (0,3,0)-(0,4,0), which out-ranks the v2 base at rest but NOT the generic hover/pressed
+   (0,4,1): that once put a surface-grey fill under their ink (1.26:1). Each takes its
+   hover/pressed from ITS OWN fill (--ux-cta-fill, the fixed mixes of .btn.primary) and an
+   ink that reads on it; a white-ink fill darkens on hover instead of lightening. */
+html[data-ux="v2"] .btn.cta { --ux-cta-fill: var(--color-brand); background: var(--ux-cta-fill); color: var(--ux-ink-on-brand); }
+html[data-ux="v2"] .btn.cta.success { --ux-cta-fill: var(--color-success); background: var(--ux-cta-fill); }
+html[data-ux="v2"] .btn.cta:not(:disabled):hover  { background: color-mix(in oklch, var(--ux-cta-fill), white 10%); }
+html[data-ux="v2"] .btn.cta:not(:disabled):active { background: color-mix(in oklch, var(--ux-cta-fill), black 8%); }
+html[data-ux="v2"] .btn.cta.violet { --ux-cta-fill: var(--ux-violet-cta); background: var(--ux-cta-fill); }
+html[data-ux="v2"] .btn.cta.violet:not(:disabled):hover  { background: color-mix(in oklch, var(--ux-cta-fill), black 10%); }
+html[data-ux="v2"] .btn.cta.violet:not(:disabled):active { background: color-mix(in oklch, var(--ux-cta-fill), black 18%); }
+html[data-ux="v2"] .btn.warn { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: color-mix(in oklch, var(--st-danger-line), transparent var(--ux-pill-fade)); }
+html[data-ux="v2"] .btn.danger { color: var(--st-danger-fg); }
+html[data-ux="v2"] .btn.danger:not(:disabled):hover  { background: var(--st-danger-bg); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
+html[data-ux="v2"] .btn.danger:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); color: var(--st-danger-fg); }
+html[data-ux="v2"] .btn.warn:not(:disabled):hover  { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 12%); color: var(--st-danger-fg); border-color: var(--st-danger-line); }
+html[data-ux="v2"] .btn.warn:not(:disabled):active { background: color-mix(in oklch, var(--st-danger-bg), var(--st-danger-line) 18%); color: var(--st-danger-fg); }
+
+/* the focus ring: 2 px brand (dark) / darker brand (light), visible in both themes */
+html[data-ux="v2"] :is(.btn, .icon-btn, .q-icon, .ctx-pill, .tc-pill, .side-item, button, a):focus-visible { outline: 2px solid var(--ux-ring); outline-offset: 2px; }
+html[data-ux="v2"] :is(.input, .select):focus { border-color: var(--ux-ring); box-shadow: 0 0 0 2px color-mix(in oklch, var(--ux-ring), transparent 72%); }
+
+/* light: white-on-brand utilities (templates carry text-white and cannot be edited) */
+html[data-ux="v2"][data-theme="light"] .bg-brand { color: var(--ux-ink-on-brand); }
+html[data-ux="v2"][data-theme="light"] .bg-brand :is(.ico, svg) { color: var(--ux-ink-on-brand); }
+html[data-ux="v2"][data-theme="light"] .btn.primary .ico { color: inherit; }
+
+/* modals: soft hairlines between head / body / foot, the themed backdrop */
+html[data-ux="v2"] :is(.card-head, .modal-head, .modal-foot) { border-color: color-mix(in oklch, var(--color-border-default), transparent 55%); }
+html[data-ux="v2"] .modal-backdrop { background: var(--ux-backdrop); }
+
+/* the topbar toggle's active state: the existing .icon-btn.brand class, set while v2 is on */
+html[data-ux="v2"] .icon-btn.brand { color: var(--color-brand); }

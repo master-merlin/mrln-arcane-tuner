@@ -7,6 +7,7 @@ import { provideHttpClientTesting, HttpTestingController } from '@angular/common
 import { TopbarComponent } from './topbar.component';
 import { ScopeStore } from '../../state/scope.store';
 import { ThemeStore } from '../../state/theme.store';
+import { UxStore } from '../../state/ux.store';
 import { ProjectService } from '../../services/project.service';
 import { RuntimeConfigService } from '../../services/runtime-config.service';
 import { TaskCenterComponent } from './task-center.component';
@@ -130,4 +131,43 @@ describe('TopbarComponent — LLM availability icon', () => {
     });
 
     afterEach(() => drainLlmProbe());
+});
+
+describe('TopbarComponent — design-language switch', () => {
+    function mountSwitch() {
+        localStorage.clear();
+        TestBed.configureTestingModule({
+            imports: [TopbarComponent],
+            providers: [
+                { provide: Router, useValue: { url: '/datasets', events: of() } },
+                { provide: ScopeStore, useValue: { projectId: () => null, scope: () => ({ kind: 'global' }) } },
+                { provide: ThemeStore, useValue: { theme: () => 'dark', toggle: vi.fn() } },
+                { provide: UxStore, useValue: { v2: () => true } },
+                { provide: ProjectService, useValue: { allProjects: () => [] } },
+                provideHttpClient(withFetch()),
+                provideHttpClientTesting(),
+                { provide: RuntimeConfigService, useValue: { apiUrl: '/api' } },
+            ],
+        }).overrideComponent(TopbarComponent, {
+            remove: { imports: [TaskCenterComponent, DownloadIndicatorComponent, NotificationPanelComponent] },
+            add: { schemas: [NO_ERRORS_SCHEMA] },
+        });
+        const fixture = TestBed.createComponent(TopbarComponent);
+        fixture.detectChanges();
+        return { fixture };
+    }
+
+    afterEach(() => drainLlmProbe());
+
+    it('carries no ux-toggle: V2 is the only rendering and the theme toggle is the last action', () => {
+        const el: HTMLElement = mountSwitch().fixture.nativeElement;
+        expect(el.querySelector('[data-testid="ux-toggle"]'), 'LANE-143: no ux-toggle in the topbar').toBeNull();
+        const actions = el.querySelectorAll('.topbar-actions > .icon-btn');
+        expect(
+            Array.from(actions).some(b => (b.getAttribute('title') ?? '').includes('design language')),
+            'LANE-143: no ux-toggle in the topbar',
+        ).toBe(false);
+        const last = actions[actions.length - 1] as HTMLElement | undefined;
+        expect(last?.getAttribute('aria-label'), 'LANE-143: the theme toggle is the last topbar action').toBe('Switch to light theme');
+    });
 });

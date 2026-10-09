@@ -1,4 +1,6 @@
-import { ChangeDetectionStrategy, Component, computed, input } from '@angular/core';
+import { ChangeDetectionStrategy, Component, computed, inject, input } from '@angular/core';
+import { IcoComponent } from '../../../icons/ico.component';
+import { UxStore } from '../../../state/ux.store';
 import { VRAMReport } from '../../../services/system.service';
 import { BreakdownPart, vramBreakdownParts } from '../vram-breakdown';
 
@@ -14,6 +16,7 @@ import { BreakdownPart, vramBreakdownParts } from '../vram-breakdown';
 @Component({
     selector: 'app-training-estimate-rail',
     standalone: true,
+    imports: [IcoComponent],
     changeDetection: ChangeDetectionStrategy.OnPush,
     template: `
         <div class="rail">
@@ -21,8 +24,9 @@ import { BreakdownPart, vramBreakdownParts } from '../vram-breakdown';
 
             @if (report(); as r) {
                 <!-- Hero — full-width KPI tile (matches the estimate wall) -->
-                <div class="kpi compact">
+                <div class="kpi compact ter-kpi">
                     <div class="kpi-accent" [class.success]="r.fits" [class.danger]="!r.fits"></div>
+                    @if (ux.v2()) { <span class="kpi-icon" aria-hidden="true"><app-ico name="HardDrive" [size]="14"/></span> }
                     <div class="kpi-label">PEAK VRAM</div>
                     <div class="kpi-value">{{ (r.peak_mb / 1024).toFixed(1) }}<span class="unit"> / {{ ((r.total_mb || r.available_mb) / 1024).toFixed(1) }} GB</span></div>
                     <div class="kpi-sub" [style.color]="r.fits ? 'var(--color-success)' : 'var(--color-danger)'">
@@ -90,6 +94,8 @@ import { BreakdownPart, vramBreakdownParts } from '../vram-breakdown';
 export class TrainingEstimateRail {
     report = input<VRAMReport | null>(null);
     lrLabel = input<string | null>(null);
+    /** The v2 design-language switch: the KPI icon square renders only under it (LANE-143). */
+    protected readonly ux = inject(UxStore);
 
     /**
      * All breakdown parts derived from the live report, in render order. Shared

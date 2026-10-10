@@ -184,7 +184,16 @@ def _libc_problems(lock: dict) -> list[str]:
         if have is None:
             bad.append(f"LANE-152: {key} has no libc field (expected {want})")
             continue
-        got = [have] if isinstance(have, str) else list(have)
+        if isinstance(have, str):
+            got = [have]
+        elif isinstance(have, list) and all(isinstance(i, str) for i in have):
+            got = have
+        else:
+            bad.append(
+                f"LANE-152: {key} libc has shape {type(have).__name__} "
+                f"(only a str or a list of str is valid, expected {want!r})"
+            )
+            continue
         if got != [want]:
             bad.append(f"LANE-152: {key} libc is {have!r}, expected {want!r}")
     return bad
@@ -444,3 +453,16 @@ def test_lock_libc_guard_names_stripped_entries():
     wrong_str["packages"][sass]["libc"] = "glibc"
     bad = _libc_problems(wrong_str)
     assert len(bad) == 1 and sass in bad[0], bad
+
+    objshape = copy.deepcopy(real)
+    watcher = "node_modules/@parcel/watcher-linux-x64-musl"
+    assert watcher in objshape["packages"]
+    objshape["packages"][watcher]["libc"] = {"musl": True}
+    bad = _libc_problems(objshape)
+    assert len(bad) == 1 and watcher in bad[0] and bad[0].startswith("LANE-152"), bad
+
+    numshape = copy.deepcopy(real)
+    gnu = next(k for k in _pinned(real) if k.endswith("-gnu"))
+    numshape["packages"][gnu]["libc"] = 1
+    bad = _libc_problems(numshape)
+    assert len(bad) == 1 and gnu in bad[0] and bad[0].startswith("LANE-152"), bad

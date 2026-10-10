@@ -69,7 +69,12 @@ def scan(root: Path) -> list[str]:
                 continue
             try:
                 params = inspect.signature(funcs[node.func.id]).parameters
-            except (TypeError, ValueError):
+            except (TypeError, ValueError) as exc:
+                # Failure is never silent: an unreadable signature is a finding.
+                findings.append(
+                    f"{rel}:{node.lineno} -> {node.func.id}: signature not "
+                    f"inspectable ({type(exc).__name__}); verify its keywords by hand"
+                )
                 continue
             if any(p.kind is p.VAR_KEYWORD for p in params.values()):
                 continue
@@ -96,3 +101,23 @@ def test_drift_guard_catches_a_stale_keyword(tmp_path):
     findings = scan(tmp_path)
     assert len(findings) == 1
     assert "cache_position" in findings[0]
+
+
+def test_drift_guard_reports_an_uninspectable_signature(tmp_path, monkeypatch):
+    (tmp_path / "opaque.py").write_text(
+        "from transformers.masking_utils import create_causal_mask\n"
+        "create_causal_mask(config=None, cache_position=1)\n",
+        encoding="utf-8",
+    )
+    # Import first so only the guard's own signature read is affected.
+    importlib.import_module("transformers.masking_utils")
+
+    def _no_signature(*_a, **_k):
+        raise ValueError("no signature found")
+
+    monkeypatch.setattr(inspect, "signature", _no_signature)
+    findings = scan(tmp_path)
+    monkeypatch.undo()
+    assert len(findings) == 1
+    assert "signature not inspectable" in findings[0]
+    assert "create_causal_mask" in findings[0]

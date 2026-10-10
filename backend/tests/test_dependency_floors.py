@@ -163,6 +163,38 @@ def _security_floor_problems(lock: dict) -> list[str]:
     return bad
 
 
+def _libc_problems(lock: dict) -> list[str]:
+    """LANE-152: a Linux native binary whose name carries a libc token must keep `libc`.
+
+    npm's checkPlatform reads the field to pick the musl or glibc twin; without it both
+    install on every Linux. Name rule: basename ends -gnu / -glibc / -musl, or has the
+    -musl- infix. `sass-embedded-linux-{arm,arm64,riscv64,x64}` carry "glibc" with no
+    token in the name, so they are not derivable and not pinned here.
+    """
+    bad = []
+    for key, entry in lock.get("packages", {}).items():
+        base = key.rsplit("/", 1)[-1]
+        if base.endswith("-musl") or "-musl-" in base:
+            want = "musl"
+        elif base.endswith(("-gnu", "-glibc")):
+            want = "glibc"
+        else:
+            continue
+        have = entry.get("libc")
+        if have is None:
+            bad.append(f"LANE-152: {key} has no libc field (expected {want})")
+            continue
+        got = [have] if isinstance(have, str) else list(have)
+        if got != [want]:
+            bad.append(f"LANE-152: {key} libc is {have!r}, expected {want!r}")
+    return bad
+
+
+def test_frontend_lock_keeps_libc_fields():
+    bad = _libc_problems(_json("frontend/package-lock.json"))
+    assert not bad, "\n".join(bad)
+
+
 def test_backend_pins_meet_lane134_floors():
     pins = _pins()
     bad = []

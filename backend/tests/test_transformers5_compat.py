@@ -259,6 +259,28 @@ def test_rope_default_shim_produces_correct_inv_freq():
     assert torch.allclose(inv_freq, expected, rtol=1e-5)
 
 
+def test_rope_default_shim_reads_a_transformers5_config():
+    """A transformers 5.x config keeps `rope_theta` inside `rope_parameters` and
+    raises on the top-level attribute; the captioning shim must read it there
+    (LANE-154: it broke the vendored hidream_o1 rotary embedding once registered
+    first). Calls the shim directly so the result does not depend on which module
+    registered `ROPE_INIT_FUNCTIONS["default"]`."""
+    from app.core.captioning.compat.transformers5 import _compute_default_rope_parameters
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
+
+    config = Qwen3VLTextConfig(
+        hidden_size=32,
+        num_attention_heads=2,
+        head_dim=16,
+        rope_parameters={"rope_type": "default", "rope_theta": 500.0, "mrope_section": [2, 3, 3]},
+    )
+    inv_freq, attention_factor = _compute_default_rope_parameters(config)
+
+    expected = 1.0 / (500.0 ** (torch.arange(0, 16, 2, dtype=torch.int64).float() / 16))
+    assert attention_factor == 1.0
+    assert torch.allclose(inv_freq, expected, rtol=1e-5)
+
+
 @pytest.mark.skipif(
     # Same cache-existence gate as test_youtu_vl_processor_loads_with_the_shim:
     # a hardcoded path would silently skip this on any other machine/CI.

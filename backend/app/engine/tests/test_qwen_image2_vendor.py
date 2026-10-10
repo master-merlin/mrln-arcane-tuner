@@ -2,8 +2,8 @@
 
 ``qwen_image2/vendor/`` carries diffusers ``6256aa7666`` ("Add Qwen-Image 2.1
 (#14804)", Apache-2.0): the transformer, the VAE and the encode/pack helpers of
-the pipeline. No diffusers release exports those classes yet (0.40.0 is the
-pinned release). These tests pin:
+the pipeline. diffusers 0.41.0 (the pinned release since LANE-149) exports them;
+LANE-150 retires the copy. These tests pin:
 
   1. The vendored transformer builds from the Qwen-Image-2.1
      ``transformer/config.json`` values (Evidence:
@@ -246,14 +246,13 @@ def test_calculate_shift_matches_the_upstream_anchors():
 
 
 @pytest.mark.parametrize("name", VENDORED_UPSTREAM_CLASSES)
-def test_vendor_is_not_yet_due_for_retirement(name):
+def test_vendor_is_due_for_retirement_on_the_pinned_release(name):
     import diffusers
 
-    if _diffusers_exports(name):
-        pytest.fail(
-            f"qwen_image2/vendor/ is due for retirement: diffusers {diffusers.__version__} exports {name}. "
-            "Switch the qwen_image2 family to the diffusers class, prove parity, and delete qwen_image2/vendor/."
-        )
+    assert _diffusers_exports(name), (
+        f"LANE-149: diffusers {diffusers.__version__} does not export {name}; "
+        "the pinned release must ship the classes qwen_image2/vendor/ stands in for (LANE-150 retires the copy)"
+    )
 
 
 # --- 5. provenance -----------------------------------------------------------

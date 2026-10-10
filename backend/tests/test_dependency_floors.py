@@ -371,3 +371,44 @@ def test_source_map_js_floor_closes_alert_153():
     assert len(have) == 1, (
         f"LANE-148: source-map-js resolves {have} in frontend/package-lock.json; expected one entry"
     )
+
+
+def test_lock_libc_guard_names_stripped_entries():
+    assert "_libc_problems" in globals(), "LANE-152: test_dependency_floors.py has no lock libc guard (_libc_problems): a frontend/package-lock.json that drops the libc field of a Linux platform binary passes the suite"
+    import copy
+
+    def _pinned(lock: dict) -> list[str]:
+        # name rule: basename ends in -gnu / -glibc / -musl, or carries the -musl- infix
+        out = []
+        for key in lock["packages"]:
+            base = key.rsplit("/", 1)[-1]
+            if base.endswith(("-gnu", "-glibc", "-musl")) or "-musl-" in base:
+                out.append(key)
+        return out
+
+    real = _json("frontend/package-lock.json")
+    assert _libc_problems(real) == []
+
+    stripped = copy.deepcopy(real)
+    for entry in stripped["packages"].values():
+        entry.pop("libc", None)
+    pinned = _pinned(stripped)
+    assert pinned
+    bad = _libc_problems(stripped)
+    assert len(bad) == len(pinned), (len(bad), len(pinned))
+    for msg in bad:
+        assert msg.startswith("LANE-152") and "libc" in msg, msg
+    for key in pinned:
+        assert any(key in msg for msg in bad), key
+
+    wrong = copy.deepcopy(real)
+    musl_key = next(k for k in _pinned(real) if k.endswith("-musl"))
+    wrong["packages"][musl_key]["libc"] = ["glibc"]
+    bad = _libc_problems(wrong)
+    assert len(bad) == 1 and musl_key in bad[0], bad
+
+    wrong_str = copy.deepcopy(real)
+    sass = next(k for k in real["packages"] if k.endswith("sass-embedded-linux-musl-x64"))
+    wrong_str["packages"][sass]["libc"] = "glibc"
+    bad = _libc_problems(wrong_str)
+    assert len(bad) == 1 and sass in bad[0], bad

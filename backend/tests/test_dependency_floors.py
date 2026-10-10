@@ -163,6 +163,47 @@ def _security_floor_problems(lock: dict) -> list[str]:
     return bad
 
 
+def _libc_problems(lock: dict) -> list[str]:
+    """LANE-152: a Linux native binary whose name carries a libc token must keep `libc`.
+
+    npm's checkPlatform reads the field to pick the musl or glibc twin; without it both
+    install on every Linux. Name rule: basename ends -gnu / -glibc / -musl, or has the
+    -musl- infix. `sass-embedded-linux-{arm,arm64,riscv64,x64}` carry "glibc" with no
+    token in the name, so they are not derivable and not pinned here.
+    """
+    bad = []
+    for key, entry in lock.get("packages", {}).items():
+        base = key.rsplit("/", 1)[-1]
+        if base.endswith("-musl") or "-musl-" in base:
+            want = "musl"
+        elif base.endswith(("-gnu", "-glibc")):
+            want = "glibc"
+        else:
+            continue
+        have = entry.get("libc")
+        if have is None:
+            bad.append(f"LANE-152: {key} has no libc field (expected {want})")
+            continue
+        if isinstance(have, str):
+            got = [have]
+        elif isinstance(have, list) and all(isinstance(i, str) for i in have):
+            got = have
+        else:
+            bad.append(
+                f"LANE-152: {key} libc has shape {type(have).__name__} "
+                f"(only a str or a list of str is valid, expected {want!r})"
+            )
+            continue
+        if got != [want]:
+            bad.append(f"LANE-152: {key} libc is {have!r}, expected {want!r}")
+    return bad
+
+
+def test_frontend_lock_keeps_libc_fields():
+    bad = _libc_problems(_json("frontend/package-lock.json"))
+    assert not bad, "\n".join(bad)
+
+
 def test_backend_pins_meet_lane134_floors():
     pins = _pins()
     bad = []
@@ -371,3 +412,57 @@ def test_source_map_js_floor_closes_alert_153():
     assert len(have) == 1, (
         f"LANE-148: source-map-js resolves {have} in frontend/package-lock.json; expected one entry"
     )
+
+
+def test_lock_libc_guard_names_stripped_entries():
+    assert "_libc_problems" in globals(), "LANE-152: test_dependency_floors.py has no lock libc guard (_libc_problems): a frontend/package-lock.json that drops the libc field of a Linux platform binary passes the suite"
+    import copy
+
+    def _pinned(lock: dict) -> list[str]:
+        # name rule: basename ends in -gnu / -glibc / -musl, or carries the -musl- infix
+        out = []
+        for key in lock["packages"]:
+            base = key.rsplit("/", 1)[-1]
+            if base.endswith(("-gnu", "-glibc", "-musl")) or "-musl-" in base:
+                out.append(key)
+        return out
+
+    real = _json("frontend/package-lock.json")
+    assert _libc_problems(real) == []
+
+    stripped = copy.deepcopy(real)
+    for entry in stripped["packages"].values():
+        entry.pop("libc", None)
+    pinned = _pinned(stripped)
+    assert pinned
+    bad = _libc_problems(stripped)
+    assert len(bad) == len(pinned), (len(bad), len(pinned))
+    for msg in bad:
+        assert msg.startswith("LANE-152") and "libc" in msg, msg
+    for key in pinned:
+        assert any(key in msg for msg in bad), key
+
+    wrong = copy.deepcopy(real)
+    musl_key = next(k for k in _pinned(real) if k.endswith("-musl"))
+    wrong["packages"][musl_key]["libc"] = ["glibc"]
+    bad = _libc_problems(wrong)
+    assert len(bad) == 1 and musl_key in bad[0], bad
+
+    wrong_str = copy.deepcopy(real)
+    sass = next(k for k in real["packages"] if k.endswith("sass-embedded-linux-musl-x64"))
+    wrong_str["packages"][sass]["libc"] = "glibc"
+    bad = _libc_problems(wrong_str)
+    assert len(bad) == 1 and sass in bad[0], bad
+
+    objshape = copy.deepcopy(real)
+    watcher = "node_modules/@parcel/watcher-linux-x64-musl"
+    assert watcher in objshape["packages"]
+    objshape["packages"][watcher]["libc"] = {"musl": True}
+    bad = _libc_problems(objshape)
+    assert len(bad) == 1 and watcher in bad[0] and bad[0].startswith("LANE-152"), bad
+
+    numshape = copy.deepcopy(real)
+    gnu = next(k for k in _pinned(real) if k.endswith("-gnu"))
+    numshape["packages"][gnu]["libc"] = 1
+    bad = _libc_problems(numshape)
+    assert len(bad) == 1 and gnu in bad[0] and bad[0].startswith("LANE-152"), bad

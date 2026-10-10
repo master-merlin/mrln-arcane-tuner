@@ -864,3 +864,41 @@ def test_get_dataset_pairs_sidecar_pool_is_bounded(manager, monkeypatch):
     manager.create_dataset("empty")
     assert manager.get_dataset_pairs("empty") == []
     assert seen == []                        # nothing to read -> no pool
+
+
+def test_init_creates_default_root_idempotently():
+    """LANE-151: the datasets root appearing between exists() and makedirs() must not raise."""
+    import app.core.dataset_manager as dm
+
+    default_root = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(dm.__file__)))),
+        "datasets",
+    )
+    # The "other xdist worker created it first" step.
+    os.makedirs(default_root, exist_ok=True)
+
+    real_exists = os.path.exists
+
+    def exists_says_absent(path):
+        if os.path.abspath(os.fspath(path)) == os.path.abspath(default_root):
+            return False
+        return real_exists(path)
+
+    with (
+        patch("app.core.dataset_manager.get_settings_manager", MagicMock()),
+        patch("app.core.dataset_manager.DatabaseEngine", MagicMock()),
+        patch("app.core.dataset_manager.DatasetRepository", MagicMock()),
+        patch("app.core.dataset_manager.MediaItemRepository", MagicMock()),
+        patch.object(DatasetManager, "load", MagicMock()),
+        patch("app.core.dataset_manager.os.path.exists", side_effect=exists_says_absent),
+    ):
+        try:
+            DatasetManager()
+        except FileExistsError:
+            pytest.fail(
+                "LANE-151: DatasetManager.__init__ raised FileExistsError because the datasets "
+                "root appeared between its exists check and makedirs (the xdist collection race); "
+                "create it with exist_ok=True"
+            )
+
+    assert os.path.isdir(default_root)

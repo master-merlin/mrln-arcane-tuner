@@ -18,7 +18,7 @@ colorama==0.4.6; sys_platform == 'win32'
 coloredlogs==15.0.1
 datasets==5.0.1  # Closes Dependabot alert 152 (GHSA-379c-qx7v-6h59, fixed in 5.0.1); LANE-142. Only sophia-optimizer requires it (no version bound); nothing in backend/ imports it.
 decord==0.6.0
-diffusers==0.40.0
+diffusers==0.41.0  # LANE-149: the standard release ships the Qwen-Image-2.1, Krea2 and Ideogram4 classes the vendor copies stand in for; needs huggingface-hub>=1.32.0,<2.0
 dill==0.4.1  # HELD with multiprocess below: datasets 5.0.1 declares dill<0.4.2, so the next dill release moves only with datasets (LANE-142 lifted the old 4.5.0 hold).
 duckduckgo_search==8.1.1
 einops==0.8.2
@@ -34,7 +34,7 @@ hf-xet==1.6.0
 hpsv2==1.2.0  # installed with --no-deps (see install-deps.sh): its dev deps leaked into its metadata as `pytest ==7.2.0` + `pytest-split ==0.8.0` — it never imports either and registers no pytest11 hook (test_dependency_metadata_contracts.py), and would otherwise abort the bulk resolve against our own pytest pin
 httpcore==1.0.9
 httpx==0.28.1
-huggingface-hub==1.29.0
+huggingface-hub==1.33.0  # LANE-149: diffusers 0.41.0 requires >=1.32.0,<2.0; 1.33.0 is the newest 1.x
 humanfriendly==10.0
 idna==3.20
 ImageIO==2.37.4

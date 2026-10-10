@@ -78,7 +78,7 @@ HELD_KEEP = {
     "torchvision": "0.27.1",
     "torchaudio": "2.11.0",
     "torchao": "0.17.0",
-    "diffusers": "0.40.0",
+    "diffusers": "0.41.0",  # LANE-149
     "transformers": "5.14.1",
     "peft": "0.20.0",
 }

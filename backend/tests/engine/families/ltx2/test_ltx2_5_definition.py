@@ -239,34 +239,32 @@ def test_the_prompt_length_is_upstreams_and_a_whole_number_of_registers(definiti
 
 
 def test_the_keyframes_flag_is_declared_for_LOADING_not_for_a_feature(definition):
-    """A recorded limitation, so nobody promises I2V keyframes on the strength of it.
+    """The keyframes flag buys load fidelity; the driver feeds no keyframes mask.
 
     The 2.5 checkpoint carries a ``keyframes_abs_pos_embedding`` weight, so the
     definition sets the flag that allocates it -- otherwise the tensor is an
-    unexpected key and the load is no longer clean. But diffusers 0.40 allocates
-    it and never reads it: its own docstring says "the regular distilled forward
-    path does not consume it until a dedicated keyframes pipeline wires it in".
+    unexpected key and the load is no longer clean.
 
-    So the flag buys load fidelity, not behaviour, and our I2V path is the same
-    per-token-timestep conditioning LTX-2.3 uses -- which is also what upstream's
-    regular forward does. Asserted rather than commented so that the day diffusers
-    wires it up, this test fails and someone decides deliberately whether to use it.
+    diffusers 0.40 allocated it and never read it. diffusers 0.41.0 consumes it in
+    ``LTX2VideoTransformer3DModel.forward`` (transformer_ltx2.py:1518-1520) for the
+    tokens the new optional ``video_keyframes_mask`` argument marks. The ltx2 driver
+    passes no such mask (driver.py:466, :496), so the 0.41 forward equals the 0.40
+    one for this project.
+
+    Decision 2026-10-10 (LANE-149, RULE-16): keep it that way until LANE-153
+    (LTX-2.5 I2V keyframe conditioning) wires the feature deliberately. This test
+    fails the day the driver feeds the mask without that lane; LANE-153 retires it.
     """
     assert definition.architecture_params["transformer.use_keyframes_abs_pos_embedding"] is True
 
-    import diffusers.models.transformers.transformer_ltx2 as mod
-
-    source = pathlib.Path(mod.__file__).read_text(encoding="utf-8")
-    # Scope to the MODEL class's own forward. Searching from the file's first
-    # `def forward(` would start above the model's __init__ -- where the parameter
-    # is allocated -- and the test would report consumption that is really just
-    # the allocation it exists to distinguish from consumption.
-    class_start = source.find("class LTX2VideoTransformer3DModel")
-    assert class_start > 0, "LTX2VideoTransformer3DModel was renamed; re-read this test"
-    forward_start = source.find("    def forward(", class_start)
-    assert forward_start > 0, "the model class has no forward(); re-read this test"
-    assert "keyframes_abs_pos_embedding" not in source[forward_start:], (
-        "diffusers now CONSUMES keyframes_abs_pos_embedding in the forward pass. "
-        "LTX-2.5's I2V keyframe conditioning has become available -- decide whether "
-        "the ltx2 driver should feed it, rather than inheriting this test's assumption."
+    # Anchored on this file, never the CWD: tests/engine/families/ltx2/ -> backend/.
+    driver = (
+        pathlib.Path(__file__).resolve().parents[4]
+        / "app" / "engine" / "models" / "families" / "ltx2" / "driver.py"
+    )
+    source = driver.read_text(encoding="utf-8")
+    assert "video_keyframes_mask" not in source, (
+        "LANE-153: the ltx2 driver now feeds video_keyframes_mask: LTX-2.5 keyframe "
+        "conditioning is LANE-153's; revisit this decision there and retire this test "
+        "with it."
     )

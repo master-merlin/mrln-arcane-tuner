@@ -193,9 +193,9 @@ class IdeogramV4Driver(IModelDriver):
         """Manual Qwen3-VL layer forward -> concat selected layer OUTPUTS.
 
         Faithful port of ai-toolkit ``src/pipeline.py::get_qwen3_vl_features``,
-        adapted to this transformers' ``create_causal_mask`` signature (which
-        wants ``input_embeds=`` + ``cache_position=``) exactly the way
-        ``Qwen3VLTextModel.forward`` calls it. Steps:
+        adapted to transformers 5.14.1's ``create_causal_mask`` signature
+        (``inputs_embeds=``, no ``cache_position``) exactly the way
+        ``Qwen3VLTextModel.forward`` calls it (modeling_qwen3_vl.py:809-815). Steps:
 
         1. ``inputs_embeds = embed_tokens(token_ids)``.
         2. Build the 4-row mRoPE position ids from ``pos_2d`` (text-only: all
@@ -217,16 +217,10 @@ class IdeogramV4Driver(IModelDriver):
         text_position_ids = position_ids_4d[0]
         mrope_position_ids = position_ids_4d[1:]
 
-        # cache_position: contiguous query indices (this transformers version's
-        # create_causal_mask requires it; mirrors Qwen3VLTextModel.forward).
-        cache_position = torch.arange(
-            inputs_embeds.shape[1], device=inputs_embeds.device,
-        )
         causal_mask = create_causal_mask(
             config=language_model.config,
-            input_embeds=inputs_embeds,
+            inputs_embeds=inputs_embeds,
             attention_mask=attention_mask,
-            cache_position=cache_position,
             past_key_values=None,
             position_ids=text_position_ids,
         )
@@ -243,7 +237,6 @@ class IdeogramV4Driver(IModelDriver):
                 attention_mask=causal_mask,
                 position_ids=text_position_ids,
                 past_key_values=None,
-                cache_position=cache_position,
                 position_embeddings=position_embeddings,
             )
             if layer_idx in tap_set:

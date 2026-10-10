@@ -193,6 +193,37 @@ async def test_enable_all_emits_dataset_invalidated(overlay_manager):
     assert invalidated == [{"name": ds.name}]
 
 
+@pytest.mark.asyncio
+async def test_toggle_image_enabled_emits_dataset_invalidated(overlay_manager):
+    """LANE-146: a single image toggle must end in a coarse dataset.invalidated
+    (the library card's excluded_count refreshes from it), in addition to the
+    per-file media_item entity.changed."""
+    mgr, ds, rel_a, _ = overlay_manager
+    mgr.datasets.pop(ds.name)
+    ds.name = "alpha"
+    mgr.datasets["alpha"] = ds
+
+    mock_broadcast = AsyncMock()
+    with patch("app.core.dataset_manager.event_manager.broadcast", mock_broadcast):
+        mgr.toggle_image_enabled("alpha", rel_a, False)
+        await asyncio.sleep(0.05)
+
+    invalidated = [
+        c.args[1]
+        for c in mock_broadcast.await_args_list
+        if c.args and c.args[0] == "dataset.invalidated" and c.args[1] == {"name": "alpha"}
+    ]
+    assert invalidated, (
+        "LANE-146: toggling one image's enabled flag broadcast no "
+        "dataset.invalidated for alpha; the library card stays stale on the "
+        "first navigation back"
+    )
+    assert len(invalidated) == 1
+    changed = _entity_events(mock_broadcast, entity="media_item", op="updated")
+    assert len(changed) == 1
+    assert changed[0]["id"] == f"alpha/{rel_a}"
+
+
 # ── overlay_recipe.rerender_overlay_from_recipe (real pipeline, CPU op) ──────
 
 def test_rerender_overlay_from_recipe_real(tmp_path):

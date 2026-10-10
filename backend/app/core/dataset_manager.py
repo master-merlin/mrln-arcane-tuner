@@ -2053,6 +2053,7 @@ class DatasetManager:
 
         dataset.media_metadata[lookup_key]["enabled"] = enabled
         self._persist_media_item(dataset, media_file)
+        self._emit_dataset_invalidated(name)
         logger.info("image_enabled_toggled", dataset=name, file=media_file, enabled=enabled)
         return {"media_file": media_file, "enabled": enabled}
 

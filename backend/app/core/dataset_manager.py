@@ -140,8 +140,7 @@ class DatasetManager:
         self.storage_file = os.path.join(self.root_dir, storage_file)
         self.default_root = os.path.join(self.root_dir, default_root)
         
-        if not os.path.exists(self.default_root):
-            os.makedirs(self.default_root)
+        os.makedirs(self.default_root, exist_ok=True)
 
         self.settings_manager = get_settings_manager()
         self.datasets: dict[str, Dataset] = {}

@@ -51,6 +51,7 @@ def _compute_default_rope_parameters(
     config=None,
     device: "torch.device | None" = None,
     seq_len: int | None = None,
+    layer_type: str | None = None,
 ) -> tuple["torch.Tensor", float]:
     """Byte-for-byte port of transformers 4.57's
     `modeling_rope_utils._compute_default_rope_parameters`.
@@ -62,8 +63,15 @@ def _compute_default_rope_parameters(
     """
     import torch
 
-    base = config.rope_theta
-    partial_rotary_factor = getattr(config, "partial_rotary_factor", 1.0)
+    # A transformers 5.x config keeps rope_theta / partial_rotary_factor inside
+    # `rope_parameters` (the top-level attribute raises), so read it there first.
+    rope_parameters = getattr(config, "rope_parameters", None) or getattr(config, "rope_scaling", None) or {}
+    if layer_type is not None and isinstance(rope_parameters.get(layer_type), dict):
+        rope_parameters = rope_parameters[layer_type]  # transformers 5 passes layer_type
+    base = rope_parameters.get("rope_theta", getattr(config, "rope_theta", 10000.0))
+    partial_rotary_factor = rope_parameters.get(
+        "partial_rotary_factor", getattr(config, "partial_rotary_factor", 1.0)
+    )
     head_dim = getattr(config, "head_dim", None) or config.hidden_size // config.num_attention_heads
     dim = int(head_dim * partial_rotary_factor)
 

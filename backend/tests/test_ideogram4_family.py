@@ -236,7 +236,17 @@ def _make_text_driver(monkeypatch, n_layers):
 
     # The fake decoder layers don't consume the causal mask; stub it out so the
     # manual forward runs without a real Qwen3-VL config/attn backend.
-    monkeypatch.setattr(driver_mod, "create_causal_mask", lambda **kw: None)
+    # The stub BINDS the installed signature first: a stale keyword fails here
+    # (a bare ``lambda **kw: None`` accepted any keyword and hid a rename).
+    import inspect
+
+    sig = inspect.signature(driver_mod.create_causal_mask)
+
+    def _bound_mask(**kw):
+        sig.bind(**kw)
+        return None
+
+    monkeypatch.setattr(driver_mod, "create_causal_mask", _bound_mask)
 
     defn = ModelDefinition(id="x", family="ideogram4", name="X")
     drv = IdeogramV4Driver(defn, torch.device("cpu"))
@@ -588,6 +598,34 @@ def test_asymmetric_cfg_helpers():
     z = zeroed_like_text(feats)
     assert z.shape == feats.shape
     assert torch.count_nonzero(z) == 0
+
+
+def test_run_qwen3vl_layers_builds_the_mask_with_the_installed_transformers():
+    """The driver's mask call reaches the REAL ``create_causal_mask`` (no stub)."""
+    from transformers.models.qwen3_vl.configuration_qwen3_vl import Qwen3VLTextConfig
+
+    from app.engine.core.definitions import ModelDefinition
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+
+    cfg = Qwen3VLTextConfig(
+        num_hidden_layers=2, hidden_size=HID, intermediate_size=64,
+        num_attention_heads=2, num_key_value_heads=2, head_dim=HID // 2,
+        vocab_size=8,
+    )
+    cfg._attn_implementation = "eager"
+    lm = _FakeLanguageModel(2)
+    lm.config = cfg
+
+    drv = IdeogramV4Driver(
+        ModelDefinition(id="x", family="ideogram4", name="X"), torch.device("cpu"),
+    )
+    drv.selected_layers = (0, 1)
+    token_ids = torch.ones(1, 5, dtype=torch.long)
+    attention_mask = torch.ones(1, 5, dtype=torch.long)
+    pos_2d = torch.arange(5)[None, :]
+    out = drv._run_qwen3vl_layers(lm, token_ids, attention_mask, pos_2d, torch.float32)
+    assert out.shape == (1, 5, HID * 2)
+    assert torch.isfinite(out).all()
 
 
 if __name__ == "__main__":

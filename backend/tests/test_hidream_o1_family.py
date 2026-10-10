@@ -407,3 +407,26 @@ def test_definition_target_list_excludes_dead_lm_head_entry():
     targets = data.get("lora_targetable_modules") or []
     assert targets, "hidream_o1 must still ship a non-empty target list"
     assert "lm_head" not in targets, "dead lm_head entry still present in YAML"
+
+
+def test_vendored_text_model_forward_uses_the_installed_create_causal_mask():
+    """One real forward of the vendored Qwen3-VL text model on a tiny config.
+
+    Reaches the real ``create_causal_mask`` of the installed transformers, so a
+    renamed or removed keyword at the vendored call site fails here.
+    """
+    from app.engine.models.families.hidream_o1.vendor import qwen3_vl_transformers as v
+
+    cfg = v.Qwen3VLTextConfig(
+        num_hidden_layers=2, hidden_size=32, intermediate_size=64,
+        num_attention_heads=2, num_key_value_heads=2, head_dim=16,
+        vocab_size=64,
+    )
+    cfg._attn_implementation = "eager"
+    model = v.Qwen3VLTextModel(cfg).eval()
+    with torch.no_grad():
+        out = model(
+            input_ids=torch.arange(5)[None, :],
+            attention_mask=torch.ones(1, 5, dtype=torch.long),
+        )
+    assert out.last_hidden_state.shape == (1, 5, 32)

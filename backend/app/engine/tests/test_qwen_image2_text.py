@@ -7,8 +7,8 @@ Spec scenarios (``_harness/lanes/LANE-132/spec.md`` 3 / 3b):
   ``"a red fox"``, ``"a detailed photo of a lighthouse at dusk"``, ``""`` exactly
   what diffusers' ``QwenImage21Pipeline.encode_prompt`` at ``6256aa7666``
   produces (max abs difference ``0``), embeddings, mask and per-caption lengths,
-  the empty caption included. The oracle is the vendored copy
-  (``vendor/pipeline_qwenimage21.py``), called by this TEST only;
+  the empty caption included. The oracle is the release
+  ``diffusers.QwenImage21Pipeline`` (0.41.0), called by this TEST only;
 * those embeddings are the activations at the INPUT of the text encoder's final
   RMSNorm. transformers 5.x ties ``hidden_states[-1]`` to the normalized
   ``last_hidden_state``; upstream bypasses the norm with a forward hook, and so
@@ -74,11 +74,12 @@ def _trainer(definition, text_encoder, processor, *, config=None, inventory=None
 
 
 def _oracle(text_encoder, processor, captions):
-    from app.engine.models.families.qwen_image2.vendor.pipeline_qwenimage21 import (
-        QwenImage21PipelineHelpers,
-    )
+    from diffusers import QwenImage21Pipeline
 
-    helpers = QwenImage21PipelineHelpers(text_encoder=text_encoder, processor=processor)
+    # The release pipeline's __init__ needs a real processor; the rest may be None.
+    helpers = QwenImage21Pipeline(
+        scheduler=None, vae=None, text_encoder=text_encoder, processor=processor, transformer=None,
+    )
     with torch.no_grad():
         embeds, mask, _ = helpers.encode_prompt(captions, device=torch.device("cpu"))
     return embeds, mask
@@ -87,7 +88,7 @@ def _oracle(text_encoder, processor, captions):
 # ── Parity with upstream encode_prompt ─────────────────────────────────────
 
 
-def test_training_text_path_matches_the_vendored_encode_prompt():
+def test_training_text_path_matches_the_release_encode_prompt():
     te, proc = tiny.tiny_qwen3vl_te(), tiny.tiny_processor()
     trainer = _trainer(_definition(), te, proc)
 

@@ -15,7 +15,10 @@ What this file holds the table to (each failure names the row or the module):
 * every vendored module imports on the installed release;
 * every ``shipped``/``partial`` row names at least one symbol and every symbol
   resolves by import on the installed diffusers; a ``none`` row names none;
-* every verdict is one of the three words.
+* every verdict is one of the five words (LANE-150 added ``retired``: the module
+  is deleted and its row says ``lines`` 0; ``remainder``: the shipped part is
+  gone, the rest stays vendored and the symbol still resolves);
+* a ``retired`` row has no file and a vendored file has no ``retired`` row.
 
 The verdicts are checked here by import and never copied into a second list
 (RULE-21): the table is the one producer.
@@ -40,7 +43,7 @@ HEADER = (
     "known differences",
     "LANE-150 action",
 )
-VERDICTS = frozenset({"shipped", "partial", "none"})
+VERDICTS = frozenset({"shipped", "partial", "none", "retired", "remainder"})
 _SYMBOL = re.compile(r"`(diffusers(?:\.\w+)+)`")
 
 
@@ -112,18 +115,28 @@ def test_every_vendored_module_has_one_row():
     without_row = sorted(files - set(modules))
     without_module = sorted(set(modules) - files)
     duplicates = sorted({m for m in modules if modules.count(m) > 1})
+    verdict = {r["module"]: r["verdict"] for r in rows}
+    retired = {m for m, v in verdict.items() if v == "retired"}
     problems = (
-        [f"vendored module without a row: {m}" for m in without_row]
-        + [f"row without a vendored module: {m}" for m in without_module]
+        [
+            f"retired row whose module still exists: {m} (vendored module whose row is retired)"
+            for m in sorted(retired & files)
+        ]
+        + [f"vendored module without a row: {m}" for m in without_row]
+        + [f"row without a vendored module: {m}" for m in without_module if m not in retired]
         + [f"duplicate row: {m}" for m in duplicates]
     )
-    assert not problems, "LANE-149: " + "; ".join(problems)
+    assert not problems, "LANE-149/150: " + "; ".join(problems)
 
 
 def test_every_row_states_the_current_line_count():
     problems = []
     for row in _rows():
         path = FAMILIES_DIR / row["module"]
+        if row["verdict"] == "retired":
+            if row["lines"] != "0":
+                problems.append(f"{row['module']}: retired row says {row['lines']} lines, wants 0")
+            continue
         if not path.is_file():
             continue  # test_every_vendored_module_has_one_row names it
         have = len(path.read_text(encoding="utf-8").splitlines())
@@ -153,8 +166,8 @@ def test_every_claimed_symbol_resolves():
     problems = []
     for row in _rows():
         symbols = _SYMBOL.findall(row["0.41 symbol(s)"])
-        if row["verdict"] in ("shipped", "partial"):
-            if not symbols:
+        if row["verdict"] in ("shipped", "partial", "remainder", "retired"):
+            if not symbols and row["verdict"] != "retired":
                 problems.append(
                     f"{row['module']}: verdict {row['verdict']} names no diffusers symbol"
                 )
@@ -172,10 +185,10 @@ def test_every_claimed_symbol_resolves():
     )
 
 
-def test_verdicts_are_the_three_words():
+def test_verdicts_are_the_five_words():
     bad = [
         f"{r['module']}: {r['verdict']!r}"
         for r in _rows()
         if r["verdict"] not in VERDICTS
     ]
-    assert not bad, f"LANE-149: verdicts outside {sorted(VERDICTS)}: " + "; ".join(bad)
+    assert not bad, f"LANE-149/150: verdicts outside {sorted(VERDICTS)}: " + "; ".join(bad)

@@ -3,8 +3,8 @@
 Loaded by path from ``tests/test_qwen_image2_*.py`` (pytest runs with
 ``--import-mode=importlib``, so a test module cannot import a sibling).
 
-Every builder returns a REAL class with random weights -- the vendored
-``QwenImage21Transformer2DModel`` / ``AutoencoderKLQwenImage21``, a real
+Every builder returns a REAL class with random weights -- the release
+``QwenImage21Transformer2DModel`` / ``AutoencoderKLQwenImage21`` (diffusers 0.41.0), a real
 ``Qwen3VLForConditionalGeneration`` / ``Qwen2_5_VLForConditionalGeneration``,
 and a real ``Qwen3VLProcessor`` over a byte-level tokenizer that carries the
 checkpoint's special tokens. Nothing here is a mock: the seam under test runs
@@ -133,10 +133,8 @@ def tiny_qwen25vl_te(seed: int = 0):
 
 
 def tiny_transformer(seed: int = 0, in_channels: int = 8):
-    """The vendored single-stream DiT: 2 blocks, 2 heads x 8, context width 32."""
-    from app.engine.models.families.qwen_image2.vendor.transformer_qwenimage21 import (
-        QwenImage21Transformer2DModel,
-    )
+    """The release single-stream DiT: 2 blocks, 2 heads x 8, context width 32."""
+    from diffusers import QwenImage21Transformer2DModel
 
     torch.manual_seed(seed)
     return QwenImage21Transformer2DModel(
@@ -153,11 +151,9 @@ def tiny_transformer(seed: int = 0, in_channels: int = 8):
 
 
 def tiny_vae(seed: int = 0):
-    """The vendored VAE with the checkpoint's geometry (z_dim 64, 4 channels,
+    """The release VAE with the checkpoint's geometry (z_dim 64, 4 channels,
     16x spatial) but a base width of 4, so a 512x512 encode runs on a CPU."""
-    from app.engine.models.families.qwen_image2.vendor.autoencoder_kl_qwenimage21 import (
-        AutoencoderKLQwenImage21,
-    )
+    from diffusers import AutoencoderKLQwenImage21
 
     torch.manual_seed(seed)
     return AutoencoderKLQwenImage21(

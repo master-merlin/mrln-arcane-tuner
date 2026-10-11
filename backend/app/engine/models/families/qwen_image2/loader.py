@@ -11,15 +11,15 @@ declares (@ ``790c92633540``):
   ``AutoModel``: ``AutoModel`` builds ``Qwen3VLModel`` whose parameter prefix
   misses the checkpoint's ``model.`` and random-initialises the TE with only a
   warning (the ideogram4 B1 bug class; ``tests/engine/test_te_loading_contracts.py``);
-- ``vae`` / ``transformer`` -> the VENDORED ``AutoencoderKLQwenImage21`` and
-  ``QwenImage21Transformer2DModel`` (diffusers 0.40, the installed release,
-  exports neither; ``vendor/`` retires when a release does).
+- ``vae`` / ``transformer`` -> diffusers' own ``AutoencoderKLQwenImage21`` and
+  ``QwenImage21Transformer2DModel`` (shipped since 0.41.0; LANE-150 retired the
+  vendored copy). They are resolved lazily from these ``hf_class`` strings:
+  the release transformer module guards its optional flex_attention import with
+  ``except ImportError`` only, so it must never be imported at startup.
 """
 
 from app.engine.core.definitions import ModelDefinition
 from app.engine.core.pipeline.loader_base import ComponentSpec, GenericComponentLoader
-
-_VENDOR = "app.engine.models.families.qwen_image2.vendor"
 
 
 class QwenImage2Loader(GenericComponentLoader):
@@ -44,17 +44,17 @@ class QwenImage2Loader(GenericComponentLoader):
                 subfolder="text_encoder",
                 candidates=["text_encoder"],
             ),
-            # -- VAE (vendored) --
+            # -- VAE --
             ComponentSpec(
                 key="vae",
-                hf_class=f"{_VENDOR}.autoencoder_kl_qwenimage21.AutoencoderKLQwenImage21",
+                hf_class="diffusers.AutoencoderKLQwenImage21",
                 subfolder="vae",
                 candidates=["vae"],
             ),
-            # -- Transformer (vendored) -> mapped to "unet" --
+            # -- Transformer -> mapped to "unet" --
             ComponentSpec(
                 key="unet",
-                hf_class=f"{_VENDOR}.transformer_qwenimage21.QwenImage21Transformer2DModel",
+                hf_class="diffusers.QwenImage21Transformer2DModel",
                 subfolder="transformer",
                 candidates=["transformer"],
             ),

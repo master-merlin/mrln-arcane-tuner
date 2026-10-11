@@ -284,3 +284,146 @@ def test_vendor_imports_without_optional_flex_attention_breaking_startup():
 
     for name in ("transformer_qwenimage21", "autoencoder_kl_qwenimage21", "pipeline_qwenimage21"):
         importlib.import_module(f"{VENDOR}.{name}")
+
+
+# --- 6. LANE-150 parity against the release (fixture-first retirement) --------
+#
+# The release classes must reproduce the vendored copy's output on a pinned seed
+# before the copy is deleted. ``vendor_parity.npz`` holds the inputs and the
+# vendored outputs (written on the first run); ``lora_keys.json`` the sorted key
+# list the saver emits for the tiny vendored model.
+
+import importlib.util  # noqa: E402
+import json  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+_TESTS = Path(__file__).resolve().parent
+_FIXTURES = _TESTS / "fixtures" / "qwen_image2"
+PARITY_NPZ = _FIXTURES / "vendor_parity.npz"
+LORA_KEYS = _FIXTURES / "lora_keys.json"
+PARITY_ATOL = 1e-6
+
+
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _assert_parity(tensor: str, release: torch.Tensor, reference: np.ndarray, atol: float = PARITY_ATOL):
+    diff = float(np.abs(release.detach().float().numpy() - reference).max())
+    assert diff <= atol, f"LANE-150 parity qwen_image2/{tensor}: max|release - fixture| = {diff:.3e} > {atol}"
+
+
+def _fixture(produce) -> dict:
+    """The stored arrays; ``produce`` (the vendored copy) adds its keys if absent."""
+    stored = {}
+    if PARITY_NPZ.exists():
+        with np.load(PARITY_NPZ) as z:
+            stored = {k: z[k] for k in z.files}
+    if not PARITY_NPZ.exists() or not set(produce_keys(produce)) <= set(stored):
+        stored.update(produce())
+        PARITY_NPZ.parent.mkdir(parents=True, exist_ok=True)
+        np.savez(PARITY_NPZ, **stored)
+    return stored
+
+
+def produce_keys(produce) -> tuple:
+    return produce.keys
+
+
+def _transformer_inputs():
+    g = torch.Generator().manual_seed(150)
+    b, text_len, h, w, c = 2, 5, 4, 6, 8
+    tokens = h * w
+    return {
+        "t_hidden": torch.randn(b, tokens, c, generator=g),
+        "t_text": torch.randn(b, text_len, 32, generator=g),
+        "t_timestep": torch.tensor([0.7, 0.2]),
+        "t_mask": torch.cat(
+            [torch.zeros(b, text_len, dtype=torch.bool), torch.ones(b, tokens // 4, dtype=torch.bool)], dim=1
+        ),
+    }, (b, h, w)
+
+
+def _run_transformer(model, inputs, hw):
+    b, h, w = hw
+    with torch.no_grad():
+        return model(
+            hidden_states=inputs["t_hidden"],
+            encoder_hidden_states=inputs["t_text"],
+            timestep=inputs["t_timestep"],
+            img_shapes=[[(1, h, w)]] * b,
+            img_mask=inputs["t_mask"],
+            return_dict=False,
+        )[0]
+
+
+def test_release_transformer_matches_the_vendored_forward():
+    import diffusers
+
+    tiny = _load_module("qwen_image2_tiny_parity", _FIXTURES / "tiny.py")
+    inputs, hw = _transformer_inputs()
+
+    def produce():
+        vendored = tiny.tiny_transformer().eval()
+        return {**{k: v.numpy() for k, v in inputs.items() if k != "t_mask"},
+                "t_mask": inputs["t_mask"].numpy(),
+                "t_out": _run_transformer(vendored, inputs, hw).numpy()}
+
+    produce.keys = ("t_out",)
+    stored = _fixture(produce)
+    vendored = tiny.tiny_transformer().eval()  # seed 0, the fixture's weights
+    release = diffusers.QwenImage21Transformer2DModel.from_config(dict(vendored.config)).eval()
+    release.load_state_dict(vendored.state_dict(), strict=True)
+    out = _run_transformer(release, inputs, hw)
+    _assert_parity("transformer", out, stored["t_out"])
+    _assert_parity("transformer(vendored)", _run_transformer(vendored, inputs, hw), stored["t_out"])
+
+
+def test_release_vae_matches_the_vendored_encode_decode():
+    import diffusers
+
+    tiny = _load_module("qwen_image2_tiny_parity_vae", _FIXTURES / "tiny.py")
+    g = torch.Generator().manual_seed(150)
+    image = torch.rand(1, 4, 1, 32, 48, generator=g) * 2 - 1
+
+    def run(vae):
+        with torch.no_grad():
+            latents = vae.encode(image).latent_dist.mode()
+            return latents, vae.decode(latents).sample
+
+    def produce():
+        lat, dec = run(tiny.tiny_vae())
+        return {"v_image": image.numpy(), "v_latents": lat.numpy(), "v_decoded": dec.numpy()}
+
+    produce.keys = ("v_decoded",)
+    stored = _fixture(produce)
+    vendored = tiny.tiny_vae()
+    release = diffusers.AutoencoderKLQwenImage21.from_config(dict(vendored.config)).eval()
+    release.load_state_dict(vendored.state_dict(), strict=True)
+    lat, dec = run(release)
+    _assert_parity("vae_latents", lat, stored["v_latents"])
+    _assert_parity("vae_decoded", dec, stored["v_decoded"])
+    v_lat, v_dec = run(vendored)
+    _assert_parity("vae_latents(vendored)", v_lat, stored["v_latents"])
+    _assert_parity("vae_decoded(vendored)", v_dec, stored["v_decoded"])
+
+
+def test_saver_key_set_is_pinned(tmp_path):
+    from safetensors import safe_open
+
+    training = _load_module("qwen_image2_training_for_keys", _TESTS / "test_qwen_image2_training.py")
+    path = training._trained_lora_file(tmp_path)
+    with safe_open(str(path), "pt") as f:
+        keys = sorted(f.keys())
+    if not LORA_KEYS.exists():
+        LORA_KEYS.write_text(json.dumps(keys, indent=1) + "\n", encoding="utf-8")
+    pinned = json.loads(LORA_KEYS.read_text(encoding="utf-8"))
+    extra, missing = sorted(set(keys) - set(pinned)), sorted(set(pinned) - set(keys))
+    assert keys == pinned, (
+        f"LANE-150 lora keys qwen_image2: saved keys differ from fixtures/qwen_image2/lora_keys.json: "
+        f"+{extra} -{missing}"
+    )

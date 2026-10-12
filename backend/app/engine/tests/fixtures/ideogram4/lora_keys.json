@@ -1,0 +1,22 @@
+[
+  "diffusion_model.layers.0.attention.o.lora_A.weight",
+  "diffusion_model.layers.0.attention.o.lora_B.weight",
+  "diffusion_model.layers.0.attention.qkv.lora_A.weight",
+  "diffusion_model.layers.0.attention.qkv.lora_B.weight",
+  "diffusion_model.layers.0.feed_forward.w1.lora_A.weight",
+  "diffusion_model.layers.0.feed_forward.w1.lora_B.weight",
+  "diffusion_model.layers.0.feed_forward.w2.lora_A.weight",
+  "diffusion_model.layers.0.feed_forward.w2.lora_B.weight",
+  "diffusion_model.layers.0.feed_forward.w3.lora_A.weight",
+  "diffusion_model.layers.0.feed_forward.w3.lora_B.weight",
+  "diffusion_model.layers.1.attention.o.lora_A.weight",
+  "diffusion_model.layers.1.attention.o.lora_B.weight",
+  "diffusion_model.layers.1.attention.qkv.lora_A.weight",
+  "diffusion_model.layers.1.attention.qkv.lora_B.weight",
+  "diffusion_model.layers.1.feed_forward.w1.lora_A.weight",
+  "diffusion_model.layers.1.feed_forward.w1.lora_B.weight",
+  "diffusion_model.layers.1.feed_forward.w2.lora_A.weight",
+  "diffusion_model.layers.1.feed_forward.w2.lora_B.weight",
+  "diffusion_model.layers.1.feed_forward.w3.lora_A.weight",
+  "diffusion_model.layers.1.feed_forward.w3.lora_B.weight"
+]

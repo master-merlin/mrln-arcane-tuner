@@ -214,3 +214,67 @@ def test_no_row_is_left_shipped_or_partial():
     (17 retired, 4 remainder, 30 none, 0 shipped, 0 partial); nothing is copied here."""
     left = _open_rows(_rows())
     assert not left, f"LANE-150: rows still shipped/partial: {left}"
+
+
+_KEPT_HEADING = "## Kept on diffusers 0.41.0"
+_LEADING_NAMES = re.compile(r"^(?:\||-)\s*((?:`[^`]+`(?:,\s*)?)+)")
+
+
+def _kept_by_family(rows: list[dict[str, str]]) -> dict[str, set[str]]:
+    """The inventory's kept modules (none/remainder), relative to ``<family>/vendor/``."""
+    kept: dict[str, set[str]] = {}
+    for r in rows:
+        if r["verdict"] in ("none", "remainder"):
+            family, _, rel = r["module"].partition("/vendor/")
+            kept.setdefault(family, set()).add(rel)
+    return kept
+
+
+def _readme_kept(family: str) -> set[str] | None:
+    """Module names in the README's kept section (table rows and bullets alike);
+    ``None`` when the README or the section is absent."""
+    readme = FAMILIES_DIR / family / "vendor" / "README.md"
+    if not readme.is_file():
+        return None
+    names: set[str] = set()
+    inside = False
+    for line in readme.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = line.strip() == _KEPT_HEADING
+            continue
+        if inside and (m := _LEADING_NAMES.match(line.strip())):
+            names.update(n.strip("`") for n in re.findall(r"`[^`]+`", m.group(1)))
+    return names if inside or names else None
+
+
+def _kept_problems(kept: dict[str, set[str]], readme_of) -> list[str]:
+    problems = []
+    for family, modules in sorted(kept.items()):
+        listed = readme_of(family)
+        for module in sorted(modules - (listed or set())):
+            problems.append(
+                f'LANE-150: {family}/vendor/README.md lacks a "Kept on diffusers 0.41.0" '
+                f"row for {family}/vendor/{module}"
+            )
+        for module in sorted((listed or set()) - modules):
+            problems.append(
+                f"LANE-150: {family}/vendor/README.md names {module}, "
+                "which is not a kept module"
+            )
+    return problems
+
+
+def test_every_kept_module_has_a_readme_row():
+    problems = _kept_problems(_kept_by_family(_rows()), _readme_kept)
+    assert not problems, "\n".join(problems)
+
+
+def test_kept_problems_names_a_missing_and_a_surplus_row():
+    # Prove the negative: a dropped row and an invented row are both named.
+    kept = {"fam": {"a.py", "b.py"}}
+    problems = _kept_problems(kept, lambda f: {"a.py", "gone.py"})
+    assert len(problems) == 2
+    assert "lacks" in problems[0] and "fam/vendor/b.py" in problems[0]
+    assert "gone.py, which is not a kept module" in problems[1]

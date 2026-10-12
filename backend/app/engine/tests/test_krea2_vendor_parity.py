@@ -1,9 +1,8 @@
 """LANE-150 parity: krea2's conditioning helpers on diffusers 0.41.0's ``Krea2Pipeline``.
 
-``fixtures/krea2/vendor_parity.npz`` holds the OUTPUTS the vendored
+``fixtures/krea2/vendor_parity.npz`` holds the OUTPUTS the (now deleted) vendored
 ``vendor/krea2_conditioning.py`` produced on pinned inputs (seed 150, CPU, the tiny
-Qwen3-VL text encoder of ``fixtures/qwen_image2/tiny.py``); ``record_vendored()`` is the one
-writer. Each test builds the release's pipeline (all heavy components ``None`` except the tiny
+Qwen3-VL text encoder of ``fixtures/qwen_image2/tiny.py``); the fixture is frozen. Each test builds the release's pipeline (all heavy components ``None`` except the tiny
 text encoder and tokenizer) and requires the stored arrays back within 1e-6.
 ``lora_keys.json`` pins the key list ``Krea2Saver`` writes for the PEFT-wrapped tiny model.
 
@@ -100,43 +99,17 @@ def compute_release() -> dict[str, np.ndarray]:
     }
 
 
-def compute_vendored() -> dict[str, np.ndarray]:
-    from app.engine.models.families.krea2.vendor import krea2_conditioning as v
-
-    tiny = _tiny()
-    te = tiny.tiny_qwen3vl_te().eval()
-    lat = _latents()
-    with torch.no_grad():
-        hs, mask = v.get_text_hidden_states(
-            tiny.tiny_processor().tokenizer, te, CAPTIONS, SELECT_LAYERS,
-            max_sequence_length=MAX_SEQ, device=torch.device("cpu"),
-        )
-    packed = v.pack_latents(lat, PATCH)
-    unpacked = v.unpack_latents(packed, LAT_H, LAT_W, PATCH)
-    pos = v.prepare_position_ids(5, LAT_H // PATCH, LAT_W // PATCH, torch.device("cpu"))
-    return {
-        "text_hidden_states": _np(hs), "text_mask": mask.numpy().astype(np.float32),
-        "packed": _np(packed), "unpacked": _np(unpacked), "position_ids": _np(pos),
-    }
-
-
-def record_vendored() -> None:
-    """Write the fixture from the vendored copy (run once, before the copy is deleted)."""
-    PARITY_NPZ.parent.mkdir(parents=True, exist_ok=True)
-    np.savez(PARITY_NPZ, **compute_vendored())
-
-
 def _stored() -> dict:
     with np.load(PARITY_NPZ) as z:
         return {k: z[k] for k in z.files}
 
 
-def _check(name: str, out: np.ndarray, ref: np.ndarray, who: str = "release"):
+def _check(name: str, out: np.ndarray, ref: np.ndarray):
     assert out.shape == ref.shape, (
         f"LANE-150 parity krea2/{name}: shape {tuple(out.shape)} != fixture shape {tuple(ref.shape)}"
     )
     diff = float(np.abs(out - ref).max())
-    assert diff <= ATOL, f"LANE-150 parity krea2/{name}: max|{who} - fixture| = {diff:.3e} > {ATOL:g}"
+    assert diff <= ATOL, f"LANE-150 parity krea2/{name}: max|release - fixture| = {diff:.3e} > {ATOL:g}"
 
 
 @pytest.fixture(scope="module")
@@ -147,14 +120,6 @@ def release_outputs():
 @pytest.mark.parametrize("name", ["text_hidden_states", "text_mask", "packed", "unpacked", "position_ids"])
 def test_krea2_release_matches_vendored_fixture(name, release_outputs):
     _check(name, release_outputs[name], _stored()[name])
-
-
-def test_krea2_fixture_is_the_vendored_copy():
-    """While the vendored copy exists it must still reproduce the fixture (the fixture is genuine)."""
-    pytest.importorskip("app.engine.models.families.krea2.vendor.krea2_conditioning")
-    out = compute_vendored()
-    for name, ref in _stored().items():
-        _check(name, out[name], ref, who="vendored")
 
 
 def test_krea2_lora_keys_pinned(tmp_path):

@@ -1,4 +1,4 @@
-"""Tests for krea2 family: diffusers transformer + vendored conditioning helpers.
+"""Tests for krea2 family: diffusers transformer + the release pipeline's conditioning helpers.
 
 TDD order:
   1. test_krea2_vendor_imports_and_instantiates  — class importable + builds on CPU
@@ -95,9 +95,9 @@ def test_krea2_vendor_imports_and_instantiates():
 
 
 def test_krea2_vendor_forward_shape():
-    from diffusers import Krea2Transformer2DModel
-    from app.engine.models.families.krea2.vendor.krea2_conditioning import prepare_position_ids
+    from diffusers import Krea2Pipeline, Krea2Transformer2DModel
 
+    prepare_position_ids = Krea2Pipeline.prepare_position_ids
     m = Krea2Transformer2DModel.from_config(_TINY_CFG).eval()
 
     B, img_seq, txt_seq = 1, 16, 7  # 4×4 image grid
@@ -121,10 +121,12 @@ def test_krea2_vendor_forward_shape():
 
 
 def test_krea2_conditioning_helpers():
-    from app.engine.models.families.krea2.vendor.krea2_conditioning import (
-        prepare_position_ids,
-        pack_latents,
-        unpack_latents,
+    """The release's pipeline helpers (diffusers 0.41.0) that the driver calls."""
+    from diffusers import Krea2Pipeline
+
+    prepare_position_ids = Krea2Pipeline.prepare_position_ids
+    pipe = Krea2Pipeline(
+        scheduler=None, vae=None, text_encoder=None, tokenizer=None, transformer=None, patch_size=2,
     )
 
     # prepare_position_ids
@@ -139,17 +141,63 @@ def test_krea2_conditioning_helpers():
     assert img_pos[:, 1].max() == H - 1
     assert img_pos[:, 2].max() == W - 1
 
-    # pack_latents / unpack_latents roundtrip
+    # _pack_latents / _unpack_latents roundtrip
     B, C, Hpx, Wpx = 2, 16, 8, 8
     patch_size = 2
     latents = torch.randn(B, C, Hpx, Wpx)
-    packed = pack_latents(latents, patch_size=patch_size)
+    packed = pipe._pack_latents(latents, B, C, Hpx, Wpx)
     assert packed.shape == (B, (Hpx // patch_size) * (Wpx // patch_size), C * patch_size * patch_size)
 
-    # unpack at pixel dimensions (no VAE scale needed since we call the raw unpack)
-    unpacked = unpack_latents(packed, Hpx, Wpx, patch_size=patch_size)
-    # unpack_latents returns (B, C, 1, H, W) matching Krea2 pipeline convention
+    # the release's unpack takes PIXEL dims (latent dims * vae_scale_factor, 8 without a VAE)
+    unpacked = pipe._unpack_latents(packed, Hpx * pipe.vae_scale_factor, Wpx * pipe.vae_scale_factor)
     assert unpacked.shape == (B, C, 1, Hpx, Wpx), f"unexpected unpack shape: {unpacked.shape}"
+    assert torch.equal(unpacked[:, :, 0], latents), "pack/unpack must round-trip"
+
+
+def test_krea2_release_cache_encode_text_after_release_raises():
+    """release_text_encoders() must drop the cached release pipeline, which holds the TE."""
+    from app.engine.models.families.krea2.driver import Krea2Driver
+
+    definition = MagicMock()
+    definition.family = "krea2"
+    definition.id = "krea2-test"
+    definition.lora_targetable_modules = []
+    definition.architecture_params = {"te.text_encoder_select_layers": [0, 1]}
+    drv = Krea2Driver(definition, torch.device("cpu"))
+
+    def _tok(texts, **kwargs):
+        n = len(texts)
+        out = MagicMock()
+        out.input_ids = torch.zeros(n, 46, dtype=torch.long)
+        out.attention_mask = torch.ones(n, 46, dtype=torch.long)
+        out.to = lambda device: out
+        return out
+
+    te = MagicMock()
+    te.side_effect = lambda **kw: MagicMock(hidden_states=tuple(torch.randn(1, 46, 8) for _ in range(2)))
+    te.parameters = lambda: iter([torch.zeros(1)])
+    tok = MagicMock(side_effect=_tok)
+    drv.assign_components({"unet": None, "vae": None, "text_encoder": te, "tokenizer": tok})
+
+    assert drv.encode_text(["a fox"], torch.float32).embeddings.ndim == 4
+    p1 = drv._get_pipeline()
+    assert drv._get_pipeline() is p1, "the release pipeline is built once and cached"
+
+    drv.release_text_encoders()
+    with pytest.raises(RuntimeError):
+        drv.encode_text(["a fox"], torch.float32)
+
+
+def test_no_vendor_import_remains():
+    """krea2 keeps no vendored diffusers copy: no vendor/ directory, no import of it."""
+    import re
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[1] / "models" / "families" / "krea2"
+    assert not (root / "vendor").exists(), f"krea2/vendor must be gone: {root / 'vendor'}"
+    pat = re.compile(r"krea2[./]vendor|krea2_conditioning")
+    offenders = [str(f) for f in root.rglob("*.py") if pat.search(f.read_text(encoding="utf-8"))]
+    assert not offenders, f"krea2 imports the retired vendor copy: {offenders}"
 
 
 # ── Step A: Family Registration ──────────────────────────────────────────────

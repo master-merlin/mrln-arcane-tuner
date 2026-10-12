@@ -3,7 +3,8 @@
 ``fixtures/boogu_image/vendor_parity.npz`` holds the OUTPUTS the vendored copy produced on
 pinned inputs (seed 150, CPU; recorded before the copy was deleted). Each test builds the
 release-backed module with the same seeded weights and requires the stored arrays back:
-fp32 within 1e-6, bf16 within 1e-2. ``lora_keys.json`` pins the key list the saver writes
+fp32 within 1e-6 (the whole-model transformer: 1e-5 + 2**-20 * max|fixture|, see ``_check``), bf16
+within 1e-2. ``lora_keys.json`` pins the key list the saver writes
 for the PEFT-wrapped tiny model.
 
 The release caption embedding has no ``timestep_scale``: the family's adapter
@@ -71,6 +72,12 @@ def _check(name: str, row, outs: list):
     for out, ref in zip(outs, reference):
         diff = float(np.abs(_np(out) - ref).max())
         bound = atol + rtol * float(np.abs(ref).max())
+        if name == "transformer" and tag == "fp32":
+            # Whole-model fp32 bound: 1e-5 + 2**-20 * max|fixture| (8 fp32 ulps of the output's largest
+            # magnitude). Evidence: CI run 38288827375 on 6f972bdd measured max|release - fixture| =
+            # 1.192e-06 (the capture host measures 0.0): CI CPU kernels round differently at the 1e-6
+            # scale. ~100x under the 1e-3 perturbation mutant, so a real divergence still fails.
+            bound = 1e-5 + 2**-20 * float(np.abs(ref).max())
         assert diff <= bound, (
             f"LANE-150 parity boogu_image/{name}: max|release - fixture| = {diff:.3e} > {bound:.3e}"
             + (f" ({atol:g} + {rtol:g}*max|fixture|)" if rtol else "")

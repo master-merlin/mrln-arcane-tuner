@@ -246,6 +246,28 @@ class CheckpointUnreadable(ValueError):
     """
 
 
+def legacy_adapter_layout_problem(adapter_dir: str) -> str | None:
+    """First adapter key on the retired fused ideogram4 layout, else None.
+
+    Before LANE-150 the ideogram4 transformer used ``attention.qkv`` / ``attention.o``;
+    the release layout is ``to_q/to_k/to_v/to_out.0``. Only the key names are read.
+    """
+    f = os.path.join(adapter_dir, "adapter_model.safetensors")
+    if not os.path.isfile(f):
+        return None
+    from safetensors import safe_open
+
+    try:
+        with safe_open(f, framework="pt") as sf:
+            keys = list(sf.keys())
+    except Exception:  # noqa: BLE001 - a corrupt file is load_adapter's named error, not ours
+        return None
+    for key in keys:
+        if ".attention.qkv." in key or ".attention.o." in key:
+            return key
+    return None
+
+
 def _pt_problem(path: str) -> str | None:
     """None when ``path`` has a readable zip central directory, else why not.
 
@@ -1189,6 +1211,15 @@ class CheckpointManager:
                 adapter_dir = os.path.join(path, name)
                 adapter_config = os.path.join(adapter_dir, "adapter_config.json")
                 if os.path.exists(adapter_config):
+                    legacy_key = legacy_adapter_layout_problem(adapter_dir)
+                    if legacy_key is not None:
+                        raise CheckpointUnreadable(
+                            f"{os.path.basename(os.path.normpath(path))}/{name} adapter was "
+                            f"written before LANE-150 on the retired fused ideogram4 layout "
+                            f"(key {legacy_key}); it cannot be resumed on the release layout. "
+                            f"Start a new job; the LoRA files this job exported stay loadable. "
+                            f"Checkpoint: {path}; last good: {last_good or 'none'}"
+                        )
                     try:
                         model.load_adapter(adapter_dir, adapter_name="default", is_trainable=True)
                     except Exception as e:  # noqa: BLE001 - re-raised as the named error

@@ -192,3 +192,25 @@ def test_verdicts_are_the_five_words():
         if r["verdict"] not in VERDICTS
     ]
     assert not bad, f"LANE-149/150: verdicts outside {sorted(VERDICTS)}: " + "; ".join(bad)
+
+
+def _open_rows(rows: list[dict[str, str]]) -> list[str]:
+    """Modules whose verdict is still ``shipped`` or ``partial`` (not yet retired)."""
+    return [
+        r["module"] for r in rows if r["verdict"] in ("shipped", "partial")
+    ]
+
+
+@pytest.mark.parametrize("word", ["shipped", "partial"])
+def test_open_rows_helper_names_a_reflagged_row(word):
+    # Prove the negative: a row set back to shipped/partial must be named.
+    rows = [dict(r) for r in _rows()]
+    rows[0]["verdict"] = word
+    assert _open_rows(rows) == [rows[0]["module"]]
+
+
+def test_no_row_is_left_shipped_or_partial():
+    """LANE-150 closes the table: counts at close are the table's own verdict words
+    (17 retired, 4 remainder, 30 none, 0 shipped, 0 partial); nothing is copied here."""
+    left = _open_rows(_rows())
+    assert not left, f"LANE-150: rows still shipped/partial: {left}"

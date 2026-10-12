@@ -2,10 +2,10 @@
 
 ``app/engine/tests/fixtures/hidream_o1/unipc_parity.npz`` holds the sigmas, the int64
 timesteps and a 20-step fake-model trajectory the vendored ``FlowUniPCMultistepScheduler``
-produces as ``vendor/pipeline.py::build_scheduler`` builds it (the ``"default"`` branch), for
+produced as ``vendor/pipeline.py::build_scheduler`` built it (the ``"default"`` branch), for
 (shift 3.0, 20 steps), (3.0, 50) and (6.0, 20) -- shift 3.0 is the sampler's default
 (pipeline.py ``generate_image(shift=3.0)``). The fixture is written from the vendored class
-when it is absent and is frozen once committed.
+before its retirement (LANE-150) and is frozen; ``build_scheduler`` now builds the stock class.
 
 Why the explicit grid: the vendored class shifts its 1000-entry sigma table once in
 ``__init__`` (fm_solvers_unipc.py:108-116) and the linspace drawn from it again in
@@ -54,12 +54,6 @@ def _release_scheduler(shift: float, n: int):
     return sched
 
 
-def _vendored_scheduler(shift: float, n: int):
-    from app.engine.models.families.hidream_o1.vendor.pipeline import build_scheduler
-
-    return build_scheduler(n, None, shift, "cpu", scheduler_name="default")
-
-
 def _trajectory(sched) -> np.ndarray:
     """Run TRAJ_STEPS steps of a fake flow model ``v = -0.1 * x`` from a seeded start, in float64.
 
@@ -89,12 +83,7 @@ def _outputs(make) -> dict[str, np.ndarray]:
 
 
 def _stored() -> dict[str, np.ndarray]:
-    if not PARITY_NPZ.exists():
-        # first run only: capture the vendored scheduler's outputs (the reference)
-        _FIXTURES.mkdir(parents=True, exist_ok=True)
-        tmp = PARITY_NPZ.with_suffix(".tmp.npz")
-        np.savez(tmp, **_outputs(_vendored_scheduler))
-        tmp.replace(PARITY_NPZ)
+    assert PARITY_NPZ.exists(), f"LANE-150 parity hidream_o1: frozen fixture missing: {PARITY_NPZ}"
     with np.load(PARITY_NPZ) as z:
         return {k: z[k] for k in z.files}
 
@@ -142,3 +131,30 @@ def test_hidream_o1_lora_keys_pinned(tmp_path):
         f"LANE-150 lora keys hidream_o1: saved keys differ from fixtures/hidream_o1/lora_keys.json: "
         f"+{extra[:5]} -{missing[:5]} ({len(extra)} extra, {len(missing)} missing)"
     )
+
+
+def test_hidream_o1_flash_scheduler_name_is_retired():
+    from app.engine.models.families.hidream_o1.vendor.pipeline import build_scheduler
+
+    with pytest.raises(ValueError, match=r"^Unknown scheduler_name='flash'"):
+        build_scheduler(5, None, 3.0, "cpu", scheduler_name="flash")
+
+
+def test_hidream_o1_generate_image_has_no_noise_schedule_parameters():
+    import inspect
+
+    from app.engine.models.families.hidream_o1.vendor.pipeline import generate_image
+
+    params = set(inspect.signature(generate_image).parameters)
+    retired = {"noise_clip_std", "noise_scale_start", "noise_scale_end"} & params
+    assert not retired, f"LANE-150 hidream_o1: retired generate_image parameters still present: {sorted(retired)}"
+
+
+@pytest.mark.parametrize("shift,n", CASES)
+def test_hidream_o1_build_scheduler_matches_fixture(shift, n):
+    from app.engine.models.families.hidream_o1.vendor.pipeline import build_scheduler
+
+    sched = build_scheduler(n, None, shift, "cpu", scheduler_name="default")
+    ref = _stored()[f"sigmas[{_tag(shift, n)}]"]
+    diff = float(np.abs(sched.sigmas.float().numpy().astype(np.float64) - ref.astype(np.float64)).max())
+    assert diff <= ATOL, f"LANE-150 parity hidream_o1/build_scheduler[{_tag(shift, n)}]: max diff {diff:.3e} > {ATOL:g}"

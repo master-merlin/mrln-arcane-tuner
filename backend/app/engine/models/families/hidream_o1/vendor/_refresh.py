@@ -47,8 +47,6 @@ VENDOR_DIR = Path(__file__).parent
 FILES_TO_COPY: dict[str, str] = {
     "hidream_o1/models/pipeline.py": "pipeline.py",
     "hidream_o1/models/qwen3_vl_transformers.py": "qwen3_vl_transformers.py",
-    "hidream_o1/models/flash_scheduler.py": "flash_scheduler.py",
-    "hidream_o1/models/fm_solvers_unipc.py": "fm_solvers_unipc.py",
     "hidream_o1/models/seam_smoothing.py": "seam_smoothing.py",
     "hidream_o1/models/utils.py": "utils.py",
     "hidream_o1/compat.py": "compat.py",

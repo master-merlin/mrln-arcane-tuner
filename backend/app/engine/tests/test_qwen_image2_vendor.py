@@ -246,7 +246,7 @@ _TESTS = Path(__file__).resolve().parent
 _FIXTURES = _TESTS / "fixtures" / "qwen_image2"
 PARITY_NPZ = _FIXTURES / "vendor_parity.npz"
 LORA_KEYS = _FIXTURES / "lora_keys.json"
-PARITY_ATOL = 1e-6
+PARITY_ATOL = 1e-5
 
 
 def _load_module(name: str, path: Path):
@@ -256,7 +256,13 @@ def _load_module(name: str, path: Path):
     return mod
 
 
-def _assert_parity(tensor: str, release: torch.Tensor, reference: np.ndarray, atol: float = PARITY_ATOL):
+def _assert_parity(tensor: str, release: torch.Tensor, reference: np.ndarray, atol: float | None = None):
+    # The fp32 bound is 1e-5 + 2**-20 * max|fixture| (8 fp32 ulps of the output's largest magnitude).
+    # Evidence: CI run 38288827375 on 6f972bdd measured max|release - fixture| = 3.189e-06 (the capture
+    # host measures 0.0): CI CPU kernels round differently at the 1e-6 scale. The bound stays ~100x
+    # under the 1e-3 perturbation mutant, so a real divergence still fails.
+    if atol is None:
+        atol = PARITY_ATOL + 2**-20 * float(np.abs(reference).max())
     diff = float(np.abs(release.detach().float().numpy() - reference).max())
     assert diff <= atol, f"LANE-150 parity qwen_image2/{tensor}: max|release - fixture| = {diff:.3e} > {atol}"
 

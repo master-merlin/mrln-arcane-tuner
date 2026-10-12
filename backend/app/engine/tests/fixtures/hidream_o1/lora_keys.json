@@ -1,0 +1,5 @@
+[
+  "diffusion_model.language_model.0.alpha",
+  "diffusion_model.language_model.0.lora_down.weight",
+  "diffusion_model.language_model.0.lora_up.weight"
+]

@@ -335,22 +335,21 @@ def test_no_vendor_import_remains():
 
 def test_the_release_transformer_is_not_imported_at_registry_import():
     """ARCHITECTURE D1: the release module guards flex_attention with ``except ImportError``
-    only, so the project resolves it lazily (hf_class string) and never at startup."""
-    code = "; ".join(
-        [
-            "import sys",
-            "import app.engine.models.registry",
-            "import app.engine.models.families.qwen_image2",
-            "bad = [m for m in sys.modules if m.endswith('transformer_qwenimage21')]",
-            "assert not bad, bad",
-        ]
+    only (transformer_qwenimage21.py:46-51), so the project resolves it lazily (hf_class
+    string) and never at startup. A fresh interpreter: this process may have imported diffusers."""
+    module = "diffusers.models.transformers.transformer_qwenimage21"
+    code = (
+        "import sys, app.engine.models.registry, app.engine.models.families.qwen_image2; "
+        f"print({module!r} in sys.modules)"
     )
     proc = subprocess.run(
         [sys.executable, "-c", code], cwd=_BACKEND, capture_output=True, text=True, timeout=300
     )
-    assert proc.returncode == 0, (
-        "LANE-150 D1: the release qwenimage21 transformer is imported at registry import: "
-        + proc.stderr[-500:]
+    assert proc.returncode == 0, proc.stderr[-500:]
+    assert proc.stdout.strip().splitlines()[-1] == "False", (
+        f"LANE-150 (ARCHITECTURE D1): {module} is in sys.modules after importing the registry; "
+        "its flex_attention guard catches ImportError only (transformer_qwenimage21.py:46-51), "
+        "so it must load lazily"
     )
 
 

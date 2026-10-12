@@ -28,13 +28,24 @@ LoRA training recipe. That is the code we need.
 
 | File | Lines | Purpose |
 |---|---|---|
-| `pipeline.py` | 460 | `generate_image()` inference pipeline |
+| `pipeline.py` | 451 | `generate_image()` inference pipeline |
 | `qwen3_vl_transformers.py` | 2201 | Custom model class with `x_embedder` + `final_layer2` |
-| `flash_scheduler.py` | 445 | Flash flow-match Euler scheduler |
-| `fm_solvers_unipc.py` | 800 | UniPC multistep scheduler |
 | `seam_smoothing.py` | 149 | Seam-smoothing for tiled generation |
 | `utils.py` | 368 | Shared helpers (resize, dimension calc, RoPE index) |
 | `compat.py` | 35 | Thin compatibility shim (`TransformersKwargs`, `Unpack`, etc.) |
+
+## Kept on diffusers 0.41.0
+
+LANE-150 retired `flash_scheduler.py` and `fm_solvers_unipc.py` (`build_scheduler` now uses
+diffusers' stock `UniPCMultistepScheduler` on the pre-shifted sigma grid). Everything above stays
+vendored; diffusers 0.41.0 ships none of it:
+
+- `pipeline.py` — no HiDream-O1 pipeline or `HiDreamO1` symbol in 0.41.0 (`HiDreamImagePipeline` is a different model).
+- `qwen3_vl_transformers.py` — transformers-derived, carries the `x_embedder` / `final_layer2` image heads; not diffusers code.
+- `seam_smoothing.py` — no seam-smoothing function in 0.41.0.
+- `utils.py` — layout / resize / RoPE-index helpers; its `calculate_dimensions` differs from qwenimage's.
+- `compat.py` — a transformers typing shim, not diffusers code.
+- `_refresh.py`, `__init__.py` — this project's own refresh script and package marker.
 
 ## Refresh workflow
 

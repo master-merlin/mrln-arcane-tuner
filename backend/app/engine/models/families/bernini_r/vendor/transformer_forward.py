@@ -227,7 +227,7 @@ def bernini_packed_forward(
     # harmless for the 1.3B (~13.6 GB peak), fatal for the 14B (40 blocks × dim
     # 5120 × ~13.8k packed tokens retained ~80-100 GB of activations → 189.9 GiB
     # OOM at the first training forward on a 95.6 GiB card). We re-implement the
-    # STOCK gate verbatim (diffusers 0.39 transformer_wan.py:694-701): route each
+    # STOCK gate verbatim (diffusers 0.41.0 transformer_wan.py:697-704): route each
     # block through the model's OWN ``_gradient_checkpointing_func`` (installed by
     # ``enable_gradient_checkpointing`` — modeling_utils.py:285-313) iff grad is
     # enabled AND checkpointing is on. The ``torch.is_grad_enabled()`` half keeps

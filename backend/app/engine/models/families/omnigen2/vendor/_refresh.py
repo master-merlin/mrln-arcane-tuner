@@ -46,9 +46,6 @@ FILES_TO_COPY: dict[str, str] = {
     "omnigen2/models/transformers/transformer_omnigen2.py": "models/transformers/transformer_omnigen2.py",
     "omnigen2/models/transformers/repo.py": "models/transformers/repo.py",
     "omnigen2/models/transformers/block_lumina2.py": "models/transformers/block_lumina2.py",
-    "omnigen2/models/transformers/components.py": "models/transformers/components.py",
-    "omnigen2/models/attention_processor.py": "models/attention_processor.py",
-    "omnigen2/models/embeddings.py": "models/embeddings.py",
     "omnigen2/schedulers/scheduling_flow_match_euler_discrete.py": "schedulers/scheduling_flow_match_euler_discrete.py",
 }
 

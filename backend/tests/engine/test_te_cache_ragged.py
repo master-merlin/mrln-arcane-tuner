@@ -277,7 +277,7 @@ def test_krea2_is_fixed_length_and_exempt():
     that the exemption premise (fixed length) still holds."""
     import inspect
 
-    from app.engine.models.families.krea2.vendor import krea2_conditioning
+    from diffusers import Krea2Pipeline
 
-    src = inspect.getsource(krea2_conditioning.get_text_hidden_states)
+    src = inspect.getsource(Krea2Pipeline.get_text_hidden_states)
     assert 'padding="max_length"' in src

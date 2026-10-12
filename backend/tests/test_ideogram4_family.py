@@ -1,6 +1,8 @@
 """Smoke tests for the Ideogram 4 model family (no weights downloaded)."""
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 import torch
 
@@ -348,15 +350,23 @@ def _make_driver_with_stub_dit(feat_dim=8, latent_h=4, latent_w=4):
     captured = {}
 
     class _DiT(torch.nn.Module):
-        def forward(self, *, llm_features, x, t, position_ids, segment_ids, indicator):
-            captured["t"] = t.detach().clone()
-            captured["L"] = x.shape[1]
+        # The release Ideogram4Transformer2DModel signature (diffusers 0.41.0,
+        # transformer_ideogram4.py:374); ``dtype`` is what the driver casts to.
+        dtype = torch.float32
+
+        def forward(
+            self, *, hidden_states, timestep, encoder_hidden_states, position_ids,
+            segment_ids, indicator, return_dict=True,
+        ):
+            captured["t"] = timestep.detach().clone()
+            captured["L"] = hidden_states.shape[1]
             captured["position_ids"] = position_ids.detach().clone()
             captured["segment_ids"] = segment_ids.detach().clone()
             captured["indicator"] = indicator.detach().clone()
-            captured["llm_features"] = llm_features.detach().clone()
-            captured["x"] = x.detach().clone()
-            return torch.zeros(x.shape[0], x.shape[1], x.shape[2])
+            captured["llm_features"] = encoder_hidden_states.detach().clone()
+            captured["x"] = hidden_states.detach().clone()
+            out = torch.zeros(hidden_states.shape)
+            return (out,) if not return_dict else {"sample": out}
 
     defn = ModelDefinition(id="x", family="ideogram4", name="X")
     drv = IdeogramV4Driver(defn, torch.device("cpu"))
@@ -626,6 +636,320 @@ def test_run_qwen3vl_layers_builds_the_mask_with_the_installed_transformers():
     out = drv._run_qwen3vl_layers(lm, token_ids, attention_mask, pos_2d, torch.float32)
     assert out.shape == (1, 5, HID * 2)
     assert torch.isfinite(out).all()
+
+
+# ── LANE-150: diffusers 0.41.0's Ideogram4Transformer2DModel replaces vendor/ ──
+#
+# The fixtures are what the VENDORED fused model produced (task 13's probe,
+# .agent/workdir/lane-150/probes/ideogram4_parity_probe.py); nothing below imports vendor/.
+
+_IG4_FIXTURES = Path(__file__).resolve().parents[1] / "app" / "engine" / "tests" / "fixtures" / "ideogram4"
+_IG4_TARGETS = ["to_q", "to_k", "to_v", "to_out.0", "w1", "w2", "w3"]
+# The fixture's tiny config in the release spelling (hidden 16 = 8 x 2 heads).
+_IG4_TINY = dict(
+    in_channels=8, num_layers=2, attention_head_dim=8, num_attention_heads=2, intermediate_size=32,
+    adaln_dim=8, llm_features_dim=12, rope_theta=10000, mrope_section=(1, 1, 1), norm_eps=1e-5,
+)
+_IG4_H = 16
+
+
+def _ig4_npz() -> dict:
+    import numpy as np
+
+    with np.load(_IG4_FIXTURES / "vendor_parity.npz") as z:
+        return {k: z[k] for k in z.files}
+
+
+def _ig4_release_tiny():
+    """A fresh release tiny model carrying the fixture's (vendored, fused) weights."""
+    from diffusers import Ideogram4Transformer2DModel
+
+    from app.engine.models.families.ideogram4 import utils
+
+    sd = {k[3:]: torch.from_numpy(v) for k, v in _ig4_npz().items() if k.startswith("sd.")}
+    model = Ideogram4Transformer2DModel(**_IG4_TINY)
+    model.load_state_dict(utils.convert_transformer_state_dict(sd), strict=True)
+    return model.eval()
+
+
+def _ig4_inputs() -> dict:
+    s = _ig4_npz()
+    return dict(
+        hidden_states=torch.from_numpy(s["in.x"]), timestep=torch.from_numpy(s["in.t"]),
+        encoder_hidden_states=torch.from_numpy(s["in.llm_features"]),
+        position_ids=torch.from_numpy(s["in.position_ids"]),
+        segment_ids=torch.from_numpy(s["in.segment_ids"]), indicator=torch.from_numpy(s["in.indicator"]),
+    )
+
+
+def _ig4_forward(model) -> torch.Tensor:
+    with torch.no_grad():
+        return model(**_ig4_inputs(), return_dict=False)[0].float()
+
+
+def _ig4_peft(rank: int, targets=None):
+    from peft import LoraConfig, get_peft_model
+
+    return get_peft_model(
+        _ig4_release_tiny(), LoraConfig(r=rank, lora_alpha=rank, target_modules=targets or _IG4_TARGETS),
+    )
+
+
+def _ig4_lora_layers(peft_model) -> dict:
+    """``module path -> PEFT LoRA layer`` (paths without the ``base_model.model.`` prefix)."""
+    return {
+        n.removeprefix("base_model.model."): m
+        for n, m in peft_model.named_modules() if hasattr(m, "lora_A") and "default" in getattr(m, "lora_A", {})
+    }
+
+
+def _ig4_seed_adapter(peft_model, seed: int = 0) -> None:
+    """Nonzero ``lora_A`` AND ``lora_B`` (PEFT's zero ``lora_B`` init would pin nothing)."""
+    g = torch.Generator().manual_seed(seed)
+    with torch.no_grad():
+        for layer in _ig4_lora_layers(peft_model).values():
+            for w in (layer.lora_A["default"].weight, layer.lora_B["default"].weight):
+                w.copy_(torch.randn(w.shape, generator=g) * 0.1)
+
+
+def _ig4_split_deltas(peft_model) -> dict:
+    return {
+        path: layer.lora_B["default"].weight.detach() @ layer.lora_A["default"].weight.detach()
+        for path, layer in _ig4_lora_layers(peft_model).items()
+    }
+
+
+def _ig4_save(peft_model, path) -> dict:
+    """The CURRENT saver on the PEFT model; returns the file's tensors (fp32 so 1e-6 holds)."""
+    from safetensors.torch import load_file
+
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+
+    defn = ModelDefinition(id="x", family="ideogram4", name="X", lora_targetable_modules=["qkv", "o", "w1", "w2", "w3"])
+    IdeogramV4Driver(defn, torch.device("cpu")).get_saver().save(
+        components={"unet": peft_model, "config": {"save_precision": "fp32"}}, path=path,
+    )
+    return load_file(str(path))
+
+
+def _ig4_convert(file_sd: dict) -> dict:
+    from diffusers.loaders.lora_conversion_utils import _convert_non_diffusers_ideogram4_lora_to_diffusers
+
+    return _convert_non_diffusers_ideogram4_lora_to_diffusers(dict(file_sd))
+
+
+def _ig4_apply_converted(converted: dict):
+    """diffusers' own loader path: ranks read from the tensor shapes, no alphas -> scale 1."""
+    model = _ig4_release_tiny()
+    model.load_lora_adapter(converted, prefix="transformer", adapter_name="default")
+    return model
+
+
+def _ig4_check(name: str, out: torch.Tensor, ref: torch.Tensor, atol: float) -> None:
+    assert tuple(out.shape) == tuple(ref.shape), f"LANE-150 parity ideogram4/{name}: shape {tuple(out.shape)}"
+    diff = float((out - ref).abs().max())
+    assert diff <= atol, f"LANE-150 parity ideogram4/{name}: max|release - fixture| = {diff:.3e} > {atol:g}"
+
+
+def test_get_lora_targets_expands_the_fused_names_at_the_peft_boundary():
+    """The released definition list [qkv, o, w1, w2, w3] names the release's split modules."""
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+
+    defn = ModelDefinition(id="x", family="ideogram4", name="X", lora_targetable_modules=["qkv", "o", "w1", "w2", "w3"])
+    assert IdeogramV4Driver(defn, torch.device("cpu")).get_lora_targets() == _IG4_TARGETS
+    bare = ModelDefinition(id="x", family="ideogram4", name="X")
+    assert IdeogramV4Driver(bare, torch.device("cpu")).get_lora_targets() == _IG4_TARGETS
+
+
+def test_expanded_targets_inject_into_the_release_model():
+    """PEFT finds every expanded target on the release class (the fused names find nothing)."""
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+
+    defn = ModelDefinition(id="x", family="ideogram4", name="X", lora_targetable_modules=["qkv", "o", "w1", "w2", "w3"])
+    model = _ig4_peft(4, IdeogramV4Driver(defn, torch.device("cpu")).get_lora_targets())
+    paths = set(_ig4_lora_layers(model))
+    for i in range(2):
+        for name in ("attention.to_q", "attention.to_k", "attention.to_v", "attention.to_out.0",
+                     "feed_forward.w1", "feed_forward.w2", "feed_forward.w3"):
+            assert f"layers.{i}.{name}" in paths
+
+
+def test_ideogram4_saver_emits_the_released_fused_keys(tmp_path):
+    """Q3 (interview): the file keeps the released ``attention.qkv`` / ``attention.o`` key names."""
+    import json
+
+    from safetensors import safe_open
+
+    model = _ig4_peft(16)
+    _ig4_seed_adapter(model)
+    path = tmp_path / "ig4.safetensors"
+    sd = _ig4_save(model, path)
+    keys = sorted(sd)
+    pinned = json.loads((_IG4_FIXTURES / "lora_keys.json").read_text(encoding="utf-8"))
+    extra, missing = sorted(set(keys) - set(pinned)), sorted(set(pinned) - set(keys))
+    assert keys == pinned, (
+        f"LANE-150 lora keys ideogram4: saved keys differ from fixtures/ideogram4/lora_keys.json: "
+        f"+{extra[:5]} -{missing[:5]} ({len(extra)} extra, {len(missing)} missing)"
+    )
+    # Rank 3r on the fused qkv (spec Decisions 1.01, the recorded behaviour change).
+    a = sd["diffusion_model.layers.0.attention.qkv.lora_A.weight"]
+    b = sd["diffusion_model.layers.0.attention.qkv.lora_B.weight"]
+    assert tuple(a.shape) == (48, _IG4_H) and tuple(b.shape) == (3 * _IG4_H, 48)
+    deltas = _ig4_split_deltas(model)
+    for i in range(2):
+        p = f"diffusion_model.layers.{i}.attention."
+        fused = sd[p + "qkv.lora_B.weight"] @ sd[p + "qkv.lora_A.weight"]
+        split = torch.cat([deltas[f"layers.{i}.attention.{n}"] for n in ("to_q", "to_k", "to_v")], dim=0)
+        assert torch.allclose(fused, split, atol=1e-6, rtol=0)
+        o = sd[p + "o.lora_B.weight"] @ sd[p + "o.lora_A.weight"]
+        assert torch.allclose(o, deltas[f"layers.{i}.attention.to_out.0"], atol=1e-6, rtol=0)
+    with safe_open(str(path), "pt") as f:
+        assert f.metadata()["ss_network_dim"] == "16"
+
+
+def test_ideogram4_refused_export_is_the_trained_function(tmp_path):
+    """Adapter parity (ii): the file the saver writes is the vendored fused model's function.
+
+    The fixture's split adapter (rank 4, alpha 4: scale 1) goes into the release PEFT model, through
+    the CURRENT ``IdeogramV4Saver.save``, back out of the file through diffusers' 0.41 converter onto
+    a FRESH release model; its forward must equal the vendored fused model carrying the same
+    adapter as a merged delta (``adapter_forward``). A wrong block order fails here numerically.
+    """
+    s = _ig4_npz()
+    model = _ig4_peft(4)
+    layers = _ig4_lora_layers(model)
+    installed = 0
+    with torch.no_grad():
+        for key, value in s.items():
+            if not key.startswith("adapter."):
+                continue
+            path, which = key[len("adapter."):].rsplit(".", 1)
+            getattr(layers[path], which)["default"].weight.copy_(torch.from_numpy(value))
+            installed += 1
+    assert installed == 2 * len(layers) == 28
+    converted = _ig4_convert(_ig4_save(model, tmp_path / "ig4.safetensors"))
+    out = _ig4_forward(_ig4_apply_converted(converted))
+    _ig4_check("adapter_forward", out, torch.from_numpy(s["adapter_forward"]), 1e-5)
+
+
+def test_ideogram4_lora_file_loads_through_the_0_41_converter(tmp_path):
+    """Round trip (iii): converter output == installed split deltas; applied, == the PEFT forward."""
+    model = _ig4_peft(16)
+    _ig4_seed_adapter(model, seed=1)
+    converted = _ig4_convert(_ig4_save(model, tmp_path / "ig4.safetensors"))
+    deltas = _ig4_split_deltas(model)
+    seen = 0
+    for path, delta in deltas.items():
+        a = converted[f"transformer.{path}.lora_A.weight"]
+        b = converted[f"transformer.{path}.lora_B.weight"]
+        assert torch.allclose(b @ a, delta, atol=1e-6, rtol=0), f"LANE-150 converter delta {path}"
+        seen += 1
+    assert seen == 14 and len(converted) == 2 * seen
+    _ig4_check("converter_round_trip", _ig4_forward(_ig4_apply_converted(converted)), _ig4_forward(model), 1e-6)
+
+
+def test_ideogram4_saver_zero_fills_an_untrained_projection(tmp_path):
+    """A custom target list training only to_q still writes the fused layout, as the trained function."""
+    model = _ig4_peft(4, ["to_q", "w1"])
+    _ig4_seed_adapter(model, seed=2)
+    sd = _ig4_save(model, tmp_path / "ig4.safetensors")
+    deltas = _ig4_split_deltas(model)
+    p = "diffusion_model.layers.0.attention.qkv."
+    fused = sd[p + "lora_B.weight"] @ sd[p + "lora_A.weight"]
+    assert tuple(fused.shape) == (3 * _IG4_H, _IG4_H)
+    assert torch.allclose(fused[:_IG4_H], deltas["layers.0.attention.to_q"], atol=1e-6, rtol=0)
+    assert torch.count_nonzero(fused[_IG4_H:]) == 0
+    converted = _ig4_convert(sd)
+    _ig4_check("partial_targets", _ig4_forward(_ig4_apply_converted(converted)), _ig4_forward(model), 1e-6)
+
+
+def test_ideogram4_pre_lane_rank_r_file_loads_through_the_0_41_converter():
+    """(iv): a file saved BEFORE this lane (shared rank-4 ``lora_A``) still loads on the release."""
+    from safetensors.torch import load_file
+
+    converted = _ig4_convert(load_file(str(_IG4_FIXTURES / "legacy_lora_rank4.safetensors")))
+    for i in range(2):
+        for proj in ("to_q", "to_k", "to_v"):
+            p = f"transformer.layers.{i}.attention.{proj}"
+            assert tuple(converted[p + ".lora_A.weight"].shape) == (4, _IG4_H)
+            assert tuple(converted[p + ".lora_B.weight"].shape) == (_IG4_H, 4)
+    model = _ig4_apply_converted({k: v.float() for k, v in converted.items()})
+    assert torch.isfinite(_ig4_forward(model)).all()
+
+
+def test_translate_transformer_config_accepts_both_spellings():
+    from app.engine.models.families.ideogram4 import utils
+
+    legacy = utils.translate_transformer_config(
+        {"emb_dim": 4608, "num_heads": 18, "adanln_dim": 512, "num_layers": 34, "_class_name": "X"},
+    )
+    assert legacy["attention_head_dim"] == 256 and legacy["num_attention_heads"] == 18
+    assert legacy["adaln_dim"] == 512 and legacy["num_layers"] == 34
+    assert not {"emb_dim", "num_heads", "adanln_dim"} & set(legacy)
+    release = {"attention_head_dim": 256, "num_attention_heads": 18, "adaln_dim": 512, "num_layers": 34}
+    assert utils.translate_transformer_config(dict(release)) == release
+
+
+def test_translate_transformer_config_refuses_a_silent_default():
+    """Neither spelling: the class defaults (18 x 256, 512) must never fill the gap."""
+    from app.engine.models.families.ideogram4 import utils
+
+    with pytest.raises(ValueError, match="attention_head_dim"):
+        utils.translate_transformer_config({})
+    with pytest.raises(ValueError, match="num_attention_heads"):
+        utils.translate_transformer_config({"emb_dim": 4608, "adaln_dim": 512})
+
+
+def test_convert_transformer_state_dict_splits_qkv_and_renames_o():
+    from app.engine.models.families.ideogram4 import utils
+
+    qkv = torch.arange(6 * 2, dtype=torch.float32).reshape(6, 2)
+    out = utils.convert_transformer_state_dict({
+        "layers.0.attention.qkv.weight": qkv, "layers.0.attention.o.weight": torch.ones(2, 2),
+        "layers.0.feed_forward.w1.weight": torch.zeros(3, 2),
+    })
+    assert set(out) == {
+        "layers.0.attention.to_q.weight", "layers.0.attention.to_k.weight", "layers.0.attention.to_v.weight",
+        "layers.0.attention.to_out.0.weight", "layers.0.feed_forward.w1.weight",
+    }
+    assert torch.equal(torch.cat([out[f"layers.0.attention.{n}.weight"] for n in ("to_q", "to_k", "to_v")]), qkv)
+    # An already-split dict passes through unchanged.
+    assert set(utils.convert_transformer_state_dict(dict(out))) == set(out)
+
+
+def test_forward_pass_bf16_release_model_fp32_latents_returns_float32():
+    """The driver casts the inputs to the model dtype and the output back to float32."""
+    from diffusers import Ideogram4Transformer2DModel
+    from peft import LoraConfig, get_peft_model
+
+    from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
+
+    torch.manual_seed(0)
+    dit = Ideogram4Transformer2DModel(
+        in_channels=128, num_layers=1, attention_head_dim=8, num_attention_heads=2, intermediate_size=32,
+        adaln_dim=8, llm_features_dim=8, rope_theta=10000, mrope_section=(1, 1, 1),
+    ).to(torch.bfloat16)
+    drv = IdeogramV4Driver(ModelDefinition(id="x", family="ideogram4", name="X"), torch.device("cpu"))
+    drv.transformer = get_peft_model(dit, LoraConfig(r=4, lora_alpha=4, target_modules=drv.get_lora_targets()))
+    text = (torch.randn(2, 5, 8), torch.ones(2, 5, dtype=torch.bool))
+    out = drv.forward_pass(torch.randn(2, 16, 128), torch.tensor([500.0, 250.0]), text, {"latent_h": 4, "latent_w": 4})
+    assert out.dtype == torch.float32 and tuple(out.shape) == (2, 16, 128)
+    assert torch.isfinite(out).all()
+
+
+def test_no_vendor_import_remains():
+    """ideogram4 keeps no vendored diffusers copy: no vendor/ directory, no import of it under backend/."""
+    import re
+
+    backend = Path(__file__).resolve().parents[1]
+    family = backend / "app" / "engine" / "models" / "families" / "ideogram4"
+    assert not (family / "vendor").exists(), f"ideogram4/vendor must be gone: {family / 'vendor'}"
+    pat = re.compile("families" + r"\.ideogram4\.vendor|" + "modeling_" + "ideogram4|" + "autoencoder_" + "ideogram4")
+    offenders = [
+        str(f) for root in (backend / "app", backend / "tests") for f in root.rglob("*.py")
+        if pat.search(f.read_text(encoding="utf-8", errors="replace"))
+    ]
+    assert not offenders, f"ideogram4 still names the retired vendor copy: {offenders}"
 
 
 if __name__ == "__main__":

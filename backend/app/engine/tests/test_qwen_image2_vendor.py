@@ -1,23 +1,20 @@
-"""Vendor tests for the qwen_image2 family (LANE-132 Task 1 -- the vendor drop only).
+"""Tests for the qwen_image2 family on diffusers 0.41.0's own classes (LANE-150).
 
-``qwen_image2/vendor/`` carries diffusers ``6256aa7666`` ("Add Qwen-Image 2.1
-(#14804)", Apache-2.0): the transformer, the VAE and the encode/pack helpers of
-the pipeline. diffusers 0.41.0 (the pinned release since LANE-149) exports them;
-LANE-150 retires the copy. These tests pin:
+LANE-132 vendored diffusers ``6256aa7666`` ("Add Qwen-Image 2.1 (#14804)") as
+``qwen_image2/vendor/``; diffusers 0.41.0 ships the transformer, the VAE and the
+pipeline helpers, so LANE-150 deleted the copy. These tests pin:
 
-  1. The vendored transformer builds from the Qwen-Image-2.1
+  1. The release transformer builds from the Qwen-Image-2.1
      ``transformer/config.json`` values (Evidence:
-     ``.agent/workdir/lane-104/step1-weights.log`` line 4) at a tiny depth, and a
-     narrow CPU copy runs one forward over the pipeline's own joint-sequence
-     layout.
-  2. The vendored VAE builds from the ``vae/config.json`` values at a narrow
-     width and compresses 16x spatially into 64 channels.
-  3. The pipeline helpers pack/unpack losslessly and normalise VAE latents with
-     the config's mean/std.
-  4. Retirement: the day diffusers exports any of the vendored classes, the
-     vendor copy is due for retirement and a test says so by name.
-  5. Provenance: each vendored file keeps the upstream Apache header and names
-     the upstream commit; NOTICE carries the entry.
+     ``.agent/workdir/lane-104/step1-weights.log`` line 4) and a tiny CPU copy
+     runs one forward over the pipeline's own joint-sequence layout.
+  2. The release VAE compresses 16x spatially into 64 channels.
+  3. The pipeline helpers pack/unpack losslessly and normalise VAE latents.
+  4. Parity: the release output equals the pinned-seed fixture
+     (``fixtures/qwen_image2/vendor_parity.npz``, captured from the release
+     copy before its deletion, LANE-150 commit 1) at ``atol=1e-6``.
+  5. Retirement: the vendor package is gone, the loader names the release
+     classes, nothing imports them at registry import (ARCHITECTURE D1).
 """
 
 from __future__ import annotations
@@ -25,13 +22,8 @@ from __future__ import annotations
 import math
 from pathlib import Path
 
-import pytest
 import torch
 
-VENDOR = "app.engine.models.families.qwen_image2.vendor"
-VENDOR_DIR = Path(__file__).resolve().parents[1] / "models" / "families" / "qwen_image2" / "vendor"
-REPO_ROOT = Path(__file__).resolve().parents[4]
-UPSTREAM_COMMIT = "6256aa7666"
 
 # Qwen/Qwen-Image-2.1 @ 790c92633540, transformer/config.json and vae/config.json
 # (Evidence: .agent/workdir/lane-104/step1-weights.log lines 4-5).
@@ -58,29 +50,11 @@ VAE_CONFIG = {
     "z_dim": 64,
 }
 
-# The classes the vendor copy stands in for. When diffusers exports one, the
-# family should use it and ``qwen_image2/vendor/`` retires.
-VENDORED_UPSTREAM_CLASSES = (
-    "QwenImage21Transformer2DModel",
-    "AutoencoderKLQwenImage21",
-    "QwenImage21Pipeline",
-)
-
-
-def _diffusers_exports(name: str) -> bool:
-    """The retirement probe: does the installed diffusers export ``name``?"""
-    import diffusers
-
-    return hasattr(diffusers, name)
-
-
 # --- 1. transformer ----------------------------------------------------------
 
 
 def test_transformer_builds_from_the_21_config_at_one_layer():
-    from app.engine.models.families.qwen_image2.vendor.transformer_qwenimage21 import (
-        QwenImage21Transformer2DModel,
-    )
+    from diffusers import QwenImage21Transformer2DModel
 
     config = {**TRANSFORMER_CONFIG, "num_layers": 1}
     # Full width is ~0.3 B parameters per layer; the meta device builds the
@@ -102,9 +76,7 @@ def test_transformer_builds_from_the_21_config_at_one_layer():
 
 
 def _tiny_transformer():
-    from app.engine.models.families.qwen_image2.vendor.transformer_qwenimage21 import (
-        QwenImage21Transformer2DModel,
-    )
+    from diffusers import QwenImage21Transformer2DModel
 
     torch.manual_seed(0)
     # Real head_dim and rope axes (they must sum to it), 2 heads, 2 layers, a
@@ -171,9 +143,7 @@ def test_transformer_declares_gradient_checkpointing_and_peft():
 
 
 def _tiny_vae():
-    from app.engine.models.families.qwen_image2.vendor.autoencoder_kl_qwenimage21 import (
-        AutoencoderKLQwenImage21,
-    )
+    from diffusers import AutoencoderKLQwenImage21
 
     torch.manual_seed(0)
     # The 2.1 layout (5 levels, 64 latent channels, 4 image channels) at a
@@ -203,84 +173,232 @@ def test_vae_compresses_16x_into_64_channels_and_decodes_back():
 
 
 def test_pack_and_unpack_latents_round_trip():
-    from app.engine.models.families.qwen_image2.vendor.pipeline_qwenimage21 import QwenImage21PipelineHelpers
+    from diffusers import QwenImage21Pipeline
 
-    helpers = QwenImage21PipelineHelpers()
-    assert helpers.vae_scale_factor == 16
     latents = torch.randn(2, 64, 1, 4, 6)
-    packed = helpers._pack_latents(latents, 2, 64, 4, 6)
+    packed = QwenImage21Pipeline._pack_latents(latents, 2, 64, 4, 6)
     # 2.1 is unpatched: one token per latent pixel, 64 channels per token.
     assert packed.shape == (2, 24, 64)
     assert torch.equal(packed[0, 7], latents[0, :, 0, 1, 1])
-    unpacked = helpers._unpack_latents(packed, 4 * 16, 6 * 16, helpers.vae_scale_factor)
+    unpacked = QwenImage21Pipeline._unpack_latents(packed, 4 * 16, 6 * 16, 16)
     assert torch.equal(unpacked, latents)
 
 
-def test_encode_vae_image_normalises_with_the_config_mean_and_std():
-    from app.engine.models.families.qwen_image2.vendor.pipeline_qwenimage21 import (
-        QwenImage21PipelineHelpers,
-        retrieve_latents,
-    )
+def _release_encode_vae_image(vae, image):
+    """Run diffusers 0.41.0's ``QwenImage21Pipeline._encode_vae_image``.
 
-    vae = _tiny_vae()
-    helpers = QwenImage21PipelineHelpers(vae=vae)
-    assert helpers.latent_channels == 64
-    image = torch.rand(1, 4, 1, 32, 32) * 2 - 1
+    Evidence: diffusers/pipelines/qwenimage21/pipeline_qwenimage21.py:429 (the
+    same name and signature the vendored helper had; ``_encode_vae_image(image,
+    generator)``, argmax posterior, then ``(x - latents_mean) / latents_std``
+    at :433-445). The constructor needs a real processor, the rest may be None.
+    """
+    from diffusers import QwenImage21Pipeline
+
+    tiny = _load_module("qwen_image2_tiny_encode", _FIXTURES / "tiny.py")
+    pipe = QwenImage21Pipeline(
+        scheduler=None, vae=vae, text_encoder=None, processor=tiny.tiny_processor(), transformer=None,
+    )
+    assert pipe.latent_channels == 64
     with torch.no_grad():
-        normalised = helpers._encode_vae_image(image, generator=None)
+        return pipe._encode_vae_image(image, generator=None)
+
+
+def _expected_normalised(vae, image, std_override=None):
+    from diffusers.pipelines.qwenimage21.pipeline_qwenimage21 import retrieve_latents
+
+    with torch.no_grad():
         raw = retrieve_latents(vae.encode(image), sample_mode="argmax")
     mean = torch.tensor(vae.config.latents_mean).view(1, 64, 1, 1, 1)
-    std = torch.tensor(vae.config.latents_std).view(1, 64, 1, 1, 1)
-    assert torch.allclose(normalised, (raw - mean) / std)
+    std = torch.tensor(vae.config.latents_std).view(1, 64, 1, 1, 1) if std_override is None else std_override
+    return raw, (raw - mean) / std
+
+
+def test_encode_vae_image_normalises_with_the_config_mean_and_std():
+    vae = _tiny_vae()
+    image = torch.rand(1, 4, 1, 32, 32) * 2 - 1
+    normalised = _release_encode_vae_image(vae, image)
+    raw, expected = _expected_normalised(vae, image)
+    assert torch.allclose(normalised, expected)
     assert not torch.allclose(normalised, raw)
 
 
 def test_calculate_shift_matches_the_upstream_anchors():
-    from app.engine.models.families.qwen_image2.vendor.pipeline_qwenimage21 import calculate_shift
+    from diffusers.pipelines.qwenimage21.pipeline_qwenimage21 import calculate_shift
 
     assert math.isclose(calculate_shift(256), 0.5)
     assert math.isclose(calculate_shift(4096), 1.15)
 
 
-# --- 4. retirement -----------------------------------------------------------
+# --- 4. LANE-150 parity against the pinned-seed fixture ------------------------
+#
+# ``vendor_parity.npz`` holds the inputs and the outputs the VENDORED copy
+# produced (captured in LANE-150 commit 1, before the copy was deleted);
+# ``lora_keys.json`` the sorted key list the saver emitted for the tiny vendored
+# model. Both are read-only here: a missing fixture is a failure, never a
+# silent re-capture from the release.
+
+import importlib.util  # noqa: E402
+import json  # noqa: E402
+
+import numpy as np  # noqa: E402
+
+_TESTS = Path(__file__).resolve().parent
+_FIXTURES = _TESTS / "fixtures" / "qwen_image2"
+PARITY_NPZ = _FIXTURES / "vendor_parity.npz"
+LORA_KEYS = _FIXTURES / "lora_keys.json"
+PARITY_ATOL = 1e-5
 
 
-@pytest.mark.parametrize("name", VENDORED_UPSTREAM_CLASSES)
-def test_vendor_is_due_for_retirement_on_the_pinned_release(name):
+def _load_module(name: str, path: Path):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def _assert_parity(tensor: str, release: torch.Tensor, reference: np.ndarray, atol: float | None = None):
+    # The fp32 bound is 1e-5 + 2**-20 * max|fixture| (8 fp32 ulps of the output's largest magnitude).
+    # Evidence: CI run 38288827375 on 6f972bdd measured max|release - fixture| = 3.189e-06 (the capture
+    # host measures 0.0): CI CPU kernels round differently at the 1e-6 scale. The bound stays ~100x
+    # under the 1e-3 perturbation mutant, so a real divergence still fails.
+    if atol is None:
+        atol = PARITY_ATOL + 2**-20 * float(np.abs(reference).max())
+    diff = float(np.abs(release.detach().float().numpy() - reference).max())
+    assert diff <= atol, f"LANE-150 parity qwen_image2/{tensor}: max|release - fixture| = {diff:.3e} > {atol}"
+
+
+def _fixture() -> dict:
+    assert PARITY_NPZ.exists(), f"LANE-150: the parity fixture {PARITY_NPZ} is missing"
+    with np.load(PARITY_NPZ) as z:
+        return {k: z[k] for k in z.files}
+
+
+def _transformer_inputs(stored: dict):
+    t = {k: torch.from_numpy(stored[k]) for k in ("t_hidden", "t_text", "t_timestep", "t_mask")}
+    b, tokens = t["t_hidden"].shape[:2]
+    return t, (b, 4, 6)
+
+
+def _run_transformer(model, inputs, hw):
+    b, h, w = hw
+    with torch.no_grad():
+        return model(
+            hidden_states=inputs["t_hidden"],
+            encoder_hidden_states=inputs["t_text"],
+            timestep=inputs["t_timestep"],
+            img_shapes=[[(1, h, w)]] * b,
+            img_mask=inputs["t_mask"],
+            return_dict=False,
+        )[0]
+
+
+def test_release_transformer_matches_the_vendored_forward():
     import diffusers
 
-    assert _diffusers_exports(name), (
-        f"LANE-149: diffusers {diffusers.__version__} does not export {name}; "
-        "the pinned release must ship the classes qwen_image2/vendor/ stands in for (LANE-150 retires the copy)"
+    tiny = _load_module("qwen_image2_tiny_parity", _FIXTURES / "tiny.py")
+    stored = _fixture()
+    inputs, hw = _transformer_inputs(stored)
+    release = tiny.tiny_transformer().eval()  # the release class, seed 0 = the fixture's weights
+    assert type(release) is diffusers.QwenImage21Transformer2DModel
+    _assert_parity("transformer", _run_transformer(release, inputs, hw), stored["t_out"])
+
+
+def test_release_vae_matches_the_vendored_encode_decode():
+    import diffusers
+
+    tiny = _load_module("qwen_image2_tiny_parity_vae", _FIXTURES / "tiny.py")
+    stored = _fixture()
+    image = torch.from_numpy(stored["v_image"])
+    release = tiny.tiny_vae()
+    assert type(release) is diffusers.AutoencoderKLQwenImage21
+    with torch.no_grad():
+        lat = release.encode(image).latent_dist.mode()
+        dec = release.decode(lat).sample
+    _assert_parity("vae_latents", lat, stored["v_latents"])
+    _assert_parity("vae_decoded", dec, stored["v_decoded"])
+
+
+def test_saver_key_set_is_pinned(tmp_path):
+    from safetensors import safe_open
+
+    assert LORA_KEYS.exists(), f"LANE-150: {LORA_KEYS} is missing"
+    training = _load_module("qwen_image2_training_for_keys", _TESTS / "test_qwen_image2_training.py")
+    path = training._trained_lora_file(tmp_path)
+    with safe_open(str(path), "pt") as f:
+        keys = sorted(f.keys())
+    pinned = json.loads(LORA_KEYS.read_text(encoding="utf-8"))
+    extra, missing = sorted(set(keys) - set(pinned)), sorted(set(pinned) - set(keys))
+    assert keys == pinned, (
+        f"LANE-150 lora keys qwen_image2: saved keys differ from fixtures/qwen_image2/lora_keys.json: "
+        f"+{extra} -{missing}"
     )
 
 
-# --- 5. provenance -----------------------------------------------------------
+# --- 5. LANE-150 retirement record ---------------------------------------------
+
+import subprocess  # noqa: E402
+import sys  # noqa: E402
+
+_BACKEND = Path(__file__).resolve().parents[3]
+_FAMILY_DIR = Path(__file__).resolve().parents[1] / "models" / "families" / "qwen_image2"
+_RETIRED_FILE = "backend/app/engine/models/families/qwen_image2/vendor/transformer_qwenimage21.py"
 
 
-@pytest.mark.parametrize(
-    "filename",
-    ["transformer_qwenimage21.py", "autoencoder_kl_qwenimage21.py", "pipeline_qwenimage21.py"],
-)
-def test_vendored_file_keeps_the_upstream_header_and_names_the_commit(filename):
-    text = (VENDOR_DIR / filename).read_text(encoding="utf-8")
-    head = text[:3000]
-    assert "The HuggingFace Team. All rights reserved." in head
-    assert 'Licensed under the Apache License, Version 2.0 (the "License");' in head
-    assert UPSTREAM_COMMIT in head
-    # Absolute diffusers imports only: upstream's parent-relative imports would
-    # resolve inside our package and fail at import.
-    assert "from .." not in text
+def test_vendor_copy_is_retired_and_the_loader_names_the_release():
+    from app.engine.models.families.qwen_image2.loader import QwenImage2Loader
+
+    manifest = QwenImage2Loader(torch.device("cpu")).get_component_manifest(None)
+    declared = {spec.key: spec.hf_class for spec in manifest}
+    problems = []
+    if (_FAMILY_DIR / "vendor" / "transformer_qwenimage21.py").exists():
+        problems.append(f"{_RETIRED_FILE} still exists")
+    if declared["unet"] != "diffusers.QwenImage21Transformer2DModel" or declared["vae"] != (
+        "diffusers.AutoencoderKLQwenImage21"
+    ):
+        problems.append(
+            f"the loader must name diffusers.QwenImage21Transformer2DModel, got {declared['unet']}"
+        )
+    elif problems:
+        problems[-1] += "; the loader must name diffusers.QwenImage21Transformer2DModel"
+    assert not problems, "LANE-150: " + "; ".join(problems)
 
 
-def test_notice_names_the_qwen_image2_vendor_copy():
-    notice = (REPO_ROOT / "NOTICE").read_text(encoding="utf-8")
-    assert "qwen_image2" in notice
-    assert UPSTREAM_COMMIT in notice
+def test_no_vendor_import_remains():
+    """No import of the retired vendor package of this family under backend/, no ``vendor/`` directory."""
+    assert not (_FAMILY_DIR / "vendor").exists(), "LANE-150: qwen_image2/vendor/ still exists"
+    needle = "qwen_image2" + ".vendor"
+    hits = [
+        str(p.relative_to(_BACKEND))
+        for p in _BACKEND.rglob("*.py")
+        if "venv" not in p.relative_to(_BACKEND).parts
+        and ".ruff_cache" not in p.parts
+        and needle in p.read_text(encoding="utf-8", errors="ignore")
+    ]
+    assert not hits, f"LANE-150: modules still import the retired qwen_image2 vendor package: {hits}"
 
 
-def test_vendor_imports_without_optional_flex_attention_breaking_startup():
-    import importlib
+def test_the_release_transformer_is_not_imported_at_registry_import():
+    """ARCHITECTURE D1: the release module guards flex_attention with ``except ImportError``
+    only (transformer_qwenimage21.py:46-51), so the project resolves it lazily (hf_class
+    string) and never at startup. A fresh interpreter: this process may have imported diffusers."""
+    module = "diffusers.models.transformers.transformer_qwenimage21"
+    # safety-net print: the fresh-interpreter probe's stdout IS the assertion
+    code = (
+        "import sys, app.engine.models.registry, app.engine.models.families.qwen_image2; "
+        f"print({module!r} in sys.modules)"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code], cwd=_BACKEND, capture_output=True, text=True, timeout=300
+    )
+    assert proc.returncode == 0, proc.stderr[-500:]
+    assert proc.stdout.strip().splitlines()[-1] == "False", (
+        f"LANE-150 (ARCHITECTURE D1): {module} is in sys.modules after importing the registry; "
+        "its flex_attention guard catches ImportError only (transformer_qwenimage21.py:46-51), "
+        "so it must load lazily"
+    )
 
-    for name in ("transformer_qwenimage21", "autoencoder_kl_qwenimage21", "pipeline_qwenimage21"):
-        importlib.import_module(f"{VENDOR}.{name}")
+
+def test_notice_no_longer_lists_the_retired_qwen_image2_vendor_copy():
+    notice = (Path(__file__).resolve().parents[4] / "NOTICE").read_text(encoding="utf-8")
+    assert "qwen_image2" not in notice, "LANE-150: NOTICE still names the retired qwen_image2 vendor copy"
+    assert "6256aa7666" not in notice

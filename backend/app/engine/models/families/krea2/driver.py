@@ -57,6 +57,8 @@ class Krea2Driver(IModelDriver):
         self.text_encoder: nn.Module | None = None
         self.tokenizer: Any = None
         self._components: dict[str, Any] = {}
+        # diffusers' Krea2Pipeline, built lazily from the loaded TE/tokenizer (conditioning helpers only)
+        self._pipeline: Any = None
 
         # Architecture params
         self.max_length: int = TOKENIZER_MAX_LENGTH
@@ -71,6 +73,7 @@ class Krea2Driver(IModelDriver):
     def assign_components(self, components: dict[str, Any]) -> None:
         """Wire loaded Krea-2 components into driver state."""
         self._components = components
+        self._pipeline = None  # rebuilt from the new components on next use
         self.model = components["unet"]
         self.vae = components["vae"]
         self.text_encoder = components.get(
@@ -95,6 +98,35 @@ class Krea2Driver(IModelDriver):
     def release_text_encoders(self) -> None:
         """Null the attr get_text_encoders() reads."""
         self.text_encoder = None
+        self._pipeline = None  # the cached pipeline holds the TE; drop it with it
+
+    def _get_pipeline(self, need_text_encoder: bool = False) -> Any:
+        """diffusers' ``Krea2Pipeline`` carrying only the TE + tokenizer (no transformer / VAE).
+
+        Built once and cached; rebuilt when ``assign_components`` / a direct attribute swap
+        replaced the TE, tokenizer or the model's patch size, dropped by ``release_text_encoders``.
+        """
+        patch_size = 2
+        if self.model is not None:
+            patch_size = getattr(getattr(self.model, "config", None), "patch_size", 2)
+        pipe = self._pipeline
+        if pipe is not None and (
+            pipe.patch_size != patch_size
+            or (self.text_encoder is not None and pipe.text_encoder is not self.text_encoder)
+            or (self.tokenizer is not None and pipe.tokenizer is not self.tokenizer)
+        ):
+            pipe = None
+        if pipe is None:
+            if need_text_encoder and self.text_encoder is None:
+                raise RuntimeError("Krea-2 text encoder is not loaded (released or never assigned)")
+            from diffusers import Krea2Pipeline
+
+            pipe = Krea2Pipeline(
+                scheduler=None, vae=None, text_encoder=self.text_encoder, tokenizer=self.tokenizer,
+                transformer=None, text_encoder_select_layers=self._select_layers, patch_size=patch_size,
+            )
+            self._pipeline = pipe
+        return pipe
 
     def get_lora_targets(self) -> list[str]:
         """Krea-2 LoRA targets — attention + feed-forward projections."""
@@ -160,7 +192,7 @@ class Krea2Driver(IModelDriver):
     ) -> TextEncoderOutput:
         """Encode captions via Qwen3-VL with 12-layer stacking.
 
-        Delegates to the vendored ``get_text_hidden_states`` helper which:
+        Delegates to diffusers' ``Krea2Pipeline.get_text_hidden_states`` which:
         1. Wraps each caption in the Krea-2 chat template
         2. Tokenises with cumulative-valid-token position IDs
         3. Forwards through Qwen3VLModel (output_hidden_states=True)
@@ -176,18 +208,10 @@ class Krea2Driver(IModelDriver):
             - ``embeddings``: ``[B, text_seq_len, 12, 2560]``
             - ``attention_mask``: ``[B, text_seq_len]`` bool
         """
-        from app.engine.models.families.krea2.vendor.krea2_conditioning import (
-            get_text_hidden_states,
-        )
-
+        pipe = self._get_pipeline(need_text_encoder=True)
         with torch.no_grad():
-            hidden_states, attention_mask = get_text_hidden_states(
-                tokenizer=self.tokenizer,
-                text_encoder=self.text_encoder,
-                prompt=captions,
-                select_layers=self._select_layers,
-                max_sequence_length=self.max_length,
-                device=self.device,
+            hidden_states, attention_mask = pipe.get_text_hidden_states(
+                captions, max_sequence_length=self.max_length, device=self.device,
             )
 
         return TextEncoderOutput(
@@ -225,10 +249,7 @@ class Krea2Driver(IModelDriver):
         Returns:
             Velocity prediction ``[B, C, H, W]``.
         """
-        from app.engine.models.families.krea2.vendor.krea2_conditioning import (
-            pack_latents,
-            prepare_position_ids,
-        )
+        from diffusers import Krea2Pipeline
 
         # 1. Unpack text embeddings.
         if isinstance(text_embeddings, tuple):
@@ -244,12 +265,12 @@ class Krea2Driver(IModelDriver):
         pW = W // patch_size
 
         # 2. Patchify: [B, C, H, W] → [B, pH*pW, C*p*p]
-        packed = pack_latents(noisy_input, patch_size=patch_size)
+        packed = self._get_pipeline()._pack_latents(noisy_input, B, C, H, W)
 
         # 3. Build position IDs (shared across batch).
         #    text_seq_len = actual sequence length seen by the model.
         text_seq_len = enc_hs.shape[1]
-        position_ids = prepare_position_ids(text_seq_len, pH, pW, noisy_input.device)
+        position_ids = Krea2Pipeline.prepare_position_ids(text_seq_len, pH, pW, noisy_input.device)
 
         # 4. Scale timesteps: [0, 1000] → [0, 1] (transformer multiplies *1000 internally).
         model_timesteps = timesteps / 1000.0
@@ -272,7 +293,7 @@ class Krea2Driver(IModelDriver):
         pred = output[0] if isinstance(output, tuple) else output
 
         # 6. Inline unpatchify: [B, pH*pW, out_C*p*p] → [B, out_C, H, W].
-        # NOTE: We do NOT use unpack_latents() which returns 5-D (B,C,1,H,W).
+        # NOTE: We do NOT use the pipeline's _unpack_latents which returns 5-D (B,C,1,H,W).
         out_channels = getattr(model.config, "out_channels", C)
         pred = pred.reshape(B, pH, pW, out_channels, patch_size, patch_size)
         pred = pred.permute(0, 3, 1, 4, 2, 5)

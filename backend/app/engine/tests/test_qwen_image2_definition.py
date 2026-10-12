@@ -118,7 +118,7 @@ def test_licence_is_in_the_readme_restricted_table():
 
 # ── Loader: every declared class resolves ───────────────────────────────────
 
-def test_loader_declares_vendored_and_qwen3vl_classes(registry):
+def test_loader_declares_release_and_qwen3vl_classes(registry):
     from app.engine.models.families.qwen_image2.loader import QwenImage2Loader
 
     import torch
@@ -128,14 +128,8 @@ def test_loader_declares_vendored_and_qwen3vl_classes(registry):
     assert declared == {
         "tokenizer": "transformers.Qwen3VLProcessor",
         "text_encoder": "transformers.Qwen3VLForConditionalGeneration",
-        "vae": (
-            "app.engine.models.families.qwen_image2.vendor."
-            "autoencoder_kl_qwenimage21.AutoencoderKLQwenImage21"
-        ),
-        "unet": (
-            "app.engine.models.families.qwen_image2.vendor."
-            "transformer_qwenimage21.QwenImage21Transformer2DModel"
-        ),
+        "vae": "diffusers.AutoencoderKLQwenImage21",
+        "unet": "diffusers.QwenImage21Transformer2DModel",
     }
     # The checkpoint's subfolder names (model_index.json: processor, not tokenizer).
     subfolders = {spec.key: spec.subfolder for spec in manifest}
@@ -151,10 +145,8 @@ def test_loader_declares_vendored_and_qwen3vl_classes(registry):
 
 # ── LoRA targets measured on the real vendored class ────────────────────────
 
-def _vendored_block_linear_suffixes() -> set[str]:
-    from app.engine.models.families.qwen_image2.vendor.transformer_qwenimage21 import (
-        QwenImage21Transformer2DModel,
-    )
+def _release_block_linear_suffixes() -> set[str]:
+    from diffusers import QwenImage21Transformer2DModel
 
     tiny = QwenImage21Transformer2DModel(
         num_layers=2,
@@ -169,13 +161,13 @@ def _vendored_block_linear_suffixes() -> set[str]:
     for name, mod in tiny.named_modules():
         if isinstance(mod, nn.Linear) and name.startswith("transformer_blocks.0."):
             suffixes.add(name[len("transformer_blocks.0."):])
-    assert suffixes, "the tiny vendored transformer exposes no block Linear"
+    assert suffixes, "the tiny release transformer exposes no block Linear"
     return suffixes
 
 
-def test_lora_targets_are_exactly_the_vendored_block_linears(registry):
+def test_lora_targets_are_exactly_the_release_block_linears(registry):
     shipped = set(_defn(registry).lora_targetable_modules)
-    assert shipped == _vendored_block_linear_suffixes()
+    assert shipped == _release_block_linear_suffixes()
 
 
 def test_block_topology_counts_the_checkpoint_blocks(registry):
@@ -183,36 +175,34 @@ def test_block_topology_counts_the_checkpoint_blocks(registry):
     assert [(b["attr_path"], b["count"]) for b in topo] == [("transformer_blocks", 32)]
 
 
-# ── utils: latent arithmetic, cross-checked against the vendored pipeline ───
+# ── utils: latent arithmetic, cross-checked against the release pipeline ───
 
 def test_latent_grid_uses_the_upstream_scale_factor():
     from app.engine.models.families.qwen_image2.utils import VAE_SCALE_FACTOR, latent_grid
 
     # The value is upstream's constant (pipeline_qwenimage21.py
-    # QwenImage21PipelineHelpers.__init__: vae_scale_factor = 16), not a
+    # QwenImage21Pipeline.__init__: vae_scale_factor = 16), not a
     # derivation from vae/config.json (spec scope 4).
     assert VAE_SCALE_FACTOR == 16
     assert latent_grid(512, 512) == (32, 32)
     assert latent_grid(1024, 768) == (64, 48)
 
 
-def test_pack_and_unpack_match_the_vendored_pipeline():
+def test_pack_and_unpack_match_the_release_pipeline():
     import torch
 
     from app.engine.models.families.qwen_image2.utils import pack_latents, unpack_latents
-    from app.engine.models.families.qwen_image2.vendor.pipeline_qwenimage21 import (
-        QwenImage21PipelineHelpers,
-    )
+    from diffusers import QwenImage21Pipeline
 
     latents = torch.randn(2, 64, 32, 32, generator=torch.Generator().manual_seed(0))
     packed = pack_latents(latents)
     assert packed.shape == (2, 1024, 64)
-    oracle = QwenImage21PipelineHelpers._pack_latents(latents, 2, 64, 32, 32)
+    oracle = QwenImage21Pipeline._pack_latents(latents, 2, 64, 32, 32)
     assert torch.equal(packed, oracle)
 
     unpacked = unpack_latents(packed, 32, 32)
     assert torch.equal(unpacked, latents)
-    oracle_unpacked = QwenImage21PipelineHelpers._unpack_latents(packed, 512, 512, 16)
+    oracle_unpacked = QwenImage21Pipeline._unpack_latents(packed, 512, 512, 16)
     assert torch.equal(unpacked, oracle_unpacked.squeeze(2))
 
 

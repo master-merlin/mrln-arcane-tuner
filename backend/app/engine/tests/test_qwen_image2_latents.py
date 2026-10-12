@@ -15,7 +15,7 @@ Two REAL files, a 512x512 RGB JPEG and a 512x512 RGBA PNG
 * a training-time cache miss -- ``PipelineDataMixin._get_batch`` (the decode
   the train loop runs) into ``LatentManager.encode_and_cache_batch``.
 
-What the VAE receives is observed by wrapping the real vendored VAE's
+What the VAE receives is observed by wrapping the real release VAE's
 ``encode`` (the call still runs); nothing on the path is stubbed.
 """
 
@@ -109,15 +109,13 @@ def _assert_vae_input(x: torch.Tensor, path: pathlib.Path) -> None:
 
 def _assert_packs(latent: torch.Tensor) -> None:
     from app.engine.models.families.qwen_image2 import utils
-    from app.engine.models.families.qwen_image2.vendor.pipeline_qwenimage21 import (
-        QwenImage21PipelineHelpers,
-    )
+    from diffusers import QwenImage21Pipeline
 
     assert tuple(latent.shape[-3:]) == (64, 32, 32)
     lat = latent.reshape(1, 64, 32, 32)
     packed = utils.pack_latents(lat)
     assert tuple(packed.shape) == (1, 1024, 64)
-    oracle = QwenImage21PipelineHelpers._pack_latents(lat.unsqueeze(2), 1, 64, 32, 32)
+    oracle = QwenImage21Pipeline._pack_latents(lat.unsqueeze(2), 1, 64, 32, 32)
     assert torch.equal(packed, oracle)
 
 

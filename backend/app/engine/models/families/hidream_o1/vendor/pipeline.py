@@ -6,11 +6,7 @@ import tqdm
 from PIL import Image
 import torchvision.transforms.v2 as transforms
 
-from diffusers import FlowMatchEulerDiscreteScheduler
-# FlowUniPCMultistepScheduler generates more details than FlowMatchEulerDiscreteScheduler
-from .fm_solvers_unipc import FlowUniPCMultistepScheduler  # noqa: E402
-
-from .flash_scheduler import FlashFlowMatchEulerDiscreteScheduler
+from diffusers import FlowMatchEulerDiscreteScheduler, UniPCMultistepScheduler
 from .seam_smoothing import apply_seam_smoothing
 from .utils import (
     resize_pilimage,
@@ -88,17 +84,26 @@ def build_t2i_text_sample(prompt, height, width, tokenizer, processor, model_con
     }
 
 def build_scheduler(num_inference_steps, timesteps_list, shift, device, scheduler_name="default"):
-    if scheduler_name == "flash":
-        sched = FlashFlowMatchEulerDiscreteScheduler(
-            num_train_timesteps=1000, shift=shift, use_dynamic_shifting=False)
-    elif scheduler_name == "flow_match":
+    if scheduler_name == "flow_match":
         sched = FlowMatchEulerDiscreteScheduler(
             num_train_timesteps=1000, shift=shift)
     elif scheduler_name == "default":
-        sched = FlowUniPCMultistepScheduler(use_dynamic_shifting=False, shift=shift)
+        # Upstream's UniPC shifts its 1000-entry sigma table once at construction and the
+        # linspace drawn from it again per call. The stock scheduler shifts an explicit sigma
+        # table exactly once, so the grid is handed over PRE-shifted at its endpoint:
+        # sigma_max = shift*s0/(1+(shift-1)*s0), s0 = 1 - 1/1000 (the table's first entry
+        # before upstream's shift). Pinned by test_hidream_o1_scheduler_parity.py.
+        sched = UniPCMultistepScheduler(
+            use_flow_sigmas=True, prediction_type="flow_prediction", flow_shift=shift)
     else:
         raise ValueError(f"Unknown scheduler_name={scheduler_name!r}")
-    sched.set_timesteps(num_inference_steps, device=device)
+    if scheduler_name == "default":
+        s0 = 1.0 - 1.0 / 1000
+        sigma_max = shift * s0 / (1.0 + (shift - 1.0) * s0)
+        sched.set_timesteps(
+            device=device, sigmas=np.linspace(sigma_max, 0.0, num_inference_steps + 1)[:-1])
+    else:
+        sched.set_timesteps(num_inference_steps, device=device)
     if timesteps_list is not None:
         sched.timesteps = torch.tensor(timesteps_list, device=device, dtype=torch.long)
         sigmas = [t.item() / 1000.0 for t in sched.timesteps]
@@ -129,9 +134,6 @@ def generate_image(
         timesteps_list=None,
         scheduler_name: str = "default",
         seed: int = 42,
-        noise_scale_start: float = NOISE_SCALE,
-        noise_scale_end: float = NOISE_SCALE,
-        noise_clip_std: float = 0.0,
         keep_original_aspect: bool = False,
         layout_bboxes: str = None,
         seam_smooth_steps: int = 0,
@@ -330,22 +332,13 @@ def generate_image(
                 "image_grid_thw": proc.image_grid_thw.to(device),
             })
 
-    noise = noise_scale_start * torch.randn(
+    noise = NOISE_SCALE * torch.randn(
         (1, 3, height, width),
         generator=torch.Generator('cpu').manual_seed(seed + 1),
     ).to(device, dtype)
     z = einops.rearrange(noise, 'B C (H p1) (W p2) -> B (H W) (C p1 p2)', p1=PATCH_SIZE, p2=PATCH_SIZE)
 
     sched = build_scheduler(num_inference_steps, timesteps_list, shift, device, scheduler_name)
-
-    num_steps = len(sched.timesteps)
-    if num_steps > 1:
-        noise_scale_schedule = [
-            noise_scale_start + (noise_scale_end - noise_scale_start) * i / (num_steps - 1)
-            for i in range(num_steps)
-        ]
-    else:
-        noise_scale_schedule = [noise_scale_start]
 
     torch.manual_seed(seed + 1)
     if torch.cuda.is_available(): torch.cuda.manual_seed_all(seed + 1)
@@ -418,10 +411,7 @@ def generate_image(
 
         model_output = -v_guided
         # model_output = clamp_tensor(model_output, percentage = 0.05)
-        if scheduler_name == "flash":
-            z = sched.step(model_output.float(), step_t.to(dtype=torch.float32), z.float(), s_noise=noise_scale_schedule[step_idx], noise_clip_std=noise_clip_std, return_dict=False)[0].to(dtype)
-        else:
-            z = sched.step(model_output.float(), step_t.to(dtype=torch.float32), z.float(), return_dict=False)[0].to(dtype)
+        z = sched.step(model_output.float(), step_t.to(dtype=torch.float32), z.float(), return_dict=False)[0].to(dtype)
 
         if seam_smooth_steps > 0 and step_idx >= len(sched.timesteps) - seam_smooth_steps:
             smooth_idx = step_idx - (len(sched.timesteps) - seam_smooth_steps)

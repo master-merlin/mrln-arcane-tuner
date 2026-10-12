@@ -127,15 +127,82 @@ def dequantize_fp8_state_dict(
     return out
 
 
+# --- diffusers 0.41.0's Ideogram4Transformer2DModel (LANE-150) -----------------
+# The ported ideogram-oss DiT spelled its config ``emb_dim`` / ``num_heads`` /
+# ``adanln_dim`` and fused the attention projections (``attention.qkv`` one
+# Linear(H, 3H), ``attention.o``); the release class spells
+# ``attention_head_dim`` / ``num_attention_heads`` / ``adaln_dim`` and splits
+# ``to_q`` / ``to_k`` / ``to_v`` / ``to_out.0`` (transformer_ideogram4.py:146-151,
+# :316-328). The released fp8 checkpoint stores the FUSED weights.
+
+_REQUIRED_RELEASE_KEYS = ("attention_head_dim", "num_attention_heads", "adaln_dim")
+
+
+def translate_transformer_config(config: dict) -> dict:
+    """Return ``config`` in the release spelling, accepting either spelling.
+
+    ``emb_dim`` + ``num_heads`` -> ``attention_head_dim = emb_dim // num_heads``,
+    ``num_attention_heads = num_heads``; ``adanln_dim`` -> ``adaln_dim``; a key
+    already in the release spelling wins. Raises ``ValueError`` naming every
+    required key neither spelling provides: the class defaults (18 heads x 256,
+    adaln 512) must never fill a gap silently in a differently-sized checkpoint.
+    """
+    out = dict(config)
+    emb_dim = out.pop("emb_dim", None)
+    num_heads = out.pop("num_heads", None)
+    adanln_dim = out.pop("adanln_dim", None)
+    if num_heads is not None:
+        out.setdefault("num_attention_heads", num_heads)
+    if adanln_dim is not None:
+        out.setdefault("adaln_dim", adanln_dim)
+    heads = out.get("num_attention_heads")
+    if "attention_head_dim" not in out and emb_dim is not None and heads:
+        if int(emb_dim) % int(heads):
+            raise ValueError(f"ideogram4 transformer config: emb_dim={emb_dim} is not divisible by num_heads={heads}")
+        out["attention_head_dim"] = int(emb_dim) // int(heads)
+    missing = [k for k in _REQUIRED_RELEASE_KEYS if out.get(k) is None]
+    if missing:
+        raise ValueError(
+            f"ideogram4 transformer config lacks {missing} (and their ported spelling "
+            "emb_dim/num_heads/adanln_dim); refusing to fall back to the class defaults"
+        )
+    return out
+
+
+def convert_transformer_state_dict(state_dict: dict[str, torch.Tensor]) -> dict[str, torch.Tensor]:
+    """Fused checkpoint keys -> the release module names (run after fp8 dequant).
+
+    ``layers.N.attention.qkv.weight`` (3H x H) is chunked in thirds, in q, k, v
+    order, into ``to_q`` / ``to_k`` / ``to_v``; ``layers.N.attention.o.weight``
+    becomes ``to_out.0.weight``. Every other key, and an already-split key,
+    passes through, so the function is idempotent.
+    """
+    out: dict[str, torch.Tensor] = {}
+    for key, value in state_dict.items():
+        if key.endswith(".attention.qkv.weight"):
+            if value.shape[0] % 3:
+                raise ValueError(f"{key}: fused qkv rows {value.shape[0]} are not divisible by 3")
+            base = key[: -len("qkv.weight")]
+            q, k, v = value.chunk(3, dim=0)
+            out[base + "to_q.weight"] = q.contiguous()
+            out[base + "to_k.weight"] = k.contiguous()
+            out[base + "to_v.weight"] = v.contiguous()
+        elif key.endswith(".attention.o.weight"):
+            out[key[: -len("o.weight")] + "to_out.0.weight"] = value
+        else:
+            out[key] = value
+    return out
+
+
 def patchify_to_seq(latents: torch.Tensor) -> torch.Tensor:
     """[B, C, H, W] -> [B, (H/2)*(W/2), C*4] via 2x2 space-to-depth.
 
     The 128-dim token feature vector is laid out as ``(p_h, p_w, c)`` -- patch
     row outermost, patch column middle, latent channel innermost. This MUST
     match the channel ordering the FROZEN pretrained DiT's ``input_proj``
-    (``modeling_ideogram4.py``: ``nn.Linear(in_channels=128, emb_dim)``) was
-    trained on; feeding a permuted ordering into the frozen weights corrupts
-    the conditioning. The ordering is the exact inverse of upstream
+    (diffusers ``Ideogram4Transformer2DModel``: ``nn.Linear(in_channels=128,
+    hidden_size)``) was trained on; feeding a permuted ordering into the
+    frozen weights corrupts the conditioning. The ordering is the exact inverse of upstream
     ``pipeline_ideogram4.py::_decode``::
 
         z = z.view(batch_size, grid_h, grid_w, patch, patch, ae_channels)

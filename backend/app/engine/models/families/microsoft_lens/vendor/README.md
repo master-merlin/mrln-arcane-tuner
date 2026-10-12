@@ -17,9 +17,16 @@ loader/driver/trainer, so we vendor only the custom DiT class
 (`FlowMatchEulerDiscreteScheduler`), tokenizer (`PreTrainedTokenizerFast`),
 and text encoder (`GptOssForCausalLM`) are stock and loaded directly.
 
-`transformer.py` imports only from `diffusers` (our pinned 0.38.0) and `torch`
+`transformer.py` imports only from `diffusers` (`diffusers==0.41.0`) and `torch`
 -- no `transformers` dependency, so it is immune to the upstream
-`transformers==5.8.0` pin. **We stay on transformers 4.57.0.**
+`transformers` pin (this repo pins `transformers==5.14.1`).
+
+## Kept on diffusers 0.41.0
+
+| module | reason |
+|---|---|
+| `__init__.py` | package docstring only |
+| `transformer.py` | searched: no file or symbol named lens / `LensTransformer` in 0.41.0; AST name match against transformer_flux2.py, transformer_flux.py, transformer_qwenimage.py, embeddings.py, normalization.py, attention.py finds only `get_timestep_embedding` and it differs |
 
 ## NOT vendored
 - `lens/text_encoder.py` (`LensGptOssEncoder`) -- we run stock `GptOssForCausalLM`

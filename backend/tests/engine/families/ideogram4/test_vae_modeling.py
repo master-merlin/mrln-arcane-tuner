@@ -1,51 +1,39 @@
-"""Vendored Ideogram4 custom VAE: instantiation + encode/decode roundtrip.
+"""Ideogram4's VAE is diffusers 0.41.0's ``AutoencoderKLFlux2`` (LANE-150).
 
-Uses a tiny synthetic config (no gated weights) on a real CPU instance with
-random weights, locking the documented contract: latent channel count, 8x...
-no -- tiny config uses a 2x factor (ch_mult length 2 -> one downsample) to keep
-the test fast; the spatial-factor assertion is derived from the config rather
-than hard-coded to the production 8x.
+Tiny synthetic config (no gated weights), a real CPU instance with random
+weights, locking the contract the family relies on: the latent channel count,
+the spatial factor derived from the config (2 here: two blocks -> one
+downsample; production has four -> 8x), and a ``bn`` head that encode/decode
+never touch (the driver normalises with LATENT_SHIFT/LATENT_SCALE).
 
-The GroupNorm(num_groups=32) inside the resnet/attn blocks requires every
-`ch * ch_mult[i]` channel count to be divisible by 32, so the tiny config keeps
-`ch=32` with `ch_mult=[1, 2]`.
+GroupNorm(num_groups=32) inside the resnet blocks requires every block channel
+count to be divisible by 32, hence ``block_out_channels=(32, 64)``.
 """
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import torch
+import yaml
+from diffusers import AutoencoderKLFlux2
 
-from app.engine.models.families.ideogram4.vendor.autoencoder_ideogram4 import (
-    AutoEncoderParams,
-    Ideogram4AutoEncoder,
-    convert_diffusers_state_dict,
-)
-
-# Tiny config: small channels/resolution. ch_mult has 2 entries -> 1 downsample
-# stage -> spatial factor 2 (vs production 8 with 4 entries). z_channels=4 keeps
-# the latent small while still exercising the 2*z_channels encoder head.
-TINY_PARAMS = AutoEncoderParams(
-    resolution=32,
-    in_channels=3,
-    ch=32,
-    out_ch=3,
-    ch_mult=[1, 2],
-    num_res_blocks=1,
-    z_channels=4,
-)
-# 2 ** (len(ch_mult) - 1)
-TINY_SPATIAL_FACTOR = 2
+LATENT_CHANNELS = 4
+TINY_SPATIAL_FACTOR = 2  # 2 ** (len(block_out_channels) - 1)
 
 
-def _tiny_vae() -> Ideogram4AutoEncoder:
-    return Ideogram4AutoEncoder(TINY_PARAMS)
+def _tiny_vae() -> AutoencoderKLFlux2:
+    return AutoencoderKLFlux2(
+        in_channels=3, out_channels=3, down_block_types=("DownEncoderBlock2D",) * 2,
+        up_block_types=("UpDecoderBlock2D",) * 2, block_out_channels=(32, 64),
+        layers_per_block=1, latent_channels=LATENT_CHANNELS, norm_num_groups=32, sample_size=32,
+    ).eval()
 
 
 def test_vae_instantiates() -> None:
     vae = _tiny_vae()
-    assert vae is not None
-    # The custom BatchNorm2d head exists over prod(ps) * z_channels channels.
-    assert vae.bn.num_features == 4 * TINY_PARAMS.z_channels  # 2*2 * 4 = 16
+    # The BatchNorm2d head exists over prod(patch_size) * latent_channels channels.
+    assert vae.bn.num_features == 4 * LATENT_CHANNELS  # 2*2 * 4 = 16
     assert vae.bn.affine is False
 
 
@@ -53,59 +41,35 @@ def test_bn_is_not_in_encode_decode_path() -> None:
     """Contract guard: the bn head must NOT be touched by encode/decode.
 
     Latent (de)normalization is done externally via LATENT_SHIFT/LATENT_SCALE,
-    not this BatchNorm. We assert encode/decode don't update the bn running
-    stats (num_batches_tracked stays 0).
+    not this BatchNorm: num_batches_tracked stays 0 (train mode would count).
     """
-    vae = _tiny_vae().eval()
-    assert int(vae.bn.num_batches_tracked) == 0
-    x = torch.randn(1, TINY_PARAMS.in_channels, 16, 16)
+    vae = _tiny_vae().train()
+    x = torch.randn(1, 3, 16, 16)
     with torch.no_grad():
-        # encode() now returns the z_channels posterior mean directly.
-        z = vae.encode(x)
+        z = vae.encode(x).latent_dist.mode()
         vae.decode(z)
     assert int(vae.bn.num_batches_tracked) == 0
 
 
 def test_encode_decode_roundtrip_shapes() -> None:
-    vae = _tiny_vae().eval()
+    vae = _tiny_vae()
     h = w = 16
-    x = torch.randn(1, TINY_PARAMS.in_channels, h, w)
-
+    x = torch.randn(1, 3, h, w)
     with torch.no_grad():
-        # encode() returns the z_channels posterior mean (NOT 2*z_channels);
-        # the logvar half of the encoder head is dropped (deterministic).
-        z = vae.encode(x)
-        assert z.shape[1] == TINY_PARAMS.z_channels
-        assert z.shape[2] == h // TINY_SPATIAL_FACTOR
-        assert z.shape[3] == w // TINY_SPATIAL_FACTOR
-
-        # Decoder consumes the z_channels latent directly.
-        decoded = vae.decode(z)
-
-    # Decode restores the input spatial dims and out_ch channels.
-    assert decoded.shape[0] == x.shape[0]
-    assert decoded.shape[1] == TINY_PARAMS.out_ch
-    assert decoded.shape[2] == h
-    assert decoded.shape[3] == w
+        # The posterior mode is the latent_channels mean (NOT 2*latent_channels).
+        z = vae.encode(x).latent_dist.mode()
+        assert tuple(z.shape) == (1, LATENT_CHANNELS, h // TINY_SPATIAL_FACTOR, w // TINY_SPATIAL_FACTOR)
+        decoded = vae.decode(z).sample
+    assert tuple(decoded.shape) == (1, 3, h, w)
 
 
-def test_documented_latent_channel_count_default() -> None:
-    """The documented production latent channel count is z_channels=32."""
-    assert AutoEncoderParams().z_channels == 32
-
-
-def test_convert_diffusers_state_dict_rewrites_keys() -> None:
-    """The key-rewriter passes bn.* through and maps diffusers conv keys."""
-    src = {
-        "bn.running_mean": torch.zeros(16),
-        "quant_conv.weight": torch.zeros(8, 8, 1, 1),
-        "post_quant_conv.weight": torch.zeros(4, 4, 1, 1),
-        "encoder.conv_norm_out.weight": torch.zeros(64),
-        "encoder.conv_in.weight": torch.zeros(32, 3, 3, 3),
-    }
-    out = convert_diffusers_state_dict(src)
-    assert "bn.running_mean" in out
-    assert "encoder.quant_conv.weight" in out
-    assert "decoder.post_quant_conv.weight" in out
-    assert "encoder.norm_out.weight" in out
-    assert "encoder.conv_in.weight" in out
+def test_documented_latent_channel_count() -> None:
+    """Production: 32 latent channels (-> 2x2 patchify 128 = the DiT's in_channels)."""
+    yaml_path = (
+        Path(__file__).resolve().parents[4]
+        / "app" / "engine" / "models" / "families" / "ideogram4" / "definitions" / "ideogram4_fp8.yaml"
+    )
+    arch = yaml.safe_load(yaml_path.read_text(encoding="utf-8"))["architecture_params"]
+    assert arch["vae._class_name"] == "AutoencoderKLFlux2"
+    assert arch["vae.latent_channels"] == 32
+    assert arch["transformer.in_channels"] == 32 * 4

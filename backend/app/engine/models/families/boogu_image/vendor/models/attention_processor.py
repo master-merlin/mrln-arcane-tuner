@@ -11,7 +11,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from einops import repeat
 
-from ..utils.import_utils import is_flash_attn_available
+from diffusers.utils import is_flash_attn_available
 
 if is_flash_attn_available():
     from flash_attn import flash_attn_varlen_func
@@ -24,7 +24,7 @@ else:
 
 from diffusers.models.attention_processor import Attention
 
-from .embeddings import apply_rotary_emb
+from diffusers.models.embeddings import apply_rotary_emb
 
 
 class BooguImageDoubleStreamSelfAttnProcessorFlash2Varlen(nn.Module):
@@ -1130,146 +1130,6 @@ class BooguImageAttnProcessorFlash2Varlen:
             attn_output_unpad, indices_q, batch_size, sequence_length
         )
         hidden_states = hidden_states.flatten(-2)
-        hidden_states = hidden_states.type_as(query)
-
-        # Apply output projection
-        hidden_states = attn.to_out[0](hidden_states)
-        hidden_states = attn.to_out[1](hidden_states)
-
-        return hidden_states
-
-
-class BooguImageAttnProcessor:
-    """
-    Processor for implementing scaled dot-product attention with flash attention and variable length sequences.
-
-    This processor is optimized for PyTorch 2.0 and implements:
-    - Flash attention with variable length sequences
-    - Rotary position embeddings (RoPE)
-    - Query-Key normalization
-    - Proportional attention scaling
-
-    Args:
-        None
-
-    Raises:
-        ImportError: If PyTorch version is less than 2.0
-    """
-
-    def __init__(self) -> None:
-        """Initialize the attention processor."""
-        if not hasattr(F, "scaled_dot_product_attention"):
-            raise ImportError(
-                "BooguImageAttnProcessorFlash2Varlen requires PyTorch 2.0. "
-                "Please upgrade PyTorch to version 2.0 or later."
-            )
-
-    def __call__(
-        self,
-        attn: Attention,
-        hidden_states: torch.Tensor,
-        encoder_hidden_states: torch.Tensor,
-        attention_mask: Optional[torch.Tensor] = None,
-        image_rotary_emb: Optional[torch.Tensor] = None,
-        base_sequence_length: Optional[int] = None,
-    ) -> torch.Tensor:
-        """
-        Process attention computation with flash attention.
-
-        Args:
-            attn: Attention module
-            hidden_states: Hidden states tensor of shape (batch_size, seq_len, hidden_dim)
-            encoder_hidden_states: Encoder hidden states tensor
-            attention_mask: Optional attention mask tensor
-            image_rotary_emb: Optional rotary embeddings for image tokens
-            base_sequence_length: Optional base sequence length for proportional attention
-
-        Returns:
-            torch.Tensor: Processed hidden states after attention computation
-        """
-        batch_size, sequence_length, _ = hidden_states.shape
-
-        # Get Query-Key-Value Pair
-        query = attn.to_q(hidden_states)
-        key = attn.to_k(encoder_hidden_states)
-        value = attn.to_v(encoder_hidden_states)
-
-        query_dim = query.shape[-1]
-        inner_dim = key.shape[-1]
-        head_dim = query_dim // attn.heads
-        dtype = query.dtype
-
-        # Get key-value heads
-        kv_heads = inner_dim // head_dim
-
-        # Reshape tensors for attention computation
-        query = query.view(batch_size, -1, attn.heads, head_dim)
-        key = key.view(batch_size, -1, kv_heads, head_dim)
-        value = value.view(batch_size, -1, kv_heads, head_dim)
-
-        # Apply Query-Key normalization
-        if attn.norm_q is not None:
-            query = attn.norm_q(query)
-        if attn.norm_k is not None:
-            key = attn.norm_k(key)
-
-        # Apply Rotary Position Embeddings
-        if image_rotary_emb is not None:
-            query = apply_rotary_emb(query, image_rotary_emb, use_real=False)
-            key = apply_rotary_emb(key, image_rotary_emb, use_real=False)
-
-        query, key = query.to(dtype), key.to(dtype)
-
-        # Calculate attention scale
-        if base_sequence_length is not None:
-            softmax_scale = (
-                math.sqrt(math.log(sequence_length, base_sequence_length)) * attn.scale
-            )
-        else:
-            softmax_scale = attn.scale
-
-        # sdpa expects attn_mask with shape (B, H, Q, K) as boolean (True keeps, False masks)
-        if attention_mask is not None:
-            attention_mask = attention_mask.bool()
-            if attention_mask.dim() == 2:
-                # Standard padding mask [B, L] -> [B, 1, 1, L]
-                attention_mask = attention_mask.view(batch_size, 1, 1, -1)
-            elif attention_mask.dim() == 3:
-                # Robust causal + padding mask construction
-                # Infer valid lengths from diagonal, then build lower-triangular mask within valid lengths
-                B, L, _ = attention_mask.shape
-                diag_valid = torch.diagonal(attention_mask, dim1=-2, dim2=-1)
-                lengths = diag_valid.sum(dim=-1)  # [B]
-                arange_L = torch.arange(L, device=attention_mask.device)
-                # Padding masks for queries and keys: shape [B, L]
-                q_valid = arange_L.unsqueeze(0) < lengths.unsqueeze(1)
-                k_valid = q_valid  # same lengths assumed
-                # Lower-triangular causal mask [L, L]
-                causal = torch.tril(
-                    torch.ones(L, L, dtype=torch.bool, device=attention_mask.device)
-                )
-                # Combine: [B, L, L]
-                combined = causal & q_valid.unsqueeze(-1) & k_valid.unsqueeze(-2)
-                attention_mask = combined.unsqueeze(1)  # [B, 1, L, L]
-            else:
-                raise ValueError(
-                    f"Unsupported attention_mask shape: {attention_mask.shape}"
-                )
-
-        query = query.transpose(1, 2)
-        key = key.transpose(1, 2)
-        value = value.transpose(1, 2)
-
-        # explicitly repeat key and value to match query length, otherwise using enable_gqa=True results in MATH backend of sdpa in our test of pytorch2.6
-        key = key.repeat_interleave(query.size(-3) // key.size(-3), -3)
-        value = value.repeat_interleave(query.size(-3) // value.size(-3), -3)
-
-        hidden_states = F.scaled_dot_product_attention(
-            query, key, value, attn_mask=attention_mask, scale=softmax_scale
-        )
-        hidden_states = hidden_states.transpose(1, 2).reshape(
-            batch_size, -1, attn.heads * head_dim
-        )
         hidden_states = hidden_states.type_as(query)
 
         # Apply output projection

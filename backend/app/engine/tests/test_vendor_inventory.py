@@ -15,7 +15,10 @@ What this file holds the table to (each failure names the row or the module):
 * every vendored module imports on the installed release;
 * every ``shipped``/``partial`` row names at least one symbol and every symbol
   resolves by import on the installed diffusers; a ``none`` row names none;
-* every verdict is one of the three words.
+* every verdict is one of the five words (LANE-150 added ``retired``: the module
+  is deleted and its row says ``lines`` 0; ``remainder``: the shipped part is
+  gone, the rest stays vendored and the symbol still resolves);
+* a ``retired`` row has no file and a vendored file has no ``retired`` row.
 
 The verdicts are checked here by import and never copied into a second list
 (RULE-21): the table is the one producer.
@@ -40,7 +43,7 @@ HEADER = (
     "known differences",
     "LANE-150 action",
 )
-VERDICTS = frozenset({"shipped", "partial", "none"})
+VERDICTS = frozenset({"shipped", "partial", "none", "retired", "remainder"})
 _SYMBOL = re.compile(r"`(diffusers(?:\.\w+)+)`")
 
 
@@ -112,18 +115,28 @@ def test_every_vendored_module_has_one_row():
     without_row = sorted(files - set(modules))
     without_module = sorted(set(modules) - files)
     duplicates = sorted({m for m in modules if modules.count(m) > 1})
+    verdict = {r["module"]: r["verdict"] for r in rows}
+    retired = {m for m, v in verdict.items() if v == "retired"}
     problems = (
-        [f"vendored module without a row: {m}" for m in without_row]
-        + [f"row without a vendored module: {m}" for m in without_module]
+        [
+            f"retired row whose module still exists: {m} (vendored module whose row is retired)"
+            for m in sorted(retired & files)
+        ]
+        + [f"vendored module without a row: {m}" for m in without_row]
+        + [f"row without a vendored module: {m}" for m in without_module if m not in retired]
         + [f"duplicate row: {m}" for m in duplicates]
     )
-    assert not problems, "LANE-149: " + "; ".join(problems)
+    assert not problems, "LANE-149/150: " + "; ".join(problems)
 
 
 def test_every_row_states_the_current_line_count():
     problems = []
     for row in _rows():
         path = FAMILIES_DIR / row["module"]
+        if row["verdict"] == "retired":
+            if row["lines"] != "0":
+                problems.append(f"{row['module']}: retired row says {row['lines']} lines, wants 0")
+            continue
         if not path.is_file():
             continue  # test_every_vendored_module_has_one_row names it
         have = len(path.read_text(encoding="utf-8").splitlines())
@@ -153,8 +166,8 @@ def test_every_claimed_symbol_resolves():
     problems = []
     for row in _rows():
         symbols = _SYMBOL.findall(row["0.41 symbol(s)"])
-        if row["verdict"] in ("shipped", "partial"):
-            if not symbols:
+        if row["verdict"] in ("shipped", "partial", "remainder", "retired"):
+            if not symbols and row["verdict"] != "retired":
                 problems.append(
                     f"{row['module']}: verdict {row['verdict']} names no diffusers symbol"
                 )
@@ -172,10 +185,96 @@ def test_every_claimed_symbol_resolves():
     )
 
 
-def test_verdicts_are_the_three_words():
+def test_verdicts_are_the_five_words():
     bad = [
         f"{r['module']}: {r['verdict']!r}"
         for r in _rows()
         if r["verdict"] not in VERDICTS
     ]
-    assert not bad, f"LANE-149: verdicts outside {sorted(VERDICTS)}: " + "; ".join(bad)
+    assert not bad, f"LANE-149/150: verdicts outside {sorted(VERDICTS)}: " + "; ".join(bad)
+
+
+def _open_rows(rows: list[dict[str, str]]) -> list[str]:
+    """Modules whose verdict is still ``shipped`` or ``partial`` (not yet retired)."""
+    return [
+        r["module"] for r in rows if r["verdict"] in ("shipped", "partial")
+    ]
+
+
+@pytest.mark.parametrize("word", ["shipped", "partial"])
+def test_open_rows_helper_names_a_reflagged_row(word):
+    # Prove the negative: a row set back to shipped/partial must be named.
+    rows = [dict(r) for r in _rows()]
+    rows[0]["verdict"] = word
+    assert _open_rows(rows) == [rows[0]["module"]]
+
+
+def test_no_row_is_left_shipped_or_partial():
+    """LANE-150 closes the table: counts at close are the table's own verdict words
+    (17 retired, 4 remainder, 30 none, 0 shipped, 0 partial); nothing is copied here."""
+    left = _open_rows(_rows())
+    assert not left, f"LANE-150: rows still shipped/partial: {left}"
+
+
+_KEPT_HEADING = "## Kept on diffusers 0.41.0"
+_LEADING_NAMES = re.compile(r"^(?:\||-)\s*((?:`[^`]+`(?:,\s*)?)+)")
+
+
+def _kept_by_family(rows: list[dict[str, str]]) -> dict[str, set[str]]:
+    """The inventory's kept modules (none/remainder), relative to ``<family>/vendor/``."""
+    kept: dict[str, set[str]] = {}
+    for r in rows:
+        if r["verdict"] in ("none", "remainder"):
+            family, _, rel = r["module"].partition("/vendor/")
+            kept.setdefault(family, set()).add(rel)
+    return kept
+
+
+def _readme_kept(family: str) -> set[str] | None:
+    """Module names in the README's kept section (table rows and bullets alike);
+    ``None`` when the README or the section is absent."""
+    readme = FAMILIES_DIR / family / "vendor" / "README.md"
+    if not readme.is_file():
+        return None
+    names: set[str] = set()
+    inside = False
+    for line in readme.read_text(encoding="utf-8").splitlines():
+        if line.startswith("## "):
+            if inside:
+                break
+            inside = line.strip() == _KEPT_HEADING
+            continue
+        if inside and (m := _LEADING_NAMES.match(line.strip())):
+            names.update(n.strip("`") for n in re.findall(r"`[^`]+`", m.group(1)))
+    return names if inside or names else None
+
+
+def _kept_problems(kept: dict[str, set[str]], readme_of) -> list[str]:
+    problems = []
+    for family, modules in sorted(kept.items()):
+        listed = readme_of(family)
+        for module in sorted(modules - (listed or set())):
+            problems.append(
+                f'LANE-150: {family}/vendor/README.md lacks a "Kept on diffusers 0.41.0" '
+                f"row for {family}/vendor/{module}"
+            )
+        for module in sorted((listed or set()) - modules):
+            problems.append(
+                f"LANE-150: {family}/vendor/README.md names {module}, "
+                "which is not a kept module"
+            )
+    return problems
+
+
+def test_every_kept_module_has_a_readme_row():
+    problems = _kept_problems(_kept_by_family(_rows()), _readme_kept)
+    assert not problems, "\n".join(problems)
+
+
+def test_kept_problems_names_a_missing_and_a_surplus_row():
+    # Prove the negative: a dropped row and an invented row are both named.
+    kept = {"fam": {"a.py", "b.py"}}
+    problems = _kept_problems(kept, lambda f: {"a.py", "gone.py"})
+    assert len(problems) == 2
+    assert "lacks" in problems[0] and "fam/vendor/b.py" in problems[0]
+    assert "gone.py, which is not a kept module" in problems[1]

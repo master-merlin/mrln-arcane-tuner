@@ -117,29 +117,33 @@ def test_add_noise_matches_convention_endpoints():
 
 
 def test_transformer_applies_timestep_scale_internally():
-    """The vendored Lumina2CombinedTimestepCaptionEmbedding passes
-    ``timestep_scale`` as the ``Timesteps`` proj's ``scale`` — the
-    transformer multiplies the [0, 1) input by 1000 INTERNALLY; callers
-    must never do it."""
+    """The family's caption embedding (the adapter over diffusers 0.41.0's class) multiplies the
+    [0, 1) input timestep by ``timestep_scale`` INTERNALLY; callers must never do it. Its output
+    equals the release class fed ``t * 1000`` directly, and differs from the release fed ``t``."""
+    from diffusers.models.transformers.transformer_lumina2 import (
+        Lumina2CombinedTimestepCaptionEmbedding as Release,
+    )
+
     from app.engine.models.families.omnigen2.vendor.models.transformers.block_lumina2 import (
-        Lumina2CombinedTimestepCaptionEmbedding,
+        Lumina2CombinedTimestepCaptionEmbedding as Adapter,
     )
 
-    embed = Lumina2CombinedTimestepCaptionEmbedding(
-        hidden_size=24, text_feat_dim=12, norm_eps=1e-5, timestep_scale=1000.0,
-    )
-    assert embed.time_proj.scale == 1000.0
+    assert issubclass(Adapter, Release)
+    embed = Adapter(hidden_size=24, text_feat_dim=12, norm_eps=1e-5, timestep_scale=1000.0)
+    assert embed.timestep_scale == 1000.0
 
-    # A scaled clock at t and a unit clock at 1000*t produce IDENTICAL
-    # sinusoidal projections — the definitional meaning of the scale.
-    embed_unit = Lumina2CombinedTimestepCaptionEmbedding(
-        hidden_size=24, text_feat_dim=12, norm_eps=1e-5, timestep_scale=1.0,
-    )
-    t = torch.tensor([0.37])
-    proj_scaled = embed.time_proj(t)
-    proj_unit = embed_unit.time_proj(t * 1000.0)
-    # fp32 op-order differs (scale*(t·f) vs (1000t)·f) — allow float slack.
-    assert torch.allclose(proj_scaled, proj_unit, rtol=1e-3, atol=1e-4)
+    release = Release(hidden_size=24, cap_feat_dim=12, norm_eps=1e-5)
+    release.load_state_dict(embed.state_dict(), strict=True)
+    t = torch.tensor([0.5, 0.25])  # dyadic: t * 1000 is exact in fp32
+    cap = torch.randn(2, 3, 12)
+    carrier = torch.zeros(2, 1, 24)
+    with torch.no_grad():
+        got, _ = embed(t, cap, torch.float32)
+        want, _ = release(carrier, t * 1000.0, cap)
+        unscaled, _ = release(carrier, t, cap)
+    assert torch.allclose(got, want, atol=1e-6)
+    # The scale has an effect: the unscaled clock is a clearly different embedding.
+    assert float((got - unscaled).abs().max()) > 1e-3
 
 
 def test_no_thousand_scaling_in_family_source():

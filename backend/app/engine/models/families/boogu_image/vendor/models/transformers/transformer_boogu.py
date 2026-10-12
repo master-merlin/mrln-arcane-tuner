@@ -27,8 +27,11 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import PeftAdapterMixin
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
 from diffusers.models.attention_processor import Attention
+from diffusers.models.attention import LuminaFeedForward
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
+from diffusers.models.normalization import LuminaLayerNormContinuous, LuminaRMSNormZero
+from diffusers.models.transformers.transformer_lumina2 import Lumina2AttnProcessor2_0
 from diffusers.utils import (
     USE_PEFT_BACKEND,
     logging,
@@ -40,17 +43,11 @@ from einops import rearrange
 from ...utils.import_utils import is_triton_available
 from ...utils.teacache_util import TeaCacheParams
 from ..attention_processor import (
-    BooguImageAttnProcessor,
     BooguImageAttnProcessorFlash2Varlen,
     BooguImageDoubleStreamSelfAttnProcessor,
     BooguImageDoubleStreamSelfAttnProcessorFlash2Varlen,
 )
-from .block_lumina2 import (
-    Lumina2CombinedTimestepCaptionEmbedding,
-    LuminaFeedForward,
-    LuminaLayerNormContinuous,
-    LuminaRMSNormZero,
-)
+from .block_lumina2 import Lumina2CombinedTimestepCaptionEmbedding
 from .rope import (
     BooguImageDoubleStreamRotaryPosEmbed,
     BooguImagePromptTuningRotaryPosEmbed,
@@ -211,13 +208,13 @@ class BooguImageTransformerBlock(nn.Module):
         self.modulation = modulation
 
         if "cpu" in os.getenv("device", "cpu"):
-            processor = BooguImageAttnProcessor()
+            processor = Lumina2AttnProcessor2_0()
 
         else:
             try:
                 processor = BooguImageAttnProcessorFlash2Varlen()
             except ImportError:
-                processor = BooguImageAttnProcessor()
+                processor = Lumina2AttnProcessor2_0()
 
         # Initialize attention layer
         self.attn = Attention(
@@ -421,12 +418,12 @@ class BooguImageDoubleStreamTransformerBlock(nn.Module):
         self.hidden_size = dim
 
         if "cpu" in os.getenv("device", "cpu"):
-            processor = BooguImageAttnProcessor()
+            processor = Lumina2AttnProcessor2_0()
         else:
             try:
                 processor = BooguImageAttnProcessorFlash2Varlen()
             except ImportError:
-                processor = BooguImageAttnProcessor()
+                processor = Lumina2AttnProcessor2_0()
 
         if "cpu" in os.getenv("device", "cpu"):
             double_stream_processor = BooguImageDoubleStreamSelfAttnProcessor(
@@ -1083,14 +1080,18 @@ class BooguImageTransformer2DModel(
                 shift += ref_img_len
                 idx += 1
 
-        # Refine each reference-image sample.
-        for layer in self.ref_image_refiner:
-            batch_ref_image_hidden_states = layer(
-                batch_ref_image_hidden_states,
-                batch_ref_img_mask,
-                batch_ref_img_rotary_emb,
-                batch_temb,
-            )
+        # Refine each reference-image sample. No reference images (text-to-image) leaves a
+        # zero-length sequence; the release's complex-path apply_rotary_emb reshapes with -1
+        # and cannot reshape a zero-element tensor (the retired vendored copy divided
+        # explicitly), and the refiner of an empty sequence is empty anyway.
+        if max_ref_img_len > 0:
+            for layer in self.ref_image_refiner:
+                batch_ref_image_hidden_states = layer(
+                    batch_ref_image_hidden_states,
+                    batch_ref_img_mask,
+                    batch_ref_img_rotary_emb,
+                    batch_temb,
+                )
 
         # Restore reference-image sequence layout.
         idx = 0

@@ -1,6 +1,10 @@
 """boogu_image ecosystem LoRA conversion — Boogu-adapted counterpart of the
 vendored (stock-Lumina2) ``_convert_non_diffusers_lumina2_lora_to_diffusers``.
 
+LANE-150 note: ``vendor/lora_conversion.py`` was retired for diffusers 0.41.0's own
+(identical, private) helper; every ``vendor/lora_conversion.py:<line>`` below cites the
+retired copy, whose body is that diffusers function.
+
 Task 7 MUST-FIX (carried from the Task 1 review): the vendored
 ``vendor/lora_conversion.py`` is byte-faithful diffusers 0.39 and hardcodes
 stock Lumina2's non-GQA qkv split — it cannot be used as-is against Boogu's

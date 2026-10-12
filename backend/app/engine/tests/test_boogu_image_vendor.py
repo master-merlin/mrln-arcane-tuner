@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import importlib.util
 
+import pytest
 import torch
 
 BOOGU_VENDOR = "app.engine.models.families.boogu_image.vendor"
@@ -143,11 +144,15 @@ class TestImportSmoke:
         # flash_attn is a soft upstream dependency installed nowhere in this
         # project, on any platform -- so unlike triton this one IS a constant,
         # and the eager attention path below is live everywhere.
-        from app.engine.models.families.boogu_image.vendor.utils.import_utils import (
-            is_flash_attn_available,
-        )
+        # LANE-150: the probe is diffusers' now; the vendored import_utils keeps triton only.
+        from diffusers.utils import is_flash_attn_available
+
+        from app.engine.models.families.boogu_image.vendor.models import attention_processor
+        from app.engine.models.families.boogu_image.vendor.utils import import_utils
 
         assert is_flash_attn_available() is False
+        assert attention_processor.is_flash_attn_available is is_flash_attn_available
+        assert not hasattr(import_utils, "is_flash_attn_available")
 
     def test_import_teacache_util(self):
         from app.engine.models.families.boogu_image.vendor.utils.teacache_util import (
@@ -180,7 +185,8 @@ class TestImportSmoke:
             attention_processor,
         )
 
-        assert hasattr(attention_processor, "BooguImageAttnProcessor")
+        # LANE-150: the single-stream processor is diffusers' Lumina2AttnProcessor2_0 now.
+        assert not hasattr(attention_processor, "BooguImageAttnProcessor")
         assert hasattr(attention_processor, "BooguImageDoubleStreamSelfAttnProcessor")
         # Flash variants still import (guarded classes), they just can't be
         # instantiated without flash_attn (see test_flash_processor_raises_without_flash_attn).
@@ -200,14 +206,18 @@ class TestImportSmoke:
                 "expected ImportError instantiating the flash processor without flash_attn"
             )
 
-    def test_import_embeddings(self):
-        from app.engine.models.families.boogu_image.vendor.models.embeddings import (
-            TimestepEmbedding,
-            apply_rotary_emb,
-        )
+    def test_embeddings_are_the_release_symbols(self):
+        # LANE-150: vendor/models/embeddings.py is retired; the processors call the release's
+        # apply_rotary_emb, and the vendored module is gone.
+        import importlib
 
-        assert callable(apply_rotary_emb)
-        assert TimestepEmbedding is not None
+        from diffusers.models.embeddings import apply_rotary_emb
+
+        from app.engine.models.families.boogu_image.vendor.models import attention_processor
+
+        assert attention_processor.apply_rotary_emb is apply_rotary_emb
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("app.engine.models.families.boogu_image.vendor.models.embeddings")
 
     def test_import_rope(self):
         from app.engine.models.families.boogu_image.vendor.models.transformers.rope import (
@@ -218,27 +228,26 @@ class TestImportSmoke:
         assert BooguImageDoubleStreamRotaryPosEmbed is not None
         assert BooguImagePromptTuningRotaryPosEmbed is not None
 
-    def test_import_block_lumina2_uses_stock_rmsnorm_fallback(self):
-        # is_triton_available() is False (and even if triton were installed,
-        # the upstream gate also requires "cuda" in os.getenv("device", "cpu"),
-        # which is never true here) -> the module-level RMSNorm binding must
-        # be torch.nn's, not the vendored triton kernel.
+    def test_block_lumina2_is_only_the_caption_adapter(self):
+        # LANE-150: the norm / feed-forward classes and swiglu are diffusers' own; block_lumina2 keeps
+        # one adapter (the vendored constructor and forward signature over the release class).
+        import importlib
+
+        from diffusers.models.transformers.transformer_lumina2 import (
+            Lumina2CombinedTimestepCaptionEmbedding as Release,
+        )
+
         from app.engine.models.families.boogu_image.vendor.models.transformers import (
             block_lumina2,
         )
 
-        assert block_lumina2.RMSNorm is torch.nn.RMSNorm
-
-    def test_import_components(self):
-        from app.engine.models.families.boogu_image.vendor.models.transformers.components import (
-            swiglu,
-        )
-
-        x = torch.randn(2, 4)
-        y = torch.randn(2, 4)
-        out = swiglu(x, y)
-        assert out.shape == x.shape
-        assert torch.isfinite(out).all()
+        assert issubclass(block_lumina2.Lumina2CombinedTimestepCaptionEmbedding, Release)
+        for gone in ("LuminaRMSNormZero", "LuminaLayerNormContinuous", "LuminaFeedForward"):
+            assert not hasattr(block_lumina2, gone)
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module(
+                "app.engine.models.families.boogu_image.vendor.models.transformers.components"
+            )
 
     def test_import_transformer_boogu(self):
         from app.engine.models.families.boogu_image.vendor.models.transformers.transformer_boogu import (
@@ -256,12 +265,37 @@ class TestImportSmoke:
 
         assert FlowMatchEulerDiscreteScheduler is not None
 
-    def test_import_lora_conversion(self):
-        from app.engine.models.families.boogu_image.vendor.lora_conversion import (
+    def test_lumina2_lora_conversion_is_the_release_helper_with_the_stock_split(self):
+        # LANE-150: vendor/lora_conversion.py is retired for diffusers' (private) helper. It hardcodes
+        # the stock Lumina2 qkv split [2304, 768, 768], not Boogu's GQA dims; lora_ecosystem.py:72-80
+        # records why the family's own converter exists. Pinned on observable output.
+        import importlib
+
+        from diffusers.loaders.lora_conversion_utils import (
             _convert_non_diffusers_lumina2_lora_to_diffusers,
         )
 
-        assert callable(_convert_non_diffusers_lumina2_lora_to_diffusers)
+        with pytest.raises(ModuleNotFoundError):
+            importlib.import_module("app.engine.models.families.boogu_image.vendor.lora_conversion")
+
+        rank = 4
+        sd = {}
+        for stack, count in (("noise_refiner", 1), ("context_refiner", 1), ("layers", 1)):
+            for i in range(count):
+                p = f"diffusion_model.{stack}.{i}"
+                sd[f"{p}.attention.qkv.lora_A.weight"] = torch.zeros(rank, 8)
+                sd[f"{p}.attention.qkv.lora_B.weight"] = torch.zeros(2304 + 768 + 768, rank)
+                sd[f"{p}.attention.out.lora_A.weight"] = torch.zeros(rank, 8)
+                sd[f"{p}.attention.out.lora_B.weight"] = torch.zeros(8, rank)
+                for n in (1, 2, 3):
+                    sd[f"{p}.feed_forward.w{n}.lora_A.weight"] = torch.zeros(rank, 8)
+                    sd[f"{p}.feed_forward.w{n}.lora_B.weight"] = torch.zeros(8, rank)
+                if stack != "context_refiner":
+                    sd[f"{p}.adaLN_modulation.1.lora_A.weight"] = torch.zeros(rank, 8)
+                    sd[f"{p}.adaLN_modulation.1.lora_B.weight"] = torch.zeros(8, rank)
+        out = _convert_non_diffusers_lumina2_lora_to_diffusers(sd)
+        widths = [out[f"transformer.layers.0.attn.{n}.lora_B.weight"].shape[0] for n in ("to_q", "to_k", "to_v")]
+        assert widths == [2304, 768, 768]
 
 
 class TestTinyTransformerForward:
@@ -344,8 +378,9 @@ class TestTinyTransformerForward:
             assert torch.isfinite(sample_out).all()
 
     def test_forward_uses_eager_non_flash_attention_processors(self):
+        from diffusers.models.transformers.transformer_lumina2 import Lumina2AttnProcessor2_0
+
         from app.engine.models.families.boogu_image.vendor.models.attention_processor import (
-            BooguImageAttnProcessor,
             BooguImageAttnProcessorFlash2Varlen,
             BooguImageDoubleStreamSelfAttnProcessor,
             BooguImageDoubleStreamSelfAttnProcessorFlash2Varlen,
@@ -354,19 +389,18 @@ class TestTinyTransformerForward:
         model = _build_tiny_transformer()
 
         # Single-stream / refiner blocks share BooguImageTransformerBlock ->
-        # attn.processor. Double-stream blocks additionally carry a
-        # double_stream self-attn processor on img_self_attn (same class) and
-        # a dedicated dual-stream processor called directly on
-        # img_instruct_attn.processor.
+        # attn.processor (diffusers' Lumina2AttnProcessor2_0 since LANE-150). Double-stream blocks
+        # additionally carry the same processor on img_self_attn and a dedicated dual-stream
+        # processor called directly on img_instruct_attn.processor.
         single_stream_block = model.single_stream_layers[0]
-        assert isinstance(single_stream_block.attn.processor, BooguImageAttnProcessor)
+        assert isinstance(single_stream_block.attn.processor, Lumina2AttnProcessor2_0)
         assert not isinstance(
             single_stream_block.attn.processor, BooguImageAttnProcessorFlash2Varlen
         )
 
         double_stream_block = model.double_stream_layers[0]
         assert isinstance(
-            double_stream_block.img_self_attn.processor, BooguImageAttnProcessor
+            double_stream_block.img_self_attn.processor, Lumina2AttnProcessor2_0
         )
         assert isinstance(
             double_stream_block.img_instruct_attn.processor,

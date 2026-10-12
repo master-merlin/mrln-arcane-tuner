@@ -4,7 +4,8 @@
 #
 # MRLN-PATCH (see vendor/__init__.py for the full strip list):
 # - flash-attn Flash2Varlen processor removed; blocks always construct the
-#   SDPA OmniGen2AttnProcessor (upstream's own ImportError fallback).
+#   SDPA processor (upstream's own ImportError fallback), now diffusers 0.41.0's
+#   Lumina2AttnProcessor2_0.
 # - triton fused RMSNorm removed; torch.nn.RMSNorm (upstream's fallback).
 # - TeaCache + TaylorSeer inference-caching machinery removed entirely
 #   (inference-only speedups; the denoise math is byte-identical to
@@ -36,18 +37,15 @@ from diffusers.configuration_utils import ConfigMixin, register_to_config
 from diffusers.loaders import PeftAdapterMixin
 from diffusers.loaders.single_file_model import FromOriginalModelMixin
 from diffusers.utils import USE_PEFT_BACKEND, logging, scale_lora_layers, unscale_lora_layers
+from diffusers.models.attention import LuminaFeedForward
 from diffusers.models.attention_processor import Attention
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
 from diffusers.models.modeling_utils import ModelMixin
+from diffusers.models.normalization import LuminaLayerNormContinuous, LuminaRMSNormZero
+from diffusers.models.transformers.transformer_lumina2 import Lumina2AttnProcessor2_0
 
-from ..attention_processor import OmniGen2AttnProcessor
 from .repo import OmniGen2RotaryPosEmbed
-from .block_lumina2 import (
-    Lumina2CombinedTimestepCaptionEmbedding,
-    LuminaFeedForward,
-    LuminaLayerNormContinuous,
-    LuminaRMSNormZero,
-)
+from .block_lumina2 import Lumina2CombinedTimestepCaptionEmbedding
 
 logger = logging.get_logger(__name__)
 
@@ -88,9 +86,10 @@ class OmniGen2TransformerBlock(nn.Module):
         self.modulation = modulation
 
         # MRLN-PATCH: upstream tries OmniGen2AttnProcessorFlash2Varlen first
-        # and falls back to OmniGen2AttnProcessor on ImportError — flash-attn
-        # is not a dependency here, so the fallback IS the implementation.
-        processor = OmniGen2AttnProcessor()
+        # and falls back to its SDPA processor on ImportError — flash-attn is
+        # not a dependency here, so the SDPA fallback IS the implementation,
+        # and it is now diffusers 0.41.0's own Lumina2AttnProcessor2_0.
+        processor = Lumina2AttnProcessor2_0()
 
         # Initialize attention layer
         self.attn = Attention(
@@ -429,9 +428,12 @@ class OmniGen2Transformer2DModel(ModelMixin, ConfigMixin, PeftAdapterMixin, From
                 shift += ref_img_len
                 idx += 1
 
-        # refine ref imgs separately
-        for layer in self.ref_image_refiner:
-            batch_ref_image_hidden_states = layer(batch_ref_image_hidden_states, batch_ref_img_mask, batch_ref_img_rotary_emb, batch_temb)
+        # refine ref imgs separately. MRLN-PATCH: no reference images (text-to-image) leaves a
+        # zero-length sequence; diffusers' complex-path apply_rotary_emb reshapes with -1 and
+        # cannot reshape a zero-element tensor, and the refiner of an empty sequence is empty anyway.
+        if max_ref_img_len > 0:
+            for layer in self.ref_image_refiner:
+                batch_ref_image_hidden_states = layer(batch_ref_image_hidden_states, batch_ref_img_mask, batch_ref_img_rotary_emb, batch_temb)
 
         # batch of ref imgs to sequence
         idx = 0

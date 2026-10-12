@@ -338,6 +338,7 @@ def test_the_release_transformer_is_not_imported_at_registry_import():
     only (transformer_qwenimage21.py:46-51), so the project resolves it lazily (hf_class
     string) and never at startup. A fresh interpreter: this process may have imported diffusers."""
     module = "diffusers.models.transformers.transformer_qwenimage21"
+    # safety-net print: the fresh-interpreter probe's stdout IS the assertion
     code = (
         "import sys, app.engine.models.registry, app.engine.models.families.qwen_image2; "
         f"print({module!r} in sys.modules)"

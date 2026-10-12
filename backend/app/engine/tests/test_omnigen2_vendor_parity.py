@@ -55,14 +55,26 @@ def _fixture(key: str) -> list:
     return [stored[f"{key}.{i}"] for i in range(n)]
 
 
-def _check(name: str, row, outs: list, atols: dict | None = None):
+# bf16 has 8 significand bits: one ulp is at most 2**-7 of a value's magnitude. Two forwards that round in
+# a different order differ by about one ulp of the LARGEST intermediate, which can sit far above a small
+# output element (an output of 0.7 beside one of -18 moved 0.125), so the relative term scales with the
+# output tensor's magnitude, max|fixture|. One contract in the boogu_image, omnigen2 and ideogram4
+# whole-model tests: atol 1e-2 + 2**-7 * max|fixture|, never a larger atol.
+RTOL_BF16 = 2.0**-7
+
+
+def _check(name: str, row, outs: list):
     _, atol, tag = row
-    atol = (atols or {}).get(tag, atol)
+    rtol = RTOL_BF16 if tag == "bf16" else 0.0
     reference = _fixture(f"{name}.{tag}")
     assert len(outs) == len(reference), f"LANE-150 parity omnigen2/{name}: {len(outs)} outputs != {len(reference)}"
     for out, ref in zip(outs, reference):
         diff = float(np.abs(_np(out) - ref).max())
-        assert diff <= atol, f"LANE-150 parity omnigen2/{name}: max|release - fixture| = {diff:.3e} > {atol:g}"
+        bound = atol + rtol * float(np.abs(ref).max())
+        assert diff <= bound, (
+            f"LANE-150 parity omnigen2/{name}: max|release - fixture| = {diff:.3e} > {bound:.3e}"
+            + (f" ({atol:g} + {rtol:g}*max|fixture|)" if rtol else "")
+        )
 
 
 def _randomize(module: torch.nn.Module, g: torch.Generator):
@@ -197,7 +209,10 @@ def _tiny_transformer_outputs(dtype, with_refs: bool = True):
     with torch.no_grad():
         out = model(
             hidden_states=hidden,
-            timestep=torch.rand(2, generator=g),
+            # Powers of two: the vendored class scaled AFTER the sinusoid ((t * freq) * 1000), the adapter
+            # scales BEFORE it ((t * 1000) * freq); the two are bit-identical only when t is a power of two
+            # (a non-power-of-two t such as 0.75 differs by 9.8e-5 on outputs up to 18: argument rounding).
+            timestep=torch.tensor([0.25, 0.5]),
             text_hidden_states=text,
             freqs_cis=freqs,
             text_attention_mask=torch.ones(2, 3, dtype=torch.bool),
@@ -209,13 +224,10 @@ def _tiny_transformer_outputs(dtype, with_refs: bool = True):
 
 @pytest.mark.parametrize("row", DTYPES, ids=lambda r: r[2])
 def test_tiny_transformer_forward_on_release_blocks(row):
-    # Whole-model tolerances are looser than the per-module ones, for two measured reasons. fp32: the
-    # adapter scales the timestep BEFORE the release sinusoid (t * 1000), the vendored class scaled
-    # after (Timesteps.scale), so a non-dyadic t rounds differently in an argument of order 1000
-    # (2.5e-4 on outputs of order 10; the per-module caption test uses dyadic t and holds 1e-6).
-    # bf16: the release's RMSNorm upcasts to fp32 and its feed-forward uses FP32SiLU, so outputs near
-    # |x| ~ 10 land a few bf16 ulps (0.0625 each) from the vendored result.
-    _check("transformer", row, _tiny_transformer_outputs(row[0]), atols={"fp32": 1e-3, "bf16": 0.125})
+    # Power-of-two timesteps (see _tiny_transformer_outputs), so fp32 holds 1e-6 here too; bf16 rounds the
+    # release's fp32-upcast RMSNorm / FP32SiLU feed-forward one ulp from the vendored result, covered by
+    # the shared contract (atol + RTOL_BF16).
+    _check("transformer", row, _tiny_transformer_outputs(row[0]))
 
 
 def test_plain_generation_runs_with_no_reference_images():
@@ -224,6 +236,21 @@ def test_plain_generation_runs_with_no_reference_images():
     for it (every t2i sample and training step takes this path)."""
     (out,) = _tiny_transformer_outputs(torch.float32, with_refs=False)
     assert out.shape[0] == 2 and bool(torch.isfinite(out).all())
+
+
+def _load_pinned_keys(path: Path) -> list:
+    """The recorded key list; a missing file FAILS (it is never written from the code under test)."""
+    assert path.exists(), (
+        f"LANE-150 lora keys omnigen2: the pinned key list fixtures/omnigen2/lora_keys.json is missing ({path})"
+    )
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def test_missing_key_fixture_fails_and_is_not_written(tmp_path):
+    missing = tmp_path / "nested" / "lora_keys.json"
+    with pytest.raises(AssertionError, match=r"fixtures/omnigen2/lora_keys\.json is missing"):
+        _load_pinned_keys(missing)
+    assert not missing.exists() and not missing.parent.exists()
 
 
 def test_saver_key_set_is_pinned(tmp_path):
@@ -235,10 +262,7 @@ def test_saver_key_set_is_pinned(tmp_path):
     path = tmp_path / "omnigen2_lora.safetensors"
     drv.get_saver().save(components={"unet": model, "config": {}}, path=path)
     keys = sorted(load_file(str(path)).keys())
-    if not LORA_KEYS.exists():
-        LORA_KEYS.parent.mkdir(parents=True, exist_ok=True)
-        LORA_KEYS.write_text(json.dumps(keys, indent=1) + "\n", encoding="utf-8")
-    pinned = json.loads(LORA_KEYS.read_text(encoding="utf-8"))
+    pinned = _load_pinned_keys(LORA_KEYS)
     extra, missing = sorted(set(keys) - set(pinned)), sorted(set(pinned) - set(keys))
     assert keys == pinned, (
         f"LANE-150 lora keys omnigen2: saved keys differ from fixtures/omnigen2/lora_keys.json: "

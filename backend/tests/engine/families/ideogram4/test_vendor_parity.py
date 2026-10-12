@@ -27,8 +27,10 @@ LEGACY_LORA = _FIXTURES / "legacy_lora_rank4.safetensors"
 
 ATOL_FP32 = 1e-6
 ATOL_BF16 = 1e-2
-# bf16 has 8 significand bits: one ulp is up to 2**-7 of the value (outputs reach ~2.4, ulp 1.6e-2), so a
-# different rounding order between the two forwards moves a value by one ulp. A relative term, not a bigger atol.
+# bf16 has 8 significand bits: one ulp is up to 2**-7 of the value. A different rounding order between the
+# two forwards moves a value by about one ulp of the LARGEST intermediate, so the relative term scales with
+# the output tensor's magnitude, max|fixture| (the same contract as the boogu_image and omnigen2 whole-model
+# tests): atol 1e-2 + 2**-7 * max|fixture|, never a larger atol.
 RTOL_BF16 = 2.0**-7
 # The release spells the same tiny config attention_head_dim x num_attention_heads / adaln_dim.
 RELEASE_CONFIG = dict(
@@ -81,9 +83,10 @@ def _check(name: str, out: np.ndarray, ref: np.ndarray, atol: float, rtol: float
         f"LANE-150 parity ideogram4/{name}: shape {tuple(out.shape)} != fixture shape {tuple(ref.shape)}"
     )
     diff = float(np.abs(out - ref).max())
-    assert np.all(np.abs(out - ref) <= atol + rtol * np.abs(ref)), (
-        f"LANE-150 parity ideogram4/{name}: max|release - fixture| = {diff:.3e} > {atol:g}"
-        + (f" + {rtol:g}*|fixture|" if rtol else "")
+    bound = atol + rtol * float(np.abs(ref).max())
+    assert diff <= bound, (
+        f"LANE-150 parity ideogram4/{name}: max|release - fixture| = {diff:.3e} > {bound:.3e}"
+        + (f" ({atol:g} + {rtol:g}*max|fixture|)" if rtol else "")
     )
 
 

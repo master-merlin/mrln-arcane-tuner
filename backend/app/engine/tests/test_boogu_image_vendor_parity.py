@@ -55,15 +55,26 @@ def _fixture(key: str) -> list:
     return [stored[f"{key}.{i}"] for i in range(n)]
 
 
-def _check(name: str, row, outs: list, bf16_atol: float | None = None):
+# bf16 has 8 significand bits: one ulp is at most 2**-7 of a value's magnitude. Two forwards that round in
+# a different order differ by about one ulp of the LARGEST intermediate, which can sit far above a small
+# output element (an output of 0.7 beside one of -18 moved 0.125), so the relative term scales with the
+# output tensor's magnitude, max|fixture|. One contract in the boogu_image, omnigen2 and ideogram4
+# whole-model tests: atol 1e-2 + 2**-7 * max|fixture|, never a larger atol.
+RTOL_BF16 = 2.0**-7
+
+
+def _check(name: str, row, outs: list):
     _, atol, tag = row
-    if tag == "bf16" and bf16_atol is not None:
-        atol = bf16_atol
+    rtol = RTOL_BF16 if tag == "bf16" else 0.0
     reference = _fixture(f"{name}.{tag}")
     assert len(outs) == len(reference), f"LANE-150 parity boogu_image/{name}: {len(outs)} outputs != {len(reference)}"
     for out, ref in zip(outs, reference):
         diff = float(np.abs(_np(out) - ref).max())
-        assert diff <= atol, f"LANE-150 parity boogu_image/{name}: max|release - fixture| = {diff:.3e} > {atol:g}"
+        bound = atol + rtol * float(np.abs(ref).max())
+        assert diff <= bound, (
+            f"LANE-150 parity boogu_image/{name}: max|release - fixture| = {diff:.3e} > {bound:.3e}"
+            + (f" ({atol:g} + {rtol:g}*max|fixture|)" if rtol else "")
+        )
 
 
 def _randomize(module: torch.nn.Module, g: torch.Generator):
@@ -219,10 +230,9 @@ def _tiny_transformer_outputs(dtype):
 
 @pytest.mark.parametrize("row", DTYPES, ids=lambda r: r[2])
 def test_tiny_transformer_forward_on_release_blocks(row):
-    # The whole model's outputs reach |x| ~ 11, where one bf16 ulp is 0.0625 (8 <= |x| < 16): the
-    # release's RMSNorm upcasts to fp32 and its feed-forward uses FP32SiLU, so a few outputs land one
-    # ulp from the vendored bf16 result. fp32 stays at 1e-6.
-    _check("transformer", row, _tiny_transformer_outputs(row[0]), bf16_atol=0.0625)
+    # bf16 rounds the release's fp32-upcast RMSNorm / FP32SiLU feed-forward one ulp (2**-7 relative) from
+    # the vendored result at outputs near |x| ~ 10; the shared contract (atol + RTOL_BF16) covers it.
+    _check("transformer", row, _tiny_transformer_outputs(row[0]))
 
 
 def test_saver_key_set_is_pinned(tmp_path):

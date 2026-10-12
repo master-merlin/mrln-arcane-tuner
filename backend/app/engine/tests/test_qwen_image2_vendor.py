@@ -184,6 +184,44 @@ def test_pack_and_unpack_latents_round_trip():
     assert torch.equal(unpacked, latents)
 
 
+def _release_encode_vae_image(vae, image):
+    """Run diffusers 0.41.0's ``QwenImage21Pipeline._encode_vae_image``.
+
+    Evidence: diffusers/pipelines/qwenimage21/pipeline_qwenimage21.py:429 (the
+    same name and signature the vendored helper had; ``_encode_vae_image(image,
+    generator)``, argmax posterior, then ``(x - latents_mean) / latents_std``
+    at :433-445). The constructor needs a real processor, the rest may be None.
+    """
+    from diffusers import QwenImage21Pipeline
+
+    tiny = _load_module("qwen_image2_tiny_encode", _FIXTURES / "tiny.py")
+    pipe = QwenImage21Pipeline(
+        scheduler=None, vae=vae, text_encoder=None, processor=tiny.tiny_processor(), transformer=None,
+    )
+    assert pipe.latent_channels == 64
+    with torch.no_grad():
+        return pipe._encode_vae_image(image, generator=None)
+
+
+def _expected_normalised(vae, image, std_override=None):
+    from diffusers.pipelines.qwenimage21.pipeline_qwenimage21 import retrieve_latents
+
+    with torch.no_grad():
+        raw = retrieve_latents(vae.encode(image), sample_mode="argmax")
+    mean = torch.tensor(vae.config.latents_mean).view(1, 64, 1, 1, 1)
+    std = torch.tensor(vae.config.latents_std).view(1, 64, 1, 1, 1) if std_override is None else std_override
+    return raw, (raw - mean) / std
+
+
+def test_encode_vae_image_normalises_with_the_config_mean_and_std():
+    vae = _tiny_vae()
+    image = torch.rand(1, 4, 1, 32, 32) * 2 - 1
+    normalised = _release_encode_vae_image(vae, image)
+    raw, expected = _expected_normalised(vae, image)
+    assert torch.allclose(normalised, expected)
+    assert not torch.allclose(normalised, raw)
+
+
 def test_calculate_shift_matches_the_upstream_anchors():
     from diffusers.pipelines.qwenimage21.pipeline_qwenimage21 import calculate_shift
 

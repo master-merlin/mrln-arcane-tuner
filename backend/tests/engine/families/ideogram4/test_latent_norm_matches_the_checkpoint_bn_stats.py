@@ -9,6 +9,7 @@ Skips naming the missing path when the checkpoint is not on the host (CI).
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 
@@ -22,6 +23,7 @@ AGREEMENT_TOL = 1e-3
 RECORD_TOL = 1e-4
 RECORDED_SHIFT_DIFF = 0.4283
 RECORDED_SCALE_DIFF = 0.2933
+PINNED_PATH = Path(__file__).resolve().parents[4] / "app" / "engine" / "tests" / "fixtures" / "ideogram4" / "bn_stats_diffs.json"
 _REPO = "models--ideogram-ai--ideogram-4-fp8"
 
 
@@ -63,9 +65,28 @@ def test_latent_shift_and_scale_differences_from_the_checkpoint_bn_stats_are_the
         mean = f.get_tensor("bn.running_mean").to(torch.float32)
         var = f.get_tensor("bn.running_var").to(torch.float32)
     assert mean.shape == (128,) and var.shape == (128,)
-    shift_diff = float((mean - torch.tensor(LATENT_SHIFT)).abs().max())
-    scale_diff = float((torch.sqrt(var + BN_EPS) - torch.tensor(LATENT_SCALE)).abs().max())
+    shift_vec = (mean - torch.tensor(LATENT_SHIFT)).abs()
+    scale_vec = (torch.sqrt(var + BN_EPS) - torch.tensor(LATENT_SCALE)).abs()
+    shift_diff = float(shift_vec.max())
+    scale_diff = float(scale_vec.max())
     print(f"LANE-150 ideogram4 bn-stats: max|shift diff| = {shift_diff:.4f}, max|scale diff| = {scale_diff:.4f}")
+    # The max alone is dominated by one channel (16), so a drift of any other channel would pass it: pin EVERY
+    # channel's measured difference (captured once from the local checkpoint; MRLN_REGEN_BN_STATS=1 rewrites it).
+    if os.environ.get("MRLN_REGEN_BN_STATS") == "1":
+        PINNED_PATH.write_text(
+            json.dumps({"shift": [float(x) for x in shift_vec], "scale": [float(x) for x in scale_vec]}, indent=0),
+            encoding="utf-8",
+        )
+    pinned = json.loads(PINNED_PATH.read_text(encoding="utf-8"))
+    for name, vec, label in (("shift", shift_vec, "|LATENT_SHIFT - bn.running_mean|"),
+                             ("scale", scale_vec, "|LATENT_SCALE - sqrt(bn.running_var+eps)|")):
+        assert len(pinned[name]) == 128
+        for c in range(128):
+            got, want = float(vec[c]), pinned[name][c]
+            assert abs(got - want) <= AGREEMENT_TOL, (
+                f"LANE-150 bn-stats channel {c} {label} = {got:.6f}, pinned {want:.6f} (tolerance {AGREEMENT_TOL:g});"
+                " constants or checkpoint changed"
+            )
     assert abs(shift_diff - RECORDED_SHIFT_DIFF) <= RECORD_TOL, (
         f"LANE-150 bn-stats: max|bn.running_mean - LATENT_SHIFT| = {shift_diff:.6f}, recorded {RECORDED_SHIFT_DIFF}"
         f" (agreement bar {AGREEMENT_TOL:g}); constants or checkpoint changed"

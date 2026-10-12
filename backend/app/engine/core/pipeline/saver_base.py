@@ -55,6 +55,17 @@ class GenericLoRASaver(ModelSaver):
     ``ovis_image/saver.py``.
     """
 
+    def remap_lora_state_dict(
+        self, state_dict: dict[str, torch.Tensor],
+    ) -> dict[str, torch.Tensor]:
+        """Map the prefixed PEFT keys to the family's released key layout.
+
+        Identity here. A family whose training modules differ from its released
+        key names (ideogram4: split ``to_q/to_k/to_v`` trained, fused ``qkv``
+        released) overrides it; it runs before the dtype cast and the metadata.
+        """
+        return state_dict
+
     def save(
         self,
         components: dict[str, Any],
@@ -101,6 +112,8 @@ class GenericLoRASaver(ModelSaver):
                     break
             clean = f"{self.key_prefix}{clean}"
             final_dict[clean] = value
+
+        final_dict = self.remap_lora_state_dict(final_dict)
 
         if not final_dict:
             logger.warning("no_lora_weights_found_to_save")

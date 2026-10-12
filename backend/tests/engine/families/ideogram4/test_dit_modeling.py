@@ -1,33 +1,33 @@
-"""Vendored Ideogram4 DiT: instantiation + module-name + forward contract.
+"""diffusers 0.41.0's Ideogram4 DiT: instantiation + module-name + LoRA-target contract.
 
 Uses a tiny synthetic config (no gated weights) to lock the submodule names
-the LoRA target list depends on, and the forward/timestep contract the driver
-must honour.
+the LoRA target list depends on (LANE-150: the vendored copy is retired).
 """
 
 from __future__ import annotations
 
+import torch
 from accelerate import init_empty_weights
+from diffusers import Ideogram4Transformer2DModel
 
-from app.engine.models.families.ideogram4.vendor.modeling_ideogram4 import (
-    Ideogram4Transformer2DModel,
-)
+from app.engine.core.definitions import ModelDefinition
+from app.engine.models.families.ideogram4.driver import IdeogramV4Driver
 
-# Tiny synthetic config. Every key matches a kwarg of the ported
-# `Ideogram4Transformer2DModel.__init__`. Values are kept small so the model
-# instantiates in seconds on CPU under `init_empty_weights`.
+# Tiny synthetic config in the release spelling (transformer_ideogram4.py:316-328).
+# Values are kept small so the model instantiates in seconds on CPU under
+# `init_empty_weights`.
 #
 # Constraints honoured by these values:
-#   - emb_dim % num_heads == 0  (head_dim = emb_dim // num_heads = 8, even).
+#   - head_dim = attention_head_dim = 8 (even).
 #   - MRoPE uses indices up to max(mrope_section) * 3 into an inv_freq vector of
 #     length head_dim // 2 == 4, so each mrope_section entry must satisfy
 #     section * 3 <= 4  ->  section == 1. Hence mrope_section=(1, 1, 1).
 TINY_CONFIG = {
-    "emb_dim": 16,
+    "attention_head_dim": 8,
     "num_layers": 2,
-    "num_heads": 2,
+    "num_attention_heads": 2,
     "intermediate_size": 32,
-    "adanln_dim": 8,
+    "adaln_dim": 8,
     "in_channels": 8,
     "llm_features_dim": 12,
     "rope_theta": 10000,
@@ -48,9 +48,7 @@ def test_model_instantiates_from_config():
 
 def test_block_count_matches_config():
     model = _tiny_model()
-    blocks = getattr(model, "layers", None) or getattr(model, "transformer_blocks", None)
-    assert blocks is not None
-    assert len(blocks) == TINY_CONFIG["num_layers"]
+    assert len(model.layers) == TINY_CONFIG["num_layers"]
 
 
 def test_lora_target_submodule_names_exist():
@@ -63,24 +61,30 @@ def test_lora_target_submodule_names_exist():
 
 
 # ---------------------------------------------------------------------------
-# LoRA target candidates -- canonical leaf nn.Linear names inside ONE block.
+# LoRA target candidates -- canonical leaf nn.Linear names inside ONE block of
+# the release class (transformer_ideogram4.py:146-151, :175-181):
 #
-# Pinned from `Ideogram4Transformer2DModel.layers[0].named_modules()` (verified
-# against the tiny config; identical structure at full scale). A later task's
-# target-module YAML and the driver default reference THIS list.
+#   layers.<i>.attention.to_q / to_k / to_v   split Q/K/V projections (bias=False)
+#   layers.<i>.attention.to_out.0             attention output projection (bias=False)
+#   layers.<i>.feed_forward.w1 / w2 / w3      SwiGLU gate / down / up (bias=False)
+#   layers.<i>.adaln_modulation               per-block adaLN modulation (bias=True)
 #
-#   layers.<i>.attention.qkv         fused Q/K/V projection (bias=False)
-#   layers.<i>.attention.o           attention output projection (bias=False)
-#   layers.<i>.feed_forward.w1       SwiGLU gate projection      (bias=False)
-#   layers.<i>.feed_forward.w2       SwiGLU down projection      (bias=False)
-#   layers.<i>.feed_forward.w3       SwiGLU up projection        (bias=False)
-#   layers.<i>.adaln_modulation      per-block adaLN modulation  (bias=True)
-#
-# peft-matchable target_modules patterns (suffixes):
-#   ["qkv", "o", "w1", "w2", "w3"]   (attention + SwiGLU MLP; the usual LoRA set)
-#   add "adaln_modulation" only if conditioning adaptation is desired.
-#
-# NOTE: attention uses a FUSED qkv projection (one Linear -> 3*hidden), not
-# separate to_q/to_k/to_v, so the attention LoRA target is the single `qkv`
-# (plus output `o`).
+# The definition's released list ["qkv", "o", "w1", "w2", "w3"] names the ported
+# FUSED projections; ``IdeogramV4Driver.get_lora_targets`` expands it to the
+# split names, and the saver re-fuses the exported keys.
 # ---------------------------------------------------------------------------
+
+
+def test_every_driver_lora_target_is_a_linear_of_the_release_class():
+    model = _tiny_model()
+    drv = IdeogramV4Driver(
+        ModelDefinition(id="x", family="ideogram4", name="X", lora_targetable_modules=["qkv", "o", "w1", "w2", "w3"]),
+        torch.device("cpu"),
+    )
+    linears = {n for n, m in model.layers[0].named_modules() if isinstance(m, torch.nn.Linear)}
+    for target in drv.get_lora_targets():
+        assert any(n == target or n.endswith("." + target) for n in linears), (
+            f"LoRA target {target!r} names no Linear in a release block: {sorted(linears)}"
+        )
+    # The ported fused names no longer exist on the release class.
+    assert not any(n.endswith(".qkv") or n.endswith(".o") for n in linears)

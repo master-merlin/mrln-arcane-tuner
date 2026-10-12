@@ -1,10 +1,10 @@
 """Ideogram 4 in-training sampler.
 
 Reproduces the upstream ``Ideogram4Pipeline`` denoise path using the trainer's
-already-loaded components (vendored DiT, custom Ideogram4 VAE, Qwen3-VL text
-encoder). The denoise reuses the driver's validated :meth:`forward_pass` so the
-text+image sequence packing (position_ids / segment_ids / indicator) is
-identical to training.
+already-loaded components (diffusers ``Ideogram4Transformer2DModel``,
+``AutoencoderKLFlux2``, Qwen3-VL text encoder). The denoise reuses the
+driver's validated :meth:`forward_pass` so the text+image sequence packing
+(position_ids / segment_ids / indicator) is identical to training.
 
 Family specifics that shape this sampler:
 
@@ -282,7 +282,7 @@ class IdeogramV4Sampler(GenericSamplingPipeline):
         #   bf16 features:            cos(z_final, ref) = 1.0000  (harmless)
         #   bf16 z + bf16 timesteps:  cos = 0.97                  (harmless)
         #   torch.autocast(bf16):     cos = 0.32 -> flat/blank image (FATAL)
-        # The vendored DiT keeps deliberate f32 islands (1e4-scaled t-sinusoids,
+        # The Ideogram 4 DiT keeps deliberate f32 islands (1e4-scaled t-sinusoids,
         # RoPE phases over positions offset by 65536, adaln modulation); autocast
         # force-downcasts those ops and collapses 20-step sampling to the
         # conditional mean. The bf16 model handles its own input casting (the
@@ -356,13 +356,14 @@ class IdeogramV4Sampler(GenericSamplingPipeline):
     def decode_latents(self, latents: Any) -> Image.Image:
         """VAE-decode an unpatchified latent ``[1, 32, H, W]`` to a PIL image.
 
-        Uses the VAE's ``decode`` wrapper (delegates to ``decoder``), matching
-        upstream ``_decode``'s ``autoencoder.decoder(z)``. Image is clamped to
+        ``AutoencoderKLFlux2.decode(z).sample`` (the release VAE never reads
+        its ``bn`` head there), matching upstream ``_decode``'s
+        ``autoencoder.decoder(z)``. Image is clamped to
         ``[-1, 1]`` then mapped to ``[0, 255]`` (upstream range).
         """
         vae = self.pipeline.vae
         with torch.no_grad():
-            image = vae.decode(latents.to(vae.dtype))
+            image = vae.decode(latents.to(vae.dtype)).sample
 
         image = image.float().clamp(-1.0, 1.0)
         image = (image + 1.0) * 127.5

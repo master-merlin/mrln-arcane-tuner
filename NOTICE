@@ -49,8 +49,9 @@ them.
       Boogu-Image model family code, vendored at commit ac9e40c1
 
   Ideogram 4 — https://github.com/ideogram-oss/ideogram4
-      Ideogram 4 DiT and autoencoder modeling code, ported into the
-      ideogram4 model family
+      Ideogram 4 sequence packing, latent normalisation and sampling
+      schedule code, ported into the ideogram4 model family driver,
+      utils and sampler (the DiT and autoencoder now come from diffusers)
 
 ================================================================================
 MIT License — retained notices

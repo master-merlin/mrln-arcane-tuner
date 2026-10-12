@@ -1,7 +1,8 @@
 """Ideogram 4 model driver -- family-specific training behavior.
 
 Implements :class:`IModelDriver` for the Ideogram 4 diffusion family
-(vendored DiT + Qwen3-VL text encoder + FLUX-style VAE).
+(diffusers ``Ideogram4Transformer2DModel`` + Qwen3-VL text encoder +
+``AutoencoderKLFlux2``).
 
 Key family characteristics:
 
@@ -19,12 +20,14 @@ Key family characteristics:
    ``(B, L, 4096 * 13)`` raw hidden states; the DiT projects them internally, so
    the driver supplies them unprojected.
 
-*  **Fused-QKV / SwiGLU LoRA targets** ``["qkv", "o", "w1", "w2", "w3"]``
-   (confirmed against the vendored model in Task 1).
+*  **LoRA targets**: the released definition list ``["qkv", "o", "w1", "w2",
+   "w3"]`` names the ported fused projections; :meth:`get_lora_targets`
+   expands it at the PEFT boundary to the release's split modules
+   (``to_q``/``to_k``/``to_v``/``to_out.0``), and the saver re-fuses the
+   exported keys to the released ``attention.qkv`` / ``attention.o`` names.
 
-*  Sequence packing (text+image, position_ids/segment_ids/indicator) and the
-   denoising ``forward_pass`` land in Task 5; they are stubbed here so the
-   driver can instantiate.
+*  Sequence packing (text+image, position_ids/segment_ids/indicator) in
+   :meth:`_build_packed_inputs`; :meth:`forward_pass` runs the DiT on it.
 """
 
 from __future__ import annotations
@@ -40,9 +43,10 @@ from app.engine.core.definitions import ModelDefinition
 from app.engine.core.interfaces import IModelDriver
 from app.engine.core.text_encoding import TextEncoderOutput
 from app.engine.models.families.ideogram4 import utils
-from app.engine.models.families.ideogram4.vendor.modeling_ideogram4 import (
+from diffusers.models.transformers.transformer_ideogram4 import (
     LLM_TOKEN_INDICATOR,
     OUTPUT_IMAGE_INDICATOR,
+    SEQUENCE_PADDING_INDICATOR,
 )
 
 logger = structlog.get_logger(__name__)
@@ -55,8 +59,14 @@ DEFAULT_SELECTED_LAYERS = utils.QWEN3VL_SELECTED_LAYERS
 # Image-grid position offset (upstream ideogram4.constants.IMAGE_POSITION_OFFSET):
 # image (t,h,w) positions are offset by this so they never collide with text
 # positions (which start at 0 and stay well below it). Inlined here as it is a
-# packing-layout constant, not part of the vendored nn.Module graph.
+# packing-layout constant, not part of the transformer's nn.Module graph.
 IMAGE_POSITION_OFFSET = 65536
+
+# Ported fused projection name -> the release module names it covers.
+_FUSED_TO_RELEASE: dict[str, tuple[str, ...]] = {
+    "qkv": ("to_q", "to_k", "to_v"),
+    "o": ("to_out.0",),
+}
 
 
 class IdeogramV4Driver(IModelDriver):
@@ -115,11 +125,17 @@ class IdeogramV4Driver(IModelDriver):
 
     def get_lora_targets(self) -> list[str]:
         defn_targets = getattr(self.definition, "lora_targetable_modules", None)
-        if defn_targets:
-            return defn_targets
-        # Confirmed against the vendored DiT in Task 1: fused qkv + attn out
-        # projection + SwiGLU feed-forward (w1/w2/w3).
-        return ["qkv", "o", "w1", "w2", "w3"]
+        targets = list(defn_targets) if defn_targets else ["qkv", "o", "w1", "w2", "w3"]
+        # The definition list is a released surface (ARCHITECTURE D2) naming the
+        # ported fused projections; diffusers' Ideogram4Attention has split
+        # to_q/to_k/to_v and to_out.0 (transformer_ideogram4.py:146-151), so the
+        # names expand here, at the PEFT boundary, and nowhere else.
+        expanded: list[str] = []
+        for name in targets:
+            for target in _FUSED_TO_RELEASE.get(name, (name,)):
+                if target not in expanded:
+                    expanded.append(target)
+        return expanded
 
     def get_te_lora_targets(self) -> list[str]:
         return []  # Qwen3-VL text encoder is frozen
@@ -135,7 +151,7 @@ class IdeogramV4Driver(IModelDriver):
     ) -> Any:
         """AMP is force-disabled for this family (GPU ablation, 2026-06-10).
 
-        ``torch.autocast(bf16)`` around the vendored DiT force-downcasts its
+        ``torch.autocast(bf16)`` around the Ideogram 4 DiT force-downcasts its
         deliberate f32 islands (1e4-scaled t-embedding sinusoids, RoPE phases
         over ``IMAGE_POSITION_OFFSET``-shifted positions, adaln modulation).
         Measured per-forward error vs an f32 reference: cos 0.86-0.94 — fatal
@@ -333,7 +349,7 @@ class IdeogramV4Driver(IModelDriver):
     # noise-interpolation lerp use the ``[0, num_train_timesteps]`` (i.e.
     # ``[0, 1000]``) convention. The Ideogram4 DiT's ``Ideogram4EmbedScalar`` is
     # built with ``input_range=(0.0, 1.0)`` and self-scales by 1e4 internally
-    # (Task 1 contract, modeling_ideogram4.py §3), so it wants the flow-matching
+    # (diffusers transformer_ideogram4.py:258-259), so it wants the flow-matching
     # value in ``[0, 1]``. We therefore DIVIDE by NUM_TRAIN_TIMESTEPS here.
     # NEVER multiply by 1000 — passing [0,1000] feeds the embedder up to 1e7 and
     # corrupts the conditioning (this is the prior-failure ×1000 bug guard).
@@ -409,8 +425,8 @@ class IdeogramV4Driver(IModelDriver):
         position_ids = torch.zeros(b, seq_len, 3, dtype=torch.long, device=device)
         indicator = torch.zeros(b, seq_len, dtype=torch.long, device=device)
         segment_ids = torch.full(
-            (b, seq_len), -1, dtype=torch.long, device=device,
-        )  # SEQUENCE_PADDING_INDICATOR
+            (b, seq_len), SEQUENCE_PADDING_INDICATOR, dtype=torch.long, device=device,
+        )
 
         # Text positions (p, p, p) for p in range(s_text).
         text_pos = torch.arange(s_text, device=device)
@@ -500,17 +516,22 @@ class IdeogramV4Driver(IModelDriver):
 
         model_t = timesteps.to(noisy_input.device) / self.NUM_TRAIN_TIMESTEPS
 
+        # The release model neither casts its inputs to its parameter dtype nor
+        # its output to float32 (the ported one did both); the driver does, so a
+        # bf16 model takes the trainer's fp32 latents and returns fp32 velocity.
+        dtype = self.transformer.dtype
         out = self.transformer(
-            llm_features=packed["llm_features"],
-            x=packed["x"],
-            t=model_t,
+            hidden_states=packed["x"].to(dtype),
+            timestep=model_t.to(dtype),
+            encoder_hidden_states=packed["llm_features"].to(dtype),
             position_ids=packed["position_ids"],
             segment_ids=packed["segment_ids"],
             indicator=packed["indicator"],
-        )
+            return_dict=False,
+        )[0]
         # Slice the image-position outputs back to [B, S_img, 128] (text tokens
         # are first, image tokens follow — mirror upstream out[:, max_text:]).
-        return out[:, s_text:]
+        return out[:, s_text:].to(torch.float32)
 
     def get_saver(self):
         from .saver import IdeogramV4Saver

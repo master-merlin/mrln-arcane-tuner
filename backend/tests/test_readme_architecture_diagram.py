@@ -61,8 +61,10 @@ def _tree_route_modules() -> list[str]:
     )
 
 
-def _doc_route_domains(doc_path: pathlib.Path) -> dict[str, list[str]]:
-    """Each `####` heading of the API Route Domains section -> its rows as paths relative to api/.
+def _doc_route_domains(doc_path: pathlib.Path) -> list[tuple[str, list[str]]]:
+    """Each `####` heading OCCURRENCE of the API Route Domains section -> (heading, rows as paths relative to api/).
+
+    One entry per occurrence, in document order: a repeated heading is two groups, never merged.
 
     The directory a heading names in backticks (`api/dataset/`) prefixes its rows; a heading naming
     none is the top level. Repeated rows are kept (multiplicity is asserted); `websocket.py` is dropped.
@@ -72,13 +74,14 @@ def _doc_route_domains(doc_path: pathlib.Path) -> dict[str, list[str]]:
     rest = text[start + len("### API Route Domains"):]
     end = re.search(r"^#{1,3} ", rest, re.MULTILINE)
     section = rest[: end.start()] if end else rest
-    domains: dict[str, list[str]] = {}
+    domains: list[tuple[str, list[str]]] = []
     current: list[str] | None = None
     prefix = ""
     for line in section.splitlines():
         if line.startswith("#### "):
             heading = line[5:].strip()
-            current = domains.setdefault(heading, [])
+            current = []
+            domains.append((heading, current))
             named = re.search(r"`api/([\w/]+/)`", heading)
             prefix = named.group(1) if named else ""
         elif current is not None:
@@ -111,9 +114,15 @@ def test_diagram_component_count_not_grossly_stale() -> None:
 def test_diagram_route_domain_count_matches_architecture_doc() -> None:
     claimed = _diagram_number("Route Domains")
     groups = _doc_route_domains(ARCHITECTURE_DOC)
+    names = [heading for heading, _ in groups]
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    assert not repeated, (
+        f"docs/ARCHITECTURE.md 'API Route Domains' repeats the #### heading {repeated}; "
+        f"each heading is one group ({len(groups)} groups, README claims {claimed})."
+    )
     assert claimed == len(groups), (
         f"README diagram claims {claimed} Route Domains; docs/ARCHITECTURE.md 'API Route Domains' has "
-        f"{len(groups)} #### groups ({sorted(groups)})."
+        f"{len(groups)} #### groups ({names})."
     )
 
 
@@ -124,7 +133,7 @@ def test_diagram_route_module_count_not_grossly_stale() -> None:
 def test_every_route_module_belongs_to_one_documented_domain() -> None:
     disk = _tree_route_modules()
     groups = _doc_route_domains(ARCHITECTURE_DOC)
-    rows = [path for paths in groups.values() for path in paths]
+    rows = [path for _, paths in groups for path in paths]
     problems: list[str] = []
     for path in disk:
         count = rows.count(path)
@@ -137,6 +146,18 @@ def test_every_route_module_belongs_to_one_documented_domain() -> None:
             problems.append(f"{path}: stale row (documented, not on disk)")
     header = f"route module membership drifted ({sorted(NOT_A_MODULE)} excluded by name):"
     assert not problems, header + "\n  " + "\n  ".join(sorted(problems))
+
+
+def test_domain_count_rejects_a_repeated_heading(tmp_path, monkeypatch) -> None:
+    text = ARCHITECTURE_DOC.read_text(encoding="utf-8")
+    table_head = "| `caption_context_routes.py`"
+    assert table_head in text
+    split = "\n#### Other Route Modules\n\n| Module | Prefix | Purpose |\n| --- | --- | --- |\n" + table_head
+    doc = tmp_path / "ARCHITECTURE.md"
+    doc.write_text(text.replace("\n" + table_head, split, 1), encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ARCHITECTURE_DOC", doc)
+    with pytest.raises(AssertionError, match=r"repeats the #### heading \['Other Route Modules'\].*4 groups, README claims 3"):
+        test_diagram_route_domain_count_matches_architecture_doc()
 
 
 def test_membership_rejects_a_duplicated_row(tmp_path, monkeypatch) -> None:

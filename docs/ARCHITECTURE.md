@@ -91,6 +91,7 @@ Routers are mounted under `/api` (settings under `/api/settings`, system under `
 | `overlay_routes.py`    | render-pipeline, overlay get/commit, restore models, model registry/download | Overlay rendering + restoration models |
 | `control_routes.py`    | control-image list/get/delete/upload, assign/re-match, role patch | Paired edit control-image management |
 | `video_routes.py`      | video probe, split, scene-detect, cutlist get/patch, trim, clip health | Video dataset prep (frames → clips)  |
+| `thumbnail_routes.py`  | thumbnails/legacy (survey), thumbnails/migrate                    | Legacy flat-thumbnail layout repair and reclaim |
 
 #### Training Routes (`api/training/`, prefix `/api`)
 

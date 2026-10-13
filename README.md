@@ -440,12 +440,12 @@ MRLN Arcane Tuner is a full-stack application with a FastAPI backend and an Angu
 ```
 ┌──────────────────────────────────────────────────────┐
 │                  Angular 22 SPA                      │
-│    43 Standalone Components · Signals · Tailwind     │
+│    137 Standalone Components · Signals · Tailwind    │
 └──────────────────┬────────────────┬──────────────────┘
                    │ REST           │ WebSocket
 ┌──────────────────┴────────────────┴──────────────────┐
 │                FastAPI Backend                       │
-│    9 Route Domains · Structured Logging · Middleware │
+│    3 Route Domains · 30 Route Modules · Middleware   │
 ├─────────────┬────────────┬───────────┬───────────────┤
 │ Dataset     │ Training   │ AI        │ System        │
 │ Manager     │ Engine     │ Services  │ Settings      │

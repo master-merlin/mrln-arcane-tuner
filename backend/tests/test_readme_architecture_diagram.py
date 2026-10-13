@@ -29,6 +29,9 @@ from __future__ import annotations
 import fnmatch
 import pathlib
 import re
+import sys
+
+import pytest
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 README = REPO / "README.md"
@@ -49,26 +52,39 @@ def _tree_component_count() -> int:
     )
 
 
-def _tree_route_modules() -> set[str]:
-    return {f.name for f in API_DIR.rglob(ROUTE_PATTERN) if not ({"__pycache__", "tests"} & set(f.parts))}
+def _tree_route_modules() -> list[str]:
+    """Route Modules as POSIX paths relative to API_DIR (file identity, not basename)."""
+    return sorted(
+        f.relative_to(API_DIR).as_posix()
+        for f in API_DIR.rglob(ROUTE_PATTERN)
+        if not ({"__pycache__", "tests"} & set(f.relative_to(API_DIR).parts))
+    )
 
 
-def _doc_route_domains(doc_path: pathlib.Path) -> dict[str, set[str]]:
-    """Each `####` heading of the API Route Domains section -> its backticked `*.py` file names."""
+def _doc_route_domains(doc_path: pathlib.Path) -> dict[str, list[str]]:
+    """Each `####` heading of the API Route Domains section -> its rows as paths relative to api/.
+
+    The directory a heading names in backticks (`api/dataset/`) prefixes its rows; a heading naming
+    none is the top level. Repeated rows are kept (multiplicity is asserted); `websocket.py` is dropped.
+    """
     text = doc_path.read_text(encoding="utf-8")
     start = text.index("### API Route Domains")
     rest = text[start + len("### API Route Domains"):]
     end = re.search(r"^#{1,3} ", rest, re.MULTILINE)
     section = rest[: end.start()] if end else rest
-    domains: dict[str, set[str]] = {}
-    current: set[str] | None = None
+    domains: dict[str, list[str]] = {}
+    current: list[str] | None = None
+    prefix = ""
     for line in section.splitlines():
         if line.startswith("#### "):
-            current = domains.setdefault(line[5:].strip(), set())
+            heading = line[5:].strip()
+            current = domains.setdefault(heading, [])
+            named = re.search(r"`api/([\w/]+/)`", heading)
+            prefix = named.group(1) if named else ""
         elif current is not None:
             row = re.match(r"\|\s*`([\w]+\.py)`", line)
             if row and row.group(1) not in NOT_A_MODULE:
-                current.add(row.group(1))
+                current.append(prefix + row.group(1))
     return domains
 
 
@@ -108,15 +124,37 @@ def test_diagram_route_module_count_not_grossly_stale() -> None:
 def test_every_route_module_belongs_to_one_documented_domain() -> None:
     disk = _tree_route_modules()
     groups = _doc_route_domains(ARCHITECTURE_DOC)
+    rows = [path for paths in groups.values() for path in paths]
     problems: list[str] = []
-    for name in sorted(disk):
-        owners = [g for g, names in groups.items() if name in names]
-        if not owners:
-            problems.append(f"{name}: undocumented (on disk, no row in any domain table)")
-        elif len(owners) > 1:
-            problems.append(f"{name}: in two domains {owners}")
-    documented = set().union(*groups.values()) if groups else set()
-    for name in sorted(documented):
-        if fnmatch.fnmatch(name, ROUTE_PATTERN) and name not in disk:
-            problems.append(f"{name}: stale row (documented, not on disk)")
-    assert not problems, "route module membership drifted ({} excluded by name):\n  ".format(sorted(NOT_A_MODULE)) + "\n  ".join(problems)
+    for path in disk:
+        count = rows.count(path)
+        if count == 0:
+            problems.append(f"{path}: undocumented (on disk, no row in any domain table)")
+        elif count > 1:
+            problems.append(f"{path}: documented {count} times (exactly one row expected)")
+    for path in sorted(set(rows)):
+        if fnmatch.fnmatch(path.rsplit("/", 1)[-1], ROUTE_PATTERN) and path not in disk:
+            problems.append(f"{path}: stale row (documented, not on disk)")
+    header = f"route module membership drifted ({sorted(NOT_A_MODULE)} excluded by name):"
+    assert not problems, header + "\n  " + "\n  ".join(sorted(problems))
+
+
+def test_membership_rejects_a_duplicated_row(tmp_path, monkeypatch) -> None:
+    text = ARCHITECTURE_DOC.read_text(encoding="utf-8")
+    row = next(line for line in text.splitlines() if line.startswith("| `thumbnail_routes.py`"))
+    doc = tmp_path / "ARCHITECTURE.md"
+    doc.write_text(text.replace(row, row + "\n" + row, 1), encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "ARCHITECTURE_DOC", doc)
+    with pytest.raises(AssertionError, match=r"dataset/thumbnail_routes\.py: documented 2 times"):
+        test_every_route_module_belongs_to_one_documented_domain()
+
+
+def test_membership_rejects_a_same_named_file_in_another_directory(tmp_path, monkeypatch) -> None:
+    api = tmp_path / "api"
+    for module in _tree_route_modules():
+        (api / module).parent.mkdir(parents=True, exist_ok=True)
+        (api / module).write_text("", encoding="utf-8")
+    (api / "training" / "thumbnail_routes.py").write_text("", encoding="utf-8")
+    monkeypatch.setattr(sys.modules[__name__], "API_DIR", api)
+    with pytest.raises(AssertionError, match=r"training/thumbnail_routes\.py: undocumented"):
+        test_every_route_module_belongs_to_one_documented_domain()

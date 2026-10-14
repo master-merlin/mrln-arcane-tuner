@@ -147,6 +147,6 @@ websockets==17.1
 wheel==0.48.0
 xxhash==3.6.0
 yarl==1.25.1
-zipp==3.23.0
+zipp==4.1.1
 spandrel==0.4.2
 webdataset==1.0.2

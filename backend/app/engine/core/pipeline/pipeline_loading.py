@@ -12,6 +12,52 @@ from app.engine.strategies.noise_interpolation import NoiseInterpolation
 
 logger = structlog.get_logger(__name__)
 
+# Largest slice of a module copied to CPU before its device blocks are released
+# (see `offload_module_to_cpu`). Bounds the transient host-commit overhead of an
+# offload to about one slice instead of the whole module.
+_OFFLOAD_CHUNK_BYTES = 1 << 30
+
+
+def _module_bytes(module: torch.nn.Module) -> int:
+    return sum(
+        t.numel() * t.element_size()
+        for t in (*module.parameters(), *module.buffers())
+    )
+
+
+def offload_module_to_cpu(module) -> None:
+    """Move ``module`` to CPU without doubling the process's commit charge.
+
+    On a Windows (WDDM) host every CUDA allocation charges the process's host
+    commit as much as a CPU allocation does, and the caching allocator keeps a
+    freed block charged until ``empty_cache()`` (LANE-157, measured by
+    ``.agent/workdir/lane-157/cuda_commit_probe.py``). A plain ``module.to("cpu")``
+    therefore needs commit for the whole module twice -- the new CPU tensors
+    while the device copies (and whatever the last forward left cached) stay
+    charged -- which exhausted the commit limit offloading the 24 GB LTX-2.5
+    text encoder and killed the worker with an access violation.
+
+    So: release the cache first, then move the module in slices of at most
+    ``_OFFLOAD_CHUNK_BYTES`` (a single leaf larger than that is one slice),
+    releasing each slice's device blocks before the next is copied. A non-module
+    object with a ``.to`` is moved as one piece.
+    """
+    if not isinstance(module, torch.nn.Module):
+        module.to("cpu")
+        return
+    torch.cuda.empty_cache()
+
+    def _move(mod: torch.nn.Module) -> None:
+        children = list(mod.children())
+        if children and _module_bytes(mod) > _OFFLOAD_CHUNK_BYTES:
+            for child in children:
+                _move(child)
+            # The children are on CPU now; this moves only `mod`'s own tensors.
+        mod.to("cpu")
+        torch.cuda.empty_cache()
+
+    _move(module)
+
 
 class PipelineLoadingMixin:
     """Model loading, quantization, and component lifecycle management."""
@@ -340,7 +386,7 @@ class PipelineLoadingMixin:
             # else holds the module happens to move or collect it.
             for te in te_dict.values():
                 if te is not None:
-                    te.to("cpu")
+                    offload_module_to_cpu(te)
             # Remove from components dict — prevents stale refs & GC leak
             for name in te_dict:
                 self.components.pop(name, None)
@@ -366,7 +412,8 @@ class PipelineLoadingMixin:
                     self.logger.info(
                         "text_encoder_offload_step", step="to_cpu", name=te_name
                     )
-                    te.to("cpu")
+                    # Sliced, not `te.to("cpu")`: see offload_module_to_cpu.
+                    offload_module_to_cpu(te)
             # Also clean components dict so _ensure_on_gpu won't
             # find stale entries after a future unload
             for name in te_dict:

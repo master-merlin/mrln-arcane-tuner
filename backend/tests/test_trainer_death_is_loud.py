@@ -130,6 +130,55 @@ def test_watchdog_reports_the_kept_handles_exit_code(monkeypatch):
     )
 
 
+def test_delete_job_releases_the_kept_handle():
+    mgr = JobManager()
+    job = mgr.create_job("flux/dev", {"output_dir": "outputs", "lora_name": "loud"})
+    job.status = JobStatus.COMPLETED
+    handle = MagicMock()
+    handle.pid = 100
+    mgr._processes[job.id] = handle
+
+    with patch.object(mgr, "_persist_delete"):
+        mgr.delete_job(job.id)
+
+    assert job.id not in mgr._processes, (
+        f"{MARKER}: delete_job left the job's Popen handle in _processes"
+    )
+
+
+def test_failed_start_after_spawn_releases_the_kept_handle(monkeypatch):
+    mgr = JobManager()
+    job = mgr.create_job("flux/dev", {"output_dir": "outputs", "lora_name": "loud"})
+    handle = MagicMock()
+    handle.pid = 4242
+    plugin = MagicMock()
+    plugin.start_training.return_value = handle
+    monkeypatch.setattr(
+        jm, "plugin_manager", SimpleNamespace(get_plugin=lambda _pid: plugin)
+    )
+    monkeypatch.setattr(jm, "LogTailer", MagicMock())
+
+    with patch.object(mgr, "_require_available_definition"), \
+         patch.object(mgr, "_persist_status"), \
+         patch.object(
+             mgr, "_start_pid_watchdog", side_effect=RuntimeError("watchdog boom")
+         ):
+        try:
+            mgr.start_job(job.id, clear_stale_signal=False, preflight=False)
+        except RuntimeError as exc:
+            assert "watchdog boom" in str(exc), f"{MARKER}: unexpected error {exc!r}"
+        else:
+            raise AssertionError(f"{MARKER}: the injected launch failure did not raise")
+
+    assert job.status == JobStatus.FAILED, (
+        f"{MARKER}: the failed launch did not reset the job (status {job.status!r})"
+    )
+    assert job.id not in mgr._processes, (
+        f"{MARKER}: a launch that failed after the spawn left its Popen handle "
+        f"in _processes"
+    )
+
+
 # ── 3. offload sub-steps are logged before the work, the summary after ──
 
 
@@ -379,4 +428,117 @@ def test_text_encoder_offload_does_not_double_the_commit_charge(monkeypatch):
         f"the whole encoder is {total}) -- it copies to CPU while the device "
         f"copy and the forward's cached blocks stay charged, which exhausted "
         f"the commit limit and killed the LTX-2.5 worker with 0xC0000005"
+    )
+
+
+# ── 6. the sliced offload names every slice and every empty_cache ───────
+
+
+def _sliced_offload_trainer(events: list):
+    import torch
+
+    class _Leaf(torch.nn.Module):
+        def __init__(self, tag: str) -> None:
+            super().__init__()
+            self.weight = torch.nn.Parameter(torch.zeros(1024), requires_grad=False)
+            self._tag = tag
+            self._moved = False
+
+        def _apply(self, fn, recurse=True):  # noqa: ANN001
+            if not self._moved:
+                self._moved = True
+                events.append(("copy", self._tag))
+            return super()._apply(fn, recurse)
+
+    te = torch.nn.Module()
+    te.layers = torch.nn.ModuleList()
+    for i in range(3):
+        block = torch.nn.Module()
+        block.attn = _Leaf(f"layers.{i}.attn")
+        block.mlp = _Leaf(f"layers.{i}.mlp")
+        te.layers.append(block)
+
+    driver = object.__new__(QwenImageDriver)
+    driver.text_encoder = te
+    trainer = object.__new__(QwenImageTrainer)
+    trainer.driver = driver
+    trainer.components = {"text_encoder": te}
+    trainer.config = {"cache_text_embeddings": True, "unload_text_encoder": False}
+    trainer.text_cache = {}
+    trainer._te_unloaded = False
+    trainer.device = "cuda"
+    trainer.logger = _RecordingLogger(events)
+    return trainer, 2 * 1024 * 4  # one chunk = one block (attn + mlp)
+
+
+def test_sliced_offload_logs_before_every_slice_and_empty_cache(monkeypatch):
+    events: list = []
+    trainer, chunk = _sliced_offload_trainer(events)
+    monkeypatch.setattr(pl, "_OFFLOAD_CHUNK_BYTES", chunk)
+    monkeypatch.setattr(
+        pl.torch.cuda, "empty_cache", lambda: events.append(("call", "empty_cache"))
+    )
+    monkeypatch.setattr(pl.gc, "collect", lambda *a: 0)
+
+    trainer._offload_text_encoders()
+
+    seq = [
+        ev if ev[0] != "log" else ("log", ev[1], ev[2].get("step"), ev[2].get("name"))
+        for ev in events
+    ]
+    calls = [i for i, ev in enumerate(seq) if ev == ("call", "empty_cache")]
+    copies = [i for i, ev in enumerate(seq) if ev[0] == "copy"]
+    assert len(copies) == 6, f"{MARKER}: expected 6 leaf copies; got {seq!r}"
+    for i in calls:
+        prev = seq[i - 1]
+        assert prev[:3] == ("log", "text_encoder_offload_step", "empty_cache"), (
+            f"{MARKER}: empty_cache call #{i} is not immediately preceded by a "
+            f"text_encoder_offload_step step=empty_cache; got {seq!r}"
+        )
+    # Every empty_cache inside the sliced offload names the component.
+    inner = [seq[i - 1] for i in calls[:-1]]  # the last one is the base method's
+    assert inner and all(ev[3] == "text_encoder" for ev in inner), (
+        f"{MARKER}: the sliced offload's empty_cache events do not name the "
+        f"component; got {inner!r}"
+    )
+    for i in copies:
+        before = [ev for ev in seq[:i] if ev[0] != "copy"]
+        assert before[-1][:4] == (
+            "log", "text_encoder_offload_step", "slice_to_cpu", "text_encoder"
+        ), (
+            f"{MARKER}: slice copy {seq[i]!r} is not preceded by a "
+            f"text_encoder_offload_step step=slice_to_cpu name=text_encoder; "
+            f"got {seq!r}"
+        )
+
+
+def test_injected_empty_cache_failure_leaves_a_line_naming_it(monkeypatch):
+    events: list = []
+    trainer, chunk = _sliced_offload_trainer(events)
+    monkeypatch.setattr(pl, "_OFFLOAD_CHUNK_BYTES", chunk)
+    n = {"calls": 0}
+
+    def _failing_empty_cache() -> None:
+        n["calls"] += 1
+        if n["calls"] == 3:  # mid-offload, after a slice copy
+            raise RuntimeError("injected empty_cache failure")
+        events.append(("call", "empty_cache"))
+
+    monkeypatch.setattr(pl.torch.cuda, "empty_cache", _failing_empty_cache)
+    monkeypatch.setattr(pl.gc, "collect", lambda *a: 0)
+
+    try:
+        trainer._offload_text_encoders()
+    except RuntimeError as exc:
+        assert "injected" in str(exc), f"{MARKER}: unexpected error {exc!r}"
+    else:
+        raise AssertionError(f"{MARKER}: the injected empty_cache failure did not raise")
+
+    logs = [ev for ev in events if ev[0] == "log"]
+    last = logs[-1]
+    assert (last[1], last[2].get("step"), last[2].get("name")) == (
+        "text_encoder_offload_step", "empty_cache", "text_encoder"
+    ), (
+        f"{MARKER}: the last line before the failing empty_cache does not name "
+        f"it (step=empty_cache name=text_encoder); got {last!r}"
     )

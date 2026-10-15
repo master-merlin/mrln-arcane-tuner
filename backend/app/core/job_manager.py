@@ -878,6 +878,7 @@ class JobManager:
         self._auto_resume_state.pop(job_id, None)
         self._rebuild_restarts.pop(job_id, None)
         self._pending_rebuilds.pop(job_id, None)
+        self._processes.pop(job_id, None)  # LANE-157: the kept Popen handle
         self._stop_tailer(job_id)
         with self._lock:
             if job_id in self._jobs:
@@ -1630,6 +1631,9 @@ class JobManager:
             # queue until a backend restart.
             job.status = JobStatus.FAILED
             job.error = str(e)
+            # LANE-157: a failure after the spawn kept the Popen handle; a
+            # FAILED job never reaches another release point, so drop it here.
+            self._processes.pop(job_id, None)
             self._persist_status(job_id, "failed", error=job.error)
             raise
 

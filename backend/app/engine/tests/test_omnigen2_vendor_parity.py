@@ -61,6 +61,14 @@ def _fixture(key: str) -> list:
 # output tensor's magnitude, max|fixture|. One contract in the boogu_image, omnigen2 and ideogram4
 # whole-model tests: atol 1e-2 + 2**-7 * max|fixture|, never a larger atol.
 RTOL_BF16 = 2.0**-7
+# Whole-model fp32 contract (EMPIRICAL, not a derived guarantee): the residual between two correct forwards
+# is bounded by 1e-5 (atol for near-zero elements) + 2**-16 * max|fixture|. An fp32 ulp at magnitude m is
+# 2**-23 * m, so the relative term is 128 ulps of the output's largest magnitude. The residual is decided by
+# the runner's CPU kernel path (oneDNN/MKL build, instruction set), not by the code. Validated on the
+# capture host and on the GitHub-hosted runner images of CI runs 38288827375 and 38739975663; a runner
+# outside that evidence is a new measurement, not a passed guarantee. The real-divergence negative (every
+# parameter scaled by 1 + 1e-3) is proven through _check in test_vendor_parity_fp32_bound.py.
+RTOL_FP32_WHOLE = 2.0**-16
 
 
 def _check(name: str, row, outs: list):
@@ -72,12 +80,8 @@ def _check(name: str, row, outs: list):
         diff = float(np.abs(_np(out) - ref).max())
         bound = atol + rtol * float(np.abs(ref).max())
         if name == "transformer" and tag == "fp32":
-            # Whole-model fp32 bound: 1e-5 + 2**-20 * max|fixture| (8 fp32 ulps of the output's largest
-            # magnitude). Evidence: CI run 38288827375 on 6f972bdd measured max|release - fixture| =
-            # 3.099e-06 (the capture host measures 0.0): CI CPU kernels round differently at the 1e-6
-            # scale. The 1e-3 perturbation mutant sits ~35x over this bound
-            # (max|fixture| = 19.0016 gives a bound of 2.812e-05), so a real divergence still fails.
-            bound = 1e-5 + 2**-20 * float(np.abs(ref).max())
+            # Whole-model fp32 contract: see RTOL_FP32_WHOLE above (128 ulps of max|fixture| + 1e-5).
+            bound = 1e-5 + RTOL_FP32_WHOLE * float(np.abs(ref).max())
         assert diff <= bound, (
             f"LANE-150 parity omnigen2/{name}: max|release - fixture| = {diff:.3e} > {bound:.3e}"
             + (f" ({atol:g} + {rtol:g}*max|fixture|)" if rtol else "")

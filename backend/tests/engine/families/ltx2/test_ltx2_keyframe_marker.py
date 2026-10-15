@@ -226,11 +226,17 @@ def _te() -> TextEncoderOutput:
     )
 
 
+def _tokens(d: Ltx2Driver) -> int:
+    f, h, w = d._latent_shape
+    return f * h * w
+
+
 def _video_only_call(d: Ltx2Driver) -> dict:
     d.train_audio = False
     d.forward_pass(
-        torch.zeros(_B, _S_TOKENS, 128), torch.full((_B,), 500.0), _te(), {},
+        torch.zeros(_B, _tokens(d), 128), torch.full((_B,), 500.0), _te(), {},
     )
+    assert d.transformer.calls[-1]["isolate_modalities"] is True, "not the video-only branch"
     return d.transformer.calls[-1]
 
 
@@ -238,7 +244,7 @@ def _joint_call(d: Ltx2Driver) -> dict:
     d.train_audio = True
     batch = {"audio_clean": torch.zeros(_B, 5, 128)}
     d.forward_pass(
-        torch.zeros(_B, _S_TOKENS, 128), torch.full((_B,), 500.0), _te(), batch,
+        torch.zeros(_B, _tokens(d), 128), torch.full((_B,), 500.0), _te(), batch,
     )
     assert d.transformer.calls[-1]["isolate_modalities"] is False, "not the joint branch"
     return d.transformer.calls[-1]
@@ -258,7 +264,7 @@ def _sampler_call(d: Ltx2Driver) -> dict:
     s.config = pipe.config
     s.device = pipe.device
     s.denoise(
-        torch.zeros(_B, _S_TOKENS, 128), _te(), num_steps=1, guidance_scale=1.0, seed=0,
+        torch.zeros(_B, _tokens(d), 128), _te(), num_steps=1, guidance_scale=1.0, seed=0,
     )
     return d.transformer.calls[-1]
 
@@ -308,6 +314,60 @@ def test_marker_on_passes_the_one_producers_mask(path, monkeypatch):
             device=mask.device, dtype=mask.dtype,
         ),
     )
+
+
+# Spec D2: the marker is orthogonal to video_mode / _i2v_active. On an i2v run
+# whose per-token timestep path is engaged, the mask reaches the transformer
+# unchanged, SIDE BY SIDE with the [B, tokens] timestep (frame 0 clean, t=0).
+
+def test_i2v_video_only_forward_carries_the_mask_and_the_per_token_timestep():
+    d = _spy_driver(keyframe_marker=True)
+    d._i2v_active = True
+    assert d._i2v_conditioning_engaged(), "fixture must engage the i2v path"
+    call = _video_only_call(d)
+
+    timestep = call["timestep"]
+    assert tuple(timestep.shape) == (_B, _S_TOKENS), "per-token timestep not engaged"
+    assert torch.equal(timestep[:, :_S_TPF], torch.zeros(_B, _S_TPF))
+    assert torch.equal(timestep[:, _S_TPF:], torch.full((_B, _S_TOKENS - _S_TPF), 500.0))
+
+    mask = call["video_keyframes_mask"]
+    assert mask is not None, "video_keyframes_mask is None on the i2v path"
+    row = torch.tensor([1.0] * _S_TPF + [0.0] * (_S_TOKENS - _S_TPF))
+    assert tuple(mask.shape) == (_B, _S_TOKENS, 1)
+    for b in range(_B):
+        assert torch.equal(mask[b, :, 0].float().cpu(), row)
+
+
+@pytest.mark.parametrize("path", sorted(_FORWARDS))
+def test_i2v_leaves_the_mask_unchanged(path):
+    t2v = _spy_driver(keyframe_marker=True)
+    i2v = _spy_driver(keyframe_marker=True)
+    i2v._i2v_active = True
+    t2v_mask = _FORWARDS[path](t2v)["video_keyframes_mask"]
+    i2v_mask = _FORWARDS[path](i2v)["video_keyframes_mask"]
+    assert t2v_mask is not None and i2v_mask is not None
+    assert torch.equal(i2v_mask, t2v_mask), f"{path}: i2v must not alter the mask (D2)"
+
+
+# Spec D4: a still (post-patch F == 1) is marked too: the single frame's H*W
+# tokens are all ones, no F > 1 guard, no error -- also on an i2v run, where the
+# per-token timestep path stays disengaged for the still (scalar [B] timestep).
+
+@pytest.mark.parametrize("i2v", [False, True], ids=["t2v", "i2v"])
+@pytest.mark.parametrize("path", sorted(_FORWARDS))
+def test_a_single_frame_latent_is_marked_entirely(path, i2v):
+    d = _spy_driver(keyframe_marker=True)
+    d._latent_shape = (1, _SH, _SW)
+    d._i2v_active = i2v
+    call = _FORWARDS[path](d)
+
+    mask = call["video_keyframes_mask"]
+    assert mask is not None, f"{path}: a still must be marked (D4: no F > 1 guard)"
+    assert tuple(mask.shape) == (_B, _S_TPF, 1)
+    assert torch.equal(mask, torch.ones(_B, _S_TPF, 1, dtype=mask.dtype))
+    if path == "video_only":
+        assert tuple(call["timestep"].shape) == (_B,), "a still trains on the scalar timestep"
 
 
 # ---------------------------------------------------------------------------

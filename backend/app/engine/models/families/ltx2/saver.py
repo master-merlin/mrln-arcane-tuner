@@ -144,10 +144,13 @@ class Ltx2Saver(ModelSaver):
             "max_train_steps": "ss_steps",
             "train_batch_size": "ss_batch_size_per_device",
             "seed": "ss_seed",
+            "keyframe_marker": "ss_keyframe_marker",
         }
         out: dict[str, str] = {}
         for cfg_key, ss_key in mapping.items():
             val = config.get(cfg_key)
+            if cfg_key == "keyframe_marker" and not val:
+                continue  # absent when off: the header says which run it was
             if val is not None and str(val).strip():
                 out[ss_key] = str(val)
         out.update(trigger_metadata(config))

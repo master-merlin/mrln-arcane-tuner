@@ -1350,7 +1350,16 @@ class JobManager:
                 time.sleep(5)
                 if worker_pid is None or worker_pid == pid:
                     worker_pid = self._resolve_worker_pid(pid, job_id)
-                if not self._trainer_tree_dead(pid, worker_pid):
+                # LANE-157: poll the kept handle FIRST, every cycle. On POSIX
+                # psutil.pid_exists() counts an unreaped zombie as alive, so a
+                # dead worker would never look dead; poll() reaps it and
+                # yields the exit code. The lingering-launcher branch of
+                # _trainer_tree_dead stays the second detector.
+                kept = self._processes.get(job_id)
+                handle_exited = kept is not None and kept.poll() is not None
+                if not handle_exited and not self._trainer_tree_dead(
+                    pid, worker_pid
+                ):
                     continue
                 job = self.get_job(job_id)
                 if not job:

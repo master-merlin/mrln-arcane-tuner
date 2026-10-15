@@ -130,6 +130,54 @@ def test_watchdog_reports_the_kept_handles_exit_code(monkeypatch):
     )
 
 
+def test_watchdog_reaps_a_really_exited_worker_even_when_its_pid_looks_alive(
+    monkeypatch,
+):
+    """A REAL abnormal exit, with the pid check lying 'alive' (the POSIX zombie)."""
+    import subprocess
+    import sys
+
+    proc = subprocess.Popen([sys.executable, "-c", "import sys; sys.exit(3)"])
+    proc.wait()  # exited; deliberately not polled before the watchdog runs
+
+    mgr = JobManager()
+    job = mgr.create_job("flux/dev", {"output_dir": "outputs", "lora_name": "loud"})
+    job.status = JobStatus.RUNNING
+    job.pid = proc.pid
+    mgr._processes[job.id] = proc
+
+    cycles = {"n": 0}
+
+    def _bounded_sleep(_s):  # noqa: ANN001
+        cycles["n"] += 1
+        assert cycles["n"] < 20, (
+            f"{MARKER}: the watchdog never noticed the exited handle "
+            "(pid looks alive)"
+        )
+
+    monkeypatch.setattr(jm, "threading", SimpleNamespace(Thread=_SyncThread))
+    monkeypatch.setattr(
+        jm, "time", SimpleNamespace(sleep=_bounded_sleep, time=time.time),
+    )
+    with patch.object(JobManager, "_is_pid_alive", return_value=True), \
+         patch.object(JobManager, "_resolve_worker_pid", return_value=proc.pid), \
+         patch.object(JobManager, "_terminate_process_tree", return_value=[]), \
+         patch.object(mgr, "_persist_status"), \
+         patch.object(mgr, "schedule_advance_queue"):
+        mgr._start_pid_watchdog(job.id, proc.pid)
+
+    assert job.status == JobStatus.STOPPED, (
+        f"{MARKER}: an exited worker whose pid still looks alive was never "
+        f"retired (status {job.status!r})"
+    )
+    assert job.error == (
+        "Process exited unexpectedly (exit code 0x00000003, detected by watchdog)"
+    ), f"{MARKER}: the real exit code is missing from the error: {job.error!r}"
+    assert job.id not in mgr._processes, (
+        f"{MARKER}: the exited handle was not released"
+    )
+
+
 def test_delete_job_releases_the_kept_handle():
     mgr = JobManager()
     job = mgr.create_job("flux/dev", {"output_dir": "outputs", "lora_name": "loud"})
@@ -321,6 +369,41 @@ def test_ltx2_connector_offload_is_instrumented(monkeypatch):
     ), (
         f"{MARKER}: no text_encoder_offload_step step=empty_cache before the "
         f"override's own empty_cache (after the connectors move); got {seq!r}"
+    )
+
+
+def test_ltx2_real_module_connectors_offload_names_the_component(monkeypatch):
+    """A real nn.Module takes the sliced path: its events must name connectors."""
+    import torch
+    from app.engine.models.families.ltx2.driver import Ltx2Driver
+    from app.engine.models.families.ltx2.trainer import Ltx2Trainer
+
+    events: list = []
+    driver = object.__new__(Ltx2Driver)
+    driver.text_encoder = None
+    driver.connectors = torch.nn.Linear(2, 2)
+    trainer = object.__new__(Ltx2Trainer)
+    trainer.driver = driver
+    trainer.components = {}
+    trainer.config = {"cache_text_embeddings": True, "unload_text_encoder": False}
+    trainer.text_cache = {}
+    trainer._te_unloaded = False
+    trainer.device = "cuda"
+    trainer.logger = _RecordingLogger(events)
+
+    monkeypatch.setattr(pl.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(pl.torch.cuda, "empty_cache", lambda: None)
+    monkeypatch.setattr(pl.gc, "collect", lambda *a: 0)
+
+    trainer._offload_text_encoders()
+
+    sliced = [
+        kw for ev in events if ev[0] == "log" and ev[1] == "text_encoder_offload_step"
+        for kw in [ev[2]] if kw.get("step") == "slice_to_cpu"
+    ]
+    assert sliced, f"{MARKER}: the real-module connectors move emitted no slice event"
+    assert all(kw.get("name") == "connectors" for kw in sliced), (
+        f"{MARKER}: sliced connector events do not carry name=connectors: {sliced!r}"
     )
 
 

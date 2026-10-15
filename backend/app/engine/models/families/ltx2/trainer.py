@@ -422,8 +422,12 @@ class Ltx2Trainer(GenericTrainingPipeline):
             return
         connectors = getattr(self.driver, "connectors", None)
         if connectors is not None and hasattr(connectors, "to"):
+            self.logger.info(
+                "text_encoder_offload_step", step="to_cpu", name="connectors"
+            )
             connectors.to("cpu")
             if torch.cuda.is_available():
+                self.logger.info("text_encoder_offload_step", step="empty_cache")
                 torch.cuda.empty_cache()
 
     @staticmethod

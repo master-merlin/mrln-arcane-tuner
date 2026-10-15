@@ -163,6 +163,11 @@ class JobManager:
         # delete_job. Keep this list exhaustive: a pop site missing from it
         # reads as deliberate the next time someone audits the map.
         self._pending_rebuilds: dict[str, dict[str, Any]] = {}
+        # LANE-157: the Popen handle start_training returned, per job. The pid
+        # watchdog polls it for the worker's exit code; every path that sets
+        # ``job.pid = None`` releases it. (A kept handle holds no resources the
+        # OS has not already torn down once the child exits.)
+        self._processes: dict[str, Any] = {}
         # Rebuild relaunches performed this session, keyed by job_id. Budget
         # for _MAX_REBUILD_RESTARTS; cleared wherever a job legitimately starts
         # a fresh session (delete, clean completion, restart-fresh) exactly like
@@ -1143,6 +1148,7 @@ class JobManager:
         with self._lock:
             job.finished_at = time.time()
             job.pid = None
+            self._processes.pop(job.id, None)
             if code == 0:
                 job.status = JobStatus.COMPLETED
             elif job.status != JobStatus.STOPPED:
@@ -1354,11 +1360,17 @@ class JobManager:
                     # Re-check: the exit message handler may have already updated
                     job = self.get_job(job_id)
                     if job and job.status in (JobStatus.RUNNING, JobStatus.PAUSED):
+                        # LANE-157: the kept handle is the one producer of the
+                        # exit code (RULE-21). It may be the redirector
+                        # launcher's; a lingering launcher polls None.
+                        proc = self._processes.pop(job_id, None)
+                        rc = proc.poll() if proc is not None else None
                         logger.warning(
                             "pid_watchdog_process_died",
                             job_id=job_id,
                             launcher_pid=pid,
                             worker_pid=worker_pid,
+                            returncode=rc,
                         )
                         # Reap any lingering launcher/worker remnant so VRAM frees.
                         self._terminate_process_tree(pid)
@@ -1372,7 +1384,12 @@ class JobManager:
                             job.status = JobStatus.STOPPED
                             job.finished_at = time.time()
                             job.pid = None
-                            job.error = "Process exited unexpectedly (detected by watchdog)"
+                            job.error = (
+                                "Process exited unexpectedly (exit code "
+                                f"0x{rc & 0xFFFFFFFF:08X}, detected by watchdog)"
+                                if rc is not None
+                                else "Process exited unexpectedly (detected by watchdog)"
+                            )
                         self._persist_status(
                             job_id, "stopped",
                             finished_at=job.finished_at,
@@ -1589,6 +1606,7 @@ class JobManager:
 
             if hasattr(process, 'pid'):
                 job.pid = process.pid
+                self._processes[job_id] = process
                 self._persist_status(job_id, "running", pid=process.pid)
 
                 # Start file-based log tailing
@@ -1689,6 +1707,7 @@ class JobManager:
                 job.status = JobStatus.FAILED
                 job.finished_at = time.time()
                 job.pid = None
+                self._processes.pop(job.id, None)
                 job.error = job.error or (
                     "Training process is no longer running (recovered)."
                 )
@@ -1788,6 +1807,7 @@ class JobManager:
             job.status = JobStatus.STOPPED
             job.finished_at = time.time()
             job.pid = None
+            self._processes.pop(job.id, None)
         self._persist_status(job_id, "stopped", finished_at=job.finished_at)
         self._stop_tailer(job_id)
         if self._loop:
@@ -2010,6 +2030,7 @@ class JobManager:
             job.status = JobStatus.PENDING
             job.error = None
             job.pid = None
+            self._processes.pop(job.id, None)
             job.started_at = None
             job.finished_at = None
             job.logs = []
@@ -2212,6 +2233,7 @@ class JobManager:
             # just exited leaves this one RUNNING.
             job.status = JobStatus.STOPPED
             job.pid = None
+            self._processes.pop(job.id, None)
         # The relaunched process reads its config from the DB, so this write
         # is what actually narrows the next run.
         self._persist_config(job_id, new_config)
@@ -2281,6 +2303,7 @@ class JobManager:
             job.error = error
             job.finished_at = time.time()
             job.pid = None
+            self._processes.pop(job.id, None)
         self._persist_status(
             job_id, "failed", error=error, finished_at=job.finished_at,
         )

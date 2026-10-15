@@ -84,6 +84,9 @@ class StandardPlugin(TrainingPlugin):
         cmd = [
             python_executable,
             "-u",
+            # LANE-157: a native crash dumps every thread's Python stack
+            # into trainer_stdout.log instead of dying silently.
+            "-X", "faulthandler",
             script_path,
             "--definition_id", definition_id,
             "--config", json.dumps(config),

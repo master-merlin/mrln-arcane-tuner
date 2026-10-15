@@ -105,6 +105,7 @@ class PipelineLoadingMixin:
             if comp is None:
                 continue
             if hasattr(comp, "to"):
+                self.logger.info("moving_component_to_gpu", name=name)
                 comp.to(self.device)
                 self.logger.info("component_moved_to_gpu", name=name)
 
@@ -358,18 +359,27 @@ class PipelineLoadingMixin:
             self.driver.release_text_encoders()
             self._te_unloaded = True
         else:
-            self.logger.info(
-                "text_encoders_offloaded_to_cpu",
-                encoders=list(te_dict.keys()),
-                cached_embeddings=cache_count,
-            )
-            for te in te_dict.values():
+            # LANE-157: each sub-step is logged BEFORE it runs, so the last
+            # line of a dead worker names the sub-step it died in.
+            for te_name, te in te_dict.items():
                 if te is not None:
+                    self.logger.info(
+                        "text_encoder_offload_step", step="to_cpu", name=te_name
+                    )
                     te.to("cpu")
             # Also clean components dict so _ensure_on_gpu won't
             # find stale entries after a future unload
             for name in te_dict:
                 self.components.pop(name, None)
 
+        self.logger.info("text_encoder_offload_step", step="empty_cache")
         torch.cuda.empty_cache()
+        self.logger.info("text_encoder_offload_step", step="gc_collect")
         gc.collect()
+        if not self.config.get("unload_text_encoder", False):
+            # Emitted AFTER the moves it names (it used to precede them).
+            self.logger.info(
+                "text_encoders_offloaded_to_cpu",
+                encoders=list(te_dict.keys()),
+                cached_embeddings=cache_count,
+            )

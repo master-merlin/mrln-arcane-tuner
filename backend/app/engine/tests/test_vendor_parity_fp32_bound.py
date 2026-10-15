@@ -83,7 +83,9 @@ def test_check_rejects_a_weight_perturbation(family, monkeypatch):
     outs = mod._tiny_transformer_outputs(torch.float32)
     bounds = [ATOL + RTOL * float(np.abs(r).max()) for r in ref]
     ratios = [float(np.abs(mod._np(o) - r).max()) / b for o, r, b in zip(outs, ref, bounds)]
-    print(f"{family}: residual/bound per output = {[f'{x:.1f}x' for x in ratios]}")
-    assert min(ratios) > 1.0, f"{MSG}: the all-parameter 1e-3 mutant is within the contract (residual/bound {ratios})"
+    shown = [f"{x:.1f}x" for x in ratios]
+    assert min(ratios) > 1.0, (
+        f"{MSG}: the all-parameter 1e-3 mutant is within the contract ({family} residual/bound per output {shown})"
+    )
     with pytest.raises(AssertionError, match="LANE-150 parity"):
         mod._check("transformer", row, outs)

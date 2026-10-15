@@ -217,3 +217,59 @@ def test_text_encoder_offload_logs_after_the_move_with_substeps(monkeypatch):
         f"{MARKER}: moving_component_to_gpu name=vae must precede the VAE "
         f".to(); got {seq!r}"
     )
+
+
+# ── 4. the LTX2 connector offload (the override after super()) ──────────
+
+
+def test_ltx2_connector_offload_is_instrumented(monkeypatch):
+    from app.engine.models.families.ltx2.driver import Ltx2Driver
+    from app.engine.models.families.ltx2.trainer import Ltx2Trainer
+
+    events: list = []
+    connectors = _RecordingModule(events, "connectors")
+
+    driver = object.__new__(Ltx2Driver)
+    driver.text_encoder = None  # base offload runs against zero encoders
+    driver.connectors = connectors
+    trainer = object.__new__(Ltx2Trainer)
+    trainer.driver = driver
+    trainer.components = {}
+    trainer.config = {"cache_text_embeddings": True, "unload_text_encoder": False}
+    trainer.text_cache = {}
+    trainer._te_unloaded = False
+    trainer.device = "cuda"  # fake: the stub only records the target
+    trainer.logger = _RecordingLogger(events)
+
+    # The override only empties the cache when CUDA is present; pretend it is.
+    monkeypatch.setattr(pl.torch.cuda, "is_available", lambda: True)
+    monkeypatch.setattr(pl.torch.cuda, "empty_cache", lambda: events.append(("call", "empty_cache")))
+    monkeypatch.setattr(pl.gc, "collect", lambda *a: events.append(("call", "gc_collect")) or 0)
+
+    trainer._offload_text_encoders()
+
+    seq = _project(events, {"text_encoder_offload_step"})
+    move = ("to", "connectors", "cpu")
+    assert move in seq, (
+        f"{MARKER}: the LTX2 override never moved the connectors to CPU; got {seq!r}"
+    )
+    move_at = seq.index(move)
+    step_to_cpu = ("text_encoder_offload_step", "to_cpu", "connectors")
+    assert step_to_cpu in seq[:move_at], (
+        f"{MARKER}: no text_encoder_offload_step step=to_cpu name=connectors "
+        f"before the connectors .to('cpu'); got {seq!r}"
+    )
+    after = seq[move_at + 1:]
+    cache_call = ("call", "empty_cache")
+    assert cache_call in after, (
+        f"{MARKER}: the override did not empty the cache after the connectors "
+        f"move; got {seq!r}"
+    )
+    cache_at = after.index(cache_call)
+    assert any(
+        ev[0] == "text_encoder_offload_step" and ev[1] == "empty_cache"
+        for ev in after[:cache_at]
+    ), (
+        f"{MARKER}: no text_encoder_offload_step step=empty_cache before the "
+        f"override's own empty_cache (after the connectors move); got {seq!r}"
+    )

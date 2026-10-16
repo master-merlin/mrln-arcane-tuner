@@ -159,6 +159,20 @@ class Flux3Driver(IModelDriver):
         """Text-encoder LoRA is out of scope for FLUX.3 (TE frozen)."""
         return []
 
+    def get_block_topology(self) -> list[dict[str, Any]]:
+        """Swappable block groups: the joint single-stream stack (the per-mode ModuleDict is
+        not an attribute path). Empty until the transformer is assigned."""
+        model = self.get_primary_model()
+        single = getattr(model, "single_transformer_blocks", None) if model is not None else None
+        if single is None:
+            return []
+        return [{
+            "name": "single_blocks",
+            "attr_path": "single_transformer_blocks",
+            "count": len(single),
+            "approx_vram_mb": 320,
+        }]
+
     def get_layer_manifest(self) -> Any:
         from app.engine.core.layer_manifest import BlockInfo, ModelLayerManifest
 

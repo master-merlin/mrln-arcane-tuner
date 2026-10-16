@@ -67,6 +67,19 @@ def test_driver_topology_matches_the_real_model():
     assert topo[0]["approx_vram_mb"] > 0
 
 
+def test_flux3_vram_profile_is_not_marked_placeholder():
+    # The UAT (LANE-144) settled the profile; a leftover placeholder marker would tell the
+    # next reader the numbers are still a guess.
+    import inspect
+
+    from app.engine.utils import vram_estimator
+
+    src = inspect.getsource(vram_estimator)
+    start = src.index('    "flux3": {')
+    block = src[start : src.index("    },", start)]
+    assert "placeholder" not in block.lower(), block
+
+
 def test_vram_estimator_has_a_flux3_profile():
     assert "flux3" in _FAMILY_PARAMS
     entry = _FAMILY_PARAMS["flux3"]

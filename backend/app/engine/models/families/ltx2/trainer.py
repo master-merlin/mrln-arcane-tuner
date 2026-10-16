@@ -23,6 +23,7 @@ import structlog
 import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
+from app.engine.core.pipeline.pipeline_loading import offload_module_to_cpu
 from app.engine.core.text_encoding import TextEncoderOutput
 
 from .driver import Ltx2Driver
@@ -422,7 +423,8 @@ class Ltx2Trainer(GenericTrainingPipeline):
             return
         connectors = getattr(self.driver, "connectors", None)
         if connectors is not None and hasattr(connectors, "to"):
-            connectors.to("cpu")
+            # Sliced like the encoder: a plain .to("cpu") double-charges commit.
+            offload_module_to_cpu(connectors)
             if torch.cuda.is_available():
                 torch.cuda.empty_cache()
 

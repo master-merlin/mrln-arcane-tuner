@@ -212,6 +212,7 @@ Counts here are pinned by `backend/tests/test_architecture_family_counts.py` —
 | `ernie_image`     | Baidu ERNIE-Image (Base 8B, custom text encoder)                   | latent_diffusion    | —                                   |
 | `flux1`           | FLUX.1 (Dev / Schnell / Kontext Dev)                               | latent_diffusion    | —                                   |
 | `flux2`           | FLUX.2 (Dev / Klein Base 4B / Klein Base 9B)                       | latent_diffusion    | —                                   |
+| `flux3`           | FLUX.3 Image Klein (Base 5.6B; vendored transformer, Qwen3-VL TE + FLUX.2 VAE) | latent_diffusion | —                       |
 | `hidream_o1`      | HiDream-O1-Image (Full) — pixel-space text-to-image LoRA           | unified_transformer | —                                   |
 | `ideogram4`       | Ideogram 4 (fp8, 9.3B; structured-JSON captioning)                 | latent_diffusion    | —                                   |
 | `krea2`           | Krea-2 (Raw train + Turbo deploy; vendored transformer, Qwen3-VL TE + Qwen VAE) | latent_diffusion | —                      |

@@ -51,6 +51,14 @@ class Flux3Trainer(GenericTrainingPipeline):
         self.driver = Flux3Driver(self.definition, self.device)
         self.loader = Flux3Loader(self.device)
 
+    def _create_sampler(self):
+        """Create a Flux3Sampler if sampling is configured."""
+        if int(self.config.get("sample_every_n_steps", 0)) > 0:
+            from .sampler import Flux3Sampler  # noqa: PLC0415
+
+            return Flux3Sampler(self)
+        return None
+
     def _update_primary_model(self, new_model: torch.nn.Module) -> None:
         """Keep self.transformer, the components dict and the driver in sync after PEFT wrapping."""
         self.transformer = new_model

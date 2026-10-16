@@ -815,3 +815,70 @@ def test_saver_round_trip_preserves_the_adapter_delta(tmp_path):
     reloaded, _ = _reload(base_state, tensors, RANK, alpha_file)
     diff = float((_tiny_forward(reloaded) - trained_out).abs().max())
     assert diff <= 1e-5, f"{MARK}: the reloaded adapter's forward differs from the trained one by {diff:.3e}"
+
+
+# ── 12-13. D6: the Euler + real-CFG sampler on the fixed 6.93 schedule ────────
+
+
+class _AutocastSpy(_SpyTransformer):
+    """The spy that also records whether an autocast region is active and the input dtypes."""
+
+    def forward(self, hidden_states=None, encoder_hidden_states=None, timestep=None, **kwargs):
+        self.calls.append({
+            "timestep": timestep.detach().float().clone(),
+            "txt": encoder_hidden_states.detach().clone(),
+            "hidden_dtype": hidden_states.dtype,
+            "context_dtype": encoder_hidden_states.dtype,
+            "autocast": torch.is_autocast_enabled("cpu") or torch.is_autocast_enabled("cuda"),
+        })
+        return _Out((torch.zeros_like(hidden_states),))
+
+
+def _sampler(spy=None):
+    cls = _load("sampler", "Flux3Sampler")
+    driver, _te, _proc, default_spy = _driver()
+    spy = spy if spy is not None else default_spy
+    driver.transformer = spy
+    pipeline = SimpleNamespace(
+        config={}, device=torch.device("cpu"), definition=driver.definition, driver=driver,
+        transformer=spy, vae=driver.vae,
+    )
+    return cls(pipeline), spy
+
+
+def _embeds(window: int = 80):
+    gen = torch.Generator().manual_seed(3)
+    return {"cond": torch.randn(1, window, CONTEXT_WIDTH, generator=gen),
+            "uncond": torch.randn(1, window, CONTEXT_WIDTH, generator=gen)}
+
+
+def test_sampler_runs_the_fp32_trajectory_without_autocast():
+    sampler, spy = _sampler(_AutocastSpy())
+    noise = sampler._create_initial_noise(128, 128, torch.Generator().manual_seed(0))
+    sampler.denoise(noise, _embeds(), 4, 3.5, 0)
+
+    assert spy.calls, f"{MARK}: the sampler never called the transformer"
+    assert not [c for c in spy.calls if c["autocast"]], (
+        f"{MARK}: an autocast region is active around the sampler forward (autocast-sampler-collapse)")
+    assert {c["hidden_dtype"] for c in spy.calls} == {torch.float32}, (
+        f"{MARK}: the transformer must see the fp32 trajectory")
+
+
+def test_sampler_schedule_is_the_fixed_shift_with_real_cfg_and_a_decodable_result():
+    sampler, spy = _sampler(_AutocastSpy())
+    steps = 5
+    embeds = _embeds()
+    noise = sampler._create_initial_noise(128, 128, torch.Generator().manual_seed(0))
+    assert noise.shape == (1, 64, 128), f"{MARK}: packed noise {tuple(noise.shape)}"
+    out = sampler.denoise(noise, embeds, steps, 3.5, 0)
+
+    expected = _shift(torch.linspace(1.0, 0.0, steps + 1)[:-1])
+    seen = torch.stack([c["timestep"][0] for c in spy.calls])
+    assert len(spy.calls) == 2 * steps, f"{MARK}: CFG needs a cond and an uncond forward per step"
+    assert torch.allclose(seen[0::2], expected, atol=1e-5) and torch.allclose(seen[1::2], expected, atol=1e-5), (
+        f"{MARK}: timesteps {seen.tolist()} are not the unit-range 6.93-shifted schedule {expected.tolist()}")
+    first, second = spy.calls[0]["txt"], spy.calls[1]["txt"]
+    pairs = [(embeds["uncond"], embeds["cond"]), (embeds["cond"], embeds["uncond"])]
+    assert any(torch.equal(first, a) and torch.equal(second, b) for a, b in pairs), (
+        f"{MARK}: each step must run the cond and the uncond context")
+    assert tuple(out.shape) == (1, 32, 16, 16), f"{MARK}: unpatchified latents {tuple(out.shape)}"

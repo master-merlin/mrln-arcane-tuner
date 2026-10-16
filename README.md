@@ -556,11 +556,11 @@ Training is configured through a **dynamic JSON Schema-driven UI** — the form 
 
 #### Supported Model Families
 
-**30 families, 55 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](docs/ARCHITECTURE.md#model-families).
+**31 families, 56 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](docs/ARCHITECTURE.md#model-families).
 
 This table is generated from `backend/app/engine/models/families/` and pinned by `backend/tests/test_readme_family_table.py`, so a family added without a row here fails the gate. It listed three of twenty-eight until 2026-08-28 — there is no text-encoder column because populating it accurately for every family means reading every loader, and twenty-five blanks would say less than no column at all.
 
-**Image — 21 families**
+**Image — 22 families**
 
 | Family | Definitions shipped |
 | --- | --- |
@@ -570,6 +570,7 @@ This table is generated from `backend/app/engine/models/families/` and pinned by
 | `ernie_image` | ERNIE Image (Base 8B) |
 | `flux1` | FLUX.1 Dev · FLUX.1 Kontext Dev · FLUX.1 Schnell |
 | `flux2` | Flux 2 (Dev) · Flux 2 (Klein Base 4B) · Flux 2 (Klein Base 9B) |
+| `flux3` | FLUX.3 Image Klein (Base) — [`flux-3-image-klein-base`](https://huggingface.co/black-forest-labs/flux-3-image-klein-base) |
 | `hidream_o1` | HiDream-O1-Image (Full) |
 | `ideogram4` | Ideogram 4 (fp8, 9.3B) |
 | `krea2` | Krea-2 Raw · Krea-2 Turbo |
@@ -822,6 +823,7 @@ model page as authoritative.
 | `ideogram4` | [`ideogram-ai/ideogram-4-fp8`](https://huggingface.co/ideogram-ai/ideogram-4-fp8) | `ideogram-4-non-commercial` — **non-commercial** | open |
 | `flux1` | [`black-forest-labs/FLUX.1-dev`](https://huggingface.co/black-forest-labs/FLUX.1-dev) | `flux-1-dev-non-commercial-license` — **non-commercial** | **gated** — you must accept the agreement on HuggingFace first |
 | `flux2` | [`black-forest-labs/FLUX.2-dev`](https://huggingface.co/black-forest-labs/FLUX.2-dev) | `flux-non-commercial-license` — **non-commercial** | **gated** |
+| `flux3` | [`black-forest-labs/flux-3-image-klein-base`](https://huggingface.co/black-forest-labs/flux-3-image-klein-base) | FLUX Kommunity License v1.0 — non-commercial and non-production use, or commercial use only as a "Qualifying User" (gross annualized revenue under US$5,000,000) | **gated** |
 | `qwen_image2` | [`Qwen/Qwen-Image-2.1`](https://huggingface.co/Qwen/Qwen-Image-2.1) | Qwen Research License — **non-commercial**; a shared fine-tune must say "Built with Qwen" | open |
 
 **Permissive (verified):** `hidream_o1`

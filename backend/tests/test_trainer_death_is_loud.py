@@ -178,6 +178,65 @@ def test_watchdog_reaps_a_really_exited_worker_even_when_its_pid_looks_alive(
     )
 
 
+def test_watchdog_falls_back_when_the_kept_handle_has_no_exit_code(monkeypatch):
+    """The launcher lingers (its handle polls None) while the worker is gone.
+
+    The real watchdog cycle runs: only the sleeps, the process-tree reap and
+    ``psutil.pid_exists`` (launcher alive, worker dead) are doubled. The job
+    must still retire with the frozen fallback wording, and the death event
+    must name the worker pid with ``returncode=None``.
+    """
+    import psutil
+
+    launcher_pid, worker_pid = 100, 200
+    mgr = JobManager()
+    job = mgr.create_job("flux/dev", {"output_dir": "outputs", "lora_name": "loud"})
+    job.status = JobStatus.RUNNING
+    job.pid = launcher_pid
+
+    handle = MagicMock()
+    handle.pid = launcher_pid
+    handle.poll.return_value = None
+    handle.returncode = None
+    mgr._processes[job.id] = handle
+
+    events: list = []
+    monkeypatch.setattr(jm, "logger", _RecordingLogger(events))
+    monkeypatch.setattr(jm, "threading", SimpleNamespace(Thread=_SyncThread))
+    monkeypatch.setattr(
+        jm, "time", SimpleNamespace(sleep=lambda _s: None, time=time.time),
+    )
+    monkeypatch.setattr(psutil, "pid_exists", lambda p: p == launcher_pid)
+    with patch.object(JobManager, "_resolve_worker_pid", return_value=worker_pid), \
+         patch.object(JobManager, "_terminate_process_tree", return_value=[]), \
+         patch.object(mgr, "_persist_status"), \
+         patch.object(mgr, "schedule_advance_queue"):
+        mgr._start_pid_watchdog(job.id, launcher_pid)
+
+    assert job.status == JobStatus.STOPPED, (
+        f"{MARKER}: a dead worker behind a lingering launcher was not retired "
+        f"(status {job.status!r})"
+    )
+    assert job.error == "Process exited unexpectedly (detected by watchdog)", (
+        f"{MARKER}: with no exit code known the watchdog must keep the frozen "
+        f"fallback wording, without an 'exit code 0x' fragment: {job.error!r}"
+    )
+    died = [kw for _k, ev, kw in events if ev == "pid_watchdog_process_died"]
+    assert len(died) == 1, (
+        f"{MARKER}: expected one pid_watchdog_process_died event, got {events!r}"
+    )
+    assert died[0].get("worker_pid") == worker_pid, (
+        f"{MARKER}: the death event does not name the worker pid: {died[0]!r}"
+    )
+    assert "returncode" in died[0] and died[0]["returncode"] is None, (
+        f"{MARKER}: the death event must carry returncode=None when the kept "
+        f"handle has no exit code: {died[0]!r}"
+    )
+    assert job.id not in mgr._processes, (
+        f"{MARKER}: the kept handle was not released on the terminal transition"
+    )
+
+
 def test_delete_job_releases_the_kept_handle():
     mgr = JobManager()
     job = mgr.create_job("flux/dev", {"output_dir": "outputs", "lora_name": "loud"})

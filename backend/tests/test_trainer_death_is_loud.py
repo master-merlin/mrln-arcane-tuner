@@ -227,6 +227,55 @@ def test_failed_start_after_spawn_releases_the_kept_handle(monkeypatch):
     )
 
 
+def test_start_job_keeps_the_spawned_handle_for_the_watchdog(monkeypatch, tmp_path):
+    """The REAL launch (start_job -> StandardPlugin.start_training -> Popen)
+    must keep the Popen handle the watchdog polls; without it the watchdog
+    finds no handle and a dead worker's exit code is lost again."""
+    handle = MagicMock()
+    handle.pid = 5151
+    handle.poll.return_value = None
+    handle.returncode = None
+    captured: dict = {}
+
+    def _popen(cmd, **kwargs):  # noqa: ANN001
+        captured["kwargs"] = kwargs
+        return handle
+
+    monkeypatch.setattr(tp.subprocess, "Popen", _popen)
+    monkeypatch.setattr(
+        jm, "plugin_manager", SimpleNamespace(get_plugin=lambda _pid: StandardPlugin())
+    )
+    monkeypatch.setattr(jm, "LogTailer", MagicMock())
+
+    mgr = JobManager()
+    job = mgr.create_job(
+        "ltx2-5-base",
+        {
+            "definition_id": "ltx2-5-base",
+            "output_dir": str(tmp_path),
+            "lora_name": "loud",
+        },
+    )
+    watchdog = MagicMock()
+    try:
+        with patch.object(mgr, "_require_available_definition"), \
+             patch.object(mgr, "_persist_status"), \
+             patch.object(mgr, "_start_pid_watchdog", watchdog):
+            mgr.start_job(job.id, clear_stale_signal=False, preflight=False)
+    finally:
+        stdout = captured.get("kwargs", {}).get("stdout")
+        if hasattr(stdout, "close"):
+            stdout.close()  # the boot log handle start_training opened
+
+    assert "kwargs" in captured, f"{MARKER}: start_job never reached Popen"
+    assert mgr._processes.get(job.id) is handle, (
+        f"{MARKER}: start_job did not keep the spawned Popen handle in "
+        f"_processes (got {mgr._processes.get(job.id)!r}); the watchdog would "
+        "find no handle and report a dead worker without its exit code"
+    )
+    watchdog.assert_called_once_with(job.id, handle.pid)
+
+
 # ── 3. offload sub-steps are logged before the work, the summary after ──
 
 

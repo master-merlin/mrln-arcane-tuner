@@ -76,6 +76,10 @@ _AUDIO_LORA_TARGETS = (
 class Ltx2Driver(IModelDriver):
     """LTX 2.3 driver (joint audio + video)."""
 
+    # LTX-2.5 ``keyframe_marker`` option; the trainer surfaces the run config
+    # onto it. Class-level so every constructor path defaults off.
+    keyframe_marker: bool = False
+
     def __init__(self, definition: ModelDefinition, device: torch.device):
         self.definition = definition
         self.device = device
@@ -316,6 +320,36 @@ class Ltx2Driver(IModelDriver):
         t[:, :tokens_per_frame] = 0.0
         return t
 
+    @staticmethod
+    def _keyframes_mask(
+        num_tokens: int,
+        tpf: int,
+        batch_size: int,
+        device: torch.device,
+        dtype: torch.dtype,
+    ) -> torch.Tensor:
+        """``[B, num_tokens, 1]`` mask: 1 on the first latent frame's tokens.
+
+        ``tpf`` = post-patch ``h * w``; the packed token order is row-major
+        ``(f, h, w)`` so the first ``tpf`` tokens are the causal first frame
+        (same layout ``_i2v_per_token_timestep`` relies on). The ONE producer
+        for the training forwards and the sampler.
+        """
+        mask = torch.zeros((batch_size, num_tokens, 1), device=device, dtype=dtype)
+        mask[:, :tpf] = 1.0
+        return mask
+
+    def _video_keyframes_mask(
+        self, noisy_input: torch.Tensor, h: int, w: int,
+    ) -> torch.Tensor | None:
+        """The keyframe mask for a forward, or ``None`` when the option is off."""
+        if not self.keyframe_marker:
+            return None
+        return self._keyframes_mask(
+            noisy_input.shape[1], h * w, noisy_input.shape[0],
+            noisy_input.device, noisy_input.dtype,
+        )
+
     def _i2v_conditioning_engaged(self) -> bool:
         """True only when i2v first-frame conditioning should apply THIS step.
 
@@ -482,6 +516,7 @@ class Ltx2Driver(IModelDriver):
                 fps=fps,
                 audio_num_frames=1,
                 isolate_modalities=True,  # no audio↔video leakage
+                video_keyframes_mask=self._video_keyframes_mask(noisy_input, h, w),
                 return_dict=False,
             )
             return output[0] if isinstance(output, (tuple, list)) else output
@@ -506,6 +541,7 @@ class Ltx2Driver(IModelDriver):
             fps=fps,
             audio_num_frames=audio_noisy.shape[1],
             isolate_modalities=False,  # joint: audio↔video cross-attention on
+            video_keyframes_mask=self._video_keyframes_mask(noisy_input, h, w),
             return_dict=False,
         )
         video_pred, audio_pred = output[0], output[1]

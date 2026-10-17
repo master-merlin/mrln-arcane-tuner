@@ -254,17 +254,32 @@ def test_the_keyframes_flag_is_declared_for_LOADING_not_for_a_feature(definition
     Decision 2026-10-10 (LANE-149, RULE-16): keep it that way until LANE-153
     (LTX-2.5 I2V keyframe conditioning) wires the feature deliberately. This test
     fails the day the driver feeds the mask without that lane; LANE-153 retires it.
+
+    LANE-153 (2026-10-15) wired the feature; this test now pins the two-file wiring.
+    The option ``keyframe_marker`` (default off, LTX-2.5 only) feeds the mask from
+    ONE producer, ``Ltx2Driver._keyframes_mask``, on both training forwards
+    (driver.py) and the preview forward (sampler.py). A driver-only or sampler-only
+    wiring is a train/sample mismatch, so both files must carry it, and the sampler
+    must call the driver's producer rather than rebuild the mask (RULE-21). The
+    behaviour itself is proven in test_ltx2_keyframe_marker.py.
     """
     assert definition.architecture_params["transformer.use_keyframes_abs_pos_embedding"] is True
 
     # Anchored on this file, never the CWD: tests/engine/families/ltx2/ -> backend/.
-    driver = (
+    family_dir = (
         pathlib.Path(__file__).resolve().parents[4]
-        / "app" / "engine" / "models" / "families" / "ltx2" / "driver.py"
+        / "app" / "engine" / "models" / "families" / "ltx2"
     )
-    source = driver.read_text(encoding="utf-8")
-    assert "video_keyframes_mask" not in source, (
-        "LANE-153: the ltx2 driver now feeds video_keyframes_mask: LTX-2.5 keyframe "
-        "conditioning is LANE-153's; revisit this decision there and retire this test "
-        "with it."
+    sources = {
+        name: (family_dir / name).read_text(encoding="utf-8")
+        for name in ("driver.py", "sampler.py")
+    }
+    for name, source in sources.items():
+        assert "video_keyframes_mask" in source, (
+            f"LANE-153: {name} does not feed video_keyframes_mask; the keyframe marker "
+            "must reach the training AND the preview forward."
+        )
+    assert "_keyframes_mask" in sources["sampler.py"].replace("video_keyframes_mask", ""), (
+        "LANE-153: sampler.py must build its mask through Ltx2Driver._keyframes_mask "
+        "(one producer, RULE-21), not a copy."
     )

@@ -20,6 +20,7 @@ encoding then happens live every step).
 
 from __future__ import annotations
 
+import structlog
 import torch
 
 from app.engine.models.families.ltx2.driver import Ltx2Driver
@@ -89,6 +90,8 @@ def _offload_trainer(cache: bool) -> Ltx2Trainer:
     t = object.__new__(Ltx2Trainer)
     t.config = {"cache_text_embeddings": cache}
     t._te_unloaded = True  # short-circuit the base TE offload; isolate connectors
+    # The override logs its sub-steps (LANE-157); a real trainer always has one.
+    t.logger = structlog.get_logger("test_ltx2_connector_device")
     t.driver = object.__new__(Ltx2Driver)
     t.driver.connectors = _RecMovable()
     return t

@@ -5,6 +5,8 @@ import json
 import zipfile
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 _CAP_REPO = "app.core.db.repositories.captioning_template_repo.CaptioningTemplateRepository"
 _MASK_REPO = "app.core.db.repositories.masking_template_repo.MaskingTemplateRepository"
 _TRAIN_REPO = "app.core.db.repositories.training_template_repo.TrainingTemplateRepository"
@@ -70,6 +72,44 @@ def test_export_single_training_template_embeds_definition(MockRepo, mock_regist
     entry = _manifest_from_response(resp)["templates"][0]
     assert entry["definition_id"] == "flux2-klein-base-4b"
     assert entry["definition"]["family"] == "flux2"
+
+
+@pytest.fixture
+def real_registry():
+    """The SHIPPED definitions (not a mock); class-level state restored afterwards."""
+    from app.engine.models.registry import ModelRegistry
+
+    attrs = ("_families", "_definitions", "_paths", "_discovered", "_definitions_loaded")
+    saved = {a: getattr(ModelRegistry, a) for a in attrs}
+    ModelRegistry._families, ModelRegistry._definitions, ModelRegistry._paths = {}, {}, {}
+    ModelRegistry._discovered = ModelRegistry._definitions_loaded = False
+    ModelRegistry.initialize()
+    try:
+        yield ModelRegistry
+    finally:
+        for a, v in saved.items():
+            setattr(ModelRegistry, a, v)
+
+
+@patch(_TRAIN_REPO)
+def test_export_flux3_template_embeds_the_shipped_definition(MockRepo, real_registry, client):
+    # The REAL registry (no _REGISTRY patch): the SHIPPED flux3 definition is what travels.
+    MockRepo.return_value.get_by_id.return_value = {
+        "id": "train_f3", "name": "Flux3 LoRA",
+        "definition_id": "flux3-image-klein-base",
+        "config": {"definition_id": "flux3-image-klein-base"}, "created_at": 1.0,
+    }
+    resp = client.get("/api/templates/training/train_f3/export")
+    assert resp.status_code == 200
+    entry = _manifest_from_response(resp)["templates"][0]
+    assert entry["definition_id"] == "flux3-image-klein-base"
+    assert entry["definition"]["id"] == "flux3-image-klein-base"
+    assert entry["definition"]["family"] == "flux3"
+    defaults = entry["definition"]["defaults"]
+    assert defaults["num_inference_steps"] == 50
+    assert defaults["guidance_scale"] == 3.5
+    assert defaults["resolution"] == 1024
+    assert defaults["scheduler"] == "flow_match"
 
 
 @patch(_REGISTRY)

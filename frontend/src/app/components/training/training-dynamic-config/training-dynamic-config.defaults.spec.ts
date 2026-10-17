@@ -150,6 +150,17 @@ describe('TrainingDynamicConfig — Default template reset keeps the form comple
         expect(c.form.get('model_family')?.value).toBe('flux2');
     });
 
+    it('keeps the flux3 selection (flux3-image-klein-base: 50 steps, CFG 3.5, 1024, flow_match) on reset', () => {
+        const c = build();
+        c.form.get('definition_id')?.setValue('flux3-image-klein-base');
+        c.form.get('model_family')?.setValue('flux3');
+
+        c.resetFormToDefaults();
+
+        expect(c.form.get('definition_id')?.value).toBe('flux3-image-klein-base');
+        expect(c.form.get('model_family')?.value).toBe('flux3');
+    });
+
     it('does not throw on layer_checklist arrays (flat FormControl) and resets their value', () => {
         const c = build();
         c.form.get('targeted_layers')?.setValue(['blocks.0', 'blocks.1']);

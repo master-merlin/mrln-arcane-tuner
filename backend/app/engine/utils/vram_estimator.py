@@ -158,6 +158,15 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 4.4,  # Qwen3-VL-4B (12-layer-stacked features)
         "vae": 0.13,  # AutoencoderKLQwenImage (127M params)
     },
+    "flux3": {
+        # Parameter counts (B) from the bf16 on-disk sizes in flux3-image-klein-base's
+        # model_size_mb (size_mb / 2); the checkpoint load and a training run were
+        # measured at the LANE-144 UAT. The definition ships those sizes, so this entry
+        # is the fallback-only path. Measured peaks are not a field of this table.
+        "transformer": 5.5,
+        "text_encoder": 4.4,  # Qwen3-VL-4B (8-layer-stacked features, text-only use)
+        "vae": 0.17,  # AutoencoderKLFlux2 (~335 MB bf16)
+    },
     "dreamlite": {
         # Meta-instantiated DreamLiteUNetModel with the REAL checkpoint
         # unet/config.json (block_out 256/512/896, tlpb 1/2/4, ff_mult 3,

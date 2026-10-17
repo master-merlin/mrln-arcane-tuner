@@ -463,6 +463,19 @@ def _derive_block_topology(family: str, arch: dict) -> list[dict]:
             })
         return topology
 
+    if family == "flux3":
+        # The vendored Flux3Transformer2DModel keeps its per-mode blocks in a ModuleDict (not
+        # an attribute path), so only the joint single-stream stack is addressable for swap.
+        num_single = arch.get("transformer.num_single_layers") or arch.get("num_single_layers")
+        if not num_single:
+            return []
+        return [{
+            "name": "single_blocks",
+            "attr_path": "single_transformer_blocks",
+            "count": int(num_single),
+            "approx_vram_mb": 320,
+        }]
+
     if family == "sdxl":
         return [
             {"name": "down_blocks", "attr_path": "down_blocks", "count": 4, "approx_vram_mb": 200},

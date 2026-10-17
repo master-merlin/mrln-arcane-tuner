@@ -50,6 +50,11 @@ class Archetype:
     # only a definition's ``capability_overrides`` flips them.
     supports_dual_sigma_shift: bool = False
     supports_cfg_augmentation: bool = False
+    # ``supports_keyframe_marker``: the transformer owns a keyframe embedding the
+    # ``keyframe_marker`` option applies to the first latent frame (LTX-2.5).
+    # Default False on every archetype so only a definition's
+    # ``capability_overrides`` flips it.
+    supports_keyframe_marker: bool = False
     config_defaults: dict = field(default_factory=dict)
 
 
@@ -175,6 +180,7 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
         "is_video",
         "image model — no i2v conditioning",
     ),
+    ("keyframe_marker", "supports_keyframe_marker", "this model has no keyframe embedding"),
     ("train_audio", "has_audio", "this model has no audio modality"),
     ("audio_loss_weight", "has_audio", "this model has no audio modality"),
     # ── Dual-clock flow matching + CFG augmentation (minimax_h3) ──────────

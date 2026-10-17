@@ -71,6 +71,7 @@ class Ltx2Trainer(GenericTrainingPipeline):
         # compute_loss, etc. gate the audio sub-stream consistently even before
         # components are assigned (assign_components re-confirms it from arch).
         self.driver.train_audio = train_audio
+        self.driver.keyframe_marker = bool(self.config.get("keyframe_marker", False))
 
     def _resolve_train_audio(self) -> bool:
         """Decide whether to train the audio stream for this run.

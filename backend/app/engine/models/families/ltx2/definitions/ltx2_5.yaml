@@ -14,6 +14,10 @@ components:
     type: diffusers
     params: {}
 control_inputs: 0
+# Per-definition capability (definitions.py capability_overrides): only LTX-2.5
+# owns the keyframes_abs_pos_embedding the keyframe_marker option applies.
+capability_overrides:
+  supports_keyframe_marker: true
 detected_precision:
   text_encoder: torch.bfloat16
   vae: torch.bfloat16

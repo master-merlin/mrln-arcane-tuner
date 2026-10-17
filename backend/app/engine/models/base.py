@@ -1114,6 +1114,16 @@ class BaseTrainingConfig(BaseModel):
             "step": 0.05,
         },
     )
+    keyframe_marker: bool = Field(
+        False,
+        description=(
+            "LTX-2.5: mark the first latent frame as a keyframe so the model "
+            "applies its keyframe embedding (training and previews). The regular "
+            "diffusers pipelines and most ComfyUI graphs do not apply it; the DFR "
+            "pipeline does."
+        ),
+        json_schema_extra={"group": "VIDEO"},
+    )
     first_frame_conditioning_probability: float = Field(
         0.5,
         description=(

@@ -41,6 +41,7 @@ ALL_FAMILIES = (
     "ernie_image",
     "flux1",
     "flux2",
+    "flux3",
     "hidream_o1",
     "hunyuan_video15",
     "ideogram4",

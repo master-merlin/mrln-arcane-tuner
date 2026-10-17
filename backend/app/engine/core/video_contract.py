@@ -119,6 +119,8 @@ class VideoProfile:
     # the shared ingestion reads it here and the selector route serves it, so
     # a frame count shown to the user and the frame count trained agree.
     ingest_fps: float | None = None
+    # The transformer owns a keyframe embedding (``keyframe_marker`` option).
+    supports_keyframe_marker: bool = False
 
     def supports_i2v(self) -> bool:
         return self.mode in ("i2v", "both")
@@ -164,6 +166,7 @@ def resolve_video_profile(definition) -> VideoProfile:
         has_image_encoder=bool(caps.get("has_image_encoder", False)),
         dual_expert=bool(caps.get("dual_expert", False)),
         ingest_fps=(native_fps or None) if arch.get(INGEST_AT_NATIVE_FPS_KEY) is True else None,
+        supports_keyframe_marker=bool(caps.get("supports_keyframe_marker", False)),
     )
 
 
@@ -200,6 +203,13 @@ def validate_video_config(definition, config: dict[str, Any]) -> VideoConfigRepo
     if not profile.has_audio and _truthy(config.get("train_audio")):
         report.errors.append(
             "This model has no audio modality — turn off 'train_audio'."
+        )
+
+    # The keyframe embedding exists only on definitions that flip the capability;
+    # a silent no-op would hide that the option did nothing.
+    if not profile.supports_keyframe_marker and _truthy(config.get("keyframe_marker")):
+        report.errors.append(
+            "This model has no keyframe embedding — turn off 'keyframe_marker'."
         )
 
     # Single-expert (high/low-noise-only) training needs a dual-expert MoE model.

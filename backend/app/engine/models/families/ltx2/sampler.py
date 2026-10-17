@@ -243,6 +243,8 @@ class Ltx2Sampler(GenericSamplingPipeline):
                 a_emb = aemb
             else:
                 a_in, a_emb = driver._dummy_audio_inputs(xin, vemb)
+            # The mask comes from the driver helper over the one producer,
+            # Ltx2Driver._keyframes_mask — never rebuilt here (RULE-21).
             with torch.no_grad():
                 out = transformer(
                     hidden_states=xin,
@@ -257,6 +259,7 @@ class Ltx2Sampler(GenericSamplingPipeline):
                     fps=driver.frame_rate,
                     audio_num_frames=audio_len if audio_on else 1,
                     isolate_modalities=not audio_on,
+                    video_keyframes_mask=driver._video_keyframes_mask(xin, h, w),
                     return_dict=False,
                 )
             if audio_on:

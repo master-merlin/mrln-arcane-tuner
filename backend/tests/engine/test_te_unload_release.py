@@ -295,6 +295,13 @@ _FAMILY_TE_ATTRS: list[tuple[str, str, str, list[str]]] = [
         ["text_encoder"],
     ),
     (
+        # families/flux3/driver.py:136 get_text_encoders reads self.text_encoder only
+        "flux3",
+        "app.engine.models.families.flux3.driver",
+        "Flux3Driver",
+        ["text_encoder"],
+    ),
+    (
         "hidream_o1",
         "app.engine.models.families.hidream_o1.driver",
         "HiDreamO1Driver",

@@ -230,6 +230,13 @@ FAMILIES: list[FamilySpec] = [
         encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
     ),
     FamilySpec(
+        "flux3",
+        "app.engine.models.families.flux3.trainer:Flux3Trainer",
+        "app.engine.models.families.flux3.driver:Flux3Driver",
+        "transformer", "transformer",
+        encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
+    ),
+    FamilySpec(
         "ideogram4",
         "app.engine.models.families.ideogram4.trainer:IdeogramV4Trainer",
         "app.engine.models.families.ideogram4.driver:IdeogramV4Driver",

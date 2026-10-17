@@ -3,6 +3,8 @@
 import json
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from app.core.portable.archive import write_manifest_zip
 from app.core.template import portable
 
@@ -192,6 +194,61 @@ def test_apply_training_present_definition_creates(
     assert len(body["created"]) == 1
     args = MockRepo.return_value.create.call_args[0][0]
     assert args["definition_id"] == "flux2-x"
+
+
+@pytest.fixture
+def real_registry():
+    """The SHIPPED definitions (not a mock); class-level state restored afterwards."""
+    from app.engine.models.registry import ModelRegistry
+
+    attrs = ("_families", "_definitions", "_paths", "_discovered", "_definitions_loaded")
+    saved = {a: getattr(ModelRegistry, a) for a in attrs}
+    ModelRegistry._families, ModelRegistry._definitions, ModelRegistry._paths = {}, {}, {}
+    ModelRegistry._discovered = ModelRegistry._definitions_loaded = False
+    ModelRegistry.initialize()
+    try:
+        yield ModelRegistry
+    finally:
+        for a, v in saved.items():
+            setattr(ModelRegistry, a, v)
+
+
+@patch(_TRAIN_REPO)
+def test_flux3_template_round_trips_to_the_shipped_definition(MockRepo, real_registry, client):
+    # The REAL registry (no _REGISTRY patch): export-shaped entry -> plan -> apply.
+    registry = real_registry
+
+    did = "flux3-image-klein-base"
+    defn = registry.get_definition(did)
+    assert defn is not None, f"unknown definition {did}"
+    assert defn.family == "flux3"
+    assert defn.defaults.get("num_inference_steps") == 50
+    assert defn.defaults.get("guidance_scale") == 3.5
+    assert defn.defaults.get("resolution") == 1024
+    assert defn.defaults.get("scheduler") == "flow_match"
+
+    MockRepo.return_value.list_for_project.return_value = []
+    MockRepo.return_value.create.return_value = {"id": "t_new", "name": "F3"}
+    config = {"definition_id": did, "num_inference_steps": 50, "guidance_scale": 3.5,
+              "resolution": 1024, "scheduler": "flow_match"}
+    entry = portable.build_template_entry(
+        "training", {"name": "F3", "definition_id": did, "config": config},
+        defn.model_dump())
+    zb = _zip_bytes([entry])
+
+    plan = _upload(client, "/api/templates/import/plan", zb)
+    assert plan.status_code == 200
+    item = plan.json()["entries"][0]
+    assert item["definition_status"] == "present"
+    assert item["blocker"] is False
+
+    resp = _apply(client, zb, {"entries": {}})
+    assert resp.status_code == 200
+    assert len(resp.json()["created"]) == 1
+    args = MockRepo.return_value.create.call_args[0][0]
+    assert args["definition_id"] == did
+    for k in ("num_inference_steps", "guidance_scale", "resolution", "scheduler"):
+        assert args["config"][k] == config[k]
 
 
 @patch(_OVERRIDE)

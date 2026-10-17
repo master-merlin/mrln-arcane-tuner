@@ -1,0 +1,447 @@
+# FLUX.3 Image Klein Base (LANE-144). The undistilled 5.6B base -- the checkpoint Black Forest Labs
+# names for LoRA training. The step-distilled `flux-3-image-klein` (flow map) is refused by the loader.
+# architecture_params mirror the checkpoint's own transformer/config.json
+# (snapshot 1469d27cfb9bb1bd81d3a93f5a023b39dbf136e4), which equals the vendored class's defaults.
+id: flux3-image-klein-base
+family: flux3
+name: FLUX.3 Image Klein (Base)
+version: '1.0'
+# FLUX Kommunity License v1.0, gated on HuggingFace. Tracked in the README "licensed separately"
+# table (the `flux3` row), never here or in the app (RULE-21; the README link reads the repo below).
+defaults:
+  resolution: 1024
+  scheduler: flow_match
+  # Assumption (LANE-144): a conventional LoRA learning rate for a ~6B DiT; judged at the GPU UAT.
+  learning_rate: 1e-4
+  # The base model's inference defaults (BFL reference: 50 steps, real CFG 3.5, 1024x1024).
+  num_inference_steps: 50
+  guidance_scale: 3.5
+  is_distilled: false
+components:
+  repo:
+    path: huggingface:black-forest-labs/flux-3-image-klein-base
+    type: diffusers
+    params: {}
+control_inputs: 0
+# bf16 on-disk sizes from the repo's file listing (_harness/research/flux3-klein.md source S2).
+model_size_mb:
+  transformer: 11080
+  text_encoder: 8880
+  vae: 340
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.bfloat16
+  unet: torch.bfloat16
+architecture_params:
+  transformer._class_name: Flux3Transformer2DModel
+  transformer.in_channels: 128
+  transformer.num_layers: 5
+  transformer.num_single_layers: 28
+  transformer.attention_head_dim: 128
+  transformer.num_attention_heads: 24
+  transformer.hidden_size: 3072
+  transformer.joint_attention_dim: 20480
+  transformer.mlp_ratio: 3.0
+  transformer.flow_map: false
+  vae._class_name: AutoencoderKLFlux2
+  te.type: qwen3_vl
+  te.model_type: qwen3_vl
+  # Spec D3: hidden states of Qwen3-VL layers 4, 8, ..., 32 stacked to 20480 per token, the text
+  # window a multiple of 80 tokens capped at te.max_length.
+  te.select_layers: [4, 8, 12, 16, 20, 24, 28, 32]
+  te.max_length: 512
+  # Spec D3: the FIXED flow-match schedule t' = a*t / (1 + (a-1)*t) with a = 6.93 -- a property of
+  # the checkpoint (reference trainer FLOW_SHIFT), not resolution-dependent and not a user knob.
+  scheduler.shift: 6.93
+  scheduler.use_dynamic_shifting: false
+# Spec D4: the six leaves of the 38 blocks a text-to-image step executes (5 image + 5 text mode
+# blocks, 28 single blocks) = 228, in BFL-native names. The diffusers converter
+# (`_convert_non_diffusers_flux3_lora_to_diffusers`, PR #15046 ec288418 lora_conversion_utils.py:2554)
+# maps `content_mode_blocks.` -> `mode_blocks.`, `single_blocks.` -> `single_transformer_blocks.`,
+# q_proj/k_proj/v_proj -> attn.to_q/k/v, attn_out -> attn.to_out.0, mlp_in/mlp_out -> ff.linear_in/out.
+# The `image_cond` mode blocks are excluded: they run only with reference images (out of scope).
+  hidden_size: 3072
+  num_heads: 24
+  depth: 5
+  depth_single_blocks: 28
+  in_channels: 128
+  context_dim: 20480
+  transformer.axes_dims_rope:
+  - 32
+  - 32
+  - 32
+  - 32
+  transformer.cond_in_channels: 128
+  transformer.eps: 1.0e-06
+  transformer.rope_theta: 10000
+  transformer.timestep_channels: 256
+  te.architectures:
+  - Qwen3VLForConditionalGeneration
+  te.image_token_id: 151655
+  te.text_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    bos_token_id: 151643
+    dtype: bfloat16
+    eos_token_id: 151645
+    head_dim: 128
+    hidden_act: silu
+    hidden_size: 2560
+    initializer_range: 0.02
+    intermediate_size: 9728
+    max_position_embeddings: 262144
+    model_type: qwen3_vl_text
+    num_attention_heads: 32
+    num_hidden_layers: 36
+    num_key_value_heads: 8
+    rms_norm_eps: 1.0e-06
+    rope_scaling:
+      mrope_interleaved: true
+      mrope_section:
+      - 24
+      - 20
+      - 20
+      rope_type: default
+    rope_theta: 5000000
+    tie_word_embeddings: true
+    use_cache: true
+    vocab_size: 151936
+  te.text_config.attention_bias: false
+  te.text_config.attention_dropout: 0.0
+  te.text_config.bos_token_id: 151643
+  te.text_config.dtype: bfloat16
+  te.text_config.eos_token_id: 151645
+  te.text_config.head_dim: 128
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 2560
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 9728
+  te.text_config.max_position_embeddings: 262144
+  te.text_config.model_type: qwen3_vl_text
+  te.text_config.num_attention_heads: 32
+  te.text_config.num_hidden_layers: 36
+  te.text_config.num_key_value_heads: 8
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_scaling:
+    mrope_interleaved: true
+    mrope_section:
+    - 24
+    - 20
+    - 20
+    rope_type: default
+  te.text_config.rope_scaling.mrope_interleaved: true
+  te.text_config.rope_scaling.mrope_section:
+  - 24
+  - 20
+  - 20
+  te.text_config.rope_scaling.rope_type: default
+  te.text_config.rope_theta: 5000000
+  te.text_config.tie_word_embeddings: true
+  te.text_config.use_cache: true
+  te.text_config.vocab_size: 151936
+  te.tie_word_embeddings: true
+  te.video_token_id: 151656
+  te.vision_config:
+    deepstack_visual_indexes:
+    - 5
+    - 11
+    - 17
+    depth: 24
+    hidden_act: gelu_pytorch_tanh
+    hidden_size: 1024
+    in_channels: 3
+    initializer_range: 0.02
+    intermediate_size: 4096
+    model_type: qwen3_vl
+    num_heads: 16
+    num_position_embeddings: 2304
+    out_hidden_size: 2560
+    patch_size: 16
+    spatial_merge_size: 2
+    temporal_patch_size: 2
+  te.vision_config.deepstack_visual_indexes:
+  - 5
+  - 11
+  - 17
+  te.vision_config.depth: 24
+  te.vision_config.hidden_act: gelu_pytorch_tanh
+  te.vision_config.hidden_size: 1024
+  te.vision_config.in_channels: 3
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 4096
+  te.vision_config.model_type: qwen3_vl
+  te.vision_config.num_heads: 16
+  te.vision_config.num_position_embeddings: 2304
+  te.vision_config.out_hidden_size: 2560
+  te.vision_config.patch_size: 16
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.temporal_patch_size: 2
+  te.vision_end_token_id: 151653
+  te.vision_start_token_id: 151652
+  vae.act_fn: silu
+  vae.batch_norm_eps: 0.0001
+  vae.batch_norm_momentum: 0.1
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.decoder_block_out_channels:
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.latent_channels: 32
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.patch_size:
+  - 2
+  - 2
+  vae.sample_size: 1024
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: true
+  vae.use_quant_conv: true
+  te.concat_layers: 8
+lora_targetable_modules:
+- content_mode_blocks.image.0.q_proj
+- content_mode_blocks.image.0.k_proj
+- content_mode_blocks.image.0.v_proj
+- content_mode_blocks.image.0.attn_out
+- content_mode_blocks.image.0.mlp_in
+- content_mode_blocks.image.0.mlp_out
+- content_mode_blocks.image.1.q_proj
+- content_mode_blocks.image.1.k_proj
+- content_mode_blocks.image.1.v_proj
+- content_mode_blocks.image.1.attn_out
+- content_mode_blocks.image.1.mlp_in
+- content_mode_blocks.image.1.mlp_out
+- content_mode_blocks.image.2.q_proj
+- content_mode_blocks.image.2.k_proj
+- content_mode_blocks.image.2.v_proj
+- content_mode_blocks.image.2.attn_out
+- content_mode_blocks.image.2.mlp_in
+- content_mode_blocks.image.2.mlp_out
+- content_mode_blocks.image.3.q_proj
+- content_mode_blocks.image.3.k_proj
+- content_mode_blocks.image.3.v_proj
+- content_mode_blocks.image.3.attn_out
+- content_mode_blocks.image.3.mlp_in
+- content_mode_blocks.image.3.mlp_out
+- content_mode_blocks.image.4.q_proj
+- content_mode_blocks.image.4.k_proj
+- content_mode_blocks.image.4.v_proj
+- content_mode_blocks.image.4.attn_out
+- content_mode_blocks.image.4.mlp_in
+- content_mode_blocks.image.4.mlp_out
+- txt_mode_blocks.0.q_proj
+- txt_mode_blocks.0.k_proj
+- txt_mode_blocks.0.v_proj
+- txt_mode_blocks.0.attn_out
+- txt_mode_blocks.0.mlp_in
+- txt_mode_blocks.0.mlp_out
+- txt_mode_blocks.1.q_proj
+- txt_mode_blocks.1.k_proj
+- txt_mode_blocks.1.v_proj
+- txt_mode_blocks.1.attn_out
+- txt_mode_blocks.1.mlp_in
+- txt_mode_blocks.1.mlp_out
+- txt_mode_blocks.2.q_proj
+- txt_mode_blocks.2.k_proj
+- txt_mode_blocks.2.v_proj
+- txt_mode_blocks.2.attn_out
+- txt_mode_blocks.2.mlp_in
+- txt_mode_blocks.2.mlp_out
+- txt_mode_blocks.3.q_proj
+- txt_mode_blocks.3.k_proj
+- txt_mode_blocks.3.v_proj
+- txt_mode_blocks.3.attn_out
+- txt_mode_blocks.3.mlp_in
+- txt_mode_blocks.3.mlp_out
+- txt_mode_blocks.4.q_proj
+- txt_mode_blocks.4.k_proj
+- txt_mode_blocks.4.v_proj
+- txt_mode_blocks.4.attn_out
+- txt_mode_blocks.4.mlp_in
+- txt_mode_blocks.4.mlp_out
+- single_blocks.0.q_proj
+- single_blocks.0.k_proj
+- single_blocks.0.v_proj
+- single_blocks.0.attn_out
+- single_blocks.0.mlp_in
+- single_blocks.0.mlp_out
+- single_blocks.1.q_proj
+- single_blocks.1.k_proj
+- single_blocks.1.v_proj
+- single_blocks.1.attn_out
+- single_blocks.1.mlp_in
+- single_blocks.1.mlp_out
+- single_blocks.2.q_proj
+- single_blocks.2.k_proj
+- single_blocks.2.v_proj
+- single_blocks.2.attn_out
+- single_blocks.2.mlp_in
+- single_blocks.2.mlp_out
+- single_blocks.3.q_proj
+- single_blocks.3.k_proj
+- single_blocks.3.v_proj
+- single_blocks.3.attn_out
+- single_blocks.3.mlp_in
+- single_blocks.3.mlp_out
+- single_blocks.4.q_proj
+- single_blocks.4.k_proj
+- single_blocks.4.v_proj
+- single_blocks.4.attn_out
+- single_blocks.4.mlp_in
+- single_blocks.4.mlp_out
+- single_blocks.5.q_proj
+- single_blocks.5.k_proj
+- single_blocks.5.v_proj
+- single_blocks.5.attn_out
+- single_blocks.5.mlp_in
+- single_blocks.5.mlp_out
+- single_blocks.6.q_proj
+- single_blocks.6.k_proj
+- single_blocks.6.v_proj
+- single_blocks.6.attn_out
+- single_blocks.6.mlp_in
+- single_blocks.6.mlp_out
+- single_blocks.7.q_proj
+- single_blocks.7.k_proj
+- single_blocks.7.v_proj
+- single_blocks.7.attn_out
+- single_blocks.7.mlp_in
+- single_blocks.7.mlp_out
+- single_blocks.8.q_proj
+- single_blocks.8.k_proj
+- single_blocks.8.v_proj
+- single_blocks.8.attn_out
+- single_blocks.8.mlp_in
+- single_blocks.8.mlp_out
+- single_blocks.9.q_proj
+- single_blocks.9.k_proj
+- single_blocks.9.v_proj
+- single_blocks.9.attn_out
+- single_blocks.9.mlp_in
+- single_blocks.9.mlp_out
+- single_blocks.10.q_proj
+- single_blocks.10.k_proj
+- single_blocks.10.v_proj
+- single_blocks.10.attn_out
+- single_blocks.10.mlp_in
+- single_blocks.10.mlp_out
+- single_blocks.11.q_proj
+- single_blocks.11.k_proj
+- single_blocks.11.v_proj
+- single_blocks.11.attn_out
+- single_blocks.11.mlp_in
+- single_blocks.11.mlp_out
+- single_blocks.12.q_proj
+- single_blocks.12.k_proj
+- single_blocks.12.v_proj
+- single_blocks.12.attn_out
+- single_blocks.12.mlp_in
+- single_blocks.12.mlp_out
+- single_blocks.13.q_proj
+- single_blocks.13.k_proj
+- single_blocks.13.v_proj
+- single_blocks.13.attn_out
+- single_blocks.13.mlp_in
+- single_blocks.13.mlp_out
+- single_blocks.14.q_proj
+- single_blocks.14.k_proj
+- single_blocks.14.v_proj
+- single_blocks.14.attn_out
+- single_blocks.14.mlp_in
+- single_blocks.14.mlp_out
+- single_blocks.15.q_proj
+- single_blocks.15.k_proj
+- single_blocks.15.v_proj
+- single_blocks.15.attn_out
+- single_blocks.15.mlp_in
+- single_blocks.15.mlp_out
+- single_blocks.16.q_proj
+- single_blocks.16.k_proj
+- single_blocks.16.v_proj
+- single_blocks.16.attn_out
+- single_blocks.16.mlp_in
+- single_blocks.16.mlp_out
+- single_blocks.17.q_proj
+- single_blocks.17.k_proj
+- single_blocks.17.v_proj
+- single_blocks.17.attn_out
+- single_blocks.17.mlp_in
+- single_blocks.17.mlp_out
+- single_blocks.18.q_proj
+- single_blocks.18.k_proj
+- single_blocks.18.v_proj
+- single_blocks.18.attn_out
+- single_blocks.18.mlp_in
+- single_blocks.18.mlp_out
+- single_blocks.19.q_proj
+- single_blocks.19.k_proj
+- single_blocks.19.v_proj
+- single_blocks.19.attn_out
+- single_blocks.19.mlp_in
+- single_blocks.19.mlp_out
+- single_blocks.20.q_proj
+- single_blocks.20.k_proj
+- single_blocks.20.v_proj
+- single_blocks.20.attn_out
+- single_blocks.20.mlp_in
+- single_blocks.20.mlp_out
+- single_blocks.21.q_proj
+- single_blocks.21.k_proj
+- single_blocks.21.v_proj
+- single_blocks.21.attn_out
+- single_blocks.21.mlp_in
+- single_blocks.21.mlp_out
+- single_blocks.22.q_proj
+- single_blocks.22.k_proj
+- single_blocks.22.v_proj
+- single_blocks.22.attn_out
+- single_blocks.22.mlp_in
+- single_blocks.22.mlp_out
+- single_blocks.23.q_proj
+- single_blocks.23.k_proj
+- single_blocks.23.v_proj
+- single_blocks.23.attn_out
+- single_blocks.23.mlp_in
+- single_blocks.23.mlp_out
+- single_blocks.24.q_proj
+- single_blocks.24.k_proj
+- single_blocks.24.v_proj
+- single_blocks.24.attn_out
+- single_blocks.24.mlp_in
+- single_blocks.24.mlp_out
+- single_blocks.25.q_proj
+- single_blocks.25.k_proj
+- single_blocks.25.v_proj
+- single_blocks.25.attn_out
+- single_blocks.25.mlp_in
+- single_blocks.25.mlp_out
+- single_blocks.26.q_proj
+- single_blocks.26.k_proj
+- single_blocks.26.v_proj
+- single_blocks.26.attn_out
+- single_blocks.26.mlp_in
+- single_blocks.26.mlp_out
+- single_blocks.27.q_proj
+- single_blocks.27.k_proj
+- single_blocks.27.v_proj
+- single_blocks.27.attn_out
+- single_blocks.27.mlp_in
+- single_blocks.27.mlp_out
+block_topology:
+- name: single_blocks
+  attr_path: single_transformer_blocks
+  count: 28
+  approx_vram_mb: 320

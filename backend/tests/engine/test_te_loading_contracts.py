@@ -438,6 +438,11 @@ CASES: list[_Case] = [
     # exemption needed.
     _Case("minimax_h3", _m("minimax_h3"), "MiniMaxH3Loader", "text_encoder",
           "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
+    # flux3 (LANE-144): flux-3-image-klein-base's text_encoder/config.json declares
+    # architectures ["Qwen3VLForConditionalGeneration"] (byte-identical to
+    # Qwen/Qwen3-VL-4B-Instruct; _harness/research/flux3-klein.md).
+    _Case("flux3", _m("flux3"), "Flux3Loader", "text_encoder",
+          "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
 ]
 
 # Families that have a loader.py but no standalone-TE loading contract.

@@ -155,10 +155,14 @@ persisted metrics still show.
 
 **When the training process dies without saying why.** A native crash or an
 out-of-memory kill can end the worker before it writes any error of its own.
-The backend watches the process, and when it notices the death it stops the
-job and puts the process's exit code in the error strip, for example
-`Process exited unexpectedly (exit code 0xC0000005, detected by watchdog)`;
-the code tells you whether the OS killed the worker or it crashed. The worker
+The backend watches the process, and when it notices the death it marks the
+job **Stopped** (the screen shows no failure message for it today) and records the cause
+in the job's error field, for example
+`Process exited unexpectedly (exit code 0xC0000005, detected by watchdog)`.
+The same exit code is in the server log's `pid_watchdog_process_died` event;
+the code tells you whether the OS killed the worker or it crashed. When the
+backend cannot read a code the record says only
+`Process exited unexpectedly (detected by watchdog)`. The worker
 also runs with Python's fault handler on, so a crash writes every thread's
 Python stack into `trainer_stdout.log` in the job's output folder — open it
 first. Long steps such as the text-encoder offload before training log each

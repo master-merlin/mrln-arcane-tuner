@@ -255,7 +255,10 @@ currently shows.
 ![Resume dialog — Continue from checkpoint (checkpoint picker) vs. Restart from 0](images/jobs-resume-dialog.png)
 
 Resume only appears where a resumable checkpoint exists (a checkpoint saved
-with its full training state, not just the LoRA weights). It offers two
+with its full training state, not just the LoRA weights). A checkpoint
+folder whose files are cut short or unreadable, for example after a save
+that was interrupted, does not count; the app checks the files rather than
+trusting that the folder exists. It offers two
 modes on the **same job record** — nothing new is created either way:
 
 - **Continue from checkpoint** — pick a saved checkpoint from the dropdown

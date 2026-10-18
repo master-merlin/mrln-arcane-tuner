@@ -41,7 +41,7 @@ BACKEND_TAKE = [
 ]
 
 # LANE-148: re-pinned 22.2.0 -> 22.2.1 and @lucide/angular 1.48.0 -> 1.50.0 (Dependabot PR #46 taken, frontend gate green).
-NG = "22.2.1"
+NG = "22.2.2"  # LANE-163: Dependabot #51 taken
 FRONTEND_MANIFEST = {
     "@angular/common": NG,
     "@angular/compiler": NG,
@@ -54,20 +54,20 @@ FRONTEND_MANIFEST = {
     "@angular/compiler-cli": NG,
     "@codemirror/commands": "^6.11.1",
     "@codemirror/state": "^6.7.6",
-    "@codemirror/view": "^6.43.13",
-    "@lucide/angular": "1.50.0",
-    "@playwright/test": "^1.63.0",
-    "jsdom": "^30.1.1",
+    "@codemirror/view": "^6.43.14",
+    "@lucide/angular": "1.55.0",
+    "@playwright/test": "^1.64.0",
+    "jsdom": "^30.1.2",
 }
 
 # Lock targets: the manifest packages (range prefix stripped) plus the lock-only ones.
 FRONTEND_LOCK = {k: v.lstrip("^~") for k, v in FRONTEND_MANIFEST.items()}
-FRONTEND_LOCK.update({"postcss": "8.5.28", "undici": "8.11.2"})
+FRONTEND_LOCK.update({"postcss": "8.5.29", "undici": "8.12.2"})  # LANE-163: #51 postcss; undici moved with the re-resolve
 # ip-address is not a lock target: Dependabot #39 at head 3abbb6aca75e drops its only dependent (express-rate-limit,
 # via the Angular 22.2.0 tree), so the package leaves the lock and alert 150 is closed by absence.
 # The floor test below still fails if it ever returns below 10.7.2.
 
-TRUFFLEHOG_SHA = "4dd8831c5f12599465d4d45c3c447b4018a34c85"
+TRUFFLEHOG_SHA = "e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9"  # LANE-163: v3.99.2
 
 # Hard-coded from main at ee1c575a.
 HELD_KEEP = {

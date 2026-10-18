@@ -25,7 +25,7 @@ def _module_bytes(module: torch.nn.Module) -> int:
     )
 
 
-def offload_module_to_cpu(module) -> None:
+def offload_module_to_cpu(module, *, name: str = "module", log=None) -> None:
     """Move ``module`` to CPU without doubling the process's commit charge.
 
     On a Windows (WDDM) host every CUDA allocation charges the process's host
@@ -41,22 +41,32 @@ def offload_module_to_cpu(module) -> None:
     ``_OFFLOAD_CHUNK_BYTES`` (a single leaf larger than that is one slice),
     releasing each slice's device blocks before the next is copied. A non-module
     object with a ``.to`` is moved as one piece.
+
+    Every slice copy and every ``empty_cache()`` is preceded by a
+    ``text_encoder_offload_step`` event on ``log`` (``name`` = the component,
+    ``slice`` = the sub-module path), so the last line of a worker that dies
+    in here names the sub-step (LANE-157).
     """
     if not isinstance(module, torch.nn.Module):
         module.to("cpu")
         return
+    log = log if log is not None else logger
+    log.info("text_encoder_offload_step", step="empty_cache", name=name, slice="")
     torch.cuda.empty_cache()
 
-    def _move(mod: torch.nn.Module) -> None:
-        children = list(mod.children())
+    def _move(mod: torch.nn.Module, path: str) -> None:
+        children = list(mod.named_children())
         if children and _module_bytes(mod) > _OFFLOAD_CHUNK_BYTES:
-            for child in children:
-                _move(child)
+            for child_name, child in children:
+                _move(child, f"{path}.{child_name}" if path else child_name)
             # The children are on CPU now; this moves only `mod`'s own tensors.
+        # info, not debug: a dying worker's stdout log must carry these lines.
+        log.info("text_encoder_offload_step", step="slice_to_cpu", name=name, slice=path)
         mod.to("cpu")
+        log.info("text_encoder_offload_step", step="empty_cache", name=name, slice=path)
         torch.cuda.empty_cache()
 
-    _move(module)
+    _move(module, "")
 
 
 class PipelineLoadingMixin:
@@ -151,6 +161,7 @@ class PipelineLoadingMixin:
             if comp is None:
                 continue
             if hasattr(comp, "to"):
+                self.logger.info("moving_component_to_gpu", name=name)
                 comp.to(self.device)
                 self.logger.info("component_moved_to_gpu", name=name)
 
@@ -383,9 +394,9 @@ class PipelineLoadingMixin:
             # (run_trainer.py moves it there before caching); dropping every
             # reference below without this step frees nothing until whatever
             # else holds the module happens to move or collect it.
-            for te in te_dict.values():
+            for te_name, te in te_dict.items():
                 if te is not None:
-                    offload_module_to_cpu(te)
+                    offload_module_to_cpu(te, name=te_name, log=self.logger)
             # Remove from components dict — prevents stale refs & GC leak
             for name in te_dict:
                 self.components.pop(name, None)
@@ -404,19 +415,28 @@ class PipelineLoadingMixin:
             self.driver.release_text_encoders()
             self._te_unloaded = True
         else:
-            self.logger.info(
-                "text_encoders_offloaded_to_cpu",
-                encoders=list(te_dict.keys()),
-                cached_embeddings=cache_count,
-            )
-            for te in te_dict.values():
+            # LANE-157: each sub-step is logged BEFORE it runs, so the last
+            # line of a dead worker names the sub-step it died in.
+            for te_name, te in te_dict.items():
                 if te is not None:
+                    self.logger.info(
+                        "text_encoder_offload_step", step="to_cpu", name=te_name
+                    )
                     # Sliced, not `te.to("cpu")`: see offload_module_to_cpu.
-                    offload_module_to_cpu(te)
+                    offload_module_to_cpu(te, name=te_name, log=self.logger)
             # Also clean components dict so _ensure_on_gpu won't
             # find stale entries after a future unload
             for name in te_dict:
                 self.components.pop(name, None)
 
+        self.logger.info("text_encoder_offload_step", step="empty_cache")
         torch.cuda.empty_cache()
+        self.logger.info("text_encoder_offload_step", step="gc_collect")
         gc.collect()
+        if not self.config.get("unload_text_encoder", False):
+            # Emitted AFTER the moves it names (it used to precede them).
+            self.logger.info(
+                "text_encoders_offloaded_to_cpu",
+                encoders=list(te_dict.keys()),
+                cached_embeddings=cache_count,
+            )

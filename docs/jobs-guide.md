@@ -153,6 +153,22 @@ appear in their own diagnostics strip. If an archived job's output folder is
 no longer on disk, a note says so and sample previews are unavailable —
 persisted metrics still show.
 
+**When the training process dies without saying why.** A native crash or an
+out-of-memory kill can end the worker before it writes any error of its own.
+The backend watches the process, and when it notices the death it marks the
+job **Stopped** (the screen shows no failure message for it today) and records the cause
+in the job's error field, for example
+`Process exited unexpectedly (exit code 0xC0000005, detected by watchdog)`.
+The same exit code is in the server log's `pid_watchdog_process_died` event;
+the code tells you whether the OS killed the worker or it crashed. When the
+backend cannot read a code the record says only
+`Process exited unexpectedly (detected by watchdog)`. The worker
+also runs with Python's fault handler on, so a crash writes every thread's
+Python stack into `trainer_stdout.log` in the job's output folder — open it
+first. Long steps such as the text-encoder offload before training log each
+sub-step before they run it, so the last line of the log names the sub-step
+the worker died in.
+
 ### KPI row
 
 *(No frame here — the row only renders for a run that's still reporting live
@@ -231,7 +247,7 @@ reusable training template — see the [Templates guide](templates-guide.md)).
 
 ### Log
 
-![Log card, expanded — filter box, Follow/Copy/Download, adaptive-targeting INFO lines](images/jobs-detail-log.png)
+![Log card, expanded — filter box, Follow/Copy/Download, INFO lines narrowed by the filter](images/jobs-detail-log.png)
 
 The full structured log, collapsed by default. A filter box narrows it live;
 **Follow** sticks to the bottom until you scroll up, then re-engages once
@@ -243,7 +259,10 @@ currently shows.
 ![Resume dialog — Continue from checkpoint (checkpoint picker) vs. Restart from 0](images/jobs-resume-dialog.png)
 
 Resume only appears where a resumable checkpoint exists (a checkpoint saved
-with its full training state, not just the LoRA weights). It offers two
+with its full training state, not just the LoRA weights). A checkpoint
+folder whose files are cut short or unreadable, for example after a save
+that was interrupted, does not count; the app checks the files rather than
+trusting that the folder exists. It offers two
 modes on the **same job record** — nothing new is created either way:
 
 - **Continue from checkpoint** — pick a saved checkpoint from the dropdown

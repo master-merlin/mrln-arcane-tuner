@@ -145,6 +145,13 @@ Video Settings at all.
   long clips, first-frame-conditioning probability, MoE expert-swap settings
   where the family has dual experts, and audio training toggles for
   families that support joint audio.
+- **Keyframe Marker** (LTX 2.5 only) — marks the first latent frame as a
+  keyframe, so the model applies its own keyframe embedding in training and
+  in the preview samples. Leave it off unless you will run the LoRA where the
+  marker is applied: the regular diffusers pipelines and most ComfyUI graphs
+  do not apply it (the DFR pipeline does), so a LoRA trained with it on can
+  look different there than in your previews. It is off by default and other
+  definitions do not show it.
 - **Sampling** — the sample prompts and their cadence (every N steps, skip
   the first N), inference steps, guidance scale, and seed used for the
   periodic preview images shown while a job runs.
@@ -476,6 +483,7 @@ this list.
 - **First Frame Conditioning Probability** (`first_frame_conditioning_probability`) — From the schema: i2v: fraction of steps that condition on the first frame (the rest train unconditional generation). Default `0.5` (range 0.0 to 1.0, step 0.05).
 - **Frame Stride** (`frame_stride`) — From the schema: Sample every Nth frame so a window spans N× the motion at 1/N the effective fps (1 = native rate). The model is told the effective fps. Keep target_fps at 0/native when using stride. Default `1` (range 1 to 8, step 1).
 - **I2V Image Dropout** (`i2v_image_dropout`) — From the schema: Chance of dropping the conditioning image (enables CFG for I2V). Default `0.1` (range 0.0 to 1.0, step 0.05).
+- **Keyframe Marker** (`keyframe_marker`) — From the schema: LTX-2.5: mark the first latent frame as a keyframe so the model applies its keyframe embedding (training and previews). The regular diffusers pipelines and most ComfyUI graphs do not apply it; the DFR pipeline does. Default `False`.
 - **Max Windows** (`max_windows`) — From the schema: Upper bound on tiled windows emitted per clip. Default `10` (range 1 to 999, step 1).
 - **Num Frames** (`num_frames`) — From the schema: Max frames per clip (snapped to the family's frame rule at runtime). Default `81` (range 1 to 257, step 1).
 - **Sigma Shift Audio** (`sigma_shift_audio`) — Audio sigma shift of the flow-matching schedule, coupled to the video clock. Empty = the model's own value. *(schema: Audio sigma shift of the flow-matching schedule, coupled to the video clock through one shared draw (empty = the model's own value, e.g. 3.0 for MiniMax-H3))*. Default `None` (range 0.1 to 50.0, step 0.5).

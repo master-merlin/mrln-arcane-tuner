@@ -243,7 +243,7 @@ reusable training template — see the [Templates guide](templates-guide.md)).
 
 ### Log
 
-![Log card, expanded — filter box, Follow/Copy/Download, adaptive-targeting INFO lines](images/jobs-detail-log.png)
+![Log card, expanded — filter box, Follow/Copy/Download, INFO lines narrowed by the filter](images/jobs-detail-log.png)
 
 The full structured log, collapsed by default. A filter box narrows it live;
 **Follow** sticks to the bottom until you scroll up, then re-engages once

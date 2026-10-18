@@ -24,7 +24,7 @@ duckduckgo_search==8.1.1
 einops==0.8.2
 execnet==2.1.2  # pytest-xdist's only dependency (LANE-63)
 fastapi==0.141.1
-filelock==3.32.4
+filelock==4.1.0
 flatbuffers==25.12.19
 frozenlist==1.8.0
 fsspec==2026.6.0  # HELD: datasets 5.0.1 declares fsspec[http]<=2026.6.0, so 2026.7.0 / 2026.9.0 (Dependabot PR #35) stay out until datasets widens it (LANE-142).

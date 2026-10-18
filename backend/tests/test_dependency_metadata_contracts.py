@@ -318,9 +318,12 @@ def test_each_no_deps_package_says_why_on_its_own_requirements_line():
 ACCEPTED_CONSTRAINT_VIOLATIONS = {
     ("hpsv2", "protobuf"): (
         "hpsv2 declares protobuf<4 and imports no protobuf anywhere in its "
-        "package, so the constraint is inert. We pin 5.29.6 because 3.20.3 "
-        "carried two HIGH advisories, and CVE-2026-0994 is fixed only at "
-        ">=5.29.6 -- 4.25.8 clears the other one and leaves that one open."
+        "package, so the constraint is inert. We pin 7.36.2 (LANE-163, "
+        "Dependabot #53) because 3.20.3 carried two HIGH advisories, and "
+        "CVE-2026-0994 is fixed only at >=5.29.6 -- 4.25.8 clears the other "
+        "one and leaves that one open. The only runtime protobuf user is "
+        "transformers' slow-tokenizer conversion, pinned by "
+        "test_lane_163_protobuf7_sentencepiece_conversion_loads."
     ),
     ("hpsv2", "pytest"): (
         "The leaked dev pin: hpsv2 declares pytest==7.2.0 as an INSTALL "

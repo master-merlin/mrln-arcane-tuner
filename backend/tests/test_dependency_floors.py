@@ -209,7 +209,8 @@ def test_backend_pins_meet_lane134_floors():
     bad = []
     for name, want in BACKEND_TAKE:
         have = pins.get(_norm(name), ("not pinned ==", ""))[0]
-        if have != want:
+        # A floor, not an equality: later lanes (LANE-163) move these pins up.
+        if _ver(have) < _ver(want):
             bad.append(
                 f"LANE-134: {name} is pinned {have} in {REQ}; the floor is {want}"
             )
@@ -495,6 +496,8 @@ L163_BACKEND_TAKE = [
     ("tzdata", "2026.5", "#52"),
     ("wcwidth", "0.9.2", "#52"),
     ("websockets", "17.2", "#52"),
+    ("fastapi", "0.143.0", "#52, taken on the user's word (record 3f4ec0f9)"),
+    ("opentelemetry-api", "1.44.0", "fastapi 0.143.0's new hard dependency (D3, the user's word); floor from its metadata"),
 ]
 
 # Held at exactly this version; the second field is the named ceiling (research report
@@ -502,7 +505,6 @@ L163_BACKEND_TAKE = [
 L163_BACKEND_HOLD = {
     "anyio": ("4.14.2", "4.15.1 needs typing_extensions>=4.16; sam3 0.1.4 declares <4.16"),
     "datasets": ("5.0.1", "5.1.0 needs pyarrow>=24 (pinned 23.0.1) and fsspec<=2026.7.0"),
-    "fastapi": ("0.141.1", "0.143.0 adds the new hard dependency opentelemetry-api (D3, the user's word)"),
     "fsspec": ("2026.6.0", "datasets declares fsspec[http]<=2026.6.0"),
     "mpmath": ("1.3.0", "sympy 1.14.0 declares mpmath<1.4"),
     "numpy": ("2.3.5", "sam3 0.1.4 declares numpy<2.4.0"),

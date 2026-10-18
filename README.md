@@ -621,7 +621,12 @@ This table is generated from `backend/app/engine/models/families/` and pinned by
   pinned by a test, so it, not this sentence, is the authoritative list of
   which definitions each family ships and which are still gated; per-family
   mechanism detail (WAN 2.2's dual noise experts, LTX's optional joint audio)
-  is in `docs/ARCHITECTURE.md`. Backed by a video dataset-curation layer: lazy clip preview,
+  is in `docs/ARCHITECTURE.md`. LTX 2.5 also has a `keyframe_marker` option
+  that marks the first latent frame as a keyframe in training and previews;
+  mask-less inference pipelines (the regular diffusers pipelines, most
+  ComfyUI graphs) do not apply it. If a training process dies, the job's
+  error names its exit code and `trainer_stdout.log` carries the stack dump
+  (see `docs/jobs-guide.md`). Backed by a video dataset-curation layer: lazy clip preview,
   LosslessCut cutlist import, scene-detect auto-split, non-destructive in-app
   trim, per-clip health checks, and multi-frame auto-captioning.
 

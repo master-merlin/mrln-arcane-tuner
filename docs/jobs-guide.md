@@ -153,6 +153,18 @@ appear in their own diagnostics strip. If an archived job's output folder is
 no longer on disk, a note says so and sample previews are unavailable —
 persisted metrics still show.
 
+**When the training process dies without saying why.** A native crash or an
+out-of-memory kill can end the worker before it writes any error of its own.
+The backend watches the process, and when it notices the death it stops the
+job and puts the process's exit code in the error strip, for example
+`Process exited unexpectedly (exit code 0xC0000005, detected by watchdog)`;
+the code tells you whether the OS killed the worker or it crashed. The worker
+also runs with Python's fault handler on, so a crash writes every thread's
+Python stack into `trainer_stdout.log` in the job's output folder — open it
+first. Long steps such as the text-encoder offload before training log each
+sub-step before they run it, so the last line of the log names the sub-step
+the worker died in.
+
 ### KPI row
 
 *(No frame here — the row only renders for a run that's still reporting live

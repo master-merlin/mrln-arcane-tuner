@@ -41,7 +41,7 @@ BACKEND_TAKE = [
 ]
 
 # LANE-148: re-pinned 22.2.0 -> 22.2.1 and @lucide/angular 1.48.0 -> 1.50.0 (Dependabot PR #46 taken, frontend gate green).
-NG = "22.2.1"
+NG = "22.2.2"  # LANE-163: Dependabot #51 taken
 FRONTEND_MANIFEST = {
     "@angular/common": NG,
     "@angular/compiler": NG,
@@ -54,20 +54,20 @@ FRONTEND_MANIFEST = {
     "@angular/compiler-cli": NG,
     "@codemirror/commands": "^6.11.1",
     "@codemirror/state": "^6.7.6",
-    "@codemirror/view": "^6.43.13",
-    "@lucide/angular": "1.50.0",
-    "@playwright/test": "^1.63.0",
-    "jsdom": "^30.1.1",
+    "@codemirror/view": "^6.43.14",
+    "@lucide/angular": "1.55.0",
+    "@playwright/test": "^1.64.0",
+    "jsdom": "^30.1.2",
 }
 
 # Lock targets: the manifest packages (range prefix stripped) plus the lock-only ones.
 FRONTEND_LOCK = {k: v.lstrip("^~") for k, v in FRONTEND_MANIFEST.items()}
-FRONTEND_LOCK.update({"postcss": "8.5.28", "undici": "8.11.2"})
+FRONTEND_LOCK.update({"postcss": "8.5.29", "undici": "8.12.2"})  # LANE-163: #51 postcss; undici moved with the re-resolve
 # ip-address is not a lock target: Dependabot #39 at head 3abbb6aca75e drops its only dependent (express-rate-limit,
 # via the Angular 22.2.0 tree), so the package leaves the lock and alert 150 is closed by absence.
 # The floor test below still fails if it ever returns below 10.7.2.
 
-TRUFFLEHOG_SHA = "4dd8831c5f12599465d4d45c3c447b4018a34c85"
+TRUFFLEHOG_SHA = "e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9"  # LANE-163: v3.99.2
 
 # Hard-coded from main at ee1c575a.
 HELD_KEEP = {
@@ -209,7 +209,8 @@ def test_backend_pins_meet_lane134_floors():
     bad = []
     for name, want in BACKEND_TAKE:
         have = pins.get(_norm(name), ("not pinned ==", ""))[0]
-        if have != want:
+        # A floor, not an equality: later lanes (LANE-163) move these pins up.
+        if _ver(have) < _ver(want):
             bad.append(
                 f"LANE-134: {name} is pinned {have} in {REQ}; the floor is {want}"
             )
@@ -466,3 +467,161 @@ def test_lock_libc_guard_names_stripped_entries():
     numshape["packages"][gnu]["libc"] = 1
     bad = _libc_problems(numshape)
     assert len(bad) == 1 and gnu in bad[0] and bad[0].startswith("LANE-152"), bad
+
+
+# ---------------------------------------------------------------------------
+# LANE-163: Dependabot 2026-10-14 (PRs #50-#56). Verdicts: _harness/lanes/LANE-163/spec.md.
+# One producer of each floor: these tables. Older lanes' rows above stay untouched.
+# ---------------------------------------------------------------------------
+
+# (package, floor, PR); protobuf first so it is the first failure on main.
+L163_BACKEND_TAKE = [
+    ("protobuf", "7.36.2", "#53"),
+    ("filelock", "4.1.0", "#54"),
+    ("zipp", "4.1.1", "#55"),
+    ("multidict", "7.1.0", "#56"),
+    ("aiohttp", "3.14.5", "#52, unlocks #56: 3.14.3 declares multidict<7.0"),
+    ("charset-normalizer", "3.5.2", "#52"),
+    ("hf-xet", "1.7.0", "#52"),
+    ("imageio", "2.38.1", "#52"),
+    ("iniconfig", "2.3.1", "#52"),
+    ("json5", "0.17.3", "#52"),
+    ("llvmlite", "0.50.0", "#52, pair with numba 0.68.0"),
+    ("numba", "0.68.0", "#52, pair with llvmlite 0.50.0"),
+    ("onnxruntime-gpu", "1.31.0", "#52"),
+    ("platformdirs", "4.12.4", "#52"),
+    ("regex", "2026.9.29", "#52"),
+    ("ruff", "0.17.0", "#52"),
+    ("typer", "0.27.3", "#52"),
+    ("tzdata", "2026.5", "#52"),
+    ("wcwidth", "0.9.2", "#52"),
+    ("websockets", "17.2", "#52"),
+    ("fastapi", "0.143.0", "#52, taken on the user's word (record 3f4ec0f9)"),
+    ("opentelemetry-api", "1.44.0", "fastapi 0.143.0's new hard dependency (D3, the user's word); floor from its metadata"),
+]
+
+# Held at exactly this version; the second field is the named ceiling (research report
+# .agent/workdir/lane-163/research-dependabot-2026-10-14.md, PR #52 table).
+L163_BACKEND_HOLD = {
+    "anyio": ("4.14.2", "4.15.1 needs typing_extensions>=4.16; sam3 0.1.4 declares <4.16"),
+    "datasets": ("5.0.1", "5.1.0 needs pyarrow>=24 (pinned 23.0.1) and fsspec<=2026.7.0"),
+    "fsspec": ("2026.6.0", "datasets declares fsspec[http]<=2026.6.0"),
+    "mpmath": ("1.3.0", "sympy 1.14.0 declares mpmath<1.4"),
+    "numpy": ("2.3.5", "sam3 0.1.4 declares numpy<2.4.0"),
+    "peft": ("0.20.0", "the user holds peft (LANE-134 Q1.2, ARCHITECTURE D8)"),
+    "pydantic": ("2.13.5", "2.14.0 needs typing-extensions>=4.16 (sam3 ceiling) and pydantic-core 2.50.0"),
+    "pydantic_core": ("2.46.5", "pydantic 2.13.5 declares pydantic-core==2.46.5"),
+    "tokenizers": ("0.22.2", "transformers 5.14.1 declares tokenizers<=0.23.0"),
+    "tqdm": ("4.67.1", "sam3 0.1.4 declares tqdm<4.68.0"),
+    "typing_extensions": ("4.15.0", "sam3 0.1.4 declares typing_extensions<4.16.0"),
+}
+
+L163_NG = "22.2.2"
+L163_FRONTEND_MANIFEST = {
+    **{
+        k: L163_NG
+        for k in (
+            "@angular/common",
+            "@angular/compiler",
+            "@angular/core",
+            "@angular/forms",
+            "@angular/platform-browser",
+            "@angular/router",
+            "@angular/build",
+            "@angular/cli",
+            "@angular/compiler-cli",
+        )
+    },
+    "@codemirror/language": "^6.13.1",
+    "@codemirror/view": "^6.43.14",
+    "@lucide/angular": "1.55.0",
+    "@playwright/test": "^1.64.0",
+    "jsdom": "^30.1.2",
+}
+# postcss is lock-only (not a manifest dependency of the app).
+L163_FRONTEND_LOCK_ONLY = {"postcss": "8.5.29"}
+
+# Dependabot #50: the sha of tag v3.99.2 (verified with gh api git/ref/tags/v3.99.2).
+L163_TRUFFLEHOG_SHA = "e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9"
+
+L163_SPM_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "spm_tiny.model"
+
+
+def test_lane_163_dependabot_2026_10_14_floors():
+    problems: list[str] = []
+    pins = _pins()
+    for name, floor, pr in L163_BACKEND_TAKE:
+        have = pins.get(_norm(name), ("absent", ""))[0]
+        if have == "absent" or _ver(have) < _ver(floor):
+            problems.append(
+                f"LANE-163: {name} is {have} in {REQ}; the floor is {floor} "
+                f"(Dependabot PR {pr})"
+            )
+    for name, (want, ceiling) in L163_BACKEND_HOLD.items():
+        have = pins.get(_norm(name), ("absent", ""))[0]
+        if have != want:
+            problems.append(
+                f"LANE-163: held pin {name} is {have}; it must stay {want} ({ceiling})"
+            )
+
+    pkg = _json("frontend/package.json")
+    deps = {**pkg.get("dependencies", {}), **pkg.get("devDependencies", {})}
+    for name, want in L163_FRONTEND_MANIFEST.items():
+        if deps.get(name) != want:
+            problems.append(
+                f"LANE-163: frontend/package.json {name} is {deps.get(name)}; "
+                f"it must be {want} (Dependabot PR #51)"
+            )
+        floor = want.lstrip("^~")
+        got = _lock_versions(name)
+        if not got or any(_ver(v) < _ver(floor) for v in got):
+            problems.append(
+                f"LANE-163: frontend/package-lock.json {name} is {got}; "
+                f"the floor is {floor} (Dependabot PR #51)"
+            )
+    for name, floor in L163_FRONTEND_LOCK_ONLY.items():
+        got = _lock_versions(name)
+        if not got or any(_ver(v) < _ver(floor) for v in got):
+            problems.append(
+                f"LANE-163: frontend/package-lock.json {name} is {got}; "
+                f"the floor is {floor} (Dependabot PR #51)"
+            )
+
+    want = f"trufflesecurity/trufflehog@{L163_TRUFFLEHOG_SHA}"
+    if want not in _read(".github/workflows/gate.yml"):
+        problems.append(
+            f"LANE-163: .github/workflows/gate.yml does not reference {want} "
+            "(v3.99.2, Dependabot PR #50)"
+        )
+    assert not problems, "\n".join(problems)
+
+
+def test_lane_163_protobuf7_sentencepiece_conversion_loads():
+    # (1) the floor, so this fails on main's 5.29.6 in its call phase.
+    import google.protobuf as pb
+
+    assert pb.__version__ == "7.36.2", (
+        f"LANE-163: protobuf is {pb.__version__}; the floor is 7.36.2 (Dependabot PR #53)"
+    )
+    # (2) transformers' runtime-selected model_pb2 (sentencepiece's upb-style module on
+    # this stack). Never import transformers' legacy sentencepiece_model_pb2 here: it
+    # raises "Descriptors cannot be created directly" on protobuf>=4.
+    from transformers.convert_slow_tokenizer import import_protobuf
+
+    model_pb2 = import_protobuf()
+    assert hasattr(model_pb2, "ModelProto"), (
+        "LANE-163: import_protobuf() returned a module without ModelProto"
+    )
+    # (3) parse the committed 16-piece unigram fixture.
+    assert L163_SPM_FIXTURE.is_file(), f"LANE-163: fixture missing at {L163_SPM_FIXTURE}"
+    proto = model_pb2.ModelProto()
+    proto.ParseFromString(L163_SPM_FIXTURE.read_bytes())
+    assert proto.pieces[0].piece == "<unk>" and len(proto.pieces) == 16, (
+        f"LANE-163: fixture parsed to {len(proto.pieces)} pieces, first "
+        f"{proto.pieces[0].piece!r}"
+    )
+    # (4) sentencepiece itself loads the same file.
+    import sentencepiece
+
+    sp = sentencepiece.SentencePieceProcessor(model_file=str(L163_SPM_FIXTURE))
+    assert sp.GetPieceSize() == 16, f"LANE-163: GetPieceSize() is {sp.GetPieceSize()}"

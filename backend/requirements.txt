@@ -110,7 +110,7 @@ rembg==2.0.85
 requests==2.34.2
 rich==15.0.0
 ruamel.yaml==0.19.1
-rpds-py==0.30.0
+rpds-py==2026.9.1
 ruff==0.17.0
 safetensors==0.8.0
 sam3==0.1.4  # installed with --no-deps (see install-deps.sh). 0.1.2's stale `huggingface-hub<1.0` ceiling is GONE upstream (0.1.4 declares `<2.0,>=0.30.0`), so that reason has expired; --no-deps stays only to keep sam3 out of the bulk resolve, and the price is that its live ceilings — numpy<2.4, tqdm<4.68, typing_extensions<4.16 — are enforced by nothing. Those three pins are held below for exactly that, and `_harness/tools/pin_coherence.py` is what checks them. Import verified by test_sam3_imports_cleanly_despite_declared_hub_pin

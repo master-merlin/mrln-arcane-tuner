@@ -493,13 +493,31 @@ class GenericSamplingPipeline(ABC):
         empty list — every other reader of the key normalizes it the same way.
         """
         raw = self.config.get("sample_prompts") or []
+        fallbacks = self._sample_prompt_fallbacks()
         result: list[dict[str, Any]] = []
         for entry in raw:
             if hasattr(entry, "model_dump"):
-                result.append(entry.model_dump())
+                cfg = entry.model_dump()
             elif isinstance(entry, dict):
-                result.append(entry)
+                cfg = dict(entry)
+            else:
+                continue
+            # An unset field (None) resolves HERE, once, for every family's sampler; a value the
+            # user set -- even one equal to a fallback -- is never touched.
+            for key, value in fallbacks.items():
+                if cfg.get(key) is None:
+                    cfg[key] = value
+            result.append(cfg)
         return result
+
+    def _sample_prompt_fallbacks(self) -> dict[str, Any]:
+        """Values for an UNSET (``None``) sample-prompt width / height / steps / guidance.
+
+        The generic fallbacks are the historical schema defaults, so a family that does not override
+        this behaves exactly as before. A family whose model card declares its own inference defaults
+        overrides it with the definition's.
+        """
+        return {"width": 1024, "height": 1024, "num_inference_steps": 20, "guidance_scale": 3.5}
 
     def _resolve_output_dir(self) -> Path:
         """Create output directory: ``{checkpoint_output_dir}/samples/``.
@@ -776,5 +794,6 @@ class GenericSamplingPipeline(ABC):
             path=str(path),
             media_type=media_type,
             seed=expanded_cfg.get("seed", 42),
+            num_inference_steps=expanded_cfg.get("num_inference_steps"),
             guidance_scale=expanded_cfg.get("guidance_scale", 3.5),
         )

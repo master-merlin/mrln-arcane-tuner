@@ -161,6 +161,17 @@ describe('TrainingDynamicConfig — Default template reset keeps the form comple
         expect(c.form.get('model_family')?.value).toBe('flux3');
     });
 
+    it('keeps the moss_image selection (moss-image-base: 50 steps, CFG 3.0, 1024, flow_match) on reset', () => {
+        const c = build();
+        c.form.get('definition_id')?.setValue('moss-image-base');
+        c.form.get('model_family')?.setValue('moss_image');
+
+        c.resetFormToDefaults();
+
+        expect(c.form.get('definition_id')?.value).toBe('moss-image-base');
+        expect(c.form.get('model_family')?.value).toBe('moss_image');
+    });
+
     it('does not throw on layer_checklist arrays (flat FormControl) and resets their value', () => {
         const c = build();
         c.form.get('targeted_layers')?.setValue(['blocks.0', 'blocks.1']);

@@ -48,6 +48,8 @@ ALL_DEFINITION_IDS = [
     "flux2-klein-base-4b",
     "flux2-klein-base-9b",
     "flux3-image-klein-base",
+    "moss-image-base",
+    "moss-image-sft",
     "qwen-image-2512",
     "qwen-image-edit-2509",
     "qwen-image-2.1",
@@ -148,6 +150,10 @@ FAMILY_HAS_VAE_AND_TE = {
         True,
         True,
     ),  # latent_diffusion DiT (AutoencoderKLFlux2) + external stacked Qwen3-VL-4B TE (no TE training)
+    "moss_image": (
+        True,
+        True,
+    ),  # latent_diffusion DiT (AutoencoderKLFlux2) + external Qwen3.5 chat-template TE (no TE training)
     "ace_step15": (
         True,
         True,

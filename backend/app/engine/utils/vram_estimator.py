@@ -167,6 +167,15 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 4.4,  # Qwen3-VL-4B (8-layer-stacked features, text-only use)
         "vae": 0.17,  # AutoencoderKLFlux2 (~335 MB bf16)
     },
+    "moss_image": {
+        # Parameter counts (B) from the research report (_harness/research/moss-image-family.md
+        # §1.2/§1.5): transformer shards 10,164,617,280 B bf16 => ~5.08 B; text encoder index
+        # metadata 8,392,695,024 params (Qwen3.5 language + vision towers); FLUX.2 VAE ~84M.
+        # Measured at UAT: pending (row 8) -- the numbers are from file listings, not a run.
+        "transformer": 5.08,
+        "text_encoder": 8.39,
+        "vae": 0.08,
+    },
     "dreamlite": {
         # Meta-instantiated DreamLiteUNetModel with the REAL checkpoint
         # unet/config.json (block_out 256/512/896, tlpb 1/2/4, ff_mult 3,

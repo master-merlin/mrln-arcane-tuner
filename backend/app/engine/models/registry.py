@@ -476,6 +476,19 @@ def _derive_block_topology(family: str, arch: dict) -> list[dict]:
             "approx_vram_mb": 320,
         }]
 
+    if family == "moss_image":
+        # The vendored MOSSImageTransformer keeps its 42 uniform single-stream blocks in the
+        # ``layers`` ModuleList (research §1.2); the driver reports the same group at runtime.
+        num_layers = arch.get("transformer.num_layers") or arch.get("num_layers")
+        if not num_layers:
+            return []
+        return [{
+            "name": "layers",
+            "attr_path": "layers",
+            "count": int(num_layers),
+            "approx_vram_mb": 240,
+        }]
+
     if family == "sdxl":
         return [
             {"name": "down_blocks", "attr_path": "down_blocks", "count": 4, "approx_vram_mb": 200},

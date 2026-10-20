@@ -556,11 +556,11 @@ Training is configured through a **dynamic JSON Schema-driven UI** — the form 
 
 #### Supported Model Families
 
-**31 families, 56 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](docs/ARCHITECTURE.md#model-families).
+**32 families, 58 shipped definitions.** A *family* is an architecture with its own loader, driver, trainer, sampler and saver; a *definition* is one concrete checkpoint of it, declared in YAML. Archetypes, capability flags and the shared support packages are in [ARCHITECTURE.md](docs/ARCHITECTURE.md#model-families).
 
 This table is generated from `backend/app/engine/models/families/` and pinned by `backend/tests/test_readme_family_table.py`, so a family added without a row here fails the gate. It listed three of twenty-eight until 2026-08-28 — there is no text-encoder column because populating it accurately for every family means reading every loader, and twenty-five blanks would say less than no column at all.
 
-**Image — 22 families**
+**Image — 23 families**
 
 | Family | Definitions shipped |
 | --- | --- |
@@ -577,6 +577,7 @@ This table is generated from `backend/app/engine/models/families/` and pinned by
 | `longcat_image` | LongCat-Image |
 | `lumina2` | Lumina-Image 2.0 |
 | `microsoft_lens` | Microsoft Lens (Base 3.8B) |
+| `moss_image` | MOSS-Image Base · MOSS-Image SFT — [`OpenMOSS-Team/MOSS-Image-Base`](https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base) · [`OpenMOSS-Team/MOSS-Image-SFT`](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT). Its Qwen3.5 text encoder holds about 16.8 GB of system RAM while it encodes your captions. The SFT checkpoint has a known banding defect of its own, so train on Base when you can |
 | `nucleus_image` | Nucleus-Image |
 | `omnigen2` | OmniGen2 |
 | `ovis_image` | Ovis-Image 7B |
@@ -829,6 +830,7 @@ model page as authoritative.
 | `flux1` | [`black-forest-labs/FLUX.1-dev`](https://huggingface.co/black-forest-labs/FLUX.1-dev) | `flux-1-dev-non-commercial-license` — **non-commercial** | **gated** — you must accept the agreement on HuggingFace first |
 | `flux2` | [`black-forest-labs/FLUX.2-dev`](https://huggingface.co/black-forest-labs/FLUX.2-dev) | `flux-non-commercial-license` — **non-commercial** | **gated** |
 | `flux3` | [`black-forest-labs/flux-3-image-klein-base`](https://huggingface.co/black-forest-labs/flux-3-image-klein-base) | FLUX Kommunity License v1.0 — non-commercial and non-production use, or commercial use only as a "Qualifying User" (gross annualized revenue under US$5,000,000) | **gated** |
+| `moss_image` | [`OpenMOSS-Team/MOSS-Image-Base`](https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base) · [`OpenMOSS-Team/MOSS-Image-SFT`](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) | Apache License 2.0 | open |
 | `qwen_image2` | [`Qwen/Qwen-Image-2.1`](https://huggingface.co/Qwen/Qwen-Image-2.1) | Qwen Research License — **non-commercial**; a shared fine-tune must say "Built with Qwen" | open |
 
 **Permissive (verified):** `hidream_o1`

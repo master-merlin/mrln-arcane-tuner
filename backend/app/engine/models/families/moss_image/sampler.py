@@ -23,7 +23,6 @@ from torch import Tensor
 
 from app.engine.core.sampling import GenericSamplingPipeline
 
-from .trainer import shift_sigma
 
 if TYPE_CHECKING:
     from .trainer import MossImageTrainer
@@ -97,6 +96,19 @@ class MossImageSampler(GenericSamplingPipeline):
         )
         return (out[0] if isinstance(out, tuple) else out).to(torch.float32)
 
+    def _inference_sigmas(self, num_steps: int) -> Tensor:
+        """The official schedule: the vendored scheduler's shifted, training-grid-snapped sigmas (+ trailing 0).
+
+        The scheduler's ``shift`` is the YAML's inference shift; its ``training_shift`` stays at the
+        upstream default, independent of the trainer's timestep-distribution shift. Snapping can merge
+        steps, so the returned length (not ``num_steps``) drives the loop.
+        """
+        from .vendor.scheduler_moss_image import MOSSImageScheduler
+
+        scheduler = MOSSImageScheduler(shift=self._flow_shift())
+        scheduler.set_timesteps(num_steps)
+        return scheduler.sigmas.to(dtype=torch.float32)
+
     def denoise(
         self, noise: Tensor, prompt_embedding: Any, num_steps: int, guidance_scale: float, seed: int,
     ) -> Tensor:
@@ -109,13 +121,12 @@ class MossImageSampler(GenericSamplingPipeline):
         uncond = prompt_embedding["uncond"]
         do_cfg = guidance_scale > 1.0
 
-        grid = torch.linspace(1.0, 0.0, num_steps + 1, dtype=torch.float32)
-        sigmas = shift_sigma(grid, self._flow_shift())
+        sigmas = self._inference_sigmas(num_steps)
         latents = noise.to(device=self.device, dtype=torch.float32)
 
         self._ensure_transformer_on_device(transformer)
         with torch.no_grad():
-            for step_i in range(num_steps):
+            for step_i in range(len(sigmas) - 1):
                 if getattr(self, "_log_writer", None):
                     self._log_writer.status(f"Sampling {step_i + 1}/{num_steps}")
                 sigma, sigma_next = sigmas[step_i], sigmas[step_i + 1]

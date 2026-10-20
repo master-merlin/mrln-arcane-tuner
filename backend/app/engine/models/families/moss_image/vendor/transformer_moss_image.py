@@ -22,8 +22,12 @@
 #     `MOSSImageTransformer`); the scheduler lives in `scheduler_moss_image.py` and the pipeline
 #     (`MOSSImagePipeline`, upstream lines 290-440) is dropped -- the family's own sampler replaces it;
 #   * the import block keeps only what these classes use (no `AutoModel`/`AutoTokenizer`, no pipeline
-#     helpers), so this module never loads remote code and imports nothing but torch + diffusers.
-# Every class and function body is byte-for-byte upstream.
+#     helpers), so this module never loads remote code and imports nothing but torch + diffusers;
+#   * gradient checkpointing (LANE-165 verify 1.01): `_supports_gradient_checkpointing = True`, a
+#     `gradient_checkpointing` flag set in `__init__`, and the block loop in `forward` runs each block
+#     through `self._gradient_checkpointing_func` when training with grad enabled (the diffusers
+#     convention, as in flux3/vendor). Upstream has none, and the trainer's default config enables it.
+# Every other class and function body is byte-for-byte upstream.
 # Retire path: delete this file when a diffusers release ships a MOSS-Image transformer
 # (row in families/VENDOR_INVENTORY.md).
 from __future__ import annotations
@@ -175,6 +179,8 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
     Each sample is evaluated at its true text length, including text refinement;
     padded tokens cannot influence either text or joint attention.
     """
+    _supports_gradient_checkpointing = True  # MRLN-VENDOR: not upstream (see header)
+
     @register_to_config
     def __init__(self, dim=3072, ffn_dim=8192, num_heads=24, num_layers=42,
                  text_dim=4096, freq_dim=256, latent_channels=128, rope_base=10000.0):
@@ -190,6 +196,7 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
         self.final_norm_video = _RMSNorm(dim)
         self.final_linear_video = nn.Linear(dim, latent_channels, bias=False)
         self.video_head_modulation = nn.Linear(dim, 2 * dim)
+        self.gradient_checkpointing = False  # MRLN-VENDOR: toggled by enable_gradient_checkpointing()
 
     def load_training_state_dict(self, state_dict, *, prefix=''):
         """Load a consolidated raw/EMA model mapping, strictly; no silent key drops."""
@@ -235,7 +242,10 @@ class MOSSImageTransformer(ModelMixin, ConfigMixin):
             x = torch.cat((video, text), 1)
             for layer_index, layer in enumerate(self.layers):
                 if layer_index not in skip_layers:
-                    x = layer(x, rope, mod[index:index + 1])
+                    if torch.is_grad_enabled() and self.gradient_checkpointing:  # MRLN-VENDOR
+                        x = self._gradient_checkpointing_func(layer, x, rope, mod[index:index + 1])
+                    else:
+                        x = layer(x, rope, mod[index:index + 1])
             x = self.final_norm_video(x[:, :height * width].to(self.final_norm_video.weight.dtype))
             x = x * (1 + head[index:index + 1, 1, None]) + head[index:index + 1, 0, None]
             x = self.final_linear_video(x.to(self.final_linear_video.weight.dtype))

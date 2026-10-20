@@ -413,6 +413,58 @@ def test_moss_image_sampler_precision_contract():
         f"(max diff {float((out - expected).abs().max()):.3e})")
 
 
+def test_moss_image_sampler_grid_parity():
+    """The preview grid is the vendored scheduler's (shifted, then snapped to the training grid), step for step."""
+    sched_cls = _load("vendor.scheduler_moss_image", "MOSSImageScheduler")
+    scheduler = sched_cls(shift=5.0)
+    scheduler.set_timesteps(50)
+    expected = (scheduler.sigmas[:-1] * 1000.0).float()
+
+    sampler, spy = _sampler()
+    embeds = {"cond": _text_output(1, 5), "uncond": _text_output(1, 2)}
+    noise = sampler._create_initial_noise(128, 128, torch.Generator().manual_seed(0))
+    sampler.denoise(noise, embeds, 50, 3.0, 0)
+
+    seen = torch.stack([c["timestep"].reshape(-1)[0] for c in spy.calls if c["skip_layers"] is None])
+    assert seen.shape == expected.shape, (
+        f"{MARK}: the sampler ran {seen.shape[0]} steps, the vendored scheduler has {expected.shape[0]}")
+    assert torch.allclose(seen, expected, rtol=0, atol=1e-3), (
+        f"{MARK}: sampler timesteps differ from the vendored scheduler's (last {seen[-1]:.3f} vs {expected[-1]:.3f})")
+
+
+def test_moss_image_gradient_checkpointing():
+    """The default config (gradient_checkpointing on) must set up and backprop into the LoRA params."""
+    from peft import LoraConfig, get_peft_model
+
+    model = _tiny_transformer(num_layers=2)
+    model.enable_gradient_checkpointing()  # the call pipeline_optimization._configure_gradient_checkpointing makes
+    forwards = {"n": 0}
+    layer0 = model.layers[0]
+    original = layer0.forward
+
+    def counting(*args, **kwargs):
+        forwards["n"] += 1
+        return original(*args, **kwargs)
+
+    layer0.forward = counting
+    peft_model = get_peft_model(model, LoraConfig(
+        r=4, lora_alpha=4, target_modules=r"layers\.\d+\.proj\.(q|k|v|o|ffn_up_gate|ffn_down)"))
+    peft_model.train()
+    for name, param in peft_model.named_parameters():
+        if "lora_B" in name:
+            torch.nn.init.normal_(param, std=0.05)
+    x = torch.randn(1, 8, 4, 4)
+    ctx = torch.randn(1, 3, 8)
+    out = peft_model(hidden_states=x, timestep=torch.tensor([500.0]), encoder_hidden_states=ctx,
+                     return_dict=False)[0]
+    out.float().pow(2).mean().backward()
+    assert forwards["n"] == 2, (
+        f"{MARK}: block 0 ran {forwards['n']}x for forward+backward, checkpointing recomputes it (expected 2)")
+    grads = [p.grad for n, p in peft_model.named_parameters() if "lora_" in n]
+    assert grads and all(g is not None for g in grads) and any(float(g.abs().sum()) > 0 for g in grads), (
+        f"{MARK}: LoRA params received no gradient under checkpointing")
+
+
 # ── scenario 6: the 252 LoRA targets ──────────────────────────────────────────────────────────────
 
 

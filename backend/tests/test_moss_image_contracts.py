@@ -657,25 +657,38 @@ def test_moss_image_te_cache_multi_dataset(tmp_path):
 # ── scenario 11: the definition's preview defaults reach a normal sample prompt ──────────────────
 
 
-def test_moss_image_preview_defaults(monkeypatch):
-    """Verify 1.01: the serialized schema defaults (20 / 3.5) resolve to the definition's 50 / 3.0."""
-    from app.engine.core.sampling import GenericSamplingPipeline
+def test_moss_image_preview_defaults():
+    """Verify 3.01: an UNSET field resolves to the definition's 50 / 3.0; an explicit value, 20 / 3.5
+    included, is kept; the broadcast report names the executed steps and guidance."""
+    from structlog.testing import capture_logs
+
     from app.engine.models.base import SamplePromptConfig
 
-    seen: list[dict] = []
-    monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", lambda self, cfg, step: seen.append(cfg))
+    assert SamplePromptConfig().num_inference_steps is None and SamplePromptConfig().guidance_scale is None, (
+        f"{MARK}: the schema must carry 'unset' as None, not a default that collides with an explicit value")
     sampler, _spy = _sampler()
-    sampler._sample_single(SamplePromptConfig(prompt="fox").model_dump(), 0)
-    sampler._sample_single(
-        SamplePromptConfig(prompt="fox", num_inference_steps=30, guidance_scale=2.0).model_dump(), 0)
+    sampler.config["sample_prompts"] = [
+        SamplePromptConfig(prompt="unset"),
+        SamplePromptConfig(prompt="collides", num_inference_steps=20, guidance_scale=3.5, width=1024),
+        SamplePromptConfig(prompt="other", num_inference_steps=30, guidance_scale=2.0, width=512),
+        {"prompt": "legacy dict", "num_inference_steps": None},
+    ]
+    unset, collides, other, legacy = sampler._get_sample_prompts()
 
-    normal, explicit = seen
-    assert (normal["num_inference_steps"], normal["guidance_scale"]) == (50, 3.0), (
-        f"{MARK}: a normal preview ran {normal['num_inference_steps']} steps at CFG {normal['guidance_scale']}, "
-        f"not the definition's 50 / 3.0")
-    assert (explicit["num_inference_steps"], explicit["guidance_scale"]) == (30, 2.0), (
-        f"{MARK}: explicit per-prompt values must win, got {explicit['num_inference_steps']} / "
-        f"{explicit['guidance_scale']}")
+    def got(c):
+        return (c["num_inference_steps"], c["guidance_scale"], c["width"], c["height"])
+
+    assert got(unset) == (50, 3.0, 1024, 1024), f"{MARK}: unset resolved to {got(unset)}, not 50 / 3.0"
+    assert got(collides) == (20, 3.5, 1024, 1024), f"{MARK}: explicit 20 / 3.5 was overridden: {got(collides)}"
+    assert got(other) == (30, 2.0, 512, 1024), f"{MARK}: explicit values must win, got {got(other)}"
+    assert legacy["num_inference_steps"] == 50 and legacy["guidance_scale"] == 3.0
+
+    # The report is built from the same resolved config the sampler executes.
+    with capture_logs() as logs:
+        sampler._broadcast_sample(Path("s.png"), 0, 1, collides, raw_prompt="collides")
+    event = next(e for e in logs if e["event"] == "sample_generated")
+    assert (event["num_inference_steps"], event["guidance_scale"]) == (20, 3.5), (
+        f"{MARK}: the report names {event['num_inference_steps']} / {event['guidance_scale']}, not the executed 20 / 3.5")
 
 
 # ── scenario 9: the vendored package's imports ────────────────────────────────────────────────────

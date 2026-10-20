@@ -34,24 +34,27 @@ class SamplePromptConfig(BaseModel):
         description="Random seed for reproducibility",
         json_schema_extra={"group": "SAMPLING", "min": 0, "max": 4294967295},
     )
-    width: int = Field(
-        1024,
-        description="Output width (px, quantized to 64)",
+    # width / height / num_inference_steps / guidance_scale: None = unset. The sampler resolves an
+    # unset field to the definition's sampling default (1024 / 1024 / 20 / 3.5 when the family
+    # declares none); an explicit value, including one equal to those fallbacks, is kept as typed.
+    width: int | None = Field(
+        None,
+        description="Output width (px, quantized to 64); unset = the model's default",
         json_schema_extra={"group": "SAMPLING", "min": 256, "max": 2048, "step": 64},
     )
-    height: int = Field(
-        1024,
-        description="Output height (px, quantized to 64)",
+    height: int | None = Field(
+        None,
+        description="Output height (px, quantized to 64); unset = the model's default",
         json_schema_extra={"group": "SAMPLING", "min": 256, "max": 2048, "step": 64},
     )
-    num_inference_steps: int = Field(
-        20,
-        description="Denoising steps",
+    num_inference_steps: int | None = Field(
+        None,
+        description="Denoising steps; unset = the model's default",
         json_schema_extra={"group": "SAMPLING", "min": 1, "max": 100, "step": 1},
     )
-    guidance_scale: float = Field(
-        3.5,
-        description="CFG scale (0 = no guidance)",
+    guidance_scale: float | None = Field(
+        None,
+        description="CFG scale (0 = no guidance); unset = the model's default",
         json_schema_extra={"group": "SAMPLING", "min": 0.0, "max": 20.0, "step": 0.5},
     )
     control_images: list[str] = Field(

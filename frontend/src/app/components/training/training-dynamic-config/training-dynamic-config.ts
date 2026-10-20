@@ -931,6 +931,7 @@ export class TrainingDynamicConfigComponent {
         control.setValue(next, { emitEvent: false });
         patchedAny = true;
       }
+      if (this._seedSamplePromptRows(defaults)) patchedAny = true;
     } finally {
       if (selector) selector.suppressAutoSave.set(hadSuppress);
     }
@@ -941,6 +942,53 @@ export class TrainingDynamicConfigComponent {
       this._updateLoraNamePreview();
       this.vramEstimation.schedule();
     }
+  }
+
+  /** The sample-prompt fields a definition's `defaults` seed (field -> defaults key). */
+  private static readonly SAMPLE_SEED_KEYS: Record<string, string> = {
+    num_inference_steps: 'num_inference_steps',
+    guidance_scale: 'guidance_scale',
+    width: 'resolution',
+    height: 'resolution',
+  };
+
+  /** The value each sample-prompt field was last seeded with (so a definition change re-seeds
+   *  a row still holding the PREVIOUS definition's seed, never one the user or a template set). */
+  private _sampleSeed: Record<string, unknown> = {};
+
+  /** The seed for one sample-prompt field from the selected definition's defaults, or undefined. */
+  private _sampleSeedFor(field: string, defaults: Record<string, unknown> | null | undefined): unknown {
+    const key = TrainingDynamicConfigComponent.SAMPLE_SEED_KEYS[field];
+    const value = key ? defaults?.[key] : undefined;
+    return typeof value === 'number' ? value : undefined;
+  }
+
+  /**
+   * Seed the sample-prompt rows' steps / guidance / size from the selected definition's defaults, so
+   * the form shows (and sends) the value the sampler will execute. Only a row control that is unset
+   * (null / '') or still holds the previous seed is patched; a typed value is never touched.
+   */
+  private _seedSamplePromptRows(defaults: Record<string, unknown>): boolean {
+    const rows = this.form.get('sample_prompts');
+    if (!(rows instanceof FormArray)) return false;
+    let patched = false;
+    for (const field of Object.keys(TrainingDynamicConfigComponent.SAMPLE_SEED_KEYS)) {
+      const next = this._sampleSeedFor(field, defaults);
+      if (next === undefined) continue;
+      for (const row of rows.controls) {
+        const control = row.get(field);
+        if (!control || control.dirty) continue;
+        const cur = control.value;
+        const unset = cur === null || cur === undefined || cur === '';
+        if (!unset && cur !== this._sampleSeed[field]) continue;
+        if (cur !== next) {
+          control.setValue(next, { emitEvent: false });
+          patched = true;
+        }
+      }
+      this._sampleSeed[field] = next;
+    }
+    return patched;
   }
 
   onFamilyChange(event: Event) {
@@ -2001,6 +2049,16 @@ export class TrainingDynamicConfigComponent {
         // Pick first enum value as default if currently empty
         if (pSchema.enum && pSchema.enum.length > 0 && (defaultValue === '' || defaultValue === undefined)) {
           defaultValue = pSchema.enum[0];
+        }
+
+        // A new sample-prompt row shows the selected definition's sampling defaults (the value
+        // the sampler will execute), not an empty box.
+        if (key === 'sample_prompts' && (defaultValue === null || defaultValue === '')) {
+          const seed = this._sampleSeedFor(pKey, this.capabilities()?.defaults);
+          if (seed !== undefined) {
+            defaultValue = seed;
+            this._sampleSeed[pKey] = seed;
+          }
         }
 
         group[pKey] = new FormControl(defaultValue);

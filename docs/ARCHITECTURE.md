@@ -192,7 +192,7 @@ engine/
 ├── factories/             # Optimizer + quantization (bitsandbytes/quanto/torchao) factories + base/impl subdirs
 ├── models/
 │   ├── registry.py        # Model family registry (plugin-driven) + count()
-│   └── families/          # 31 families + 2 support packages (see below)
+│   └── families/          # 32 families + 2 support packages (see below)
 ├── strategies/            # EMA, timestep sampling, noise interpolation, sigma schedule/tracker
 └── utils/                 # LoRA tools + conversion, safe save, introspection, VRAM/cost estimators, override manager
 ```

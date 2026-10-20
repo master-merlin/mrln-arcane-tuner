@@ -42,6 +42,7 @@ ALL_FAMILIES = (
     "flux1",
     "flux2",
     "flux3",
+    "moss_image",
     "hidream_o1",
     "hunyuan_video15",
     "ideogram4",

@@ -256,6 +256,28 @@ def _qwen3vl_text():
     return Qwen3VLTextModel(text)
 
 
+def _qwen35_model():
+    # moss_image (LANE-165): the checkpoint's architectures entry is Qwen3_5Model (research §1.5);
+    # sub-configs go in as dicts, like the VL builders above. layer_types mixes the GDN
+    # (linear_attention) and full-attention layers the real model has.
+    from transformers import Qwen3_5Model
+    from transformers.models.qwen3_5.configuration_qwen3_5 import (
+        Qwen3_5Config, Qwen3_5TextConfig, Qwen3_5VisionConfig,
+    )
+    text = Qwen3_5TextConfig(
+        vocab_size=64, hidden_size=16, intermediate_size=32, num_hidden_layers=2,
+        num_attention_heads=2, num_key_value_heads=1, head_dim=8,
+        max_position_embeddings=32, linear_conv_kernel_dim=2, linear_key_head_dim=4,
+        linear_value_head_dim=4, linear_num_key_heads=2, linear_num_value_heads=2,
+        layer_types=["linear_attention", "full_attention"])
+    vision = Qwen3_5VisionConfig(
+        depth=1, hidden_size=8, intermediate_size=16, num_heads=2, in_channels=3,
+        patch_size=4, spatial_merge_size=1, temporal_patch_size=2,
+        out_hidden_size=16, num_position_embeddings=16)
+    return Qwen3_5Model(Qwen3_5Config(
+        text_config=text.to_dict(), vision_config=vision.to_dict()))
+
+
 def _qwen25vl_configs():
     from transformers.models.qwen2_5_vl.configuration_qwen2_5_vl import (
         Qwen2_5_VLConfig, Qwen2_5_VLTextConfig, Qwen2_5_VLVisionConfig,
@@ -323,6 +345,7 @@ _BUILDERS = {
     "Gemma3ForConditionalGeneration": _gemma3_conditional,
     "Qwen3VLForConditionalGeneration": _qwen3vl_conditional,
     "Qwen3VLModel": _qwen3vl_model,
+    "Qwen3_5Model": _qwen35_model,
     "Qwen3VLTextModel": _qwen3vl_text,
     "Qwen2_5_VLForConditionalGeneration": _qwen25vl_conditional,
     "Qwen2_5_VLTextModel": _qwen25vl_text,
@@ -443,6 +466,10 @@ CASES: list[_Case] = [
     # Qwen/Qwen3-VL-4B-Instruct; _harness/research/flux3-klein.md).
     _Case("flux3", _m("flux3"), "Flux3Loader", "text_encoder",
           "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
+    # moss_image (LANE-165): the TE checkpoint is the bare Qwen3_5Model (language_model +
+    # visual towers; research §1.5), declared by its concrete class, never an Auto* mapping.
+    _Case("moss_image", _m("moss_image"), "MossImageLoader", "text_encoder",
+          "transformers.Qwen3_5Model", "Qwen3_5Model"),
 ]
 
 # Families that have a loader.py but no standalone-TE loading contract.

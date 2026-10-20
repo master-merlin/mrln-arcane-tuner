@@ -237,6 +237,15 @@ FAMILIES: list[FamilySpec] = [
         encode_kind="tensor", encode_seed=_seed_tensor, encode_check=_check_tensor_3d,
     ),
     FamilySpec(
+        # The cache holds one [S_i, D] row per caption (variable length); encode_text pads the
+        # batch to a TextEncoderOutput(embeddings [B,S,D], mask [B,S]), no pooled.
+        "moss_image",
+        "app.engine.models.families.moss_image.trainer:MossImageTrainer",
+        "app.engine.models.families.moss_image.driver:MossImageDriver",
+        "transformer", "transformer",
+        encode_kind="teo_emb_mask", encode_seed=_seed_variable_tensor, encode_check=_check_teo_emb_mask,
+    ),
+    FamilySpec(
         "ideogram4",
         "app.engine.models.families.ideogram4.trainer:IdeogramV4Trainer",
         "app.engine.models.families.ideogram4.driver:IdeogramV4Driver",

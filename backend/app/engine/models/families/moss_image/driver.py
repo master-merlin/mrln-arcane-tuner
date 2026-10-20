@@ -110,7 +110,7 @@ class MossImageDriver(IModelDriver):
         return list(getattr(self.definition, "lora_targetable_modules", None) or [])
 
     def init_scheduler(self) -> Any:
-        """Flow matching; the trainer draws its own sigmas (``scheduler.training_shift``)."""
+        """Flow matching; the trainer draws sigmas through the shared ``TimestepSampler``."""
         return None
 
     def resolve_loading_dtype(self) -> torch.dtype:

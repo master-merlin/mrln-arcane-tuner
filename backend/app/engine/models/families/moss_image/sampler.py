@@ -110,7 +110,8 @@ class MossImageSampler(GenericSamplingPipeline):
         """The official schedule: the vendored scheduler's shifted, training-grid-snapped sigmas (+ trailing 0).
 
         The scheduler's ``shift`` is the YAML's inference shift; its ``training_shift`` stays at the
-        upstream default, independent of the trainer's timestep-distribution shift. Snapping can merge
+        upstream default, independent of training timestep sampling (which goes through the shared
+        ``TimestepSampler`` and reads no ``training_shift``). Snapping can merge
         steps, so the returned length (not ``num_steps``) drives the loop.
         """
         from .vendor.scheduler_moss_image import MOSSImageScheduler

@@ -158,6 +158,34 @@ def test_moss_image_scheduler_keys_pinned(enrich_copy):
         assert not drift, f"{did}: unpinned config_drift_detected for scheduler.shift: {drift}"
 
 
+def test_moss_image_harvested_training_shift_is_inert(enrich_copy):
+    """Enrichment appends the repo scheduler config; the appended training_shift is dead data."""
+    harvested = {"scheduler.shift": 1.0, "scheduler.training_shift": 1.0}
+    for did, filename in ((BASE_ID, "base.yaml"), (SFT_ID, "sft.yaml")):
+        shipped = yaml.safe_load((FAMILY_DIR / "definitions" / filename).read_text(encoding="utf-8"))
+        plain_defn = registry.get_definition(did)
+        driver, *_ = _driver(plain_defn)
+        plain = _bare_trainer(driver, {"mixed_precision": "fp32", "te_quantization": "none",
+                                       "cache_text_embeddings": True, "sample_prompts": []})
+        torch.manual_seed(0)
+        before = plain.sample_timesteps(256)
+
+        enriched = enrich_copy(did, filename, harvested)
+        assert enriched.architecture_params["scheduler.shift"] == shipped["architecture_params"][
+            "scheduler.shift"] == 5.0, f"{did}: the pin did not hold through the harvest"
+        assert enriched.architecture_params.get("scheduler.training_shift") == 1.0, (
+            f"{did}: the harvest did not append scheduler.training_shift (test premise broken)")
+
+        driver2, *_ = _driver(enriched)
+        after_trainer = _bare_trainer(driver2, {"mixed_precision": "fp32", "te_quantization": "none",
+                                                "cache_text_embeddings": True, "sample_prompts": []})
+        torch.manual_seed(0)
+        after = after_trainer.sample_timesteps(256)
+        assert torch.equal(before, after), (
+            f"{did}: an appended scheduler.training_shift changed sample_timesteps "
+            f"(max abs diff {float((before - after).abs().max()):.4f})")
+
+
 def test_moss_image_private_sampler_gone():
     module = importlib.import_module(TRAINER_MODULE)
     assert not hasattr(module, "shift_sigma"), "trainer still defines the private shift_sigma"

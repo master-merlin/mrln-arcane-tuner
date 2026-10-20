@@ -80,18 +80,24 @@ architecture_params:
   sampling.seed_prompt_defaults: true
   scheduler.use_dynamic_shifting: false
   scheduler.num_train_timesteps: 1000
-  # Family-only key, read by the trainer (never the sampler): the training sigma draw
-  # sigma = s*u / (1 + (s-1)*u), u = sigmoid(N(0,1)). Evidence: kohya sd-scripts
-  # docs/moss_image_train_network.md §7.2 (`discrete_flow_shift 3.0`, "very similar" to the
-  # pre-training logit-normal); research Decision D5. Assumption: the pre-training direction is as
-  # kohya states -- falsified by the technical report's training schedule.
-  scheduler.training_shift: 3.0
+  # Family DEFAULT timestep draw, read by the trainer and used only where the run config names no
+  # `timestep_sampling` (a key the config carries is never touched; the shared TimestepSampler is the
+  # path for every mode). The technical report's final-stage schedule is S = 1 - sigmoid(Z),
+  # Z ~ N(-1.09, 0.95^2); in the factory's convention (sigma 1 = noise, sigmoid(N(mu, std))) that is
+  # mu +1.09, std 0.95.
+  timestep.default_mode: logit_normal
+  timestep.logit_normal_mu: 1.09
+  timestep.logit_normal_sigma: 0.95
   # The model card's negative-branch block skip (uncond_skip_layers=(22,), zero-based).
   sampler.uncond_skip_layers:
   - 22
 # Research §3.2: the six bias-free projections of each of the 42 blocks = 252 modules (kohya's default
 # set; modulation, norms, video_embedder, time embedding, text_embedder and the final layer are not
 # targets). Native names -- the saver writes them as diffusion_model.<name>.lora_A/B.weight.
+# scheduler.shift is the checkpoint's inference grid shift (model card, 5.0); the repo's
+# scheduler_config.json harvests 1.0 and enrichment must not replace it (LANE-167, UAT 2026-10-20).
+enrich_pinned_keys:
+- scheduler.shift
 lora_targetable_modules:
 - layers.0.proj.q
 - layers.0.proj.k

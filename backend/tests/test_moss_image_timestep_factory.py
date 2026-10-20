@@ -139,6 +139,29 @@ def enrich_copy(tmp_path):
             registry._paths[did] = path
 
 
+class _Recorder:
+    """Stands in for the registry's module logger. structlog.testing.capture_logs() only sees
+    loggers bound AFTER it swaps the processors; once an earlier test in the same worker has
+    configured structlog (cache_logger_on_first_use) the registry's logger is already bound and
+    capture_logs() captures nothing. Replacing the module attribute is order-independent."""
+
+    def __init__(self) -> None:
+        self.events: list[dict] = []
+
+    def _record(self, event, **kw):
+        self.events.append({"event": event, **kw})
+
+    warning = info = debug = error = _record
+
+
+@pytest.fixture
+def registry_log(monkeypatch):
+    registry_module = importlib.import_module("app.engine.models.registry")
+    recorder = _Recorder()
+    monkeypatch.setattr(registry_module, "logger", recorder)
+    return recorder
+
+
 def _assert_pinned_shift_drift(did: str, logs: list[dict]) -> None:
     """Spec scenario 5: the registry still REPORTS the drift of a pinned key (it keeps the YAML
     value, it does not hide the divergence) -- exactly one warning, flagged pinned, never unpinned."""
@@ -153,7 +176,7 @@ def _assert_pinned_shift_drift(did: str, logs: list[dict]) -> None:
         5.0, 1.0, True), f"{did}: config_drift_detected carries the wrong values: {event}"
 
 
-def test_moss_image_scheduler_keys_pinned(enrich_copy):
+def test_moss_image_scheduler_keys_pinned(enrich_copy, registry_log):
     for did, filename in ((BASE_ID, "base.yaml"), (SFT_ID, "sft.yaml")):
         data = yaml.safe_load((FAMILY_DIR / "definitions" / filename).read_text(encoding="utf-8"))
         assert "scheduler.shift" in (data.get("enrich_pinned_keys") or []), (
@@ -162,15 +185,16 @@ def test_moss_image_scheduler_keys_pinned(enrich_copy):
             f"{did} still declares scheduler.training_shift")
 
     for did, filename in ((BASE_ID, "base.yaml"), (SFT_ID, "sft.yaml")):
-        with structlog.testing.capture_logs() as logs:
-            defn = enrich_copy(did, filename, {"scheduler.shift": 1.0})
+        registry_log.events.clear()
+        defn = enrich_copy(did, filename, {"scheduler.shift": 1.0})
+        logs = list(registry_log.events)
         assert defn.architecture_params["scheduler.shift"] == 5.0, (
             f"{did}: enrichment replaced scheduler.shift 5.0 with the harvest: "
             f"{defn.architecture_params['scheduler.shift']}")
         _assert_pinned_shift_drift(did, logs)
 
 
-def test_moss_image_harvested_training_shift_is_inert(enrich_copy):
+def test_moss_image_harvested_training_shift_is_inert(enrich_copy, registry_log):
     """Enrichment appends the repo scheduler config; the appended training_shift is dead data."""
     harvested = {"scheduler.shift": 1.0, "scheduler.training_shift": 1.0}
     for did, filename in ((BASE_ID, "base.yaml"), (SFT_ID, "sft.yaml")):
@@ -182,8 +206,9 @@ def test_moss_image_harvested_training_shift_is_inert(enrich_copy):
         torch.manual_seed(0)
         before = plain.sample_timesteps(256)
 
-        with structlog.testing.capture_logs() as logs:
-            enriched = enrich_copy(did, filename, harvested)
+        registry_log.events.clear()
+        enriched = enrich_copy(did, filename, harvested)
+        logs = list(registry_log.events)
         _assert_pinned_shift_drift(did, logs)
         assert enriched.architecture_params["scheduler.shift"] == shipped["architecture_params"][
             "scheduler.shift"] == 5.0, f"{did}: the pin did not hold through the harvest"

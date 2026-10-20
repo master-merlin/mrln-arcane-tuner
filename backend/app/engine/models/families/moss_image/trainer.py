@@ -31,6 +31,10 @@ logger = structlog.get_logger(__name__)
 
 # Research Decision D5 / the YAML ``scheduler.training_shift``.
 DEFAULT_TRAINING_SHIFT = 3.0
+# The disk filename's fixed source part: the entry's identity is (caption, template flags, token cap) --
+# the caption hashed in the filename, the other two in the directory's ``te_cache_tag()`` -- never the
+# image that happened to carry the caption first (LANE-165 verify 1.02).
+_TE_CACHE_HINT = "moss"
 
 
 def shift_sigma(u: torch.Tensor, shift: float) -> torch.Tensor:
@@ -66,12 +70,10 @@ class MossImageTrainer(GenericTrainingPipeline):
 
     # -- Text-embedding pre-cache --
 
-    def _te_cache_dir(self) -> str:
-        dirs = self._resolve_te_cache_dirs()
-        if not dirs:
-            return ""
+    def _te_cache_dir_for(self, base_dir: str) -> str:
+        """``{dataset}/.cache/{model}/{version}/embeddings/{te_quant}/te1/{te_cache_tag}``."""
         te_quant = self.config.get("te_quantization", "none")
-        return os.path.join(dirs[0], "embeddings", te_quant, "te1", self.driver.te_cache_tag())
+        return os.path.join(base_dir, "embeddings", te_quant, "te1", self.driver.te_cache_tag())
 
     def _precache_hints(self) -> dict[str, str]:
         hints = dict(self._build_caption_hints())
@@ -80,8 +82,46 @@ class MossImageTrainer(GenericTrainingPipeline):
             hints.setdefault(negative, "sample_negative")
         return hints
 
+    def _with_inventory(self, items: list[dict], fn):
+        """Run ``fn()`` with ``self.inventory`` narrowed to ``items`` (restored in ``finally``)."""
+        full = self.inventory
+        self.inventory = items
+        try:
+            return fn()
+        finally:
+            self.inventory = full
+
+    def _te_cache_owners(self) -> dict[str, list[str]]:
+        """Each pre-cache caption -> the TE cache dirs of every dataset that needs it.
+
+        The inventory is grouped by its OWNING dataset cache dir (the shared ``_resolve_te_cache_dirs``
+        on a one-item inventory), and each group's hints are what that dataset trained alone needs:
+        its composites and dropout variants plus the empty string, the sample prompts and the negative
+        prompt. So a dataset trained alone later finds every entry it needs under its own dir. Captions
+        with no dataset dir (no inventory, or caching off on disk) map to ``[]``: memory only.
+        """
+        groups: dict[str, list[dict]] = {}
+        for item in self.inventory:
+            dirs = self._with_inventory([item], self._resolve_te_cache_dirs)
+            groups.setdefault(dirs[0] if dirs else "", []).append(item)
+        if not groups:
+            return {caption: [] for caption in self._precache_hints()}
+        owners: dict[str, list[str]] = {}
+        for base_dir, items in groups.items():
+            te_dir = self._te_cache_dir_for(base_dir) if base_dir else ""
+            for caption in self._with_inventory(items, self._precache_hints):
+                dirs = owners.setdefault(caption, [])
+                if te_dir and te_dir not in dirs:
+                    dirs.append(te_dir)
+        return owners
+
     def _pre_cache_text_embeddings(self) -> None:
-        """Encode every hint (memory, then disk, then the encoder) before the TE offload."""
+        """Encode every caption (memory, then any owner's disk, then the encoder) before the TE offload.
+
+        The disk key is the caption's identity alone (``_TE_CACHE_HINT``, never the image that first
+        carried it); the template flags and token cap are in the directory. An entry found under one
+        owning dataset is copied to the owners that lack it, an encoded one is written to all of them.
+        """
         if not self.config.get("cache_text_embeddings", True):
             return
         if self.text_encoder is None or self.driver is None:
@@ -89,23 +129,29 @@ class MossImageTrainer(GenericTrainingPipeline):
 
         from app.engine.components.text_embeddings import TextEmbeddingCache
 
-        hints = self._precache_hints()
-        te_cache_dir = self._te_cache_dir()
+        owners = self._te_cache_owners()
         disk_loaded = 0
-        need_encode: list[tuple[str, str]] = []
-        for caption, hint in hints.items():
-            if caption in self.text_cache:
+        need_encode: list[str] = []
+        for caption, dirs in owners.items():
+            tensor = self.text_cache.get(caption)
+            missing = list(dirs)
+            for te_dir in dirs:
+                found = TextEmbeddingCache.load(caption, te_dir, _TE_CACHE_HINT)
+                if found is not None and found.ndim == 2:
+                    missing.remove(te_dir)
+                    if tensor is None:
+                        tensor = found
+                        disk_loaded += 1
+            if tensor is None:
+                need_encode.append(caption)
                 continue
-            if te_cache_dir:
-                tensor = TextEmbeddingCache.load(caption, te_cache_dir, hint)
-                if tensor is not None and tensor.ndim == 2:
-                    self.text_cache[caption] = tensor
-                    disk_loaded += 1
-                    continue
-            need_encode.append((caption, hint))
+            self.text_cache[caption] = tensor
+            for te_dir in missing:
+                TextEmbeddingCache.save(caption, tensor, te_dir, _TE_CACHE_HINT)
 
-        self.logger.info("te_disk_cache_status", total=len(hints), from_disk=disk_loaded,
-                         need_encode=len(need_encode), cache_tag=self.driver.te_cache_tag())
+        self.logger.info("te_disk_cache_status", total=len(owners), from_disk=disk_loaded,
+                         need_encode=len(need_encode), cache_tag=self.driver.te_cache_tag(),
+                         dataset_dirs=len({d for dirs in owners.values() for d in dirs}))
         if not need_encode:
             if getattr(self, "_log_writer", None):
                 self._log_writer.status("TE Cache Loaded from Disk")
@@ -114,11 +160,11 @@ class MossImageTrainer(GenericTrainingPipeline):
         if getattr(self, "_log_writer", None):
             self._log_writer.status("Caching Text Embeddings (0%)")
         total = len(need_encode)
-        for i, (caption, hint) in enumerate(need_encode):
+        for i, caption in enumerate(need_encode):
             row = self.driver.encode_caption(caption).detach().cpu()
             self.text_cache[caption] = row
-            if te_cache_dir:
-                TextEmbeddingCache.save(caption, row, te_cache_dir, hint)
+            for te_dir in owners[caption]:
+                TextEmbeddingCache.save(caption, row, te_dir, _TE_CACHE_HINT)
             if getattr(self, "_log_writer", None):
                 self._log_writer.status(f"Caching Text Embeddings ({round((i + 1) / total * 100)}%)")
         self.logger.info("text_embedding_cache_complete", cached_embeddings=len(self.text_cache),

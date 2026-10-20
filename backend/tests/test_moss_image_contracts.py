@@ -30,6 +30,7 @@ The interface the later rows build (Evidence: the official pipeline
 from __future__ import annotations
 
 import ast
+import hashlib
 import importlib
 import re
 import sys
@@ -272,8 +273,8 @@ def _bare_trainer(driver, config: dict | None = None, inventory=(), tmp_path: Pa
     trainer.noise_interpolation = NoiseInterpolation("linear")
     trainer.global_step = 0
     trainer.max_train_steps = 1
-    cache_root = str(tmp_path) if tmp_path is not None else ""
-    trainer._resolve_te_cache_dirs = lambda: [cache_root] if cache_root else []
+    if tmp_path is not None:  # one shared cache root; without it the real per-item resolution runs
+        trainer._resolve_te_cache_dirs = lambda: [str(tmp_path)]
     return trainer
 
 
@@ -606,6 +607,75 @@ def test_moss_image_te_cache_key(tmp_path):
     unthought, _ = _precache_run(tmp_path, captions, **{"te.enable_thinking": False})
     assert unthought == len(hints_a), (
         f"{MARK}: a different chat-template flag must miss every entry ({unthought} forwards)")
+
+
+def test_moss_image_te_cache_dedup(tmp_path):
+    """Verify 1.02: the disk key is the caption's identity, never the first image that carried it."""
+    cold, hints_a = _precache_run(tmp_path, ["fox", "fox"])
+    assert cold == len(hints_a) > 0, f"{MARK}: two images captioned 'fox' must encode 'fox' once ({cold} forwards)"
+    sha = hashlib.sha256(b"fox").hexdigest()
+    assert len(list(tmp_path.rglob(f"*{sha}*"))) == 1, f"{MARK}: one 'fox' entry on disk, not one per image"
+
+    # The first image's caption changes: the second image's 'fox' must still hit.
+    partial, hints_c = _precache_run(tmp_path, ["a hen", "fox"])
+    assert partial == len(hints_c - hints_a) == 1, (
+        f"{MARK}: only the changed caption may miss; {partial} forwards (a filename keyed on the "
+        f"source image re-encodes the unchanged 'fox')")
+
+
+def _dataset_items(root: Path, name: str, captions: list[str]) -> list[dict]:
+    """Inventory items whose latent ``cache_dir`` places them in dataset ``name`` (the real layout)."""
+    cache_dir = root / name / ".cache" / BASE_ID / "v1" / "latents" / "original" / "1024"
+    return [{"path": str(root / name / f"img_{i}.png"), "caption": c, "cache_dir": str(cache_dir)}
+            for i, c in enumerate(captions)]
+
+
+def _multi_dataset_run(items: list[dict]) -> tuple[int, set[str]]:
+    driver, te, _proc, _spy = _driver()
+    trainer = _bare_trainer(driver, inventory=items)  # the real per-item cache-dir resolution
+    trainer._pre_cache_text_embeddings()
+    return len(te.calls), set(trainer._build_caption_hints())
+
+
+def test_moss_image_te_cache_multi_dataset(tmp_path):
+    """Verify 1.02: each entry persists under its owning dataset, so a dataset trained alone hits."""
+    ds_a = _dataset_items(tmp_path, "ds_a", ["a red fox", "two cats on a sofa"])
+    ds_b = _dataset_items(tmp_path, "ds_b", ["an owl at night"])
+    together, hints = _multi_dataset_run(ds_a + ds_b)
+    assert together == len(hints) > 0, f"{MARK}: a cold two-dataset run encodes every hint once ({together})"
+
+    owl = hashlib.sha256(b"an owl at night").hexdigest()
+    assert list((tmp_path / "ds_b").rglob(f"*{owl}*")), f"{MARK}: ds_b's caption must persist under ds_b"
+    assert not list((tmp_path / "ds_a").rglob(f"*{owl}*")), f"{MARK}: ds_b's caption landed under ds_a"
+
+    b_alone, _ = _multi_dataset_run(ds_b)
+    assert b_alone == 0, f"{MARK}: ds_b trained alone must hit its own entries, it ran {b_alone} forwards"
+    a_alone, _ = _multi_dataset_run(ds_a)
+    assert a_alone == 0, f"{MARK}: ds_a trained alone must hit its own entries, it ran {a_alone} forwards"
+
+
+# ── scenario 11: the definition's preview defaults reach a normal sample prompt ──────────────────
+
+
+def test_moss_image_preview_defaults(monkeypatch):
+    """Verify 1.01: the serialized schema defaults (20 / 3.5) resolve to the definition's 50 / 3.0."""
+    from app.engine.core.sampling import GenericSamplingPipeline
+    from app.engine.models.base import SamplePromptConfig
+
+    seen: list[dict] = []
+    monkeypatch.setattr(GenericSamplingPipeline, "_sample_single", lambda self, cfg, step: seen.append(cfg))
+    sampler, _spy = _sampler()
+    sampler._sample_single(SamplePromptConfig(prompt="fox").model_dump(), 0)
+    sampler._sample_single(
+        SamplePromptConfig(prompt="fox", num_inference_steps=30, guidance_scale=2.0).model_dump(), 0)
+
+    normal, explicit = seen
+    assert (normal["num_inference_steps"], normal["guidance_scale"]) == (50, 3.0), (
+        f"{MARK}: a normal preview ran {normal['num_inference_steps']} steps at CFG {normal['guidance_scale']}, "
+        f"not the definition's 50 / 3.0")
+    assert (explicit["num_inference_steps"], explicit["guidance_scale"]) == (30, 2.0), (
+        f"{MARK}: explicit per-prompt values must win, got {explicit['num_inference_steps']} / "
+        f"{explicit['guidance_scale']}")
 
 
 # ── scenario 9: the vendored package's imports ────────────────────────────────────────────────────

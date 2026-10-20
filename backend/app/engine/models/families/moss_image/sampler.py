@@ -39,6 +39,15 @@ _PATCH = 2
 _LATENT_CHANNELS = 32
 # The official pipeline's negative-branch skip (research §sampler).
 UNCOND_SKIP_LAYERS = (22,)
+_RESOLVED_KEYS = ("width", "height", "num_inference_steps", "guidance_scale")
+
+
+def _schema_defaults() -> dict[str, Any]:
+    """The ``SamplePromptConfig`` field defaults, read from the schema (never a copied number)."""
+    from app.engine.models.base import SamplePromptConfig
+
+    fields = SamplePromptConfig.model_fields
+    return {key: fields[key].default for key in _RESOLVED_KEYS if key in fields}
 
 
 class MossImageSampler(GenericSamplingPipeline):
@@ -47,7 +56,14 @@ class MossImageSampler(GenericSamplingPipeline):
     pipeline: MossImageTrainer
 
     def _sample_single(self, prompt_cfg: dict[str, Any], step: int) -> Any:
-        """Fill the native preview defaults (definition-sourced) before the generic flow."""
+        """Resolve the native preview defaults (definition-sourced) before the generic flow.
+
+        A serialized ``SamplePromptConfig`` always carries its schema defaults (20 steps, CFG 3.5): the
+        training form emits every field, so "the user did not set it" and "the user chose the schema
+        default" are the same bytes. A value that is missing, ``0`` or equal to the schema default
+        therefore resolves to the definition's default (spec scenario 11); any other value is the user's
+        and wins.
+        """
         cfg = dict(prompt_cfg)
         defaults = getattr(self.pipeline.definition, "defaults", {}) or {}
         resolution = int(defaults.get("resolution", _DEFAULT_RESOLUTION))
@@ -57,8 +73,10 @@ class MossImageSampler(GenericSamplingPipeline):
             "num_inference_steps": int(defaults.get("num_inference_steps", _DEFAULT_STEPS)),
             "guidance_scale": float(defaults.get("guidance_scale", _DEFAULT_GUIDANCE)),
         }
+        schema = _schema_defaults()
         for key, value in fill.items():
-            if cfg.get(key) in (None, 0):
+            current = cfg.get(key)
+            if current in (None, 0) or current == schema.get(key):
                 cfg[key] = value
         return super()._sample_single(cfg, step)
 

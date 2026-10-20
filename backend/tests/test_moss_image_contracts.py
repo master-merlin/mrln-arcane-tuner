@@ -631,7 +631,7 @@ def test_moss_image_definition_defaults():
     family_cls = _load("family", "MossImageFamily")
     assert ModelRegistry.get_family_class("moss_image") is family_cls
     trainer_cls = _load("trainer", "MossImageTrainer")
-    assert family_cls().get_trainer_class() is trainer_cls
+    assert family_cls(_definition(), {}).get_trainer_class() is trainer_cls
     for definition_id in (BASE_ID, SFT_ID):
         driver, _te, _proc, _spy = _driver(_definition(definition_id))
         assert type(driver.get_saver()) is _load("saver", "MossImageSaver")

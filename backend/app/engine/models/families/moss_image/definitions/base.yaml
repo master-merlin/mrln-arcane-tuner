@@ -1,0 +1,344 @@
+# MOSS-Image-Base (LANE-165). The un-post-trained 5B DiT the authors leave "to make it easier for the
+# community to train LoRAs" (OpenMOSS/MOSS-Image USERGUIDE) -- the family's PRIMARY LoRA target.
+# The SFT definition (sft.yaml) differs ONLY in id, name and the pinned repo revision
+# (test_moss_image_definition_defaults holds the two files to that).
+# architecture_params mirror the checkpoint's transformer/config.json and scheduler_config.json at the
+# pinned revision (_harness/research/moss-image-family.md §1.2-§1.5).
+id: moss-image-base
+family: moss_image
+name: MOSS-Image (Base)
+version: '1.0'
+# Apache License 2.0, ungated. Tracked in the README "licensed separately" table (the `moss_image`
+# row), never here or in the app (RULE-21; the README link reads the repo below).
+defaults:
+  # Research §1.6: 1M-2M total pixels recommended, H and W multiples of 16.
+  resolution: 1024
+  scheduler: flow_match
+  # Assumption (LANE-165): a conventional LoRA learning rate for a ~5B DiT; judged at the GPU UAT.
+  learning_rate: 1e-4
+  # The model card's inference defaults: 50 steps, real CFG 3.0 (range 3-6), shift 5, Euler.
+  num_inference_steps: 50
+  guidance_scale: 3.0
+  is_distilled: false
+components:
+  repo:
+    # Pinned 40-hex HF revision: a two-day-old release whose pipeline file may still change.
+    path: huggingface:OpenMOSS-Team/MOSS-Image-Base@1ceede80badddd6a7812069619edaa5633587192
+    type: diffusers
+    params: {}
+control_inputs: 0
+# On-disk sizes (bf16 transformer + text encoder, fp32 VAE) from the repo's file listing at the pin.
+model_size_mb:
+  transformer: 10165
+  text_encoder: 16785
+  vae: 250
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+architecture_params:
+  transformer._class_name: MOSSImageTransformer
+  transformer.dim: 3072
+  transformer.ffn_dim: 8192
+  transformer.num_heads: 24
+  transformer.num_layers: 42
+  transformer.text_dim: 4096
+  transformer.freq_dim: 256
+  transformer.latent_channels: 128
+  transformer.rope_base: 10000.0
+  hidden_size: 3072
+  num_heads: 24
+  depth: 42
+  in_channels: 128
+  context_dim: 4096
+  vae._class_name: AutoencoderKLFlux2
+  vae.latent_channels: 32
+  vae.batch_norm_eps: 0.0001
+  vae.patch_size:
+  - 2
+  - 2
+  vae.block_out_channels:
+  - 128
+  - 256
+  - 512
+  - 512
+  vae.decoder_block_out_channels:
+  - 96
+  - 192
+  - 384
+  - 384
+  te.type: qwen3_5
+  te.model_type: qwen3_5
+  # Research §1.5: each caption alone through the Qwen chat template (add_generation_prompt,
+  # enable_thinking=True), truncated at 4096 tokens, the final-layer 4096-wide hidden state.
+  te.max_length: 4096
+  te.enable_thinking: true
+  # The checkpoint's scheduler_config.json: inference shift 5.0 on the 1000-step grid, no dynamic shift.
+  scheduler.shift: 5.0
+  scheduler.use_dynamic_shifting: false
+  scheduler.num_train_timesteps: 1000
+  # Family-only key, read by the trainer (never the sampler): the training sigma draw
+  # sigma = s*u / (1 + (s-1)*u), u = sigmoid(N(0,1)). Evidence: kohya sd-scripts
+  # docs/moss_image_train_network.md §7.2 (`discrete_flow_shift 3.0`, "very similar" to the
+  # pre-training logit-normal); research Decision D5. Assumption: the pre-training direction is as
+  # kohya states -- falsified by the technical report's training schedule.
+  scheduler.training_shift: 3.0
+  # The model card's negative-branch block skip (uncond_skip_layers=(22,), zero-based).
+  sampler.uncond_skip_layers:
+  - 22
+# Research §3.2: the six bias-free projections of each of the 42 blocks = 252 modules (kohya's default
+# set; modulation, norms, video_embedder, time embedding, text_embedder and the final layer are not
+# targets). Native names -- the saver writes them as diffusion_model.<name>.lora_A/B.weight.
+lora_targetable_modules:
+- layers.0.proj.q
+- layers.0.proj.k
+- layers.0.proj.v
+- layers.0.proj.o
+- layers.0.proj.ffn_up_gate
+- layers.0.proj.ffn_down
+- layers.1.proj.q
+- layers.1.proj.k
+- layers.1.proj.v
+- layers.1.proj.o
+- layers.1.proj.ffn_up_gate
+- layers.1.proj.ffn_down
+- layers.2.proj.q
+- layers.2.proj.k
+- layers.2.proj.v
+- layers.2.proj.o
+- layers.2.proj.ffn_up_gate
+- layers.2.proj.ffn_down
+- layers.3.proj.q
+- layers.3.proj.k
+- layers.3.proj.v
+- layers.3.proj.o
+- layers.3.proj.ffn_up_gate
+- layers.3.proj.ffn_down
+- layers.4.proj.q
+- layers.4.proj.k
+- layers.4.proj.v
+- layers.4.proj.o
+- layers.4.proj.ffn_up_gate
+- layers.4.proj.ffn_down
+- layers.5.proj.q
+- layers.5.proj.k
+- layers.5.proj.v
+- layers.5.proj.o
+- layers.5.proj.ffn_up_gate
+- layers.5.proj.ffn_down
+- layers.6.proj.q
+- layers.6.proj.k
+- layers.6.proj.v
+- layers.6.proj.o
+- layers.6.proj.ffn_up_gate
+- layers.6.proj.ffn_down
+- layers.7.proj.q
+- layers.7.proj.k
+- layers.7.proj.v
+- layers.7.proj.o
+- layers.7.proj.ffn_up_gate
+- layers.7.proj.ffn_down
+- layers.8.proj.q
+- layers.8.proj.k
+- layers.8.proj.v
+- layers.8.proj.o
+- layers.8.proj.ffn_up_gate
+- layers.8.proj.ffn_down
+- layers.9.proj.q
+- layers.9.proj.k
+- layers.9.proj.v
+- layers.9.proj.o
+- layers.9.proj.ffn_up_gate
+- layers.9.proj.ffn_down
+- layers.10.proj.q
+- layers.10.proj.k
+- layers.10.proj.v
+- layers.10.proj.o
+- layers.10.proj.ffn_up_gate
+- layers.10.proj.ffn_down
+- layers.11.proj.q
+- layers.11.proj.k
+- layers.11.proj.v
+- layers.11.proj.o
+- layers.11.proj.ffn_up_gate
+- layers.11.proj.ffn_down
+- layers.12.proj.q
+- layers.12.proj.k
+- layers.12.proj.v
+- layers.12.proj.o
+- layers.12.proj.ffn_up_gate
+- layers.12.proj.ffn_down
+- layers.13.proj.q
+- layers.13.proj.k
+- layers.13.proj.v
+- layers.13.proj.o
+- layers.13.proj.ffn_up_gate
+- layers.13.proj.ffn_down
+- layers.14.proj.q
+- layers.14.proj.k
+- layers.14.proj.v
+- layers.14.proj.o
+- layers.14.proj.ffn_up_gate
+- layers.14.proj.ffn_down
+- layers.15.proj.q
+- layers.15.proj.k
+- layers.15.proj.v
+- layers.15.proj.o
+- layers.15.proj.ffn_up_gate
+- layers.15.proj.ffn_down
+- layers.16.proj.q
+- layers.16.proj.k
+- layers.16.proj.v
+- layers.16.proj.o
+- layers.16.proj.ffn_up_gate
+- layers.16.proj.ffn_down
+- layers.17.proj.q
+- layers.17.proj.k
+- layers.17.proj.v
+- layers.17.proj.o
+- layers.17.proj.ffn_up_gate
+- layers.17.proj.ffn_down
+- layers.18.proj.q
+- layers.18.proj.k
+- layers.18.proj.v
+- layers.18.proj.o
+- layers.18.proj.ffn_up_gate
+- layers.18.proj.ffn_down
+- layers.19.proj.q
+- layers.19.proj.k
+- layers.19.proj.v
+- layers.19.proj.o
+- layers.19.proj.ffn_up_gate
+- layers.19.proj.ffn_down
+- layers.20.proj.q
+- layers.20.proj.k
+- layers.20.proj.v
+- layers.20.proj.o
+- layers.20.proj.ffn_up_gate
+- layers.20.proj.ffn_down
+- layers.21.proj.q
+- layers.21.proj.k
+- layers.21.proj.v
+- layers.21.proj.o
+- layers.21.proj.ffn_up_gate
+- layers.21.proj.ffn_down
+- layers.22.proj.q
+- layers.22.proj.k
+- layers.22.proj.v
+- layers.22.proj.o
+- layers.22.proj.ffn_up_gate
+- layers.22.proj.ffn_down
+- layers.23.proj.q
+- layers.23.proj.k
+- layers.23.proj.v
+- layers.23.proj.o
+- layers.23.proj.ffn_up_gate
+- layers.23.proj.ffn_down
+- layers.24.proj.q
+- layers.24.proj.k
+- layers.24.proj.v
+- layers.24.proj.o
+- layers.24.proj.ffn_up_gate
+- layers.24.proj.ffn_down
+- layers.25.proj.q
+- layers.25.proj.k
+- layers.25.proj.v
+- layers.25.proj.o
+- layers.25.proj.ffn_up_gate
+- layers.25.proj.ffn_down
+- layers.26.proj.q
+- layers.26.proj.k
+- layers.26.proj.v
+- layers.26.proj.o
+- layers.26.proj.ffn_up_gate
+- layers.26.proj.ffn_down
+- layers.27.proj.q
+- layers.27.proj.k
+- layers.27.proj.v
+- layers.27.proj.o
+- layers.27.proj.ffn_up_gate
+- layers.27.proj.ffn_down
+- layers.28.proj.q
+- layers.28.proj.k
+- layers.28.proj.v
+- layers.28.proj.o
+- layers.28.proj.ffn_up_gate
+- layers.28.proj.ffn_down
+- layers.29.proj.q
+- layers.29.proj.k
+- layers.29.proj.v
+- layers.29.proj.o
+- layers.29.proj.ffn_up_gate
+- layers.29.proj.ffn_down
+- layers.30.proj.q
+- layers.30.proj.k
+- layers.30.proj.v
+- layers.30.proj.o
+- layers.30.proj.ffn_up_gate
+- layers.30.proj.ffn_down
+- layers.31.proj.q
+- layers.31.proj.k
+- layers.31.proj.v
+- layers.31.proj.o
+- layers.31.proj.ffn_up_gate
+- layers.31.proj.ffn_down
+- layers.32.proj.q
+- layers.32.proj.k
+- layers.32.proj.v
+- layers.32.proj.o
+- layers.32.proj.ffn_up_gate
+- layers.32.proj.ffn_down
+- layers.33.proj.q
+- layers.33.proj.k
+- layers.33.proj.v
+- layers.33.proj.o
+- layers.33.proj.ffn_up_gate
+- layers.33.proj.ffn_down
+- layers.34.proj.q
+- layers.34.proj.k
+- layers.34.proj.v
+- layers.34.proj.o
+- layers.34.proj.ffn_up_gate
+- layers.34.proj.ffn_down
+- layers.35.proj.q
+- layers.35.proj.k
+- layers.35.proj.v
+- layers.35.proj.o
+- layers.35.proj.ffn_up_gate
+- layers.35.proj.ffn_down
+- layers.36.proj.q
+- layers.36.proj.k
+- layers.36.proj.v
+- layers.36.proj.o
+- layers.36.proj.ffn_up_gate
+- layers.36.proj.ffn_down
+- layers.37.proj.q
+- layers.37.proj.k
+- layers.37.proj.v
+- layers.37.proj.o
+- layers.37.proj.ffn_up_gate
+- layers.37.proj.ffn_down
+- layers.38.proj.q
+- layers.38.proj.k
+- layers.38.proj.v
+- layers.38.proj.o
+- layers.38.proj.ffn_up_gate
+- layers.38.proj.ffn_down
+- layers.39.proj.q
+- layers.39.proj.k
+- layers.39.proj.v
+- layers.39.proj.o
+- layers.39.proj.ffn_up_gate
+- layers.39.proj.ffn_down
+- layers.40.proj.q
+- layers.40.proj.k
+- layers.40.proj.v
+- layers.40.proj.o
+- layers.40.proj.ffn_up_gate
+- layers.40.proj.ffn_down
+- layers.41.proj.q
+- layers.41.proj.k
+- layers.41.proj.v
+- layers.41.proj.o
+- layers.41.proj.ffn_up_gate
+- layers.41.proj.ffn_down

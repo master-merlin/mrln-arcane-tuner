@@ -48,4 +48,28 @@ def test_prompts_still_come_through_as_dicts():
             return {"prompt": "from a model"}
 
     sampler = _sampler({"sample_prompts": [{"prompt": "a dict"}, _Model(), "not a prompt"]})
-    assert sampler._get_sample_prompts() == [{"prompt": "a dict"}, {"prompt": "from a model"}]
+    # The string is still dropped; the unset width/height/steps/guidance are resolved centrally to
+    # the base fallbacks (GenericSamplingPipeline._sample_prompt_fallbacks).
+    fallbacks = {"width": 1024, "height": 1024, "num_inference_steps": 20, "guidance_scale": 3.5}
+    assert sampler._get_sample_prompts() == [
+        {"prompt": "a dict", **fallbacks},
+        {"prompt": "from a model", **fallbacks},
+    ]
+
+
+def test_explicit_prompt_values_are_kept_not_resolved():
+    explicit = {
+        "prompt": "set by the user",
+        "width": 512,
+        "height": 768,
+        "num_inference_steps": 20,  # equal to a fallback: still the user's value
+        "guidance_scale": 7.0,
+    }
+    sampler = _sampler({"sample_prompts": [dict(explicit)]})
+    assert sampler._get_sample_prompts() == [explicit]
+
+
+def test_unset_none_fields_are_filled():
+    sampler = _sampler({"sample_prompts": [{"prompt": "p", "width": None, "guidance_scale": None}]})
+    (cfg,) = sampler._get_sample_prompts()
+    assert cfg["width"] == 1024 and cfg["guidance_scale"] == 3.5

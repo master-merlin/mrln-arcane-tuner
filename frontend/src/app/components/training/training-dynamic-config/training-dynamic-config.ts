@@ -952,9 +952,11 @@ export class TrainingDynamicConfigComponent {
     height: 'resolution',
   };
 
-  /** The value each sample-prompt field was last seeded with (so a definition change re-seeds
-   *  a row still holding the PREVIOUS definition's seed, never one the user or a template set). */
-  private _sampleSeed: Record<string, unknown> = {};
+  /** The sample-prompt row controls whose value automatic seeding put there (provenance, not value
+   *  equality): a definition change re-seeds only these and unset controls. A template/job patch
+   *  (patchFormRecursive) disowns every control it writes, and a typed value is `dirty`, so a value
+   *  that merely EQUALS the previous seed is never mistaken for one (LANE-165 verify 5 finding 1.01). */
+  private _seedOwned = new WeakSet<AbstractControl>();
 
   /** The fixed sample-prompt row values every definition that has NOT opted in keeps. */
   private static readonly SAMPLE_FIXED_SEEDS: Record<string, number> = {
@@ -981,7 +983,8 @@ export class TrainingDynamicConfigComponent {
   /**
    * Seed the sample-prompt rows' steps / guidance / size from the selected definition's defaults, so
    * the form shows (and sends) the value the sampler will execute. Only a row control that is unset
-   * (null / '') or still holds the previous seed is patched; a typed value is never touched.
+   * (null / '') or still owned by automatic seeding (`_seedOwned`) is patched; a typed or
+   * template/job-restored value is never touched.
    */
   private _seedSamplePromptRows(defaults: Record<string, unknown>): boolean {
     const rows = this.form.get('sample_prompts');
@@ -992,18 +995,42 @@ export class TrainingDynamicConfigComponent {
       if (next === undefined) continue;
       for (const row of rows.controls) {
         const control = row.get(field);
-        if (!control || control.dirty) continue;
+        if (!control) continue;
+        if (control.dirty) {
+          this._seedOwned.delete(control);
+          continue;
+        }
         const cur = control.value;
         const unset = cur === null || cur === undefined || cur === '';
-        if (!unset && cur !== this._sampleSeed[field]) continue;
+        if (!unset && !this._seedOwned.has(control)) continue;
         if (cur !== next) {
           control.setValue(next, { emitEvent: false });
           patched = true;
         }
+        this._seedOwned.add(control);
       }
-      this._sampleSeed[field] = next;
     }
     return patched;
+  }
+
+  /** A template/job value now sits in every control `value` reaches: automatic seeding no longer
+   *  owns them (a row the patch grew was seeded by addArrayItem and is disowned here too). */
+  private _disownSeeded(control: AbstractControl, value: unknown): void {
+    if (control instanceof FormArray) {
+      if (!Array.isArray(value)) return;
+      value.forEach((v, i) => {
+        const child = control.at(i);
+        if (child) this._disownSeeded(child, v);
+      });
+    } else if (control instanceof FormGroup) {
+      if (value === null || typeof value !== 'object') return;
+      for (const k of Object.keys(value as Record<string, unknown>)) {
+        const child = control.get(k);
+        if (child) this._disownSeeded(child, (value as Record<string, unknown>)[k]);
+      }
+    } else {
+      this._seedOwned.delete(control);
+    }
   }
 
   onFamilyChange(event: Event) {
@@ -1284,11 +1311,13 @@ export class TrainingDynamicConfigComponent {
           }
         }
         control.patchValue(value);
+        this._disownSeeded(control, value);
 
       } else if (control instanceof FormGroup) {
         this.patchFormRecursive(control, value);
       } else {
         control.setValue(value);
+        this._seedOwned.delete(control);
       }
     });
   }
@@ -2068,15 +2097,17 @@ export class TrainingDynamicConfigComponent {
 
         // A new sample-prompt row shows the selected definition's sampling defaults (the value
         // the sampler will execute), not an empty box.
+        let seeded = false;
         if (key === 'sample_prompts' && (defaultValue === null || defaultValue === '')) {
           const seed = this._sampleSeedFor(pKey, this.capabilities()?.defaults);
           if (seed !== undefined) {
             defaultValue = seed;
-            this._sampleSeed[pKey] = seed;
+            seeded = true;
           }
         }
 
         group[pKey] = new FormControl(defaultValue);
+        if (seeded) this._seedOwned.add(group[pKey]);
       }
       array.push(this.fb.group(group));
     } else {

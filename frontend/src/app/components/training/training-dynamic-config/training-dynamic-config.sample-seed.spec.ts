@@ -132,4 +132,49 @@ describe('TrainingDynamicConfig — sample-prompt rows are seeded from the defin
         expect(rows.at(0).get('guidance_scale')!.value).toBe(4.0);
         expect(rows.at(1).get('guidance_scale')!.value).toBe(5);
     });
+
+    // LANE-165 verify 5 finding 1.01: a template/job value that happens to EQUAL the current seed
+    // is the template's value, not the seed's; a definition change must not overwrite it.
+    it('a restored template value equal to the current seed survives a definition change', () => {
+        const c = build();
+        const items = SCHEMA.properties!['sample_prompts'].items;
+        c.addArrayItem('sample_prompts', items);
+        setCaps(c, MOSS);
+        c.applyDefinitionDefaults(MOSS);
+        const rows = c.getFormArray('sample_prompts');
+        expect(rows.at(0).get('num_inference_steps')!.value).toBe(50);
+
+        // the template restores two rows: one over the seeded row, one grown by the patch
+        const restored = { prompt: 'p', num_inference_steps: 50, guidance_scale: 3.0, width: 1024 };
+        c.patchFormRecursive(c.form, { sample_prompts: [restored, { ...restored, prompt: 'q' }] });
+        expect(rows.length).toBe(2);
+
+        const next = { num_inference_steps: 28, guidance_scale: 4.0, resolution: 768 };
+        setCaps(c, next);
+        c.applyDefinitionDefaults(next);
+
+        for (const i of [0, 1]) {
+            expect(rows.at(i).get('num_inference_steps')!.value).toBe(50);
+            expect(rows.at(i).get('guidance_scale')!.value).toBe(3.0);
+            expect(rows.at(i).get('width')!.value).toBe(1024);
+        }
+    });
+
+    it('a restored unset (null) field is still seeded by the next definition', () => {
+        const c = build();
+        const items = SCHEMA.properties!['sample_prompts'].items;
+        c.addArrayItem('sample_prompts', items);
+        setCaps(c, MOSS);
+        c.applyDefinitionDefaults(MOSS);
+        c.patchFormRecursive(c.form, {
+            sample_prompts: [{ prompt: 'p', num_inference_steps: null, guidance_scale: 3.0, width: null }],
+        });
+        const next = { num_inference_steps: 28, guidance_scale: 4.0, resolution: 768 };
+        setCaps(c, next);
+        c.applyDefinitionDefaults(next);
+        const row = c.getFormArray('sample_prompts').at(0);
+        expect(row.get('num_inference_steps')!.value).toBe(28);
+        expect(row.get('width')!.value).toBe(768);
+        expect(row.get('guidance_scale')!.value).toBe(3.0);
+    });
 });

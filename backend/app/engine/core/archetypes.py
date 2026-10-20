@@ -291,6 +291,12 @@ def resolve_capabilities(definition) -> dict:
     # promotion this replaced.
     caps.update(getattr(definition, "capability_overrides", None) or {})
 
+    # Opt-in (architecture_params ``sampling.seed_prompt_defaults``, default false): the training
+    # form seeds a NEW sample-prompt row from this definition's own sampling defaults; every other
+    # definition keeps the fixed 20 / 3.5 / 1024 rows.
+    arch_params = getattr(definition, "architecture_params", None) or {}
+    caps["seed_prompt_defaults"] = bool(arch_params.get("sampling.seed_prompt_defaults", False))
+
     # Paired edit conditioning (per-definition, not per-archetype). Surface
     # control_inputs + an ``is_edit`` flag and the derived gates the field
     # rules consume (augmentation/masking are disabled for edit models).

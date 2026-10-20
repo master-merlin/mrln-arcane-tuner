@@ -73,7 +73,18 @@ class MossImageSampler(GenericSamplingPipeline):
         dtype = next(trainer.transformer.parameters()).dtype
         cond = trainer.encode_text([prompt], dtype=dtype)
         uncond = trainer.encode_text([""], dtype=dtype)
-        return {"cond": cond.to(self.device), "uncond": uncond.to(self.device)}
+        return {"cond": self._to_device(cond), "uncond": self._to_device(uncond)}
+
+    def _to_device(self, out: Any) -> Any:
+        """``TextEncoderOutput`` is a plain dataclass (no ``.to``): move its tensor fields explicitly."""
+        from dataclasses import replace  # noqa: PLC0415
+
+        return replace(
+            out,
+            embeddings=out.embeddings.to(self.device),
+            attention_mask=None if out.attention_mask is None else out.attention_mask.to(self.device),
+            pooled=None if out.pooled is None else out.pooled.to(self.device),
+        )
 
     # ── Latents ──────────────────────────────────────────────────────────
 

@@ -75,6 +75,9 @@ architecture_params:
   te.enable_thinking: true
   # The checkpoint's scheduler_config.json: inference shift 5.0 on the 1000-step grid, no dynamic shift.
   scheduler.shift: 5.0
+  # Opt-in (ECOSYSTEM section 6): a NEW sample-prompt row in the training form is seeded with this
+  # definition's own steps / guidance / size (50 / 3.0 / 1024) instead of the fixed 20 / 3.5 / 1024.
+  sampling.seed_prompt_defaults: true
   scheduler.use_dynamic_shifting: false
   scheduler.num_train_timesteps: 1000
   # Family-only key, read by the trainer (never the sampler): the training sigma draw

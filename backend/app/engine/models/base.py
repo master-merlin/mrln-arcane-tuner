@@ -37,6 +37,9 @@ class SamplePromptConfig(BaseModel):
     # width / height / num_inference_steps / guidance_scale: None = unset. The sampler resolves an
     # unset field to the definition's sampling default (1024 / 1024 / 20 / 3.5 when the family
     # declares none); an explicit value, including one equal to those fallbacks, is kept as typed.
+    # No family behaviour moves: an omitted field resolves to the same 1024 / 1024 / 20 / 3.5 it got
+    # from the schema default before. Only a definition that opts in through the architecture_params
+    # key ``sampling.seed_prompt_defaults`` has its own defaults shown in a new form row.
     width: int | None = Field(
         None,
         description="Output width (px, quantized to 64); unset = the model's default",

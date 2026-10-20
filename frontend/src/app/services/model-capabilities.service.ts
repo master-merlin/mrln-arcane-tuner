@@ -23,6 +23,8 @@ export interface CapabilityFlags {
   control_inputs: number;
   /** True when this is a paired edit model (control_inputs > 0). */
   is_edit: boolean;
+  /** Opt-in (`sampling.seed_prompt_defaults`): a new sample-prompt row shows the definition's own defaults. */
+  seed_prompt_defaults?: boolean;
 }
 
 export interface FieldVisibility {

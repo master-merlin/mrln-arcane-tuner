@@ -747,6 +747,8 @@ def test_moss_image_definition_defaults():
         assert float(params["scheduler.training_shift"]) == 3.0, f"{MARK}: {data['id']} training_shift"
         assert int(params["te.max_length"]) == TEXT_CAP and params["te.enable_thinking"] is True, (
             f"{MARK}: {data['id']} text recipe keys")
+        assert params["sampling.seed_prompt_defaults"] is True, (
+            f"{MARK}: {data['id']} must opt in to row seeding (sampling.seed_prompt_defaults)")
         assert _REPO_PIN.match(data["components"]["repo"]["path"]), (
             f"{MARK}: {data['id']} must pin a 40-hex revision: {data['components']['repo']['path']}")
     assert base["components"]["repo"]["path"] != sft["components"]["repo"]["path"]
@@ -782,6 +784,17 @@ def test_moss_image_definition_defaults():
         f"{MARK}: with training_shift 1.0 the seed-0 draws must be u unchanged")
     sampler, _spy2 = _sampler(flat)
     assert sampler._flow_shift() == 5.0, f"{MARK}: the sampler must still use scheduler.shift 5.0"
+
+    # the opt-in reaches the capabilities the form reads; a definition without the key stays false
+    from app.engine.core.archetypes import resolve_capabilities
+
+    for definition_id in (BASE_ID, SFT_ID):
+        assert resolve_capabilities(ModelRegistry.get_definition(definition_id))["capabilities"][
+            "seed_prompt_defaults"] is True, f"{MARK}: {definition_id} capabilities must expose the opt-in"
+    others = [d for d in ModelRegistry._definitions.values() if d.family != "moss_image"]
+    assert others and not [d.id for d in others
+                           if resolve_capabilities(d)["capabilities"]["seed_prompt_defaults"]], (
+        f"{MARK}: no other definition may opt in")
 
 
 # ── scenario 12: MOSS's own text recipe ───────────────────────────────────────────────────────────
@@ -833,3 +846,23 @@ def test_moss_image_text_encoding_contract(tmp_path):
             f"{MARK}: cached != uncached embedding for {caption[:12]!r}")
         assert torch.equal(cached.attention_mask.cpu(), ref.attention_mask.cpu()), (
             f"{MARK}: cached != uncached mask for {caption[:12]!r}")
+
+
+# ── verify 1.01: the preview encode path with the REAL TextEncoderOutput ──────────────────────────
+
+
+def test_moss_image_encode_prompt_real_types():
+    """``encode_prompt`` through the trainer's real encoding path (real ``TextEncoderOutput``) reaches the DiT."""
+    cls = _load("sampler", "MossImageSampler")
+    driver, _te, _proc, spy = _driver()
+    trainer = _bare_trainer(driver, config={"mixed_precision": "fp32", "te_quantization": "none",
+                                            "cache_text_embeddings": False, "sample_prompts": []})
+    sampler = cls(trainer)
+    sampler.device = torch.device("cpu")
+
+    embeds = sampler.encode_prompt("a red fox")
+    assert embeds["cond"].embeddings.shape[-1] == TEXT_DIM and embeds["uncond"].embeddings.shape[0] == 1
+
+    noise = sampler._create_initial_noise(128, 128, torch.Generator().manual_seed(0))
+    sampler.denoise(noise, embeds, 1, 3.0, 0)
+    assert len(spy.calls) == 2, f"{MARK}: the first denoising call must be reached ({len(spy.calls)} forwards)"

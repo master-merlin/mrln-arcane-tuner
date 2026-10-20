@@ -956,11 +956,26 @@ export class TrainingDynamicConfigComponent {
    *  a row still holding the PREVIOUS definition's seed, never one the user or a template set). */
   private _sampleSeed: Record<string, unknown> = {};
 
-  /** The seed for one sample-prompt field from the selected definition's defaults, or undefined. */
+  /** The fixed sample-prompt row values every definition that has NOT opted in keeps. */
+  private static readonly SAMPLE_FIXED_SEEDS: Record<string, number> = {
+    num_inference_steps: 20,
+    guidance_scale: 3.5,
+    width: 1024,
+    height: 1024,
+  };
+
+  /**
+   * The seed for one sample-prompt field: the selected definition's own default when it opted in
+   * (`capabilities.seed_prompt_defaults`, from architecture_params `sampling.seed_prompt_defaults`),
+   * otherwise the fixed 20 / 3.5 / 1024.
+   */
   private _sampleSeedFor(field: string, defaults: Record<string, unknown> | null | undefined): unknown {
-    const key = TrainingDynamicConfigComponent.SAMPLE_SEED_KEYS[field];
-    const value = key ? defaults?.[key] : undefined;
-    return typeof value === 'number' ? value : undefined;
+    if (this.capabilities()?.capabilities?.seed_prompt_defaults === true) {
+      const key = TrainingDynamicConfigComponent.SAMPLE_SEED_KEYS[field];
+      const value = key ? defaults?.[key] : undefined;
+      return typeof value === 'number' ? value : undefined;
+    }
+    return TrainingDynamicConfigComponent.SAMPLE_FIXED_SEEDS[field];
   }
 
   /**

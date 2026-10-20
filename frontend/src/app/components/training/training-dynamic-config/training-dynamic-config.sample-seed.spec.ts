@@ -62,11 +62,27 @@ function build() {
     return fixture.componentInstance;
 }
 
-function setCaps(c: TrainingDynamicConfigComponent, defaults: Record<string, unknown>) {
-    (c as unknown as { capabilities: { set(v: unknown): void } }).capabilities.set({ defaults });
+function setCaps(c: TrainingDynamicConfigComponent, defaults: Record<string, unknown>, optIn = true) {
+    (c as unknown as { capabilities: { set(v: unknown): void } }).capabilities.set({
+        defaults,
+        capabilities: { seed_prompt_defaults: optIn },
+    });
 }
 
 describe('TrainingDynamicConfig — sample-prompt rows are seeded from the definition', () => {
+    it('a definition that did not opt in keeps the fixed 20 / 3.5 / 1024 row', () => {
+        const c = build();
+        setCaps(c, MOSS, false);
+        c.addArrayItem('sample_prompts', SCHEMA.properties!['sample_prompts'].items);
+        const row = c.getFormArray('sample_prompts').at(0);
+        expect(row.get('num_inference_steps')!.value).toBe(20);
+        expect(row.get('guidance_scale')!.value).toBe(3.5);
+        expect(row.get('width')!.value).toBe(1024);
+        c.applyDefinitionDefaults(MOSS);
+        expect(row.get('num_inference_steps')!.value).toBe(20);
+        expect(row.get('guidance_scale')!.value).toBe(3.5);
+    });
+
     it('a new row shows the definition steps / guidance / size', () => {
         const c = build();
         setCaps(c, MOSS);
@@ -83,10 +99,11 @@ describe('TrainingDynamicConfig — sample-prompt rows are seeded from the defin
         c.addArrayItem('sample_prompts', items);
         c.addArrayItem('sample_prompts', items);
         const rows = c.getFormArray('sample_prompts');
-        expect(rows.at(0).get('num_inference_steps')!.value).toBeNull();
+        expect(rows.at(0).get('num_inference_steps')!.value).toBe(20); // no opt-in yet: the fixed seed
 
         rows.at(1).get('num_inference_steps')!.setValue(20);
         rows.at(1).get('num_inference_steps')!.markAsDirty();
+        setCaps(c, MOSS);
         c.applyDefinitionDefaults(MOSS);
 
         expect(rows.at(0).get('num_inference_steps')!.value).toBe(50);
@@ -102,11 +119,14 @@ describe('TrainingDynamicConfig — sample-prompt rows are seeded from the defin
         c.addArrayItem('sample_prompts', items);
         c.addArrayItem('sample_prompts', items);
         const rows = c.getFormArray('sample_prompts');
+        setCaps(c, MOSS);
         c.applyDefinitionDefaults(MOSS);
         rows.at(1).get('guidance_scale')!.setValue(5);
         rows.at(1).get('guidance_scale')!.markAsDirty();
 
-        c.applyDefinitionDefaults({ num_inference_steps: 28, guidance_scale: 4.0, resolution: 1024 });
+        const next = { num_inference_steps: 28, guidance_scale: 4.0, resolution: 1024 };
+        setCaps(c, next);
+        c.applyDefinitionDefaults(next);
 
         expect(rows.at(0).get('num_inference_steps')!.value).toBe(28);
         expect(rows.at(0).get('guidance_scale')!.value).toBe(4.0);

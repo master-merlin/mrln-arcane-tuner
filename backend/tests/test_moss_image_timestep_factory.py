@@ -139,6 +139,20 @@ def enrich_copy(tmp_path):
             registry._paths[did] = path
 
 
+def _assert_pinned_shift_drift(did: str, logs: list[dict]) -> None:
+    """Spec scenario 5: the registry still REPORTS the drift of a pinned key (it keeps the YAML
+    value, it does not hide the divergence) -- exactly one warning, flagged pinned, never unpinned."""
+    drift = [e for e in logs if e.get("event") == "config_drift_detected"
+             and e.get("key") == "scheduler.shift"]
+    unpinned = [e for e in drift if not e.get("pinned")]
+    assert not unpinned, f"{did}: unpinned config_drift_detected for scheduler.shift: {unpinned}"
+    assert len(drift) == 1, (
+        f"{did}: expected exactly one config_drift_detected for scheduler.shift, got {drift}")
+    event = drift[0]
+    assert (event.get("yaml_value"), event.get("harvested_value"), event.get("pinned")) == (
+        5.0, 1.0, True), f"{did}: config_drift_detected carries the wrong values: {event}"
+
+
 def test_moss_image_scheduler_keys_pinned(enrich_copy):
     for did, filename in ((BASE_ID, "base.yaml"), (SFT_ID, "sft.yaml")):
         data = yaml.safe_load((FAMILY_DIR / "definitions" / filename).read_text(encoding="utf-8"))
@@ -153,9 +167,7 @@ def test_moss_image_scheduler_keys_pinned(enrich_copy):
         assert defn.architecture_params["scheduler.shift"] == 5.0, (
             f"{did}: enrichment replaced scheduler.shift 5.0 with the harvest: "
             f"{defn.architecture_params['scheduler.shift']}")
-        drift = [e for e in logs if e.get("event") == "config_drift_detected"
-                 and e.get("key") == "scheduler.shift" and not e.get("pinned")]
-        assert not drift, f"{did}: unpinned config_drift_detected for scheduler.shift: {drift}"
+        _assert_pinned_shift_drift(did, logs)
 
 
 def test_moss_image_harvested_training_shift_is_inert(enrich_copy):
@@ -170,7 +182,9 @@ def test_moss_image_harvested_training_shift_is_inert(enrich_copy):
         torch.manual_seed(0)
         before = plain.sample_timesteps(256)
 
-        enriched = enrich_copy(did, filename, harvested)
+        with structlog.testing.capture_logs() as logs:
+            enriched = enrich_copy(did, filename, harvested)
+        _assert_pinned_shift_drift(did, logs)
         assert enriched.architecture_params["scheduler.shift"] == shipped["architecture_params"][
             "scheduler.shift"] == 5.0, f"{did}: the pin did not hold through the harvest"
         assert enriched.architecture_params.get("scheduler.training_shift") == 1.0, (

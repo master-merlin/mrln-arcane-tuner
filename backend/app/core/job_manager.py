@@ -465,8 +465,12 @@ class JobManager:
             config[key] = value
 
     def _apply_capability_allowlist(
-        self, config: dict[str, Any], definition_id: str | None
-    ) -> None:
+        self,
+        config: dict[str, Any],
+        definition_id: str | None,
+        *,
+        stored_job_id: str | None = None,
+    ) -> list[str]:
         """Silently drop top-level config keys the target family's descriptor
         gates OFF (the same ``field_visibility`` source the Training UI reads to
         strip unsupported fields before submit).
@@ -480,9 +484,19 @@ class JobManager:
         and logs one INFO line naming the family + dropped keys. Unknown / vendor
         keys and exempt runtime keys are left untouched. Fails open (a lookup /
         resolve error skips the sweep rather than blocking the job).
+
+        Also runs at :meth:`start_job` on the STORED config (``stored_job_id``
+        set): a row saved before a key became gated still carries it, and the
+        trainer would receive it (LANE-168: ``min_snr_gamma`` went SDXL-only,
+        so a stale row made the savers claim a weighting never applied). That
+        drop is logged once as a WARNING naming the job — the stored record is
+        being rewritten — instead of the create/update INFO line.
+
+        Returns the dropped keys (empty when nothing was dropped or the sweep
+        was skipped).
         """
         if not definition_id:
-            return
+            return []
         try:
             from app.engine.models.registry import registry
 
@@ -493,9 +507,9 @@ class JobManager:
                 definition_id=definition_id,
                 error=str(e),
             )
-            return
+            return []
         if definition is None:
-            return
+            return []
 
         from app.engine.core.config_allowlist import apply_capability_allowlist
 
@@ -507,13 +521,22 @@ class JobManager:
                 definition_id=definition_id,
                 error=str(e),
             )
-            return
-        if dropped:
+            return []
+        dropped = list(dropped or [])
+        if dropped and stored_job_id is not None:
+            logger.warning(
+                "stored_config_capability_filtered",
+                job_id=stored_job_id,
+                definition_id=definition_id,
+                dropped=dropped,
+            )
+        elif dropped:
             logger.info(
                 "capability_allowlist_dropped",
                 definition_id=definition_id,
                 dropped=dropped,
             )
+        return dropped
 
     def create_job(self, plugin_id: str, config: dict[str, Any]) -> Job:
         """Create a new pending job and register it."""
@@ -1513,6 +1536,21 @@ class JobManager:
 
         if job.status == JobStatus.RUNNING:
             raise ValueError("Job already running")
+
+        # The stored config passed the allowlist only as it stood when the row
+        # was created/edited; a key gated since (LANE-168: min_snr_gamma is
+        # SDXL-only) would reach the trainer and its metadata. Every launch
+        # path (manual start, auto-queue, restart, crash-recovery relaunch)
+        # funnels through here, so filter once, swap and persist the result.
+        filtered = copy.deepcopy(job.config)
+        if self._apply_capability_allowlist(
+            filtered,
+            filtered.get("definition_id") or job.plugin_id,
+            stored_job_id=job_id,
+        ):
+            with self._lock:
+                job.config = filtered
+            self._persist_config(job_id, filtered)
 
         plugin = plugin_manager.get_plugin(job.plugin_id)
         if not plugin:

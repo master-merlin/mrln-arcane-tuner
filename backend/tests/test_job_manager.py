@@ -9,7 +9,7 @@ import asyncio
 
 import pytest
 import pathlib
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock, call, patch
 
 from app.core.job import Job, JobStatus
 from app.core.job_manager import JobManager, JobConflictError
@@ -1367,7 +1367,9 @@ class TestStartJobPreflightDownload:
 
         mgr.start_job(job.id)
 
-        mock_get_def.assert_called_once_with("flux/dev")
+        # Exactly two resolutions in start_job: the stored-config capability
+        # sweep (LANE-168 verify 1.01) and the preflight download.
+        assert mock_get_def.call_args_list == [call("flux/dev"), call("flux/dev")]
         mock_prefetch.assert_called_once_with(fake_def)
 
     @patch("app.engine.utils.model_utils.ModelPathResolver.ensure_definition_cached")

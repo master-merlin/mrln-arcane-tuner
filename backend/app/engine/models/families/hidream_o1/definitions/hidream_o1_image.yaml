@@ -6,6 +6,9 @@ defaults:
   resolution: 1024
   scheduler: euler_a
   learning_rate: 5e-6
+  # The recipe's linear sigma draw, through the shared TimestepSampler (LANE-168);
+  # the trainer clamps to the pixel-space bounds [T_EPS, 0.9999].
+  timestep_sampling: uniform
 components:
   repo:
     path: huggingface:HiDream-ai/HiDream-O1-Image

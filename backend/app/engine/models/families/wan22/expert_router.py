@@ -174,9 +174,9 @@ class ExpertRouter:
         """Estimate ``P(t >= boundary)`` under the REAL per-step distribution.
 
         Draws ``mc_samples`` timesteps and returns the empirical fraction
-        ``>= boundary``, computed on CPU with the default RNG seeded so the
-        estimate is reproducible (does not touch the step-selection
-        generator). By default draws from the generic :class:`TimestepSampler`
+        ``>= boundary``, computed on CPU with the default CPU generator seeded
+        inside a CPU-only fork so the estimate is reproducible (does not touch
+        the step-selection generator, the caller's CPU state or any CUDA RNG). By default draws from the generic :class:`TimestepSampler`
         (same mode + params the trainer uses) — correct whenever the per-step
         timesteps ARE that same generic draw. When ``timestep_draw`` was
         supplied at construction, that callable draws instead — for a family
@@ -192,14 +192,18 @@ class ExpertRouter:
         """``P(t >= boundary)`` at ``progress`` and a reference latent shape.
 
         ``latent_shape`` defaults to the constructor's ``reference_latent_shape``.
-        Pure with respect to the router state (the global RNG is restored).
+        Pure with respect to the router state and the training RNG: the CPU generator
+        is restored on exit and no CUDA generator is touched.
         """
         shape = tuple(latent_shape) if latent_shape else self._reference_latent_shape
         # Only the SHAPE reaches the resolution-aware modes (token count); no data is read.
         latents = torch.empty(*shape) if shape else None
-        prev_state = torch.random.get_rng_state()
-        try:
-            torch.random.manual_seed(self._seed + 1)
+        # The shared TimestepSampler draws from the default CPU generator and takes no
+        # generator argument, so the estimate seeds THAT generator only, inside a CPU-only
+        # fork that restores it on exit. Never ``torch.manual_seed``: it also reseeds every
+        # CUDA generator, and each interval would replay the training draws (LANE-168 1.01).
+        with torch.random.fork_rng(devices=[]):
+            torch.default_generator.manual_seed(self._seed + 1)
             if self._timestep_draw is not None:
                 accepted = inspect.signature(self._timestep_draw).parameters
                 kwargs: dict[str, Any] = {}
@@ -218,9 +222,7 @@ class ExpertRouter:
                     latents=latents,
                     progress=progress,
                 )
-        finally:
-            torch.random.set_rng_state(prev_state)
-        p = float((samples >= self.boundary_scaled).float().mean().item())
+        p =float((samples >= self.boundary_scaled).float().mean().item())
         # Guard against degenerate 0/1 (would make one expert never train).
         return min(max(p, 1e-6), 1.0 - 1e-6)
 

@@ -243,6 +243,38 @@ def test_router_reestimates_at_each_switch_interval_from_the_trainer_progress():
     assert router.p_high == pytest.approx(router.estimate_p_high(progress=0.9), abs=1e-9)
 
 
+def _rng_snapshot():
+    cuda = [s.clone() for s in torch.cuda.get_rng_state_all()] if torch.cuda.is_available() else []
+    return torch.get_rng_state().clone(), cuda
+
+
+def test_an_interval_estimate_leaves_the_global_cpu_and_cuda_rng_untouched():
+    # verify 1.01: a global manual_seed in the estimate reseeded every CUDA generator.
+    t = _dual({**RADC14, "resolutions": [1024]}, step=0, max_steps=100)
+    t.global_step = 40
+    # Advance the training RNG first (a training step drew), so a reseed cannot coincide with it.
+    torch.rand(8, device=torch.device("cuda") if torch.cuda.is_available() else CPU)
+    cpu_before, cuda_before = _rng_snapshot()
+    t.expert_router.choose_expert(3)  # a fresh interval block -> a re-estimate
+    cpu_after, cuda_after = _rng_snapshot()
+    assert torch.equal(cpu_before, cpu_after)
+    assert len(cuda_before) == len(cuda_after)
+    assert all(torch.equal(a, b) for a, b in zip(cuda_before, cuda_after, strict=True))
+
+
+def test_training_draws_after_consecutive_interval_switches_are_not_repeated():
+    dev = torch.device("cuda") if torch.cuda.is_available() else CPU
+    t = _dual({**RADC14, "resolutions": [1024]}, step=0, max_steps=100)
+    router = t.expert_router
+    t.global_step = 10
+    router.choose_expert(1)
+    first = torch.rand(16, device=dev)
+    t.global_step = 20
+    router.choose_expert(2)
+    second = torch.rand(16, device=dev)
+    assert not torch.equal(first, second), "the interval estimate reseeded the training RNG"
+
+
 def test_band_sampler_draws_from_the_factory_at_the_current_progress(spy):
     t = _dual({**RADC14, "resolutions": [512]}, step=50, max_steps=100)
     spy.clear()

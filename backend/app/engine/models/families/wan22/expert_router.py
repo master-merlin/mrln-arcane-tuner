@@ -32,6 +32,8 @@ Everything here is weight-free and unit-tests with a seeded RNG + tiny tensors.
 
 from __future__ import annotations
 
+import inspect
+from collections.abc import Sequence
 from typing import Any, Callable
 
 import structlog
@@ -80,7 +82,25 @@ class ExpertRouter:
             (e.g. bernini_r's mode+shift-warp band sampling) must pass its own
             sampler here, or the step-selection frequency and the actual
             per-band timestep mass silently stop composing to the intended
-            marginal (see :meth:`BerniniRTrainer._build_router`).
+            marginal (see :meth:`BerniniRTrainer._build_router`). The callable
+            may also declare ``progress`` and/or ``latents`` keyword parameters;
+            it then receives the training progress and the reference latent
+            (see below) for the estimate it serves.
+        reference_latent_shape: Optional ``[B, C, (F,) H, W]`` shape of ONE
+            reference latent the p_high estimate is drawn at, for a
+            resolution-aware mode (``flux_shift``, ``model_shift``, ``radc``
+            with ``radc_res_influence > 0``). ``None`` (wan22) = no latent.
+            The estimate is therefore a switch-scheduling hint at ONE
+            resolution: a mixed-resolution bucket batch inside a switch
+            interval is NOT followed (every sample still trains on the timestep
+            its own band draw produced), so this value never decides a
+            correctness property, only how often each expert is stepped.
+        progress_provider: Optional callable returning the current training
+            progress in ``[0, 1]``. When given, ``p_high`` is re-estimated at
+            every NEW switch-interval block from it (a progress-dependent mode
+            such as ``radc``); a resumed job estimates from its restored step
+            with no extra state. ``None`` (wan22) = the estimate is made once
+            at progress ``0.0``, exactly as before.
     """
 
     def __init__(
@@ -93,7 +113,9 @@ class ExpertRouter:
         mc_samples: int = 100_000,
         scale: float = 1000.0,
         pinned_expert: str | None = None,
-        timestep_draw: Callable[[int], torch.Tensor] | None = None,
+        timestep_draw: Callable[..., torch.Tensor] | None = None,
+        reference_latent_shape: Sequence[int] | None = None,
+        progress_provider: Callable[[], float] | None = None,
     ) -> None:
         self.boundary_frac = float(boundary)
         self.scale = float(scale)
@@ -103,6 +125,10 @@ class ExpertRouter:
         self.mode: str = str(self.config.get("timestep_sampling", "logit_normal"))
         self.mc_samples = int(mc_samples)
         self._timestep_draw = timestep_draw
+        self._reference_latent_shape = (
+            tuple(int(d) for d in reference_latent_shape) if reference_latent_shape else None
+        )
+        self._progress_provider = progress_provider
         self.logger = structlog.get_logger(self.__class__.__name__)
 
         pinned = pinned_expert.lower() if pinned_expert else None
@@ -157,11 +183,31 @@ class ExpertRouter:
         whose ACTUAL per-step timesteps come from its own transform (see the
         constructor docstring).
         """
+        progress = 0.0 if self._progress_provider is None else float(self._progress_provider())
+        return self.estimate_p_high(progress=progress)
+
+    def estimate_p_high(
+        self, progress: float = 0.0, latent_shape: Sequence[int] | None = None
+    ) -> float:
+        """``P(t >= boundary)`` at ``progress`` and a reference latent shape.
+
+        ``latent_shape`` defaults to the constructor's ``reference_latent_shape``.
+        Pure with respect to the router state (the global RNG is restored).
+        """
+        shape = tuple(latent_shape) if latent_shape else self._reference_latent_shape
+        # Only the SHAPE reaches the resolution-aware modes (token count); no data is read.
+        latents = torch.empty(*shape) if shape else None
         prev_state = torch.random.get_rng_state()
         try:
             torch.random.manual_seed(self._seed + 1)
             if self._timestep_draw is not None:
-                samples = self._timestep_draw(self.mc_samples)
+                accepted = inspect.signature(self._timestep_draw).parameters
+                kwargs: dict[str, Any] = {}
+                if "progress" in accepted:
+                    kwargs["progress"] = progress
+                if "latents" in accepted:
+                    kwargs["latents"] = latents
+                samples = self._timestep_draw(self.mc_samples, **kwargs)
             else:
                 samples = TimestepSampler.sample_scaled(
                     self.mode,
@@ -169,6 +215,8 @@ class ExpertRouter:
                     torch.device("cpu"),
                     self.config,
                     scale=self.scale,
+                    latents=latents,
+                    progress=progress,
                 )
         finally:
             torch.random.set_rng_state(prev_state)
@@ -187,6 +235,12 @@ class ExpertRouter:
         """
         if block_index in self._block_decisions:
             return self._block_decisions[block_index]
+        if (
+            self._progress_provider is not None
+            and self.pinned_expert is None
+            and block_index > 0  # block 0 was just estimated by __init__
+        ):
+            self.p_high = self._estimate_p_high()
         u = torch.rand((), generator=self._step_rng).item()
         decision = HIGH if u < self.p_high else LOW
         self._block_decisions[block_index] = decision

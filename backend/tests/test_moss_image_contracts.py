@@ -18,9 +18,9 @@ The interface the later rows build (Evidence: the official pipeline
   dtype)`` -> ``TextEncoderOutput(embeddings, attention_mask)``, ``forward_pass`` (timestep passed
   through unchanged), ``get_lora_targets``, ``get_saver``. The text recipe reads
   ``architecture_params`` ``te.max_length`` (4096) and ``te.enable_thinking`` (true).
-* ``trainer.MossImageTrainer`` -- ``sample_sigmas(batch)``, ``sample_timesteps`` (sigma * 1000),
-  ``_training_shift`` (``scheduler.training_shift``), ``encode_text`` (cache aware),
-  ``_pre_cache_text_embeddings``; ``trainer.shift_sigma(u, shift)``.
+* ``trainer.MossImageTrainer`` -- ``sample_timesteps`` (sigma * 1000),
+  ``encode_text`` (cache aware),
+  ``_pre_cache_text_embeddings``.
 * ``sampler.MossImageSampler`` -- ``_create_initial_noise``, ``denoise``, ``_flow_shift``
   (``scheduler.shift``); the prompt embedding is ``{"cond": TextEncoderOutput, "uncond": ...}``.
 * ``saver.MossImageSaver`` -- kohya-layout keys with ``alpha / rank`` folded into ``lora_B``.
@@ -318,32 +318,26 @@ def test_moss_image_timestep_contract(monkeypatch):
 
 
 def test_moss_image_timestep_distribution():
-    shift_sigma = _load("trainer", "shift_sigma")
+    """Factory path (LANE-167): family default and a user override, scenarios 2 and 3."""
     driver, _te, _proc, _spy = _driver()
     trainer = _bare_trainer(driver)
-    assert trainer._training_shift() == 3.0, f"{MARK}: the training shift is not the YAML's 3.0"
 
     torch.manual_seed(0)
-    first = trainer.sample_sigmas(4)
+    first = trainer.sample_timesteps(4096) / 1000.0
     torch.manual_seed(0)
-    second = trainer.sample_sigmas(4)
+    second = trainer.sample_timesteps(4096) / 1000.0
     assert torch.equal(first, second), f"{MARK}: the same seed gave two different sigma draws"
-    assert first.shape == (4,) and bool(((first > 0) & (first < 1)).all()), (
-        f"{MARK}: sigmas must lie in (0, 1), got {first.tolist()}")
+    assert bool(((first > 0) & (first < 1)).all()), f"{MARK}: sigmas must lie in (0, 1)"
+    assert abs(float(first.median()) - 0.748) <= 0.02, (
+        f"{MARK}: the family default median sigma {float(first.median()):.4f} is not 0.748")
 
+    trainer.config["timestep_sampling"] = "logit_normal"
+    trainer.config["logit_normal_mu"] = 0.0
+    trainer.config["logit_normal_sigma"] = 1.0
     torch.manual_seed(0)
-    u = torch.sigmoid(torch.randn(4))
-    assert torch.allclose(first, 3.0 * u / (1 + 2.0 * u), atol=1e-6), (
-        f"{MARK}: sigma != 3u/(1+2u) for u = sigmoid(z), z ~ N(0,1): {first.tolist()}")
-
-    assert torch.allclose(shift_sigma(torch.tensor([0.5]), 3.0), torch.tensor([0.75])), (
-        f"{MARK}: the median draw u=0.5 must map to 0.75")
-    assert torch.equal(shift_sigma(u, 1.0), u), f"{MARK}: shift 1.0 must return u unchanged"
-
-    torch.manual_seed(0)
-    timesteps = trainer.sample_timesteps(4)
-    assert torch.allclose(timesteps, first * 1000.0, atol=1e-3), (
-        f"{MARK}: sample_timesteps must be sigma * 1000 (the pipeline scale), got {timesteps.tolist()}")
+    user = trainer.sample_timesteps(4096) / 1000.0
+    assert abs(float(user.median()) - 0.5) <= 0.02, (
+        f"{MARK}: the user's logit-normal values did not win: median {float(user.median()):.4f}")
 
 
 # ── scenario 4: interpolation direction and velocity target ───────────────────────────────────────
@@ -744,7 +738,8 @@ def test_moss_image_definition_defaults():
         assert float(data["defaults"]["guidance_scale"]) == 3.0, f"{MARK}: {data['id']} CFG"
         params = data["architecture_params"]
         assert float(params["scheduler.shift"]) == 5.0, f"{MARK}: {data['id']} scheduler.shift"
-        assert float(params["scheduler.training_shift"]) == 3.0, f"{MARK}: {data['id']} training_shift"
+        assert "scheduler.shift" in data["enrich_pinned_keys"], f"{MARK}: {data['id']} scheduler.shift pin"
+        assert "scheduler.training_shift" not in params, f"{MARK}: {data['id']} still has training_shift"
         assert int(params["te.max_length"]) == TEXT_CAP and params["te.enable_thinking"] is True, (
             f"{MARK}: {data['id']} text recipe keys")
         assert params["sampling.seed_prompt_defaults"] is True, (
@@ -773,15 +768,7 @@ def test_moss_image_definition_defaults():
         driver, _te, _proc, _spy = _driver(_definition(definition_id))
         assert type(driver.get_saver()) is _load("saver", "MossImageSaver")
 
-    # The trainer reads training_shift, the sampler reads shift: they are independent keys.
-    flat = _definition(**{"scheduler.training_shift": 1.0})
-    driver, _te, _proc, _spy = _driver(flat)
-    trainer = _bare_trainer(driver)
-    torch.manual_seed(0)
-    drawn = trainer.sample_sigmas(4)
-    torch.manual_seed(0)
-    assert torch.allclose(drawn, torch.sigmoid(torch.randn(4)), atol=1e-6), (
-        f"{MARK}: with training_shift 1.0 the seed-0 draws must be u unchanged")
+    flat = _definition()
     sampler, _spy2 = _sampler(flat)
     assert sampler._flow_shift() == 5.0, f"{MARK}: the sampler must still use scheduler.shift 5.0"
 

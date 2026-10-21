@@ -7,11 +7,9 @@
   the caption's unpadded ``[S, 4096]`` final-layer state in the encoder's own dtype (every token valid,
   so the mask is its length). The disk directory carries the driver's ``te_cache_tag()`` (template
   flags + token cap) and the filename hashes the caption: a change to any of the three misses.
-- Sigmas: ``sigma = s*u / (1 + (s-1)*u)``, ``u = sigmoid(z)``, ``z ~ N(0, 1)``, ``s`` = the YAML's
-  ``scheduler.training_shift`` (3.0). Evidence: research Decision D5 (kohya
-  ``docs/moss_image_train_network.md`` §7.2). Assumption: the bounded approximation of the
-  unconfirmed pre-training schedule (spec risk 2) -- the GPU UAT side-by-side judges it. The run
-  config's ``timestep_sampling`` is not consulted (no run-config key for this family).
+- Sigmas: drawn by the shared ``TimestepSampler`` factory in the run config's ``timestep_sampling``
+  mode (no family shift). The family default, used only when the config names no mode, is the
+  technical report's final-stage logit-normal (YAML ``timestep.*`` keys).
 - Timesteps ``sigma * 1000`` (the pipeline scale; the driver passes them through unchanged).
 - Noisy input ``(1 - sigma) * x0 + sigma * noise`` and target ``noise - x0`` -- fixed here, never the
   configurable ``noise_interpolation`` mode.
@@ -29,17 +27,10 @@ from app.engine.core.text_encoding import TextEncoderOutput
 
 logger = structlog.get_logger(__name__)
 
-# Research Decision D5 / the YAML ``scheduler.training_shift``.
-DEFAULT_TRAINING_SHIFT = 3.0
 # The disk filename's fixed source part: the entry's identity is (caption, template flags, token cap) --
 # the caption hashed in the filename, the other two in the directory's ``te_cache_tag()`` -- never the
 # image that happened to carry the caption first (LANE-165 verify 1.02).
 _TE_CACHE_HINT = "moss"
-
-
-def shift_sigma(u: torch.Tensor, shift: float) -> torch.Tensor:
-    """``s*u / (1 + (s-1)*u)`` on ``u`` in ``[0, 1]``; ``s = 1`` returns ``u`` unchanged."""
-    return shift * u / (1.0 + (shift - 1.0) * u)
 
 
 class MossImageTrainer(GenericTrainingPipeline):
@@ -219,18 +210,29 @@ class MossImageTrainer(GenericTrainingPipeline):
 
     # -- Sigmas, timesteps, noise, target --
 
-    def _training_shift(self) -> float:
-        arch = getattr(getattr(self, "definition", None), "architecture_params", None) or {}
-        return float(arch.get("scheduler.training_shift", DEFAULT_TRAINING_SHIFT))
-
-    def sample_sigmas(self, batch_size: int) -> torch.Tensor:
-        """``shift_sigma(sigmoid(z), s)``, ``z ~ N(0, 1)`` per sample, in ``(0, 1)``."""
-        u = torch.sigmoid(torch.randn(batch_size)).to(self.device)
-        return shift_sigma(u, self._training_shift())
-
     def sample_timesteps(self, batch_size: int, latents: torch.Tensor | None = None) -> torch.Tensor:
-        """``sigma * 1000``: the pipeline scale the driver hands to the transformer unchanged."""
-        return self.sample_sigmas(batch_size) * 1000.0
+        """The configured mode through the shared ``TimestepSampler``, as ``sigma * 1000``.
+
+        No family shift is applied. With no ``timestep_sampling`` in the config the family default
+        (the YAML's ``timestep.*`` keys: the report's logit-normal) is used, ``setdefault``-style, so
+        a value the config carries is never touched. MOSS patchifies 2x2 before the transformer, so
+        the resolution-aware modes see the real token count (``flux_shift_patchify_factor`` 2).
+        """
+        from app.engine.strategies.timestep_sampling import TimestepSampler  # noqa: PLC0415
+
+        cfg = dict(self.config)
+        if "timestep_sampling" not in cfg:
+            arch = getattr(getattr(self, "definition", None), "architecture_params", None) or {}
+            cfg["timestep_sampling"] = arch.get("timestep.default_mode", "logit_normal")
+            cfg.setdefault("logit_normal_mu", float(arch.get("timestep.logit_normal_mu", 1.09)))
+            cfg.setdefault("logit_normal_sigma", float(arch.get("timestep.logit_normal_sigma", 0.95)))
+        cfg.setdefault("flux_shift_patchify_factor", 2)
+        mode = cfg["timestep_sampling"]
+        max_steps = getattr(self, "max_train_steps", 1)
+        progress = getattr(self, "global_step", 0) / max(max_steps, 1)
+        sigma = TimestepSampler.sample(
+            mode, batch_size, self.device, cfg, latents=latents, progress=progress)
+        return sigma * 1000.0
 
     def add_noise(self, latents: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
         """``(1 - sigma) * x0 + sigma * noise`` with ``sigma = t / 1000`` (sigma 1 = pure noise)."""

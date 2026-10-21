@@ -441,7 +441,7 @@ class BaseTrainingConfig(BaseModel):
         "logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc", "model_shift"
     ] = Field(
         "logit_normal",
-        description="Timestep sampling strategy for training",
+        description="Timestep sampling strategy for training (HiDream-O1 runs flux_shift/model_shift as uniform and ignores radc_res_influence; SDXL hides it)",
         json_schema_extra={"group": "STRATEGY"},
     )
     logit_normal_mu: float = Field(
@@ -1006,12 +1006,12 @@ class BaseTrainingConfig(BaseModel):
     )
     noise_offset: float = Field(
         0.0,
-        description="Noise offset for dynamic range",
+        description="Noise offset for dynamic range (not offered for HiDream-O1; refused by MiniMax-H3)",
         json_schema_extra={"group": "ENGINE", "min": 0.0, "max": 0.2, "step": 0.005},
     )
     min_snr_gamma: float = Field(
         5.0,
-        description="Min-SNR Gamma weighting",
+        description="Min-SNR Gamma weighting (SDXL only; hidden for every other family)",
         json_schema_extra={"group": "ENGINE", "min": 0.0, "max": 20.0, "step": 0.5},
     )
     low_vram: bool = Field(

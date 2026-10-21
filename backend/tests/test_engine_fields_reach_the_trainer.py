@@ -269,6 +269,25 @@ def _discards_shared_timesteps(trainer_cls) -> list[str]:
     """Family-trainer ``forward_pass``/``compute_loss`` overrides that neither read the ``timesteps`` the
     shared loop drew via ``sample_timesteps`` nor call the factory themselves: ``sample_timesteps`` can
     then reach the factory while the sigma the model trains on comes from somewhere else."""
+    def _calls_factory(fn, depth: int) -> bool:
+        """``fn`` names ``TimestepSampler`` itself, or through a ``self.<helper>`` of the family
+        trainer (hidream_o1's ``_draw_sigma``), followed ``depth`` levels deep."""
+        tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
+        if "TimestepSampler" in {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}:
+            return True
+        if depth <= 0:
+            return False
+        for node in ast.walk(tree):
+            if (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+                    and isinstance(node.func.value, ast.Name) and node.func.value.id == "self"):
+                helper = inspect.getattr_static(trainer_cls, node.func.attr, None)
+                helper = getattr(helper, "__func__", helper)
+                if (inspect.isfunction(helper)
+                        and helper.__module__.startswith("app.engine.models.families.")
+                        and _calls_factory(helper, depth - 1)):
+                    return True
+        return False
+
     found: list[str] = []
     for klass in trainer_cls.__mro__:
         if not klass.__module__.startswith("app.engine.models.families."):
@@ -280,7 +299,7 @@ def _discards_shared_timesteps(trainer_cls) -> list[str]:
             tree = ast.parse(textwrap.dedent(inspect.getsource(fn)))
             names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
             attrs = {n.attr for n in ast.walk(tree) if isinstance(n, ast.Attribute)}
-            reads = ("timesteps" in names) or ("sample_timesteps" in attrs) or ("TimestepSampler" in names)
+            reads = ("timesteps" in names) or ("sample_timesteps" in attrs) or _calls_factory(fn, 2)
             if not reads:
                 found.append(f"{klass.__name__}.{name}")
     return found
@@ -313,6 +332,18 @@ def _observe_noise_offset(defn, spy) -> str | None:
     redraws = _own_noise_methods(type(trainer))
     if redraws:
         return f"{', '.join(redraws)} draw fresh noise, so the shared loop's noise offset (pipeline_train.py) never reaches the model"
+    # The real sink: the shared loop's ONE noise draw, as this family's trainer class resolves it
+    # (an override included), at the same seed with and without the configured offset.
+    latents = torch.zeros(2, 4, 8, 8)
+    strength = float(trainer.config["noise_offset"])
+    torch.manual_seed(0)
+    plain = trainer.make_training_noise(latents, 0.0)
+    torch.manual_seed(0)
+    offset = trainer.make_training_noise(latents, strength)
+    if plain.shape != latents.shape or offset.shape != latents.shape:
+        return f"make_training_noise returned shapes {tuple(plain.shape)}/{tuple(offset.shape)} for latents {tuple(latents.shape)}"
+    if torch.equal(plain, offset):
+        return f"make_training_noise draws the same noise with noise_offset {strength} as with 0.0"
     return None
 
 
@@ -339,12 +370,14 @@ def _configure_optimization(defn, **config):
         trainer.driver.assign_components({"unet": model})
     except Exception:  # noqa: BLE001 -- drivers that need no model for the optimizer step ignore it
         pass
-    # bernini_r (14B) and wan22 wrap the shared method around their expert pair and call super();
-    # the shared implementation is the sink the contract is about, so drive it directly.
-    shared = next(k for k in type(trainer).__mro__
-                  if "_configure_optimization" in k.__dict__
-                  and not k.__module__.startswith("app.engine.models.families."))
-    shared.__dict__["_configure_optimization"](trainer, 10)
+    # bernini_r (14B) and wan22 wrap the shared method around their expert pair and call super():
+    # the family's OWN entry point is driven (an override that drops a field must fail), with only
+    # the expert plumbing stubbed -- the expert params collapse onto the one stub model and the
+    # start placement is a no-op (no weights to place).
+    trainer._collect_expert_params = lambda: list(model.parameters())
+    if hasattr(trainer.driver, "place_experts_for_start"):
+        trainer.driver.place_experts_for_start = lambda *a, **k: None
+    trainer._configure_optimization(10)
 
 
 def _observe_factory(defn, spy, field) -> str | None:

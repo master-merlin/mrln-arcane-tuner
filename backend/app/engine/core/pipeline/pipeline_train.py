@@ -162,6 +162,29 @@ class PipelineTrainMixin:
         if lw:
             lw.log("Step profile:\n" + body)
 
+    def make_training_noise(
+        self, latents: torch.Tensor, noise_offset_strength: float
+    ) -> torch.Tensor:
+        """The training loop's ONE noise draw for a batch of ``latents``, offset included.
+
+        Noise is sampled in SPATIAL space ``[B, C, ...]`` (before any packing): the
+        offset must be per-channel in spatial space, not in packed ``[B, L, D]`` space
+        where D interleaves 2x2 patch positions and would amplify the offset ~4x.
+        ``noise_offset_strength > 0`` adds a per-channel ``[B, C, 1, ...]`` gaussian
+        offset scaled by it (https://www.crosslabs.org/blog/diffusion-with-offset-noise).
+        """
+        noise = torch.randn_like(latents)
+        if noise_offset_strength > 0:
+            noise_offset = noise_offset_strength * torch.randn(
+                latents.shape[0],
+                latents.shape[1],
+                *([1] * (latents.ndim - 2)),
+                device=self.device,
+                dtype=latents.dtype,
+            )
+            noise = noise + noise_offset
+        return noise
+
     def _iter_training_batches(self, batch_size: int):
         """Infinite bucket-aware batch iterator for the training loop.
 
@@ -524,23 +547,7 @@ class PipelineTrainMixin:
                 with torch.autocast(
                     "cuda", dtype=self.autocast_dtype, enabled=self.use_amp
                 ), self._prof_region("forward_loss"):
-                    # Sample noise in SPATIAL space [B,C,H,W] (before any packing).
-                    # This is critical: noise offset must be per-channel in spatial
-                    # space, not in packed [B,L,D] space where D interleaves
-                    # 2×2 patch positions and would amplify the offset ~4×.
-                    noise = torch.randn_like(latents)
-
-                    # Noise offset (https://www.crosslabs.org/blog/diffusion-with-offset-noise)
-                    if noise_offset_strength > 0:
-                        # Per-channel offset in spatial space: [B, C, 1, 1]
-                        noise_offset = noise_offset_strength * torch.randn(
-                            latents.shape[0],
-                            latents.shape[1],
-                            *([1] * (latents.ndim - 2)),
-                            device=self.device,
-                            dtype=latents.dtype,
-                        )
-                        noise = noise + noise_offset
+                    noise = self.make_training_noise(latents, noise_offset_strength)
 
                     # Pack/reshape latents AND noise together (family hook).
                     # Both must go through the same packing to stay aligned.

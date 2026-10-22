@@ -27,9 +27,14 @@ import pytest
 
 CHECKOUT = Path(__file__).resolve().parents[1]
 SUITE = CHECKOUT / "_harness" / "tests"
+#: 3.2.11 (UN-143, Astro Suite): the harness's own suite runs UPSTREAM (`gate.py --self`); a project gets a tested
+#: harness. Through this bridge `_harness/tests/conftest.py` is never loaded (no markers, no route logs, no test
+#: environment), so collecting it in a project's gate half-runs that suite -- the bridge runs only when asked by name
+OPT_IN = "HARNESS_RUN_SHARED_SUITE"
+RUN = SUITE.is_dir() and os.environ.get(OPT_IN) == "1"
 
 pytestmark = pytest.mark.skipif(
-    not SUITE.is_dir(), reason="_harness/tests not present (dev harness only)"
+    not RUN, reason=f"_harness/tests not present, or not asked for ({OPT_IN}=1): the harness suite runs upstream"
 )
 
 
@@ -42,8 +47,10 @@ def _is_fixture(obj) -> bool:
 
 def _collect() -> dict[str, object]:
     exported: dict[str, object] = {}
-    if not SUITE.is_dir():
+    if not RUN:
         return exported
+    if str(SUITE) not in sys.path:
+        sys.path.insert(0, str(SUITE))  # UN-143: the harness tests import `harness_paths` beside them
     os.environ["HARNESS_CHECKOUT"] = str(CHECKOUT)
     os.environ["MRLN_CHECKOUT"] = str(CHECKOUT)
     for path in sorted(SUITE.glob("test_*.py")):
@@ -70,4 +77,4 @@ globals().update(_collect())
 
 def test_the_bridge_collected_something_when_the_harness_is_present():
     collected = [k for k in globals() if "__test_" in k]
-    assert collected, "_harness/tests exists but nothing was collected — a module raised at import?"
+    assert collected, "_harness/tests exists and was asked for, but nothing was collected — a module raised at import?"

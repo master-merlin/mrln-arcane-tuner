@@ -414,3 +414,32 @@ def test_no_accepted_violation_has_quietly_stopped_being_one():
         "The upstream pin was fixed or our own moved back into range -- drop the "
         "entry so the ledger keeps meaning what it says."
     )
+
+
+def _thin_reasons(ledger: dict[tuple[str, str], str]) -> list[tuple[str, str]]:
+    """Keys whose written reason has fewer than ten words (one function for the
+    real-data test and its control, so the control exercises the real check)."""
+    return sorted(key for key, reason in ledger.items() if len(reason.split()) < 10)
+
+
+def test_every_accepted_violation_carries_a_written_reason():
+    """The ledger is a record of what was judged, not a way to make the check quiet.
+
+    An entry with an empty or one-word reason is indistinguishable from
+    suppression, which is the thing ACCEPTED_CONSTRAINT_VIOLATIONS exists to stop.
+    """
+    thin = _thin_reasons(ACCEPTED_CONSTRAINT_VIOLATIONS)
+    assert not thin, (
+        f"ACCEPTED_CONSTRAINT_VIOLATIONS entries without a real reason: {thin}. "
+        "Every accepted violation must say why it was judged acceptable (at least "
+        "ten words), or the next reader cannot tell it from one nobody noticed."
+    )
+
+
+def test_the_reason_check_lists_a_two_word_reason():
+    """Positive control: the reason check must name a thin entry, not pass on empty."""
+    ledger = {
+        ("x", "y"): "too slow",
+        ("a", "b"): "a reason of ten words that says why this is judged acceptable here",
+    }
+    assert _thin_reasons(ledger) == [("x", "y")]

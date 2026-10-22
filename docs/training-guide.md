@@ -261,10 +261,10 @@ increasingly draw their training timesteps from the low-noise end as the run
 progresses; this is a training-time internal, not something the sample
 previews will visibly show you step to step.
 
-**Limits.** On WAN 2.2 dual-expert and Bernini-R runs, the expert router (or
-the band sampler) draws the timesteps itself and is never told the training
-progress, so `radc` stays pinned at `radc_start` for the whole run on those
-families. On FLUX2, the same curve also weights each sample's training loss,
+**Limits.** On WAN 2.2 dual-expert runs, the expert router draws the
+timesteps itself and is never told the training progress, so `radc` stays
+pinned at `radc_start` for the whole run on that family. Every other family,
+including the band-sampled ones, follows the curriculum. On FLUX2, the same curve also weights each sample's training loss,
 not only which timesteps get drawn (`compute_loss_weight`,
 `backend/app/engine/models/families/flux2/trainer.py:245-265`, applied at
 `backend/app/engine/core/pipeline/pipeline_base.py:320`) — a timestep the
@@ -388,7 +388,7 @@ this list.
 - **Resolutions** (`resolutions`) — Target pixel resolutions for aspect-ratio bucketing. Placeholder: {resolutions} *(schema: Target resolutions for bucketing)*. Default `[1024]`.
 - **Resume From Checkpoint** (`resume_from_checkpoint`) — Path to a checkpoint directory to continue training from. Placeholder: {resume_from_checkpoint} *(schema: Path to a checkpoint directory to resume from)*. Default `""` (empty).
 - **Save Every N Steps** (`save_every_n_steps`) — Save a full checkpoint every N optimizer steps (0 to disable). Placeholder: {save_every_n_steps} *(schema: Save a checkpoint every N steps (0 to disable))*. Default `0` (min 0, step 50).
-- **Timestep Sampling** (`timestep_sampling`) — Distribution used to sample noise timesteps during training. Placeholder: {timestep_sampling} *(schema: Timestep sampling strategy for training)*. Default `logit_normal` (choices: `logit_normal`, `uniform`, `sigmoid`, `cosmap`, `mode`, `flux_shift`, `radc`, `model_shift`).
+- **Timestep Sampling** (`timestep_sampling`) — Distribution used to sample noise timesteps during training. Placeholder: {timestep_sampling} *(schema: Timestep sampling strategy for training (HiDream-O1 runs flux_shift/model_shift as uniform and ignores radc_res_influence; SDXL hides it))*. Default `logit_normal` (choices: `logit_normal`, `uniform`, `sigmoid`, `cosmap`, `mode`, `flux_shift`, `radc`, `model_shift`).
 - **Timestep Uniform Prob** (`timestep_uniform_prob`) — From the schema: Fraction of timesteps drawn uniformly (mixed into shifted modes). Default `0.1` (range 0.0 to 1.0, step 0.05).
 - **Train Batch Size** (`train_batch_size`) — Number of images processed per GPU in each forward pass. Placeholder: {train_batch_size} *(schema: Batch size)*. Default `1` (range 1 to 32, step 1).
 - **Use Cached Embeddings** (`use_cached_embeddings`) — Re-use text embedding cache from the checkpoint instead of re-encoding all captions. Placeholder: {use_cached_embeddings} *(schema: Re-use embedding cache from prior run (only encode new captions))*. Default `False`.
@@ -465,8 +465,8 @@ this list.
 - **Ema** (`ema`) — Maintain a smoothed copy of weights for more stable outputs. Placeholder: {ema} *(schema: Enable Exponential Moving Average)*. Default `False`.
 - **Ema Decay** (`ema_decay`) — How slowly the EMA shadow weights update (higher = slower). Placeholder: {ema_decay} *(schema: EMA decay rate)*. Default `0.999` (range 0.9 to 1.0, step 0.001).
 - **Low Vram** (`low_vram`) — Offload the VAE to CPU after latent caching to free GPU memory. Placeholder: {low_vram} *(schema: Offload VAE to CPU after caching (disable to keep VAE on GPU for sampling speed))*. Default `True`.
-- **Min Snr Gamma** (`min_snr_gamma`) — Reduces the contribution of 'easy' (low-noise) timesteps to the loss. Placeholder: {min_snr_gamma} *(schema: Min-SNR Gamma weighting)*. Default `5.0` (range 0.0 to 20.0, step 0.5).
-- **Noise Offset** (`noise_offset`) — Adds a global brightness shift to training noise for better dynamic range. Placeholder: {noise_offset} *(schema: Noise offset for dynamic range)*. Default `0.0` (range 0.0 to 0.2, step 0.005).
+- **Min Snr Gamma** (`min_snr_gamma`) — Reduces the contribution of 'easy' (low-noise) timesteps to the loss. SDXL only; hidden for every other family. Placeholder: {min_snr_gamma} *(schema: Min-SNR Gamma weighting (SDXL only; hidden for every other family))*. Default `5.0` (range 0.0 to 20.0, step 0.5).
+- **Noise Offset** (`noise_offset`) — Adds a global brightness shift to training noise for better dynamic range. Not offered for HiDream-O1; refused by MiniMax-H3. Placeholder: {noise_offset} *(schema: Noise offset for dynamic range (not offered for HiDream-O1; refused by MiniMax-H3))*. Default `0.0` (range 0.0 to 0.2, step 0.005).
 - **Offload To Cpu** (`offload_to_cpu`) — Move inactive model components to CPU RAM to free GPU VRAM. Placeholder: {offload_to_cpu} *(schema: Offload model blocks to CPU to save VRAM)*. Default `False`.
 - **Unload Text Encoder** (`unload_text_encoder`) — Remove the text encoder from GPU after embeddings are cached. Placeholder: {unload_text_encoder} *(schema: Delete text encoders after caching (max VRAM savings, disables live prompt encoding for sampling))*. Default `False`.
 - **Vram Safe Bucket Order** (`vram_safe_bucket_order`) — From the schema: Feed the largest aspect-ratio bucket first each epoch so the CUDA allocator reserves its peak segment up front; smaller buckets then reuse it. Eliminates the order-dependent fragmentation that makes reserved VRAM vary run-to-run and spill past the card. Order stays shuffled within each bucket. Disable for fully-random bucket order. Default `True`.

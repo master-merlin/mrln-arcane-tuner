@@ -2,7 +2,12 @@
 
 Recipe (re-implemented natively — see spike_notes.md Task 3a):
 - ``noise_scale = 8.0``
-- linear sigma sampling in ``[T_EPS=0.001, 0.9999]``
+- sigma drawn by the shared :class:`TimestepSampler` in the configured
+  ``timestep_sampling`` mode (the definition presets ``uniform``, the recipe's
+  linear draw), progress forwarded, clamped to ``[T_EPS=0.001, 0.9999]``;
+  the resolution-shift modes (``flux_shift`` / ``model_shift``) and a
+  ``radc_res_influence > 0`` have no meaning on pixel patches and are replaced
+  under a logged warning, once per job
 - velocity-equivalent loss: predict ``(noisy - x_pred)/sigma`` against
   ``noise * noise_scale - patches``
 - ``max_loss = 1.0`` clamp
@@ -40,7 +45,6 @@ Integration notes (Task 16):
 
 from __future__ import annotations
 
-import math
 from typing import Any
 
 import einops
@@ -51,6 +55,7 @@ import torch.nn.functional as F
 
 from app.engine.components.pixel_latents import PixelPassthroughLatentManager
 from app.engine.core.pipeline import GenericTrainingPipeline
+from app.engine.strategies.timestep_sampling import TimestepSampler
 
 from .driver import HiDreamO1Driver
 from .loader import HiDreamO1Loader
@@ -109,43 +114,14 @@ class _LoraOnlyComponentProxy:
 _PixelPassthroughLatentManager = PixelPassthroughLatentManager
 
 
-def _sample_sigma(
-    batch_size: int,
-    device: torch.device,
-    timestep_type: str = TIMESTEP_TYPE,
-    min_sigma: float = T_EPS,
-    max_sigma: float = 0.9999,
-    shift: float = 1.0,
-) -> torch.Tensor:
-    """Sample sigma per ai-toolkit's options. ``linear`` is the default.
-
-    Args:
-        batch_size: Number of sigma values to draw.
-        device: Device to create the tensor on.
-        timestep_type: One of ``"linear"`` (uniform), ``"sigmoid"``
-            (sigmoid of standard normal), or ``"shift"`` (linear with
-            resolution-based shift).
-        min_sigma: Lower bound (inclusive).
-        max_sigma: Upper bound (inclusive).
-        shift: Scale shift for ``"shift"`` type. No-op when ``shift == 1.0``.
-
-    Returns:
-        Float32 tensor of shape ``[batch_size]`` clamped to
-        ``[min_sigma, max_sigma]``.
-    """
-    min_sigma = max(0.0001, min(0.9999, float(min_sigma)))
-    max_sigma = max(min_sigma + 0.0001, min(0.9999, float(max_sigma)))
-    tt = (timestep_type or "linear").lower()
-
-    if tt == "sigmoid":
-        s = torch.sigmoid(torch.randn(batch_size, device=device, dtype=torch.float32))
-    else:
-        s = torch.rand(batch_size, device=device, dtype=torch.float32)
-
-    s = min_sigma + (max_sigma - min_sigma) * s
-    if tt == "shift" and shift and shift > 0 and not math.isclose(shift, 1.0):
-        s = shift * s / (1 + (shift - 1) * s)
-    return s.clamp(min_sigma, max_sigma)
+# Upper sigma bound of the recipe (the lower one is the vendored ``T_EPS``).
+MAX_SIGMA: float = 0.9999
+# Modes that shift by the token count of a LATENT grid; hidream_o1 trains on raw
+# pixel patches, so the shift has no defined meaning here -> ``uniform`` (logged).
+_RESOLUTION_SHIFT_MODES: frozenset[str] = frozenset({"flux_shift", "model_shift"})
+# The factory's default when a job config carries no ``radc_res_influence``
+# (``strategies/timestep_sampling.py`` ``_radc_center``).
+_FACTORY_RADC_RES_INFLUENCE: float = 0.15
 
 
 class HiDreamO1Trainer(GenericTrainingPipeline):
@@ -184,9 +160,67 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         self.loader = HiDreamO1Loader(self.device)
         self.lora_injection: LoRAInjectionResult | None = None
 
-        # Pixel-space model — no VAE latent scaling or patchify factor.
-        # Config keys used by the recipe (pulled in compute_loss / _sample_sigma):
-        self.config.setdefault("timestep_type", TIMESTEP_TYPE)
+        # Pixel-space model — no VAE latent scaling or patchify factor. The
+        # sigma draw reads the form's ``timestep_sampling`` (see _draw_sigma).
+
+    # ── Sigma: the shared factory, pixel-space bounds ────────────────────
+
+    def _progress(self) -> float:
+        """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""
+        max_steps = getattr(self, "max_train_steps", 1)
+        return getattr(self, "global_step", 0) / max(max_steps, 1)
+
+    def _effective_timestep_config(self) -> tuple[str, str, float, dict[str, Any]]:
+        """``(configured, effective, res_influence, factory_config)``; warns once per job.
+
+        A replacement never rewrites ``self.config`` (the job's record); the factory
+        receives a copy carrying the effective values.
+        """
+        log = getattr(self, "logger", logger)
+        configured = str(self.config.get("timestep_sampling", "uniform"))
+        effective = configured
+        if configured in _RESOLUTION_SHIFT_MODES:
+            effective = "uniform"
+            if not getattr(self, "_hd_mode_warned", False):
+                self._hd_mode_warned = True
+                log.warning(
+                    "hidream_o1_timestep_mode_replaced",
+                    configured=configured,
+                    used="uniform",
+                    reason="pixel-space patches carry no latent grid for a resolution shift",
+                )
+        cfg = self.config
+        res_influence = float(cfg.get("radc_res_influence", _FACTORY_RADC_RES_INFLUENCE))
+        if effective == "radc" and res_influence > 0:
+            if not getattr(self, "_hd_res_influence_warned", False):
+                self._hd_res_influence_warned = True
+                log.warning(
+                    "hidream_o1_radc_res_influence_ignored",
+                    configured=res_influence,
+                    used=0.0,
+                    reason="pixel-space patches carry no latent grid for the radc resolution term",
+                )
+            res_influence = 0.0
+            cfg = {**cfg, "radc_res_influence": 0.0}
+        return configured, effective, res_influence, cfg
+
+    def _draw_sigma(
+        self, batch_size: int, device: torch.device, *, progress: float = 0.0
+    ) -> torch.Tensor:
+        """``batch_size`` float32 sigmas of the configured mode in ``[T_EPS, MAX_SIGMA]``."""
+        configured, effective, res_influence, cfg = self._effective_timestep_config()
+        if not getattr(self, "_hd_mode_logged", False):
+            self._hd_mode_logged = True
+            getattr(self, "logger", logger).info(
+                "timestep_sampling_mode",
+                family="hidream_o1",
+                configured=configured,
+                effective=effective,
+                progress_forwarded=True,
+                res_influence=res_influence,
+            )
+        sigma = TimestepSampler.sample(effective, batch_size, device, cfg, progress=progress)
+        return sigma.to(dtype=torch.float32).clamp(T_EPS, MAX_SIGMA)
 
     def _build_trainable_components(self) -> dict[str, Any]:
         """Pass the unet to the saver, but skip the per-component dump.
@@ -418,8 +452,7 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         )
 
         # Sample sigma
-        tt = self.config.get("timestep_type", TIMESTEP_TYPE)
-        sigma = _sample_sigma(patches.shape[0], self.device, timestep_type=tt)
+        sigma = self._draw_sigma(patches.shape[0], self.device, progress=self._progress())
         sigma_typed = sigma.to(dtype=patches.dtype)
         sigma_view = sigma_typed.view(-1, 1, 1)
 
@@ -567,8 +600,7 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         )
 
         # Sigma + noise injection
-        tt = self.config.get("timestep_type", TIMESTEP_TYPE) if hasattr(self, "config") else TIMESTEP_TYPE
-        sigma = _sample_sigma(patches.shape[0], device, timestep_type=tt).to(dtype=dtype)
+        sigma = self._draw_sigma(patches.shape[0], device, progress=self._progress()).to(dtype=dtype)
         sigma_view = sigma.view(-1, 1, 1)
         noise = torch.randn_like(patches)
         scaled_noise = noise * NOISE_SCALE

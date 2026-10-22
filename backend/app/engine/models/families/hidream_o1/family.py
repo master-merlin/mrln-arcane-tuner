@@ -8,6 +8,9 @@ class HiDreamO1Family(ModelFamily):
 
     family_name = "hidream_o1"
     archetype = "unified_transformer"
+    # trainer.py forward_pass / compute_loss draw their own noise in patch space and never
+    # receive the shared loop's offset noise, so noise_offset is hidden (interview Q1.1, LANE-168).
+    capability_overrides = {"supports_noise_offset": False}
 
     def get_trainer_class(self):
         # Import inside the method to avoid loading heavy training deps

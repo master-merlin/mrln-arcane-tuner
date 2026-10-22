@@ -10,12 +10,15 @@ the shared lazy + disk cache, a frozen text encoder, plain captions,
 
 The Bernini-specific pieces:
 
-- **Timestep sampling** (:meth:`sample_timesteps`) — the upstream renderer's
-  ``NoiseScheduler`` for the video tasks: SD3 ``mode`` weighting followed by the
-  per-task shift-warp, in the RAW ``[0, 1000]`` space (the wan flow-match
-  ``add_noise`` lerp does the ``/1000``). This OVERRIDES the base flow-match
-  sampler. The formula is transcribed verbatim from upstream ``bernini/training/
-  data.py`` ``NoiseScheduler`` (see ``.agent/workdir/bernini-r-recon.md`` §4).
+- **Timestep sampling** (:meth:`sample_timesteps`) — the configured
+  ``timestep_sampling`` mode is the BASE draw through the shared
+  :class:`TimestepSampler` (progress and batch latents forwarded); the family
+  applies only its declared transforms on top, in the RAW ``[0, 1000]`` space
+  (the wan flow-match ``add_noise`` lerp does the ``/1000``): the per-task
+  ``timestep_shift`` warp on every mode, and for the preset ``mode`` the
+  upstream renderer's cosine SD3 formula over a factory ``uniform`` draw. The
+  formula is transcribed verbatim from upstream ``bernini/training/data.py``
+  ``NoiseScheduler`` (see ``.agent/workdir/bernini-r-recon.md`` §4).
 
 - **Loss** — plain flow-match velocity ``noise - x0`` on the TARGET tokens only.
   No trainer override needed (see the driver docstring).
@@ -72,6 +75,12 @@ import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
+from app.engine.models.families.wan_shared.vae_utils import (
+    WAN_VAE_SPATIAL,
+    WAN_VAE_TEMPORAL,
+    WAN_VAE_Z_DIM,
+)
+from app.engine.strategies.timestep_sampling import TimestepSampler
 from app.engine.models.families.wan_shared.trainer_base import (
     DualExpertDeferredLoadMixin,
     WanTextCacheMixin,
@@ -106,6 +115,13 @@ class BerniniRTrainer(
     # Per-task shift-warp. v2v = 5.0 (upstream ``shift_config``); the definition
     # (BR4) supplies the effective value via config; this is the family default.
     DEFAULT_TIMESTEP_SHIFT: float = 5.0
+    # The family's declared transform mode and the YAML preset (``timestep_sampling: mode``).
+    DEFAULT_TIMESTEP_MODE: str = "mode"
+    # Wan DiT patch size (1, 2, 2): the token count the resolution-aware modes need.
+    PATCHIFY_FACTOR: int = 2
+    # Reference latent for the router estimate when the job names no resolution / frames.
+    DEFAULT_ROUTING_RESOLUTION: int = 1024
+    DEFAULT_ROUTING_FRAMES: int = 81
 
     # ── Setup ────────────────────────────────────────────────────────────
     def _setup_family(self) -> None:
@@ -159,16 +175,19 @@ class BerniniRTrainer(
         seed = int(self.config.get("seed", 0) or 0)
         mode = getattr(self, "expert_mode", "both")
         pinned = None if mode == "both" else mode
-        mode_scale, shift = self._timestep_params()
+        # Only a progress-dependent mode (radc) needs the estimate refreshed per interval.
+        progress_dependent = self._configured_mode() == "radc"
         router = ExpertRouter(
             boundary=self.driver.boundary,
             switch_interval=switch_interval,
             timestep_cfg=self.config,
             seed=seed,
             pinned_expert=pinned,
-            timestep_draw=lambda n: self._mode_shift_timesteps(
-                torch.rand(n), mode_scale, shift
+            timestep_draw=lambda n, progress=0.0, latents=None: self._warped_draw(
+                n, torch.device("cpu"), latents=latents, progress=progress
             ),
+            reference_latent_shape=self._routing_reference_shape(),
+            progress_provider=self._progress if progress_dependent else None,
         )
         self.expert_router = router
         self.driver.set_router(router)
@@ -246,16 +265,97 @@ class BerniniRTrainer(
         must see the un-scaled value).
         """
         driver = getattr(self, "driver", None)
+        self._log_timestep_mode_once()
+        progress = self._progress()
         if (
             driver is not None
             and getattr(driver, "is_dual", False)
             and getattr(driver, "router", None) is not None
         ):
-            return self._sample_band(driver.active_expert, batch_size)
+            return self._sample_band(
+                driver.active_expert, batch_size, latents=latents, progress=progress
+            )
 
+        return self._warped_draw(
+            batch_size, self.device, latents=latents, progress=progress
+        )
+
+    # ── The ONE distribution: factory base draw + the family's declared warps ──
+    def _configured_mode(self) -> str:
+        return str(self.config.get("timestep_sampling", self.DEFAULT_TIMESTEP_MODE))
+
+    def _progress(self) -> float:
+        """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""
+        max_steps = getattr(self, "max_train_steps", 1)
+        return getattr(self, "global_step", 0) / max(max_steps, 1)
+
+    def _factory_config(self) -> dict:
+        """The trainer's config carrying this DiT's patchified-token factor (2x2 patches)."""
+        if "flux_shift_patchify_factor" in self.config:
+            return self.config
+        return {**self.config, "flux_shift_patchify_factor": self.PATCHIFY_FACTOR}
+
+    def _warped_draw(
+        self,
+        n: int,
+        device: torch.device,
+        *,
+        latents: torch.Tensor | None = None,
+        progress: float = 0.0,
+    ) -> torch.Tensor:
+        """``n`` RAW ``[0, 1000]`` timesteps: configured mode (base draw) + the family warps.
+
+        ``mode`` is the one declared family transform (the upstream cosine formula,
+        which differs from the factory's rational ``mode``): it rides on a factory
+        ``uniform`` draw. Every other mode is the factory's own draw. The
+        ``timestep_shift`` warp is applied on top of every mode.
+        """
         mode_scale, shift = self._timestep_params()
-        raw = torch.rand(batch_size, device=self.device)
-        return self._mode_shift_timesteps(raw, mode_scale, shift)
+        cfg = self._factory_config()
+        mode = self._configured_mode()
+        if mode == "mode":
+            raw = TimestepSampler.sample(
+                "uniform", n, device, cfg, latents=latents, progress=progress
+            )
+            return self._mode_shift_timesteps(raw, mode_scale, shift)
+        t = TimestepSampler.sample(
+            mode, n, device, cfg, latents=latents, progress=progress
+        )
+        sigmas = shift * t / (1.0 + (shift - 1.0) * t)
+        return (sigmas * 1000.0).clamp(0.0, 1000.0)
+
+    def _routing_reference_shape(self) -> tuple[int, int, int, int, int]:
+        """``[1, C, F, H, W]`` of ONE reference latent for the router's p_high estimate.
+
+        Resolution = ``resolutions[0]`` of the job config (the base resolution);
+        frames = the config's ``num_frames`` else the definition default; the
+        family's WAN VAE factors give the latent grid.
+        """
+        resolutions = self.config.get("resolutions") or [self.DEFAULT_ROUTING_RESOLUTION]
+        res = int(resolutions[0])
+        frames = self.config.get("num_frames")
+        if frames is None:
+            defaults = getattr(getattr(self, "definition", None), "defaults", None) or {}
+            frames = defaults.get("num_frames", self.DEFAULT_ROUTING_FRAMES)
+        frames = max(int(frames), 1)
+        side = max(res // WAN_VAE_SPATIAL, 1)
+        return (1, WAN_VAE_Z_DIM, (frames - 1) // WAN_VAE_TEMPORAL + 1, side, side)
+
+    def _log_timestep_mode_once(self) -> None:
+        """Once per job, on the first draw: which mode ran (D10: nothing silent)."""
+        if getattr(self, "_timestep_mode_logged", False):
+            return
+        self._timestep_mode_logged = True
+        mode = self._configured_mode()
+        getattr(self, "logger", logger).info(
+            "timestep_sampling_mode",
+            family="bernini_r",
+            configured=mode,
+            effective=mode,
+            progress_forwarded=True,
+            res_influence=float(self.config.get("radc_res_influence", 0.15)),
+            routing_reference_shape=self._routing_reference_shape(),
+        )
 
     def _expert_band(self, expert: str) -> tuple[float, float]:
         """Raw ``[0, 1000]`` serving band for ``expert`` (inclusive-lo).
@@ -269,7 +369,14 @@ class BerniniRTrainer(
             return b, 1000.0
         return 0.0, b
 
-    def _sample_band(self, expert: str, batch_size: int) -> torch.Tensor:
+    def _sample_band(
+        self,
+        expert: str,
+        batch_size: int,
+        *,
+        latents: torch.Tensor | None = None,
+        progress: float | None = None,
+    ) -> torch.Tensor:
         """Redraw-clamped SD3-mode timesteps in ``expert``'s serving band.
 
         Draws from BERNINI's ``_mode_shift_timesteps`` distribution and keeps only
@@ -278,7 +385,8 @@ class BerniniRTrainer(
         Rejection (not rescale) preserves the mode+shift weighting shape within
         the band. On redraw exhaustion the remaining slots clamp into the band.
         """
-        mode_scale, shift = self._timestep_params()
+        if progress is None:
+            progress = self._progress()
         lo, hi = self._expert_band(expert)
         out = torch.empty(batch_size, device=self.device)
         filled = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
@@ -293,8 +401,8 @@ class BerniniRTrainer(
         rounds = 0
         while not bool(filled.all()) and rounds < _MAX_BAND_REDRAW_ROUNDS:
             need = int((~filled).sum().item())
-            cand = self._mode_shift_timesteps(
-                torch.rand(need, device=self.device), mode_scale, shift
+            cand = self._warped_draw(
+                need, self.device, latents=latents, progress=progress
             )
             ok = _in_band(cand)
             if bool(ok.any()):
@@ -307,7 +415,7 @@ class BerniniRTrainer(
         if not bool(filled.all()):
             # Pathological distribution: clamp the remaining slots strictly into
             # the band rather than hang (logged so it's visible).
-            self.logger.warning(
+            getattr(self, "logger", logger).warning(
                 "bernini_r_band_redraw_exhausted",
                 expert=expert,
                 rounds=rounds,

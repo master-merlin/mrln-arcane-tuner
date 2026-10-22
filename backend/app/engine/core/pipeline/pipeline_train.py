@@ -6,7 +6,7 @@ import os
 import random
 import time
 import uuid
-from typing import Any
+from typing import Any, NamedTuple
 
 import structlog
 import torch
@@ -21,6 +21,19 @@ def _sliding_window_frames(target_frames: int, temporal_downscale: int) -> int:
     from app.engine.components.latents import LatentManager
 
     return LatentManager.latent_frames(int(target_frames), int(temporal_downscale))
+
+
+class StepTensors(NamedTuple):
+    """Every tensor one micro-step builds, in ``forward_loss_step`` order."""
+
+    loss: torch.Tensor
+    timesteps: torch.Tensor
+    noise: torch.Tensor
+    prepared_latents: torch.Tensor
+    prepared_noise: torch.Tensor
+    noisy_input: torch.Tensor
+    pred: Any
+    target: Any
 
 
 class _RegionTimer:
@@ -162,6 +175,79 @@ class PipelineTrainMixin:
         if lw:
             lw.log("Step profile:\n" + body)
 
+    def make_training_noise(self, latents: torch.Tensor) -> torch.Tensor:
+        """The training loop's ONE noise draw for a batch of ``latents``, offset included.
+
+        Noise is sampled in SPATIAL space ``[B, C, ...]`` (before any packing): the
+        offset must be per-channel in spatial space, not in packed ``[B, L, D]`` space
+        where D interleaves 2x2 patch positions and would amplify the offset ~4x.
+        The configured ``noise_offset`` is read HERE, the one production read: a
+        strength > 0 adds a per-channel ``[B, C, 1, ...]`` gaussian offset scaled by
+        it (https://www.crosslabs.org/blog/diffusion-with-offset-noise).
+        """
+        noise_offset_strength = float(self.config.get("noise_offset", 0.0))
+        noise = torch.randn_like(latents)
+        if noise_offset_strength > 0:
+            noise_offset = noise_offset_strength * torch.randn(
+                latents.shape[0],
+                latents.shape[1],
+                *([1] * (latents.ndim - 2)),
+                device=self.device,
+                dtype=latents.dtype,
+            )
+            noise = noise + noise_offset
+        return noise
+
+    def forward_loss_step(
+        self,
+        latents: torch.Tensor,
+        text_emb: Any,
+        batch: dict[str, Any],
+        grad_accum: int,
+    ) -> "StepTensors":
+        """One micro-step's compute, from the clean ``latents`` to the scaled loss.
+
+        The training loop's whole noise -> pack -> timestep -> noise-add -> forward
+        -> target -> loss sequence through the family hooks, in this order; the loop
+        runs it under autocast and the ``forward_loss`` profiler region. Returned
+        whole so the loop logs ``timesteps`` and drops every batch-sized tensor.
+        """
+        noise = self.make_training_noise(latents)
+
+        # Pack/reshape latents AND noise together (family hook).
+        # Both must go through the same packing to stay aligned.
+        prepared_latents = self.prepare_latents_for_training(latents)
+        prepared_noise = self.prepare_noise_for_training(noise)
+
+        # Timesteps (family hook)
+        timesteps = self.sample_timesteps(prepared_latents.shape[0], latents)
+
+        # Track sigma distribution (non-fatal diagnostic).
+        try:
+            tracker = getattr(self, "_sigma_tracker", None)
+            if tracker is not None:
+                tracker.update(timesteps)
+        except Exception:  # noqa: BLE001
+            pass
+
+        # Add noise (family hook)
+        noisy_input = self.add_noise(prepared_latents, prepared_noise, timesteps)
+
+        # Forward pass (family hook)
+        pred = self.forward_pass(noisy_input, timesteps, text_emb, batch)
+
+        # Target (family hook)
+        target = self.compute_target(prepared_latents, prepared_noise, timesteps)
+
+        # Loss — family hook allows full override (e.g. pixel-space
+        # families like HiDream-O1 that bypass the latent/noise path
+        # and compute their own recipe loss in forward_pass).
+        loss = self._compute_step_loss(pred, target, timesteps, batch, grad_accum)
+        return StepTensors(
+            loss, timesteps, noise, prepared_latents, prepared_noise,
+            noisy_input, pred, target,
+        )
+
     def _iter_training_batches(self, batch_size: int):
         """Infinite bucket-aware batch iterator for the training loop.
 
@@ -273,7 +359,6 @@ class PipelineTrainMixin:
         except Exception:  # noqa: BLE001
             self._sigma_tracker = None
         grad_accum = int(self.config.get("gradient_accumulation_steps", 1))
-        noise_offset_strength = float(self.config.get("noise_offset", 0.0))
 
         # Bucket-aware infinite iterator with VRAM-safe warmup ordering.
         # Extracted to ``_iter_training_batches`` (behaviour-neutral) so the
@@ -524,64 +609,16 @@ class PipelineTrainMixin:
                 with torch.autocast(
                     "cuda", dtype=self.autocast_dtype, enabled=self.use_amp
                 ), self._prof_region("forward_loss"):
-                    # Sample noise in SPATIAL space [B,C,H,W] (before any packing).
-                    # This is critical: noise offset must be per-channel in spatial
-                    # space, not in packed [B,L,D] space where D interleaves
-                    # 2×2 patch positions and would amplify the offset ~4×.
-                    noise = torch.randn_like(latents)
-
-                    # Noise offset (https://www.crosslabs.org/blog/diffusion-with-offset-noise)
-                    if noise_offset_strength > 0:
-                        # Per-channel offset in spatial space: [B, C, 1, 1]
-                        noise_offset = noise_offset_strength * torch.randn(
-                            latents.shape[0],
-                            latents.shape[1],
-                            *([1] * (latents.ndim - 2)),
-                            device=self.device,
-                            dtype=latents.dtype,
-                        )
-                        noise = noise + noise_offset
-
-                    # Pack/reshape latents AND noise together (family hook).
-                    # Both must go through the same packing to stay aligned.
-                    prepared_latents = self.prepare_latents_for_training(latents)
-                    prepared_noise = self.prepare_noise_for_training(noise)
-
-                    # Timesteps (family hook)
-                    timesteps = self.sample_timesteps(
-                        prepared_latents.shape[0], latents
-                    )
-
-                    # Track sigma distribution (non-fatal diagnostic).
-                    try:
-                        if self._sigma_tracker is not None:
-                            self._sigma_tracker.update(timesteps)
-                    except Exception:  # noqa: BLE001
-                        pass
-
-                    # Add noise (family hook)
-                    noisy_input = self.add_noise(
-                        prepared_latents, prepared_noise, timesteps
-                    )
-
-                    # Forward pass (family hook)
-                    pred = self.forward_pass(noisy_input, timesteps, text_emb, batch)
-
-                    # Target (family hook)
-                    target = self.compute_target(
-                        prepared_latents, prepared_noise, timesteps
-                    )
-
-                    # Loss — family hook allows full override (e.g. pixel-space
-                    # families like HiDream-O1 that bypass the latent/noise path
-                    # and compute their own recipe loss in forward_pass).
-                    loss = self._compute_step_loss(
+                    (
+                        loss,
+                        timesteps,
+                        noise,
+                        prepared_latents,
+                        prepared_noise,
+                        noisy_input,
                         pred,
                         target,
-                        timesteps,
-                        batch,
-                        grad_accum,
-                    )
+                    ) = self.forward_loss_step(latents, text_emb, batch, grad_accum)
 
                 # 4. Backward
                 if torch.isnan(loss) or torch.isinf(loss):

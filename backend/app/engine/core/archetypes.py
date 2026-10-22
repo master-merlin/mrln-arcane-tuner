@@ -10,6 +10,8 @@ Additive only — it changes nothing about how jobs actually train.
 from __future__ import annotations
 from dataclasses import dataclass, field, asdict
 
+from app.engine.models.base import BaseTrainingConfig
+
 
 @dataclass(frozen=True)
 class Archetype:
@@ -55,6 +57,17 @@ class Archetype:
     # Default False on every archetype so only a definition's
     # ``capability_overrides`` flips it.
     supports_keyframe_marker: bool = False
+    # ── Engine fields a family may not apply (LANE-168, ECOSYSTEM §5 names) ──
+    # ``supports_min_snr``: the trainer weights its loss by Min-SNR(gamma) — only
+    # sdxl's ``compute_loss_weight`` reads ``min_snr_gamma``, so default False.
+    # ``supports_noise_offset``: the shared loop's ``make_training_noise`` reaches
+    # the model (default True; hidream_o1 draws its own patch-space noise).
+    # ``supports_flow_timestep_sampling``: the trainer draws its timesteps through
+    # the shared ``TimestepSampler`` (default True; sdxl's discrete uniform draw
+    # reads none of the ``FLOW_TIMESTEP_FIELDS``).
+    supports_min_snr: bool = False
+    supports_noise_offset: bool = True
+    supports_flow_timestep_sampling: bool = True
     config_defaults: dict = field(default_factory=dict)
 
 
@@ -117,6 +130,18 @@ PIXEL_TRANSFORMER = Archetype(
 ARCHETYPES: dict[str, Archetype] = {
     a.id: a for a in (LATENT_DIFFUSION, UNIFIED_TRANSFORMER, PIXEL_TRANSFORMER)
 }
+
+# Every flow-matching timestep field of the run-config schema, DERIVED from it (in
+# schema order) so a sub-field added later is gated with the rest, never silently
+# shown to a family that ignores it: the mode itself plus every parameter one of
+# the ``TimestepSampler`` modes reads.
+_FLOW_TIMESTEP_NAMES = frozenset({"timestep_sampling", "timestep_uniform_prob", "mode_scale"})
+_FLOW_TIMESTEP_PREFIXES = ("radc_", "flux_shift_", "model_shift_", "logit_normal_")
+FLOW_TIMESTEP_FIELDS: tuple[str, ...] = tuple(
+    name
+    for name in BaseTrainingConfig.model_fields
+    if name in _FLOW_TIMESTEP_NAMES or name.startswith(_FLOW_TIMESTEP_PREFIXES)
+)
 
 # Maps a config field -> the capability flag that gates it + a human reason.
 _FIELD_RULES: list[tuple[str, str, str]] = [
@@ -235,6 +260,25 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
     # ── Audio fields (gated by is_audio_family; hidden on every other family) ──
     ("duration_s", "is_audio_family", "this model has no audio-generation modality"),
     ("genre_ratio", "is_audio_family", "this model has no audio-generation modality"),
+    # ── Engine fields a family does not apply (LANE-168) ─────────────────
+    (
+        "min_snr_gamma",
+        "supports_min_snr",
+        "Min-SNR loss weighting applies to SDXL only",
+    ),
+    (
+        "noise_offset",
+        "supports_noise_offset",
+        "this model draws its own patch-space noise — no noise offset",
+    ),
+    *(
+        (
+            name,
+            "supports_flow_timestep_sampling",
+            "this model draws a discrete uniform timestep — no flow-matching timestep sampling",
+        )
+        for name in FLOW_TIMESTEP_FIELDS
+    ),
 ]
 
 

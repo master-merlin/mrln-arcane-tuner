@@ -67,7 +67,7 @@ optimum-quanto==0.2.7
 packaging==26.3
 pandas==3.0.6
 peft==0.20.0
-pillow==12.3.0
+pillow==13.0.0
 pillow-avif-plugin==1.6.0
 platformdirs==4.12.4
 pluggy==1.6.0

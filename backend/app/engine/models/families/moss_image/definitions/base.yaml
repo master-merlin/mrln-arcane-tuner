@@ -96,6 +96,236 @@ architecture_params:
 # targets). Native names -- the saver writes them as diffusion_model.<name>.lora_A/B.weight.
 # scheduler.shift is the checkpoint's inference grid shift (model card, 5.0); the repo's
 # scheduler_config.json harvests 1.0 and enrichment must not replace it (LANE-167, UAT 2026-10-20).
+  te.architectures:
+  - Qwen3_5Model
+  te.dtype: bfloat16
+  te.image_token_id: 248056
+  te.text_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    attn_output_gate: true
+    bos_token_id:
+    dtype: bfloat16
+    eos_token_id: 248044
+    full_attention_interval: 4
+    head_dim: 256
+    hidden_act: silu
+    hidden_size: 4096
+    initializer_range: 0.02
+    intermediate_size: 12288
+    layer_types:
+    - linear_attention
+    - linear_attention
+    - linear_attention
+    - full_attention
+    - linear_attention
+    - linear_attention
+    - linear_attention
+    - full_attention
+    - linear_attention
+    - linear_attention
+    - linear_attention
+    - full_attention
+    - linear_attention
+    - linear_attention
+    - linear_attention
+    - full_attention
+    - linear_attention
+    - linear_attention
+    - linear_attention
+    - full_attention
+    - linear_attention
+    - linear_attention
+    - linear_attention
+    - full_attention
+    - linear_attention
+    - linear_attention
+    - linear_attention
+    - full_attention
+    - linear_attention
+    - linear_attention
+    - linear_attention
+    - full_attention
+    linear_conv_kernel_dim: 4
+    linear_key_head_dim: 128
+    linear_num_key_heads: 16
+    linear_num_value_heads: 32
+    linear_value_head_dim: 128
+    mamba_ssm_dtype: float32
+    max_position_embeddings: 262144
+    mlp_only_layers: []
+    model_type: qwen3_5_text
+    mtp_num_hidden_layers: 1
+    mtp_use_dedicated_embeddings: false
+    num_attention_heads: 16
+    num_hidden_layers: 32
+    num_key_value_heads: 4
+    pad_token_id:
+    partial_rotary_factor: 0.25
+    rms_norm_eps: 1.0e-06
+    rope_parameters:
+      mrope_interleaved: true
+      mrope_section:
+      - 11
+      - 11
+      - 10
+      partial_rotary_factor: 0.25
+      rope_theta: 10000000
+      rope_type: default
+    tie_word_embeddings: false
+    use_cache: true
+    vocab_size: 248320
+  te.text_config.attention_bias: false
+  te.text_config.attention_dropout: 0.0
+  te.text_config.attn_output_gate: true
+  te.text_config.bos_token_id:
+  te.text_config.dtype: bfloat16
+  te.text_config.eos_token_id: 248044
+  te.text_config.full_attention_interval: 4
+  te.text_config.head_dim: 256
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 4096
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 12288
+  te.text_config.layer_types:
+  - linear_attention
+  - linear_attention
+  - linear_attention
+  - full_attention
+  - linear_attention
+  - linear_attention
+  - linear_attention
+  - full_attention
+  - linear_attention
+  - linear_attention
+  - linear_attention
+  - full_attention
+  - linear_attention
+  - linear_attention
+  - linear_attention
+  - full_attention
+  - linear_attention
+  - linear_attention
+  - linear_attention
+  - full_attention
+  - linear_attention
+  - linear_attention
+  - linear_attention
+  - full_attention
+  - linear_attention
+  - linear_attention
+  - linear_attention
+  - full_attention
+  - linear_attention
+  - linear_attention
+  - linear_attention
+  - full_attention
+  te.text_config.linear_conv_kernel_dim: 4
+  te.text_config.linear_key_head_dim: 128
+  te.text_config.linear_num_key_heads: 16
+  te.text_config.linear_num_value_heads: 32
+  te.text_config.linear_value_head_dim: 128
+  te.text_config.mamba_ssm_dtype: float32
+  te.text_config.max_position_embeddings: 262144
+  te.text_config.mlp_only_layers: []
+  te.text_config.model_type: qwen3_5_text
+  te.text_config.mtp_num_hidden_layers: 1
+  te.text_config.mtp_use_dedicated_embeddings: false
+  te.text_config.num_attention_heads: 16
+  te.text_config.num_hidden_layers: 32
+  te.text_config.num_key_value_heads: 4
+  te.text_config.pad_token_id:
+  te.text_config.partial_rotary_factor: 0.25
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_parameters:
+    mrope_interleaved: true
+    mrope_section:
+    - 11
+    - 11
+    - 10
+    partial_rotary_factor: 0.25
+    rope_theta: 10000000
+    rope_type: default
+  te.text_config.rope_parameters.mrope_interleaved: true
+  te.text_config.rope_parameters.mrope_section:
+  - 11
+  - 11
+  - 10
+  te.text_config.rope_parameters.partial_rotary_factor: 0.25
+  te.text_config.rope_parameters.rope_theta: 10000000
+  te.text_config.rope_parameters.rope_type: default
+  te.text_config.tie_word_embeddings: false
+  te.text_config.use_cache: true
+  te.text_config.vocab_size: 248320
+  te.tie_word_embeddings: false
+  te.video_token_id: 248057
+  te.vision_config:
+    deepstack_visual_indexes: []
+    depth: 27
+    dtype: bfloat16
+    hidden_act: gelu_pytorch_tanh
+    hidden_size: 1152
+    in_channels: 3
+    initializer_range: 0.02
+    intermediate_size: 4304
+    model_type: qwen3_5_vision
+    num_heads: 16
+    num_position_embeddings: 2304
+    out_hidden_size: 4096
+    patch_size: 16
+    spatial_merge_size: 2
+    temporal_patch_size: 2
+  te.vision_config.deepstack_visual_indexes: []
+  te.vision_config.depth: 27
+  te.vision_config.dtype: bfloat16
+  te.vision_config.hidden_act: gelu_pytorch_tanh
+  te.vision_config.hidden_size: 1152
+  te.vision_config.in_channels: 3
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 4304
+  te.vision_config.model_type: qwen3_5_vision
+  te.vision_config.num_heads: 16
+  te.vision_config.num_position_embeddings: 2304
+  te.vision_config.out_hidden_size: 4096
+  te.vision_config.patch_size: 16
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.temporal_patch_size: 2
+  te.vision_end_token_id: 248054
+  te.vision_start_token_id: 248053
+  scheduler._class_name: MOSSImageScheduler
+  scheduler.base_image_seq_len: 256
+  scheduler.base_shift: 0.5
+  scheduler.invert_sigmas: false
+  scheduler.max_image_seq_len: 4096
+  scheduler.max_shift: 1.15
+  scheduler.shift_terminal:
+  scheduler.stochastic_sampling: false
+  scheduler.time_shift_type: exponential
+  scheduler.training_shift: 1.0
+  scheduler.use_beta_sigmas: false
+  scheduler.use_exponential_sigmas: false
+  scheduler.use_karras_sigmas: false
+  vae.act_fn: silu
+  vae.batch_norm_momentum: 0.1
+  vae.down_block_types:
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  - DownEncoderBlock2D
+  vae.force_upcast: true
+  vae.in_channels: 3
+  vae.layers_per_block: 2
+  vae.mid_block_add_attention: true
+  vae.norm_num_groups: 32
+  vae.out_channels: 3
+  vae.sample_size: 1024
+  vae.up_block_types:
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  - UpDecoderBlock2D
+  vae.use_post_quant_conv: true
+  vae.use_quant_conv: true
 enrich_pinned_keys:
 - scheduler.shift
 lora_targetable_modules:
@@ -351,3 +581,8 @@ lora_targetable_modules:
 - layers.41.proj.o
 - layers.41.proj.ffn_up_gate
 - layers.41.proj.ffn_down
+block_topology:
+- name: layers
+  attr_path: layers
+  count: 42
+  approx_vram_mb: 240

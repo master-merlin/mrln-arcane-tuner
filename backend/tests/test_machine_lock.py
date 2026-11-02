@@ -6,7 +6,7 @@ under test is exactly the one a thread cannot show: two Python processes
 that share nothing but a path.
 
 All tests point ``MRLN_MACHINE_LOCK_DIR`` at ``tmp_path`` so they never contend
-with (or wrongly recover) a real ``_harness/.gpu.lock`` held by another run.
+with (or wrongly recover) a real ``.gpu.lock`` held by another run.
 """
 import json
 import os
@@ -84,17 +84,13 @@ def _release(report: Path) -> None:
 # ── path ─────────────────────────────────────────────────────────────────
 
 
-def test_the_default_directory_is_the_shared_harness_dir_or_the_machine_tempdir(monkeypatch):
+def test_the_default_directory_is_the_machine_tempdir(monkeypatch):
+    import tempfile
+
     monkeypatch.delenv(LOCK_DIR_ENV, raising=False)
     d = lock_dir()
-    repo = BACKEND.parent
     assert d.is_dir()
-    if (repo / "_harness").is_dir():
-        assert d == repo / "_harness", d
-    else:  # a public clone: still one file per machine
-        import tempfile
-
-        assert d == Path(tempfile.gettempdir()), d
+    assert d == Path(tempfile.gettempdir()), d  # one file per machine
     assert lock_path("gpu").name == ".gpu.lock"
 
 

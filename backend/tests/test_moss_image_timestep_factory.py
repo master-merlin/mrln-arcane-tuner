@@ -181,8 +181,9 @@ def test_moss_image_scheduler_keys_pinned(enrich_copy, registry_log):
         data = yaml.safe_load((FAMILY_DIR / "definitions" / filename).read_text(encoding="utf-8"))
         assert "scheduler.shift" in (data.get("enrich_pinned_keys") or []), (
             f"'scheduler.shift' not in enrich_pinned_keys of {did}")
-        assert "scheduler.training_shift" not in data["architecture_params"], (
-            f"{did} still declares scheduler.training_shift")
+        # Enrichment appends the repo's 1.0 after a real run; any other value would mislead.
+        assert float(data["architecture_params"].get("scheduler.training_shift", 1.0)) == 1.0, (
+            f"{did} declares a scheduler.training_shift other than the repo's 1.0")
 
     for did, filename in ((BASE_ID, "base.yaml"), (SFT_ID, "sft.yaml")):
         registry_log.events.clear()

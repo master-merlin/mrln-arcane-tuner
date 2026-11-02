@@ -11,6 +11,7 @@ even when the old file is still memory-mapped.
 
 import os
 import time
+from collections.abc import Callable
 
 from safetensors.torch import save_file
 
@@ -20,6 +21,34 @@ logger = get_logger(__name__)
 
 _MAX_RETRIES = 3
 _RETRY_DELAY = 1.0  # seconds
+
+# Windows refuses a rename while any process holds a handle on the file or inside
+# the folder: access denied (5) or a sharing violation (32).
+_FILE_LOCK_WINERRORS = frozenset({5, 32})
+_FILE_LOCK_BACKOFF = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0)  # seconds
+
+
+def is_file_lock_error(error: BaseException) -> bool:
+    """Whether ``error`` is Windows reporting a lock, not a real permission problem."""
+    return isinstance(error, PermissionError) and getattr(error, "winerror", None) in _FILE_LOCK_WINERRORS
+
+
+def retry_file_lock(rename: Callable[[str, str], None], src: str, dst: str) -> None:
+    """``rename(src, dst)``, retried within a bound while Windows reports a file lock.
+
+    Any other error raises at once, and so does the lock error once the bound
+    is used up.
+    """
+    for delay in _FILE_LOCK_BACKOFF:
+        try:
+            rename(src, dst)
+            return
+        except PermissionError as e:
+            if not is_file_lock_error(e):
+                raise
+            logger.warning("file_lock_retry", src=src, dst=dst, delay=delay, error=str(e))
+            time.sleep(delay)
+    rename(src, dst)
 
 
 def safe_save_file(
@@ -47,7 +76,7 @@ def safe_save_file(
                     pass
 
             save_file(tensors, tmp_path, metadata=metadata)
-            os.replace(tmp_path, path)
+            retry_file_lock(os.replace, tmp_path, path)
             return  # success
         except (OSError, Exception) as e:
             err_str = str(e)

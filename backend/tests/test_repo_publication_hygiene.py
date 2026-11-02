@@ -91,6 +91,13 @@ def _staged_by_default(tmp_path: Path, files: list[str]) -> list[str]:
     "frontend/src/_notes/plan.txt",
     ".hidden-tools/config.json",
     "backend/.hidden-tools/config.json",
+    # Under every path a re-include opens: the last matching rule wins.
+    ".github/_tooling/config.json",
+    ".github/workflows/_tooling/config.yml",
+    ".github/.hidden-tools/config.json",
+    "docs/_tooling/notes.md",
+    "docs/.hidden-tools/notes.md",
+    "backend/app/engine/models/families/some_family/vendor/_tooling/notes.md",
 ])
 def test_a_private_directory_is_never_staged_by_default(tmp_path: Path, rel: str) -> None:
     """The guard above only speaks after a commit; ignoring is what stops `git add -A`."""
@@ -100,9 +107,13 @@ def test_a_private_directory_is_never_staged_by_default(tmp_path: Path, rel: str
 @pytest.mark.parametrize("rel", [
     "frontend/src/app/__tests__/new.spec.ts",
     "backend/tests/_lint_data/new.py",
+    ".github/workflows/new.yml",
+    ".github/ISSUE_TEMPLATE/new.md",
+    "docs/guides/new.md",
+    "backend/app/engine/models/families/some_family/vendor/NOTES.md",
 ])
-def test_a_public_directory_with_a_leading_underscore_still_stages(tmp_path: Path, rel: str) -> None:
-    """Positive control: the rule above must not swallow directories that are tracked today."""
+def test_a_public_path_still_stages(tmp_path: Path, rel: str) -> None:
+    """Positive control: the rule above must not swallow what is public today."""
     assert _staged_by_default(tmp_path, [rel]) == [rel]
 
 

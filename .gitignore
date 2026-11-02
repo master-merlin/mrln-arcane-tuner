@@ -42,11 +42,6 @@ backend/tests/import-time*.db*
 # form available: git does not descend into it, so nothing inside can be
 # resurfaced by a later re-include, deliberately or by accident.
 _docs/
-# Any directory with one leading underscore is private too, at any depth, so
-# `git add -A` can't pick one up. `__tests__` and `__pycache__` have two; a public
-# one is re-included by name.
-_[!_]*/
-!_lint_data/
 /adapters/
 /scripts/
 graphify-out/
@@ -122,3 +117,15 @@ Desktop.ini
 # was ever pushed, so nothing public changed.
 # `documentation/` no longer exists: ARCHITECTURE.md moved to `docs/` and the
 # user chose a clean rename over a redirect stub (LANE-62, 2026-09-01).
+
+# ========================
+# Private directories: keep this LAST
+# ========================
+# The last matching rule wins, so these sit below every re-include above: a
+# directory with one leading underscore, at any depth, and a dot directory inside
+# `.github`, which `!.github/**` would otherwise open. `git add -A` can't pick one
+# up. `__tests__` and `__pycache__` have two underscores; a public directory with
+# one is re-included by name.
+_[!_]*/
+!_lint_data/
+.github/**/.*/

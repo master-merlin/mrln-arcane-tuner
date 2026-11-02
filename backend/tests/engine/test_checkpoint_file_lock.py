@@ -26,6 +26,7 @@ from app.engine.components.checkpoints import (
     _publish_folder,
     checkpoint_resumable,
     remove_unfinished_saves,
+    select_resumable_checkpoint,
 )
 from app.engine.utils import safe_save as safe_save_mod
 from app.engine.utils.safe_save import retry_file_lock, safe_save_file
@@ -415,6 +416,82 @@ def test_an_unfinished_name_is_never_resumable_even_with_valid_content(tmp_path,
     folder.rename(renamed)
 
     assert checkpoint_resumable(renamed)[0] is False
+
+
+def _raise_lock(*_args, **_kwargs):
+    raise _locked(32)
+
+
+@pytest.fixture(params=["manifest", "size", "zip"])
+def locked_read(request, monkeypatch):
+    """Applies a lock to one of the reads the content validation makes."""
+
+    def apply() -> None:
+        if request.param == "manifest":
+            monkeypatch.setattr(ckpt_mod, "open", _raise_lock, raising=False)
+        elif request.param == "size":
+            monkeypatch.setattr(os.path, "getsize", _raise_lock)
+        else:
+            monkeypatch.setattr(ckpt_mod.zipfile, "ZipFile", _raise_lock)
+
+    return apply
+
+
+def test_a_backup_that_cannot_be_read_is_kept(tmp_path, locked_read, monkeypatch):
+    final, replaced = _left_replaced(tmp_path)
+    before = _contents(replaced)
+    locked_read()
+
+    remove_unfinished_saves(tmp_path)
+
+    monkeypatch.undo()
+    assert not final.exists()
+    assert _contents(replaced) == before
+
+
+def test_a_locked_read_is_still_not_resumable(tmp_path, locked_read):
+    folder = _save(tmp_path, 5)
+    locked_read()
+
+    ok, reason = checkpoint_resumable(folder)
+
+    assert ok is False
+    assert "locked" in reason or "unreadable" in reason
+
+
+# ── select_resumable_checkpoint ──────────────────────────────────────────
+
+
+def test_resume_finds_a_backup_that_is_the_only_save(tmp_path):
+    final, replaced = _left_replaced(tmp_path)
+
+    best, skipped = select_resumable_checkpoint(tmp_path)
+
+    assert best == (final.name, 5)
+    assert skipped == []
+    assert not replaced.exists()
+
+
+def test_resume_prefers_a_newer_backup_over_an_older_save(tmp_path):
+    _save(tmp_path, 5)
+    final, _replaced_folder = _left_replaced(tmp_path, step=10)
+
+    best, _skipped = select_resumable_checkpoint(tmp_path)
+
+    assert best == (final.name, 10)
+
+
+def test_resume_selection_deletes_nothing(tmp_path):
+    staging = tmp_path / "checkpoint-000007.staging-0123456789ab"
+    invalid = tmp_path / "checkpoint-000008.replaced-0123456789ab"
+    for folder in (staging, invalid):
+        folder.mkdir()
+        (folder / "keep.txt").write_text("x")
+
+    assert select_resumable_checkpoint(tmp_path) == (None, [])
+
+    assert (staging / "keep.txt").exists()
+    assert (invalid / "keep.txt").exists()
 
 
 def test_the_next_cleanup_restores_what_an_exhausted_rollback_left(tmp_path, sleeps, monkeypatch):

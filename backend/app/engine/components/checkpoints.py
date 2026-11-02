@@ -282,6 +282,8 @@ def _pt_problem(path: str) -> str | None:
     try:
         with zipfile.ZipFile(path) as zf:
             zf.namelist()
+    except PermissionError:
+        raise  # a lock says nothing about the file: see _checkpoint_content_intact
     except (zipfile.BadZipFile, OSError, EOFError, ValueError) as e:
         return f"{type(e).__name__}: {e}"
     return None
@@ -296,11 +298,18 @@ def checkpoint_resumable(folder: str | os.PathLike[str]) -> tuple[bool, str]:
     name = os.path.basename(os.path.normpath(folder))
     if STAGING_MARK in name or REPLACED_MARK in name:
         return False, f"{name} is an unfinished save (staging/replaced folder)"
-    return _checkpoint_content_intact(folder)
+    try:
+        return _checkpoint_content_intact(folder)
+    except PermissionError as e:
+        return False, f"{name} is unreadable, a file in it is locked ({e})"
 
 
 def _checkpoint_content_intact(folder: str) -> tuple[bool, str]:
-    """``checkpoint_resumable`` without its check of the folder's name."""
+    """``checkpoint_resumable`` without its check of the folder's name.
+
+    ``(False, reason)`` is proof of damage. A read that hits a lock proves
+    nothing, so its ``PermissionError`` is raised to the caller.
+    """
     name = os.path.basename(os.path.normpath(folder))
     if not os.path.isdir(folder):
         return False, f"{name} does not exist"
@@ -311,6 +320,8 @@ def _checkpoint_content_intact(folder: str) -> tuple[bool, str]:
         try:
             with open(manifest_path, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
+        except PermissionError:
+            raise
         except (OSError, ValueError) as e:
             return False, f"{MANIFEST_NAME} is unreadable ({e})"
         if not isinstance(manifest, dict):
@@ -327,6 +338,8 @@ def _checkpoint_content_intact(folder: str) -> tuple[bool, str]:
                 fpath = os.path.join(folder, *str(rel).split("/"))
                 try:
                     actual = os.path.getsize(fpath)
+                except PermissionError:
+                    raise
                 except OSError:
                     return False, f"{rel} is missing"
                 if actual != size:
@@ -341,6 +354,8 @@ def _checkpoint_content_intact(folder: str) -> tuple[bool, str]:
         for entry in os.listdir(folder):
             if entry.endswith(".pt") and os.path.isfile(os.path.join(folder, entry)):
                 pt_files.add(entry)
+    except PermissionError:
+        raise
     except OSError as e:
         return False, f"folder is unreadable ({e})"
     for rel in sorted(pt_files):
@@ -364,8 +379,12 @@ def select_resumable_checkpoint(
 
     ``skipped`` lists ``(folder, reason)`` for each NEWER folder that was
     passed over; the CALLER logs each (failure never silent).
+
+    A backup left by an interrupted save is restored first, so call this only
+    for a run that is not training.
     """
     run_dir = os.fspath(run_dir)
+    restore_replaced_saves(run_dir)
     candidates: list[tuple[int, str]] = []
     try:
         for entry in os.scandir(run_dir):
@@ -438,31 +457,49 @@ def _load_pt(path: str, last_good: str | None) -> Any:
         ) from e
 
 
+def _own_unfinished_folders(output_dir: str) -> list[os.DirEntry]:
+    try:
+        return [e for e in os.scandir(output_dir) if e.is_dir() and _OWN_UNFINISHED_RE.match(e.name)]
+    except OSError:
+        return []
+
+
+def restore_replaced_saves(output_dir: str | os.PathLike[str]) -> set[str]:
+    """Move a ``.replaced-*`` folder back when it is the last complete save.
+
+    If a swap died between renaming the old folder away and moving the new one
+    in, the final name is missing and the ``.replaced-*`` folder IS that save.
+    It is moved back when it validates. One that can't be read or moved is kept
+    where it is, and its name returned. Nothing is deleted here.
+    """
+    output_dir = os.fspath(output_dir)
+    kept: set[str] = set()
+    for entry in _own_unfinished_folders(output_dir):
+        if REPLACED_MARK not in entry.name:
+            continue
+        final_name = entry.name.split(REPLACED_MARK)[0]
+        final_path = os.path.join(output_dir, final_name)
+        if os.path.exists(final_path):
+            continue
+        try:
+            if _checkpoint_content_intact(entry.path)[0]:
+                retry_file_lock(os.rename, entry.path, final_path)
+                logger.warning("restored_replaced_checkpoint", folder=final_name)
+        except OSError as e:
+            logger.error("restore_replaced_checkpoint_failed", folder=entry.name, error=str(e))
+            kept.add(entry.name)
+    return kept
+
+
 def remove_unfinished_saves(output_dir: str | os.PathLike[str]) -> None:
     """Remove this run's own ``.staging-*`` / ``.replaced-*`` folders.
 
-    If a swap died between renaming the old folder away and moving the new one
-    in, the final name is missing and the ``.replaced-*`` folder IS the last
-    complete save: it is moved back (when it validates) instead of deleted, and
-    stays where it is if it can't be moved.
+    ``restore_replaced_saves`` runs first, and what it kept is not removed.
     """
     output_dir = os.fspath(output_dir)
-    try:
-        entries = [e for e in os.scandir(output_dir) if e.is_dir()]
-    except OSError:
-        return
-    for entry in entries:
-        if _OWN_UNFINISHED_RE.match(entry.name) and REPLACED_MARK in entry.name:
-            final_name = entry.name.split(REPLACED_MARK)[0]
-            final_path = os.path.join(output_dir, final_name)
-            if not os.path.exists(final_path) and _checkpoint_content_intact(entry.path)[0]:
-                try:
-                    retry_file_lock(os.rename, entry.path, final_path)
-                    logger.warning("restored_replaced_checkpoint", folder=final_name)
-                except OSError as e:
-                    logger.error("restore_replaced_checkpoint_failed", folder=entry.name, error=str(e))
-                continue
-        if _OWN_UNFINISHED_RE.match(entry.name):
+    kept = restore_replaced_saves(output_dir)
+    for entry in _own_unfinished_folders(output_dir):
+        if entry.name not in kept:
             shutil.rmtree(entry.path, ignore_errors=True)
 
 

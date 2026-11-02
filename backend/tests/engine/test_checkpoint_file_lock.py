@@ -25,6 +25,7 @@ from app.engine.components.checkpoints import (
     CheckpointManager,
     _publish_folder,
     checkpoint_resumable,
+    remove_unfinished_saves,
 )
 from app.engine.utils import safe_save as safe_save_mod
 from app.engine.utils.safe_save import retry_file_lock, safe_save_file
@@ -337,3 +338,99 @@ def test_a_lock_that_outlasts_the_bound_fails_the_save_by_name(tmp_path, sleeps,
 
     assert checkpoint_resumable(earlier) == (True, "")
     assert not list(tmp_path.glob(f"*{ckpt_mod.STAGING_MARK}*"))
+
+
+# ── remove_unfinished_saves ──────────────────────────────────────────────
+
+
+def _left_replaced(run: Path, step: int = 5) -> tuple[Path, Path]:
+    """A real, valid checkpoint left under its ``.replaced-`` name: ``(final, replaced)``."""
+    final = _save(run, step)
+    replaced = run / f"{final.name}{ckpt_mod.REPLACED_MARK}0123456789ab"
+    final.rename(replaced)
+    return final, replaced
+
+
+def _contents(folder: Path) -> dict[str, bytes]:
+    return {p.name: p.read_bytes() for p in folder.iterdir() if p.is_file()}
+
+
+def test_a_valid_replaced_folder_is_restored_when_the_final_name_is_missing(tmp_path):
+    final, replaced = _left_replaced(tmp_path)
+    before = _contents(replaced)
+
+    remove_unfinished_saves(tmp_path)
+
+    assert not replaced.exists()
+    assert _contents(final) == before
+    assert checkpoint_resumable(final) == (True, "")
+
+
+def test_the_restore_retries_a_locked_rename(tmp_path, sleeps, monkeypatch):
+    final, replaced = _left_replaced(tmp_path)
+    monkeypatch.setattr(os, "rename", _Rename(_locked(), real=_REAL_RENAME))
+
+    remove_unfinished_saves(tmp_path)
+
+    assert checkpoint_resumable(final) == (True, "")
+    assert sleeps == _BACKOFF[:1]
+
+
+def test_a_restore_that_stays_locked_keeps_the_folder(tmp_path, sleeps, monkeypatch):
+    final, replaced = _left_replaced(tmp_path)
+    before = _contents(replaced)
+    monkeypatch.setattr(os, "rename", _Rename(*_locks()))
+
+    remove_unfinished_saves(tmp_path)
+
+    assert not final.exists()
+    assert _contents(replaced) == before
+
+
+def test_a_replaced_folder_is_removed_when_the_final_name_exists(tmp_path):
+    final, replaced = _left_replaced(tmp_path)
+    final.mkdir()
+    (final / "state.txt").write_text("newer")
+
+    remove_unfinished_saves(tmp_path)
+
+    assert not replaced.exists()
+    assert (final / "state.txt").read_text() == "newer"
+
+
+def test_a_replaced_folder_with_invalid_content_is_removed(tmp_path):
+    final, replaced = _left_replaced(tmp_path)
+    (replaced / "training_state.json").unlink()
+
+    remove_unfinished_saves(tmp_path)
+
+    assert not replaced.exists()
+    assert not final.exists()
+
+
+@pytest.mark.parametrize("mark", [ckpt_mod.STAGING_MARK, ckpt_mod.REPLACED_MARK])
+def test_an_unfinished_name_is_never_resumable_even_with_valid_content(tmp_path, mark):
+    folder = _save(tmp_path, 5)
+    renamed = tmp_path / f"{folder.name}{mark}0123456789ab"
+    folder.rename(renamed)
+
+    assert checkpoint_resumable(renamed)[0] is False
+
+
+def test_the_next_cleanup_restores_what_an_exhausted_rollback_left(tmp_path, sleeps, monkeypatch):
+    final = _save(tmp_path, 5)
+    before = _contents(final)
+    staging = tmp_path / f"{final.name}{ckpt_mod.STAGING_MARK}0123456789ab"
+    staging.mkdir()
+
+    with monkeypatch.context() as locked:
+        locked.setattr(os, "replace", _Rename(*_locks()))
+        locked.setattr(os, "rename", _Rename(None, *_locks(), real=_REAL_RENAME))
+        with pytest.raises(CheckpointFolderLocked):
+            _publish_folder(str(staging), str(final))
+    assert not final.exists()
+
+    remove_unfinished_saves(tmp_path)
+
+    assert _contents(final) == before
+    assert checkpoint_resumable(final) == (True, "")

@@ -296,6 +296,12 @@ def checkpoint_resumable(folder: str | os.PathLike[str]) -> tuple[bool, str]:
     name = os.path.basename(os.path.normpath(folder))
     if STAGING_MARK in name or REPLACED_MARK in name:
         return False, f"{name} is an unfinished save (staging/replaced folder)"
+    return _checkpoint_content_intact(folder)
+
+
+def _checkpoint_content_intact(folder: str) -> tuple[bool, str]:
+    """``checkpoint_resumable`` without its check of the folder's name."""
+    name = os.path.basename(os.path.normpath(folder))
     if not os.path.isdir(folder):
         return False, f"{name} does not exist"
 
@@ -437,7 +443,8 @@ def remove_unfinished_saves(output_dir: str | os.PathLike[str]) -> None:
 
     If a swap died between renaming the old folder away and moving the new one
     in, the final name is missing and the ``.replaced-*`` folder IS the last
-    complete save: it is moved back (when it validates) instead of deleted.
+    complete save: it is moved back (when it validates) instead of deleted, and
+    stays where it is if it can't be moved.
     """
     output_dir = os.fspath(output_dir)
     try:
@@ -448,13 +455,13 @@ def remove_unfinished_saves(output_dir: str | os.PathLike[str]) -> None:
         if _OWN_UNFINISHED_RE.match(entry.name) and REPLACED_MARK in entry.name:
             final_name = entry.name.split(REPLACED_MARK)[0]
             final_path = os.path.join(output_dir, final_name)
-            if not os.path.exists(final_path) and checkpoint_resumable(entry.path)[0]:
+            if not os.path.exists(final_path) and _checkpoint_content_intact(entry.path)[0]:
                 try:
-                    os.rename(entry.path, final_path)
+                    retry_file_lock(os.rename, entry.path, final_path)
                     logger.warning("restored_replaced_checkpoint", folder=final_name)
-                    continue
-                except OSError:
-                    pass
+                except OSError as e:
+                    logger.error("restore_replaced_checkpoint_failed", folder=entry.name, error=str(e))
+                continue
         if _OWN_UNFINISHED_RE.match(entry.name):
             shutil.rmtree(entry.path, ignore_errors=True)
 

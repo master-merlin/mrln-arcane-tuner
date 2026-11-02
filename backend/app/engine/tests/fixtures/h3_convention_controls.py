@@ -8,7 +8,7 @@ the source guards are REQUIRED to flag (CONVENTIONS "Tests" rule 11):
 * a second ``1 - sigma`` conversion site outside ``schedule.py`` — training
   and sampling conventions diverging (test 8 ``share_one_conversion_module``).
 
-Plan row 1.2 (``_harness/plans/2026-09-12-minimax-h3-pr1.md``).
+Plan row 1.2.
 """
 
 from __future__ import annotations

@@ -3,7 +3,7 @@
 # The SFT definition (sft.yaml) differs ONLY in id, name and the pinned repo revision
 # (test_moss_image_definition_defaults holds the two files to that).
 # architecture_params mirror the checkpoint's transformer/config.json and scheduler_config.json at the
-# pinned revision (_harness/research/moss-image-family.md §1.2-§1.5).
+# pinned revision.
 id: moss-image-base
 family: moss_image
 name: MOSS-Image (Base)

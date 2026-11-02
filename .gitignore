@@ -81,8 +81,6 @@ Desktop.ini
 *.env
 .env.*
 
-# MRLN-Harness (imported by _harness/tools/import_harness.py)
-_harness/
 .agent/workdir/
 .agent/output/
 .claude/settings.local.json
@@ -114,9 +112,8 @@ _harness/
 !CONTRIBUTING.md
 !CHANGELOG.md
 # API_CONVENTIONS.md, LOGGING.md and TESTING.md are INTERNAL (`_docs/`) as of
-# 2026-09-02, on the user's word: "we will not publish the harness". They were
+# 2026-09-02. They were
 # re-included here briefly by the release-hardening pass; nothing under docs/
 # was ever pushed, so nothing public changed.
 # `documentation/` no longer exists: ARCHITECTURE.md moved to `docs/` and the
 # user chose a clean rename over a redirect stub (LANE-62, 2026-09-01).
-.claude/hooks/harness_state.json

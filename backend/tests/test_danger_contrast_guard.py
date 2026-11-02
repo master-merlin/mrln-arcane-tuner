@@ -44,7 +44,7 @@ necessarily pixels painted today. The split pair is a live hazard — an overrid
 that moves the background without the colour — and resolving which declaration
 wins needs the workspace rendered against a running backend. LANE-36 could not
 measure it (backend not answering on :8000 during that pass) and deliberately did
-not guess: see ``_harness/LESSONS.md``.
+not guess.
 
 The *other* duty of
 ``--color-danger`` — danger-as-TEXT on a surface, which wants 4.5:1 — is NOT

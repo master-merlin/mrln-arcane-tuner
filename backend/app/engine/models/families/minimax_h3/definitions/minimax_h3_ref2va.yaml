@@ -23,7 +23,7 @@ version: '1.0'
 #
 # ref2va has a defect of its own: reference conditioning is UNBUILT, not
 # unanswerable -- see `unavailable_reason` below and
-# `_harness/research/minimax-h3-context-ir.md` (Verdict: NOT REQUIRED); those
+# `CONTEXT_IR_VERDICT` (Verdict: NOT REQUIRED); those
 # two are the ONE statement of why this definition is gated, and
 # `test_definition_availability_gate.py::test_ref2va_reason_is_true_today`
 # pins its meaning. As with fl2va, `mode: both` is the only thing separating

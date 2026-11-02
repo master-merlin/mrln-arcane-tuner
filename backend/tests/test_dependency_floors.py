@@ -470,7 +470,7 @@ def test_lock_libc_guard_names_stripped_entries():
 
 
 # ---------------------------------------------------------------------------
-# LANE-163: Dependabot 2026-10-14 (PRs #50-#56). Verdicts: _harness/lanes/LANE-163/spec.md.
+# LANE-163: Dependabot 2026-10-14 (PRs #50-#56).
 # One producer of each floor: these tables. Older lanes' rows above stay untouched.
 # ---------------------------------------------------------------------------
 

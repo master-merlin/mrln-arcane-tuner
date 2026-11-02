@@ -323,7 +323,7 @@ the same database as everything else and are untouched by an update.
 
 ## Field reference (generated from the schema)
 
-<!-- This heading is a machine anchor, not prose: `_harness/tools/
+<!-- This heading is a machine anchor, not prose: `backend/scripts/
      docs_schema_explainers.py` looks for it verbatim (`_SECTION_HEADING`) to
      find the generated blocks below. Renaming it makes --check report all
      nine groups as stale. Change the tool's constant in the same commit or

@@ -65,8 +65,7 @@ def test_no_third_party_asset_origins() -> None:
 
     assert offenders == [], (
         "Third-party asset origin referenced from frontend sources. Vendor the "
-        "asset under frontend/public/ instead — see "
-        "_harness/research/csp-policy-for-request-2.md.\n  " + "\n  ".join(offenders)
+        "asset under frontend/public/ instead.\n  " + "\n  ".join(offenders)
     )
 
 
@@ -144,8 +143,7 @@ def test_no_inline_style_attributes_in_index_html() -> None:
 
     A `<style>` block can be hashed; a style attribute needs 'unsafe-inline' (or
     'unsafe-hashes') in style-src-attr. Keeping index.html free of them is what
-    lets the delivered policy stay tight — see
-    _harness/research/csp-policy-for-request-2.md.
+    lets the delivered policy stay tight.
     """
     html = INDEX_HTML.read_text(encoding="utf-8")
     assert re.search(r"\sstyle=\"", html) is None, (

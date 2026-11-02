@@ -14,7 +14,7 @@ project never does -- the code is vendored and reviewed instead (ARCHITECTURE D1
 | **Model weights** | [`OpenMOSS-Team/MOSS-Image-Base`](https://huggingface.co/OpenMOSS-Team/MOSS-Image-Base), [`OpenMOSS-Team/MOSS-Image-SFT`](https://huggingface.co/OpenMOSS-Team/MOSS-Image-SFT) (Apache-2.0, ungated) |
 
 The SFT repository's `pipeline_moss_image.py` at `fc5de0d56fc910cbca6f6625a70f5f582b26deb1` is
-byte-identical (`cmp`, `_harness/research/moss-image-family.md` §1.1).
+byte-identical (`cmp`).
 
 ## What changed
 

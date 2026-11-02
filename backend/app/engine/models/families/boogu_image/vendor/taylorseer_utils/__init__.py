@@ -12,7 +12,7 @@ caller's import paths are frozen.
 
 This is a CLEAN-ROOM replacement for a GPL-3.0-derived implementation, written
 from the ICCV 2025 TaylorSeer paper, from
-``_harness/research/taylorseer-cache-behavioural-spec.md``, and from
+a behavioural specification derived from it, and from
 ``models/transformers/transformer_boogu.py`` (Boogu's own Apache-2.0 caller,
 which is not TaylorSeer-derived). It is not derived from the code it replaces.
 See :mod:`...taylor_cache` for the full provenance note.

@@ -176,8 +176,8 @@ class TestTheBatRelaunches:
 
     def test_a_relaunch_that_cannot_bind_is_narrated_not_retried(self, tmp_path):
         """75 then 3: the relaunched server failed to start. One line naming the
-        likely holder of the port, exit 3 — narration, not a loop (Shepherd cut
-        the retry: an unobserved hypothesis is not a branch to ship)."""
+        likely holder of the port, exit 3 — narration, not a loop (the retry was
+        cut: an unobserved hypothesis is not a branch to ship)."""
         h = _Harness(tmp_path)
         proc = h.run(f"{RESTART_EXIT_CODE},3,0")
 

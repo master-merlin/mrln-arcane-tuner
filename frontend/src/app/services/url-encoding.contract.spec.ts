@@ -9,8 +9,7 @@ import { datasetPreviewUrl } from '../shared/media-preview';
 
 /**
  * Guard for the URL path-segment encoding contract (plan Task 2, RULE-20
- * class T). Contract: `_harness/research/url-path-segment-encoding-contract.md`,
- * ECOSYSTEM §5 row 4.
+ * class T). Contract: ECOSYSTEM §5 row 4.
  *
  * The defect these pin is not theoretical. Raw interpolation of a filename
  * containing `#` or `?` truncates the URL at the fragment or query, so the

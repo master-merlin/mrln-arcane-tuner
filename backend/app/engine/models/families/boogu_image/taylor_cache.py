@@ -6,8 +6,8 @@ This module was written from, and only from:
 
 * *From Reusing to Forecasting: Accelerating Diffusion Models with TaylorSeers*
   (ICCV 2025) — the published method;
-* ``_harness/research/taylorseer-cache-behavioural-spec.md`` — the behavioural
-  specification derived from that paper and from the caller below;
+* the behavioural specification derived from that paper and from the caller
+  below;
 * ``vendor/models/transformers/transformer_boogu.py`` — Boogu-Image's own
   **Apache-2.0** code. It is the caller, it is not TaylorSeer-derived, and it
   fixes the names, signatures and dictionary keys reproduced here.

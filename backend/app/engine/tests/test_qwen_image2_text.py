@@ -1,6 +1,6 @@
 """qwen_image2 text path: parity with upstream ``encode_prompt`` and the TE-cache key (LANE-132 Task 3b).
 
-Spec scenarios (``_harness/lanes/LANE-132/spec.md`` 3 / 3b):
+Spec scenarios 3 and 3b (LANE-132):
 
 * the family's TRAINING text path -- ``QwenImage2Trainer.encode_text`` with the
   cache off, which delegates to the driver -- produces for the batch

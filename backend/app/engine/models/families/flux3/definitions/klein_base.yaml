@@ -23,7 +23,7 @@ components:
     type: diffusers
     params: {}
 control_inputs: 0
-# bf16 on-disk sizes from the repo's file listing (_harness/research/flux3-klein.md source S2).
+# bf16 on-disk sizes from the repo's file listing.
 model_size_mb:
   transformer: 11080
   text_encoder: 8880

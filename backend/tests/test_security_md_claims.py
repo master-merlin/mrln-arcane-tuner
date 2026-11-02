@@ -1,6 +1,6 @@
 """SECURITY.md's claims, pinned to the code that implements them.
 
-`DOCS_STYLE.md` §2 lists SECURITY.md as a public surface whose role is "what the
+SECURITY.md is a public surface whose role is "what the
 product does with files, keys, network". It did not exist until 2026-08-28; the
 release audit found the gap.
 
@@ -66,9 +66,9 @@ def _claimed_paths() -> set[str]:
 
 
 def test_security_md_exists_at_all():
-    """DOCS_STYLE §2 lists it as a public surface. It was missing for months."""
+    """It is a public surface. It was missing for months."""
     assert SECURITY.is_file(), (
-        "SECURITY.md is gone. DOCS_STYLE §2 lists it as a public surface; a public "
+        "SECURITY.md is gone. It is a public surface; a public "
         "repository without one tells a finder to open an issue instead."
     )
 

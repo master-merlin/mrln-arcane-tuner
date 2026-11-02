@@ -1,7 +1,7 @@
 """The README's version claims match the code, AND match each other.
 
 THE LESSON THIS FILE EXISTS FOR: registering the README's claims in
-``_harness/DOCS_MANIFEST.json`` (LANE-8) proved three of them false, and **two
+a docs manifest (LANE-8) proved three of them false, and **two
 of the three were the document contradicting itself**:
 
 * line 5 announced ``PyTorch 2.10`` while line 82, twelve lines further down in

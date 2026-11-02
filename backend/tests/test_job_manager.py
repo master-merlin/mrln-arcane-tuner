@@ -2358,7 +2358,7 @@ class TestDeleteJobChoosesWhetherFilesGo:
     dialog told users "its output, checkpoints and logs will be permanently
     removed from disk. This cannot be undone." Nothing was destroyed -- the safe
     direction, and why it went unnoticed -- but someone deleting runs to reclaim
-    disk reclaimed nothing and believed otherwise. Found by an mrln-docs agent
+    disk reclaimed nothing and believed otherwise. Found by an agent
     verifying the jobs guide against code, not by a test.
     """
 

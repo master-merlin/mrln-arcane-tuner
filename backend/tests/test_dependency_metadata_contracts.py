@@ -8,7 +8,7 @@ INSTALL requirements). `sam3` is the third, and as of 0.1.4 its metadata is no
 longer wrong at all — the `huggingface-hub<1.0` ceiling that put it here was
 fixed upstream. It keeps ``--no-deps`` only to stay out of the bulk resolve,
 which means its live ceilings (numpy, tqdm, typing_extensions) are enforced by
-nothing pip runs; `_harness/tools/pin_coherence.py` is what checks those.
+nothing pip runs.
 
 ``--no-deps`` is a claim, and the claim is not "the package installs" — pip will
 happily install anything with its dependencies switched off. The claim is **"the

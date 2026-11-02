@@ -28,6 +28,11 @@ _FILE_LOCK_WINERRORS = frozenset({5, 32})
 _FILE_LOCK_BACKOFF = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0)  # seconds
 
 
+def is_file_lock_error(error: BaseException) -> bool:
+    """Whether ``error`` is Windows reporting a lock, not a real permission problem."""
+    return isinstance(error, PermissionError) and getattr(error, "winerror", None) in _FILE_LOCK_WINERRORS
+
+
 def retry_file_lock(rename: Callable[[str, str], None], src: str, dst: str) -> None:
     """``rename(src, dst)``, retried within a bound while Windows reports a file lock.
 
@@ -39,7 +44,7 @@ def retry_file_lock(rename: Callable[[str, str], None], src: str, dst: str) -> N
             rename(src, dst)
             return
         except PermissionError as e:
-            if getattr(e, "winerror", None) not in _FILE_LOCK_WINERRORS:
+            if not is_file_lock_error(e):
                 raise
             logger.warning("file_lock_retry", src=src, dst=dst, delay=delay, error=str(e))
             time.sleep(delay)

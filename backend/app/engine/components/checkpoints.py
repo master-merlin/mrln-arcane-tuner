@@ -26,7 +26,7 @@ from pydantic import BaseModel, Field
 from safetensors.torch import load_file as st_load
 from typing import Any
 
-from app.engine.utils.safe_save import safe_save_file
+from app.engine.utils.safe_save import is_file_lock_error, retry_file_lock, safe_save_file
 
 logger = structlog.get_logger(__name__)
 
@@ -239,6 +239,10 @@ _OWN_UNFINISHED_RE = re.compile(
 _FINAL_RANK = 10**9  # a final checkpoint outranks any numbered step
 
 
+class CheckpointFolderLocked(PermissionError):
+    """A checkpoint folder stayed locked by another process past the retry bound."""
+
+
 class CheckpointUnreadable(ValueError):
     """A checkpoint folder cannot be resumed (truncated/unreadable/absent).
 
@@ -385,7 +389,7 @@ def _atomic_write_bytes_file(path: str, write: Any) -> None:
     try:
         write(tmp)
         _fsync_path(tmp)
-        os.replace(tmp, path)
+        retry_file_lock(os.replace, tmp, path)
     except BaseException:
         # A failed/killed write must not leave a half file under the final
         # name; the tmp is this run's own and is removed best-effort.
@@ -460,19 +464,32 @@ def _publish_folder(staging: str, final: str) -> None:
 
     An existing ``final`` is renamed aside first and removed only after the
     new one is in place, so the earlier complete folder survives a failure.
+    Each rename retries a transient file lock on its own; a lock past that bound
+    is a ``CheckpointFolderLocked`` naming the folder.
     """
+    name = os.path.basename(final)
     replaced: str | None = None
     if os.path.exists(final):
         replaced = f"{final}{REPLACED_MARK}{uuid.uuid4().hex[:12]}"
-        os.rename(final, replaced)
+        try:
+            retry_file_lock(os.rename, final, replaced)
+        except PermissionError as e:
+            if is_file_lock_error(e):
+                raise CheckpointFolderLocked(f"{name} is locked by another process; it was not replaced") from e
+            raise
     try:
-        os.replace(staging, final)
-    except BaseException:
-        if replaced is not None and not os.path.exists(final):
+        retry_file_lock(os.replace, staging, final)
+    except BaseException as e:
+        rolled_back = replaced is None or os.path.exists(final)
+        if not rolled_back:
             try:
-                os.rename(replaced, final)
+                retry_file_lock(os.rename, replaced, final)
+                rolled_back = True
             except OSError:
                 pass
+        if is_file_lock_error(e):
+            kept = f"the earlier save is under {final if rolled_back else replaced}" if replaced else "no earlier save"
+            raise CheckpointFolderLocked(f"{name} could not be published, a folder is locked; {kept}") from e
         raise
     if replaced is not None:
         shutil.rmtree(replaced, ignore_errors=True)

@@ -730,6 +730,53 @@ def test_moss_image_vendor_imports(tmp_path):
 _REPO_PIN = re.compile(r"^huggingface:OpenMOSS-Team/MOSS-Image-(Base|SFT)@[0-9a-f]{40}$")
 
 
+def _definition_differences(first: dict, second: dict) -> list[str]:
+    """What the two definitions may not differ in.
+
+    Enrichment writes harvested data into a definition after a real run, so one
+    that has been trained can carry settings the other doesn't have yet. A setting
+    in both must still match.
+    """
+
+    def stripped(data):
+        copy = yaml.safe_load(yaml.safe_dump(data))
+        for key in ("id", "name", "block_topology"):
+            copy.pop(key, None)
+        copy["components"]["repo"].pop("path", None)
+        return copy
+
+    one, other = stripped(first), stripped(second)
+    params_one, params_other = one.pop("architecture_params"), other.pop("architecture_params")
+    found = [] if one == other else ["a key outside architecture_params differs"]
+    for key in sorted(params_one.keys() | params_other.keys()):
+        if key in params_one and key in params_other:
+            if params_one[key] != params_other[key]:
+                found.append(f"{key} differs")
+        elif not key.startswith(("scheduler.", "te.", "vae.")):
+            found.append(f"{key} is in one definition only and is not harvested")
+    return found
+
+
+def test_the_definition_rule_allows_only_harvested_extras():
+    base = _definition_data(BASE_ID)
+    sft = _definition_data(SFT_ID)
+    assert _definition_differences(base, sft) == []
+
+    def changed(edit) -> list[str]:
+        copy = yaml.safe_load(yaml.safe_dump(base))
+        edit(copy)
+        return _definition_differences(copy, sft)
+
+    assert changed(lambda d: d["architecture_params"].update({"scheduler.shift": 1.0})) == ["scheduler.shift differs"]
+    assert changed(lambda d: d["architecture_params"].update({"my.setting": 1})) == [
+        "my.setting is in one definition only and is not harvested"
+    ]
+    assert changed(lambda d: d["defaults"].update({"guidance_scale": 9.0})) == [
+        "a key outside architecture_params differs"
+    ]
+    assert changed(lambda d: d["architecture_params"].update({"te.extra": 1})) == []
+
+
 def test_moss_image_definition_defaults():
     base, sft = _definition_data(BASE_ID), _definition_data(SFT_ID)
     for data in (base, sft):
@@ -739,7 +786,9 @@ def test_moss_image_definition_defaults():
         params = data["architecture_params"]
         assert float(params["scheduler.shift"]) == 5.0, f"{MARK}: {data['id']} scheduler.shift"
         assert "scheduler.shift" in data["enrich_pinned_keys"], f"{MARK}: {data['id']} scheduler.shift pin"
-        assert "scheduler.training_shift" not in params, f"{MARK}: {data['id']} still has training_shift"
+        # Enrichment appends the repo's 1.0 after a real run; any other value would mislead.
+        assert float(params.get("scheduler.training_shift", 1.0)) == 1.0, (
+            f"{MARK}: {data['id']} training_shift differs from the repo's 1.0")
         assert int(params["te.max_length"]) == TEXT_CAP and params["te.enable_thinking"] is True, (
             f"{MARK}: {data['id']} text recipe keys")
         assert params["sampling.seed_prompt_defaults"] is True, (
@@ -748,14 +797,8 @@ def test_moss_image_definition_defaults():
             f"{MARK}: {data['id']} must pin a 40-hex revision: {data['components']['repo']['path']}")
     assert base["components"]["repo"]["path"] != sft["components"]["repo"]["path"]
 
-    def stripped(data):
-        copy = yaml.safe_load(yaml.safe_dump(data))
-        for key in ("id", "name"):
-            copy.pop(key, None)
-        copy["components"]["repo"].pop("path", None)
-        return copy
-
-    assert stripped(base) == stripped(sft), f"{MARK}: the definitions may differ only in repo + revision (and id/name)"
+    differences = _definition_differences(base, sft)
+    assert not differences, f"{MARK}: the definitions may differ only in repo + revision and harvested data: {differences}"
 
     from app.engine.models.registry import ModelRegistry
 

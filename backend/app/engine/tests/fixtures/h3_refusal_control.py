@@ -4,8 +4,7 @@ NOT production code; never imported by the engine. It carries the refusal
 shapes the incremental guard's scanner must recognise — a direct
 ``raise NotImplementedError``, a raise through the ``_lands_in_pr1`` helper
 shape, and one inside a method — so a scanner that finds nothing is caught
-by ``test_refusal_scanner_flags_the_positive_control``. Plan row 2.1
-(``_harness/plans/2026-09-12-minimax-h3-pr1.md``).
+by ``test_refusal_scanner_flags_the_positive_control``. Plan row 2.1.
 """
 
 from __future__ import annotations

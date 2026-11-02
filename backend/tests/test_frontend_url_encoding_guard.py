@@ -1,7 +1,7 @@
 """Repo-hygiene guard: no un-encoded interpolation in a URL path position.
 
 RULE-20 class S guard for the URL path-segment encoding contract
-(`_harness/research/url-path-segment-encoding-contract.md`, ECOSYSTEM §5 row 4).
+(ECOSYSTEM §5 row 4).
 
 Why this lives in the Python suite rather than beside the Vitest specs: the scan
 needs filesystem access, and the frontend tsconfig has no `@types/node`. Adding a

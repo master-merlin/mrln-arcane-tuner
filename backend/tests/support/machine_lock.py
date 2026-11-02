@@ -4,18 +4,15 @@
 ONE pytest run (``--dist loadgroup`` sends the whole group to one worker). It
 says nothing about a second pytest — another worktree's gate, another agent's
 run — on the same box, and the live GPU, the loopback ports, are per-machine.
-This lock closes that harness-vs-harness window (LANE-63 step 4; adversarial
+This lock closes that run-vs-run window (LANE-63 step 4; adversarial
 finding 3).
 
 Design, item by item:
 
-* **path** — ``_harness/.<group>.lock``. ``_harness/`` is junction-shared into
-  every worktree, so every tree contends on the SAME file; a per-tree path
-  would be a lock in name only. A clone without ``_harness`` (CI, a public
-  checkout) falls back to the machine's temp dir, which is still one file per
-  box. ``MRLN_MACHINE_LOCK_DIR`` overrides the directory (the lock's own tests
-  use it so they never contend with a real run). Anchored on ``__file__``,
-  never the CWD.
+* **path** — ``.<group>.lock`` in the machine's temp dir, so every tree on the
+  box contends on the SAME file; a per-tree path would be a lock in name only.
+  ``MRLN_MACHINE_LOCK_DIR`` overrides the directory (the lock's own tests use
+  it so they never contend with a real run).
 * **acquisition** — the owner metadata (pid, xdist worker id, worktree, ISO
   timestamp) is written into a temp file beside the lock and then ``os.link``ed
   onto the lock's name: atomic on NTFS and POSIX, and the name never exists
@@ -52,8 +49,8 @@ Design, item by item:
 * **release** — in ``finally``, and only if the file still carries OUR pid:
   a stale-recovery by another process may have replaced the file with its own.
 
-Honest limit: cooperative only. The user's live backend and non-harness
-processes do not honour it; for those the operational boundary in the plan
+Honest limit: cooperative only. The user's live backend and processes outside
+pytest do not honour it; for those the operational boundary in the plan
 (never beside a training run, never while a UAT pack is open) is the control.
 """
 from __future__ import annotations
@@ -118,9 +115,6 @@ def lock_dir() -> Path:
     env = os.environ.get(LOCK_DIR_ENV)
     if env:
         return Path(env)
-    harness = _REPO_ROOT / "_harness"
-    if harness.is_dir():
-        return harness
     return Path(tempfile.gettempdir())
 
 
@@ -361,7 +355,7 @@ def resolve_timeout(timeout_s: float | None) -> float:
 @contextmanager
 def machine_lock(name: str, *, timeout_s: float | None = None,
                  path: Path | None = None) -> Iterator[Path]:
-    """Hold ``_harness/.<name>.lock`` for the block; released in ``finally``."""
+    """Hold ``.<name>.lock`` for the block; released in ``finally``."""
     path = path or lock_path(name)
     acquire(path, resolve_timeout(timeout_s))
     try:

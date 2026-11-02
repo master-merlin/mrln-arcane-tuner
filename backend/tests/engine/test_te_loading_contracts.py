@@ -463,7 +463,7 @@ CASES: list[_Case] = [
           "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
     # flux3 (LANE-144): flux-3-image-klein-base's text_encoder/config.json declares
     # architectures ["Qwen3VLForConditionalGeneration"] (byte-identical to
-    # Qwen/Qwen3-VL-4B-Instruct; _harness/research/flux3-klein.md).
+    # Qwen/Qwen3-VL-4B-Instruct).
     _Case("flux3", _m("flux3"), "Flux3Loader", "text_encoder",
           "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
     # moss_image (LANE-165): the TE checkpoint is the bare Qwen3_5Model (language_model +

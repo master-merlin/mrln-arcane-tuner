@@ -1,7 +1,7 @@
 """Behavioural pins for the clean-room boogu_image Taylor feature cache.
 
 Every expected value here is **hand-computed** from
-``_harness/research/taylorseer-cache-behavioural-spec.md`` and written out in
+the cache's behavioural specification and written out in
 the test that uses it. Nothing is compared against a previous implementation.
 
 Chosen so the arithmetic is exact in fp32: every feature value and every

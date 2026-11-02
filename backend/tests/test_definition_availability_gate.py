@@ -49,8 +49,7 @@ assert set(EXPECTED_AVAILABILITY) == H3_ALL_IDS  # every frozen id, no more, no 
 GATED_IDS = frozenset(k for k, v in EXPECTED_AVAILABILITY.items() if v)
 AVAILABLE_H3_IDS = H3_ALL_IDS - GATED_IDS
 
-# Row 4.4's `Verdict:` line, copied verbatim from
-# `_harness/research/minimax-h3-context-ir.md:19` (ONE producer of the fact).
+# The context-IR research's `Verdict:` line (ONE producer of the fact).
 CONTEXT_IR_VERDICT = "NOT REQUIRED"
 CONTEXT_IR_VERDICTS = ("REQUIRED", "NOT REQUIRED", "UNDETERMINED")
 

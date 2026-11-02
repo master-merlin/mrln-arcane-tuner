@@ -1,6 +1,6 @@
 """qwen_image2 family + ``qwen-image-2.1`` definition pins (LANE-132 Task 3).
 
-Spec scenarios 1 and 2 (``_harness/lanes/LANE-132/spec.md``):
+Spec scenarios 1 and 2 (LANE-132):
 
 1. the registry lists ``qwen-image-2.1`` in family ``qwen_image2`` while
    ``qwen-image-2512`` stays in ``qwen_image`` -- a NEW family, not a sibling

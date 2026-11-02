@@ -3,7 +3,7 @@
 RELEASE AUDIT 0.7.9-beta..HEAD (2026-09-01) found the diagram claiming "43
 Standalone Components" and "9 Route Domains" against a measured 153 component
 files and 31 route modules -- over 3x stale, unnoticed because nothing read
-the tree against it. `_harness/DOCS_MANIFEST.json` marked these counts as
+the tree against it. A docs audit marked these counts as
 DECAYS; this is the pin.
 
 Definitions (the same in the README and docs/ARCHITECTURE.md):

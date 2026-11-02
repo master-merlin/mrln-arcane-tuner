@@ -1,7 +1,7 @@
 """LANE-144 -- the FLUX.3 Image Klein (``flux3``) family contract.
 
 The eleven tests of the spec's Proving check, in its order (the spec is
-``_harness/lanes/LANE-144/card.md`` ``## Spec``, decisions D1-D5):
+LANE-144's, decisions D1-D5):
 
  1. the vendored transformer imports on the installed diffusers and a tiny config builds and runs (D1);
  2. the loader refuses a flow-map (step-distilled) checkpoint before it loads anything (D2);

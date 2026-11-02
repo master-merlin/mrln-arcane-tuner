@@ -30,7 +30,7 @@ What it does, per process:
 * ``sys.path`` gets ``backend/`` so ``from tests.support…`` and ``from app…``
   resolve from every root (``--import-mode=importlib`` never adds it itself).
 * every test carrying ``@pytest.mark.xdist_group("<name>")`` holds the
-  cross-process lock ``_harness/.<name>.lock`` from before its fixtures run
+  cross-process lock ``.<name>.lock`` from before its fixtures run
   until after they are torn down (``tests/support/machine_lock.py``). The
   group marker serialises the group inside ONE run; the lock serialises it
   against every other pytest on the box. Marking is the only thing a test

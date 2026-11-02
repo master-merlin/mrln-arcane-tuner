@@ -2,7 +2,7 @@
 #
 # Until this file existed there was no `.github/` in the repository at all, so
 # nothing has ever verified a contributor's clone -- only the maintainer's
-# machine, which has a GPU, a populated venv and the private dev harness. This
+# machine, which has a GPU and a populated venv. This
 # workflow is deliberately the SAME gate the project documents locally (ruff,
 # the backend pytest suite, the frontend unit tests) plus the checks a public
 # repository needs and a local run cannot give: a history secret scan, a
@@ -13,8 +13,8 @@
 # comments; a transitively vulnerable *pinned* torch stack must not be able to
 # wedge every contributor's pull request on day one.
 name: gate
-# integrate.py dispatches this workflow on a lane branch with `op` and finds the
-# run again by the `op` its name carries -- keep the run-name as it is.
+# A dispatch on a branch passes `op` and finds the run again by the `op` its name
+# carries -- keep the run-name as it is.
 run-name: gate ${{ inputs.op || github.sha }}
 
 on:
@@ -24,7 +24,7 @@ on:
   workflow_dispatch:
     inputs:
       op:
-        description: "the Integrate operation (integrate.py), echoed into the run's name"
+        description: "an operation id, echoed into the run's name"
         required: false
         default: ""
 
@@ -71,13 +71,9 @@ jobs:
         # CI's first-ever run went red on a rule the local version had not seen.
         run: python -m pip install --upgrade pip "ruff==0.16.5"
 
-      # The command below is GENERATED from harness.json (`gate_scopes[...].ci`, the CI form of
-      # the gate command -- CI has no venv). Never hand-edit it: run `render.py`, which is what
-      # `render.py --check` and the harness gate verify. CI used to type the gate from memory.
+      # The CI form of the gate command: CI has no venv.
       - name: ruff check
-        # <!-- gen:gate:ci:0 -->
         run: python -m ruff check .
-        # <!-- /gen -->
 
       # The torch trio is a SPLIT STACK (backend/requirements.txt): the Docker
       # image bakes its own build, the maintainer's venv installs another, and
@@ -135,8 +131,7 @@ jobs:
       # worker count lives HERE, not in pytest.ini, so a one-file run or a
       # bisect stays serial. `--dist loadgroup` keeps every xdist_group (the
       # live-GPU and port-binding tests) on one worker, and backend/conftest.py
-      # holds a cross-process lock per group (a clone without _harness/ puts it
-      # in the runner's temp dir). Per-worker logs come from the same conftest.
+      # holds a cross-process lock per group, in the runner's temp dir. Per-worker logs come from the same conftest.
       #
       # The count here is `auto` and NOT the documented local `-n 4`: a
       # GitHub-hosted ubuntu runner has 2 vCPU and ~16 GB, so `auto` is 2, and
@@ -145,11 +140,8 @@ jobs:
       # (2026-09-16) after this lane's `-n 16` runs took the maintainer's box
       # down; `auto` on a 2-vCPU runner is below that ceiling, and `auto` must
       # never be used on the maintainer's 32-core box.
-      # Generated from harness.json (`gate_scopes[...].ci`): never hand-edit, run `render.py`.
       - name: pytest
-        # <!-- gen:gate:ci:1 -->
         run: python -m pytest backend -q -n auto --dist loadgroup
-        # <!-- /gen -->
 
       # Runs HERE, not in the licence job, because the dependency graph is
       # already installed at this point. pip-licenses can only report on
@@ -184,22 +176,16 @@ jobs:
         working-directory: frontend
         run: npm ci
 
-      # Generated from harness.json (`gate_scopes[...].ci`): never hand-edit, run `render.py`.
       # The CI form carries no `--prefix`: `working-directory` above is what puts it in frontend/.
       - name: Unit tests
         working-directory: frontend
-        # <!-- gen:gate:ci:2 -->
         run: npm run test -- --watch=false
-        # <!-- /gen -->
 
       # The production configuration, not the development one: budget overruns
       # and prod-only build errors are exactly what a dev build hides.
-      # Generated from harness.json (`gate_scopes[...].ci`): never hand-edit, run `render.py`.
       - name: Production build
         working-directory: frontend
-        # <!-- gen:gate:ci:3 -->
         run: npm run build
-        # <!-- /gen -->
 
       # The CSP applies to the file FastAPI SERVES, which is this build output —
       # not frontend/src/index.html. That distinction is not academic: the

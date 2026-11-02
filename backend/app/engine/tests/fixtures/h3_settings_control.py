@@ -6,7 +6,7 @@ consumer must NOT (RULE-21: ``families/minimax_h3/settings.py`` is the ONE
 resolver), so the source guard has an offender it is REQUIRED to flag. If the
 guard ever stops naming this file, the guard is broken, not the tree.
 
-Plan row 1.0 (``_harness/plans/2026-09-12-minimax-h3-pr1.md``).
+Plan row 1.0.
 """
 
 from __future__ import annotations

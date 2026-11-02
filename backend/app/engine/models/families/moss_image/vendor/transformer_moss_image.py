@@ -14,7 +14,7 @@
 # revision 1ceede80badddd6a7812069619edaa5633587192, file `pipeline_moss_image.py` lines 56-261
 # (Apache-2.0: "The model weights and bundled inference code are released under the Apache License,
 # Version 2.0", model card). The file is byte-identical in OpenMOSS-Team/MOSS-Image-SFT at
-# fc5de0d56fc910cbca6f6625a70f5f582b26deb1 (`cmp`, _harness/research/moss-image-family.md §1.1).
+# fc5de0d56fc910cbca6f6625a70f5f582b26deb1 (`cmp`).
 # The installed diffusers release (0.41.0) ships no MOSS-Image transformer.
 # What changed from upstream:
 #   * only the transformer and its helpers are kept (`_RMSNorm`, `_situ`, `_validate_skip_layers`,

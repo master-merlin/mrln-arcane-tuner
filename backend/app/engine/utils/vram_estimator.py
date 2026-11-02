@@ -168,8 +168,7 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "vae": 0.17,  # AutoencoderKLFlux2 (~335 MB bf16)
     },
     "moss_image": {
-        # Parameter counts (B) from the research report (_harness/research/moss-image-family.md
-        # §1.2/§1.5): transformer shards 10,164,617,280 B bf16 => ~5.08 B; text encoder index
+        # Parameter counts (B) from the research report: transformer shards 10,164,617,280 B bf16 => ~5.08 B; text encoder index
         # metadata 8,392,695,024 params (Qwen3.5 language + vision towers); FLUX.2 VAE ~84M.
         # Measured at UAT: pending (row 8) -- the numbers are from file listings, not a run.
         "transformer": 5.08,

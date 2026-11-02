@@ -15,6 +15,7 @@ import json
 import os
 import re
 import shutil
+import stat
 import time
 import uuid
 import zipfile
@@ -304,6 +305,17 @@ def checkpoint_resumable(folder: str | os.PathLike[str]) -> tuple[bool, str]:
         return False, f"{name} is unreadable, a file in it is locked ({e})"
 
 
+def _stat_mode(path: str) -> int:
+    """``st_mode`` of ``path``, 0 if it's absent. ``os.path.isfile`` and ``isdir``
+    report a locked path as absent; this raises its ``PermissionError``."""
+    try:
+        return os.stat(path).st_mode
+    except PermissionError:
+        raise
+    except OSError:
+        return 0
+
+
 def _checkpoint_content_intact(folder: str) -> tuple[bool, str]:
     """``checkpoint_resumable`` without its check of the folder's name.
 
@@ -311,12 +323,12 @@ def _checkpoint_content_intact(folder: str) -> tuple[bool, str]:
     nothing, so its ``PermissionError`` is raised to the caller.
     """
     name = os.path.basename(os.path.normpath(folder))
-    if not os.path.isdir(folder):
+    if not stat.S_ISDIR(_stat_mode(folder)):
         return False, f"{name} does not exist"
 
     manifest_path = os.path.join(folder, MANIFEST_NAME)
     pt_files: set[str] = set()
-    if os.path.isfile(manifest_path):
+    if stat.S_ISREG(_stat_mode(manifest_path)):
         try:
             with open(manifest_path, "r", encoding="utf-8") as f:
                 manifest = json.load(f)
@@ -348,11 +360,11 @@ def _checkpoint_content_intact(folder: str) -> tuple[bool, str]:
                     pt_files.add(str(rel))
         # else: legacy (unversioned size map) — validated like no manifest.
 
-    if not os.path.isfile(os.path.join(folder, "training_state.json")):
+    if not stat.S_ISREG(_stat_mode(os.path.join(folder, "training_state.json"))):
         return False, "training_state.json is missing"
     try:
         for entry in os.listdir(folder):
-            if entry.endswith(".pt") and os.path.isfile(os.path.join(folder, entry)):
+            if entry.endswith(".pt") and stat.S_ISREG(_stat_mode(os.path.join(folder, entry))):
                 pt_files.add(entry)
     except PermissionError:
         raise

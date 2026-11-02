@@ -422,17 +422,35 @@ def _raise_lock(*_args, **_kwargs):
     raise _locked(32)
 
 
-@pytest.fixture(params=["manifest", "size", "zip"])
+_REAL_STAT = os.stat
+_STAT_TARGETS = {
+    "stat-folder": lambda name: name.startswith("checkpoint-"),
+    "stat-manifest": lambda name: name == ckpt_mod.MANIFEST_NAME,
+    "stat-state": lambda name: name == "training_state.json",
+    "stat-pt": lambda name: name.endswith(".pt"),
+}
+
+
+@pytest.fixture(params=["manifest", "size", "zip", "listdir", *_STAT_TARGETS])
 def locked_read(request, monkeypatch):
     """Applies a lock to one of the reads the content validation makes."""
+
+    def locked_stat(path, *args, **kwargs):
+        if _STAT_TARGETS[request.param](os.path.basename(os.fspath(path))):
+            raise _locked(32)
+        return _REAL_STAT(path, *args, **kwargs)
 
     def apply() -> None:
         if request.param == "manifest":
             monkeypatch.setattr(ckpt_mod, "open", _raise_lock, raising=False)
         elif request.param == "size":
             monkeypatch.setattr(os.path, "getsize", _raise_lock)
-        else:
+        elif request.param == "zip":
             monkeypatch.setattr(ckpt_mod.zipfile, "ZipFile", _raise_lock)
+        elif request.param == "listdir":
+            monkeypatch.setattr(os, "listdir", _raise_lock)
+        else:
+            monkeypatch.setattr(os, "stat", locked_stat)
 
     return apply
 

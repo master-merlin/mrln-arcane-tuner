@@ -69,6 +69,43 @@ def _unexpected_top_level(paths: list[str]) -> list[str]:
     return sorted(p for p in paths if p.split("/", 1)[0] not in PUBLIC_TOP_LEVEL)
 
 
+def _staged_by_default(tmp_path: Path, files: list[str]) -> list[str]:
+    """What `git add -A` stages from *files* under the real `.gitignore`, in a throwaway repo."""
+    (tmp_path / ".gitignore").write_bytes((REPO_ROOT / ".gitignore").read_bytes())
+    for rel in files:
+        target = tmp_path / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text("x\n", encoding="utf-8")
+    for args in (["init", "-q"], ["add", "-A"]):
+        subprocess.run(["git", *args], cwd=tmp_path, capture_output=True, text=True, check=True)
+    proc = subprocess.run(
+        ["git", "ls-files", "-z"], cwd=tmp_path, capture_output=True, text=True, check=True,
+    )
+    return sorted(p for p in proc.stdout.split("\0") if p and p != ".gitignore")
+
+
+@pytest.mark.parametrize("rel", [
+    "_tooling/config.json",
+    "_tooling/tools/run.py",
+    "backend/_tooling/tools/run.py",
+    "frontend/src/_notes/plan.txt",
+    ".hidden-tools/config.json",
+    "backend/.hidden-tools/config.json",
+])
+def test_a_private_directory_is_never_staged_by_default(tmp_path: Path, rel: str) -> None:
+    """The guard above only speaks after a commit; ignoring is what stops `git add -A`."""
+    assert _staged_by_default(tmp_path, [rel]) == []
+
+
+@pytest.mark.parametrize("rel", [
+    "frontend/src/app/__tests__/new.spec.ts",
+    "backend/tests/_lint_data/new.py",
+])
+def test_a_public_directory_with_a_leading_underscore_still_stages(tmp_path: Path, rel: str) -> None:
+    """Positive control: the rule above must not swallow directories that are tracked today."""
+    assert _staged_by_default(tmp_path, [rel]) == [rel]
+
+
 def test_every_tracked_path_is_under_a_public_top_level_name() -> None:
     """Nothing unexpected is tracked, whatever `.gitignore` currently says."""
     tracked = _tracked_paths()

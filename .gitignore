@@ -42,6 +42,11 @@ backend/tests/import-time*.db*
 # form available: git does not descend into it, so nothing inside can be
 # resurfaced by a later re-include, deliberately or by accident.
 _docs/
+# Any directory with one leading underscore is private too, at any depth, so
+# `git add -A` can't pick one up. `__tests__` and `__pycache__` have two; a public
+# one is re-included by name.
+_[!_]*/
+!_lint_data/
 /adapters/
 /scripts/
 graphify-out/

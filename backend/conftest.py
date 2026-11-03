@@ -36,6 +36,10 @@ What it does, per process:
   against every other pytest on the box. Marking is the only thing a test
   author does — the pairing lives here, in one place, for all three roots.
   A wait that runs out is an ERROR naming the holder, never a skip.
+* ``sys.modules["hpsv2"]`` is ``tests/support/fake_hpsv2.py``. ``hpsv2_model.py``
+  imports the library lazily inside its methods, so this is enough for a scan to
+  stay real down to the library call without loading the production model. Here
+  because all three roots scan, and because it needs neither ``torch`` nor ``app``.
 
 Everything here is anchored on ``__file__``, never the CWD.
 """
@@ -49,6 +53,7 @@ _BACKEND = Path(__file__).resolve().parent
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
+from tests.support import fake_hpsv2  # noqa: E402
 from tests.support.machine_lock import (  # noqa: E402
     MachineLockTimeout,
     acquire,
@@ -57,6 +62,8 @@ from tests.support.machine_lock import (  # noqa: E402
     resolve_timeout,
 )
 from tests.support.worker_paths import worker_suffixed  # noqa: E402
+
+sys.modules["hpsv2"] = fake_hpsv2
 
 SERVER_TEST_LOG = worker_suffixed(_BACKEND / "tests" / "server-test.log")
 os.environ["MRLN_SERVER_LOG_PATH"] = str(SERVER_TEST_LOG)

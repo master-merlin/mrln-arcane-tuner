@@ -11,6 +11,7 @@ from unittest.mock import patch, MagicMock
 from PIL import Image
 
 from app.core.dataset_manager import Dataset, DatasetManager
+from tests.support import fake_hpsv2
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────
@@ -283,6 +284,16 @@ class TestScanDataset:
         assert meta["width"] == 400
         assert meta["height"] == 200
         assert meta["orientation"] == "landscape"
+
+    @patch("app.core.dataset_manager.solide_hash_robust", return_value="cafef00d" * 4)
+    def test_scan_stores_the_scorer_s_value(self, mock_hash, manager):
+        """The real service and plugin run; only the library is the double."""
+        ds = manager.create_dataset("scored")
+        _create_image(os.path.join(ds.path, "a.png"))
+        _create_caption(os.path.join(ds.path, "a.txt"))
+
+        result = manager.scan_dataset("scored")
+        assert result.media_metadata["a.png"]["quality_score"] == fake_hpsv2.FAKE_SCORE
 
     def test_scan_missing_path_raises(self, manager):
         """Scanning a dataset whose path doesn't exist should raise."""

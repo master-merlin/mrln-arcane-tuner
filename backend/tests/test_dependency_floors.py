@@ -630,6 +630,7 @@ L172_BACKEND_TAKE = [
     ("zipp", "4.1.2", "#71"),
     ("pillow", "13.0.0", "#63"),
     ("rembg", "2.0.86", "#71, unlocks #63: 2.0.85 declares pillow<13"),
+    ("pytorch_optimizer", "4.0.0", "#62"),
 ]
 
 # 11 of #71 are the existing table, each ceiling still standing; pytest and #60 join it.

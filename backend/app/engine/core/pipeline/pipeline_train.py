@@ -11,6 +11,7 @@ from typing import Any, NamedTuple
 import structlog
 import torch
 
+from app.engine.core.pipeline.hessian_estimate import estimate_hessian_diagonal
 from app.engine.factories.optimizer import OptimizerFactory
 
 logger = structlog.get_logger(__name__)
@@ -247,6 +248,69 @@ class PipelineTrainMixin:
             loss, timesteps, noise, prepared_latents, prepared_noise,
             noisy_input, pred, target,
         )
+
+    def _hessian_for_step(
+        self,
+        step: int,
+        latents: torch.Tensor,
+        text_emb: Any,
+        batch: dict[str, Any],
+        grad_accum: int,
+    ) -> list[torch.Tensor] | None:
+        """The estimate for ``optimizer.step(hessian=...)`` if one is due, else ``None``.
+
+        Only SophiaH carries ``hessian_period``. The estimate is of the window's last
+        micro-batch, which the loop still holds. Its passes take gradients directly,
+        so the window's ``p.grad`` stays as it is, unscaled or not.
+        """
+        period = getattr(self.optimizer, "hessian_period", None)
+        if not isinstance(period, int) or step % period != 0:
+            return None
+
+        params = [p for group in self.optimizer.param_groups for p in group["params"]]
+        # A parameter this window didn't reach (a dual-expert family's inactive
+        # expert) isn't perturbed, and may not even be on the GPU.
+        reached = [p for p in params if p.grad is not None]
+
+        def gradients() -> list[torch.Tensor | None]:
+            with torch.autocast("cuda", dtype=self.autocast_dtype, enabled=self.use_amp):
+                loss = self.forward_loss_step(latents, text_emb, batch, grad_accum)[0]
+            # The loop's loss is divided by grad_accum, and scaled under AMP. The
+            # Hessian must not grow or shrink with either.
+            factor = float(grad_accum)
+            if self.scaler.is_enabled():
+                loss = self.scaler.scale(loss)
+                factor /= self.scaler.get_scale()
+            found = torch.autograd.grad(loss, reached, allow_unused=True)
+            return [None if g is None else g * factor for g in found]
+
+        # These passes aren't training steps: the histogram counts only those.
+        tracker = getattr(self, "_sigma_tracker", None)
+        self._sigma_tracker = None
+        try:
+            with self._prof_region("hessian_estimate"):
+                estimate = estimate_hessian_diagonal(
+                    reached,
+                    gradients,
+                    num_samples=self.optimizer.hessian_num_samples,
+                    distribution=self.optimizer.hessian_distribution,
+                )
+        finally:
+            self._sigma_tracker = tracker
+
+        if estimate is None:
+            self.logger.warning("sophiah_hessian_estimate_skipped", step=step)
+            return None
+
+        # step(hessian=) needs an entry per parameter, and storing one in empty state
+        # makes the library's init_group skip the rest, so its update raises KeyError.
+        by_param = {id(p): e for p, e in zip(reached, estimate)}
+        for p in params:
+            state = self.optimizer.state[p]
+            for key in ("momentum", "hessian_moment"):
+                if key not in state:
+                    state[key] = torch.zeros_like(p)
+        return [by_param.get(id(p), torch.zeros_like(p)) for p in params]
 
     def _iter_training_batches(self, batch_size: int):
         """Infinite bucket-aware batch iterator for the training loop.
@@ -695,6 +759,9 @@ class PipelineTrainMixin:
                 self._update_job_progress(step)
                 continue
 
+            hessian = self._hessian_for_step(step, latents, text_emb, batch, grad_accum)
+            step_kwargs = {} if hessian is None else {"hessian": hessian}
+
             # 5. Optimizer step (after all accumulation steps)
             #    Profiler region "optimizer": unscale + grad-norm clip + step.
             with self._prof_region("optimizer"):
@@ -714,10 +781,10 @@ class PipelineTrainMixin:
                     )
 
                 if self.scaler.is_enabled():
-                    self.scaler.step(self.optimizer)
+                    self.scaler.step(self.optimizer, **step_kwargs)
                     self.scaler.update()
                 else:
-                    self.optimizer.step()
+                    self.optimizer.step(**step_kwargs)
 
             if self.lr_scheduler:
                 self.lr_scheduler.step()

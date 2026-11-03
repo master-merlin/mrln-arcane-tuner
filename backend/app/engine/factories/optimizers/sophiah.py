@@ -4,6 +4,12 @@ from ..optimizer_base import OptimizerBase
 
 logger = structlog.get_logger(__name__)
 
+# A period no run reaches, for the library's own estimate: it differentiates the
+# gradients, and the trainer builds no graph for that. The trainer passes its own
+# estimate to step() instead, see core/pipeline/hessian_estimate.py.
+_LIBRARY_ESTIMATE_OFF = 2**62
+
+
 class SophiaHStrategy(OptimizerBase):
     """SophiaH (Second-order Clipped Stochastic Optimization) PyTorch optimizer strategy via pytorch_optimizer."""
 
@@ -27,18 +33,23 @@ class SophiaHStrategy(OptimizerBase):
             from pytorch_optimizer import load_optimizer
             
             optimizer_class = load_optimizer("sophiah")
-            return optimizer_class(
+            optimizer = optimizer_class(
                 params,
                 lr=lr,
                 weight_decay=weight_decay,
                 betas=betas,
                 rho=rho,
                 p=p,
-                update_period=update_period,
+                update_period=_LIBRARY_ESTIMATE_OFF,
                 num_samples=num_samples,
                 hessian_distribution=hessian_dist
             )
-            
+            # What the training loop reads to supply the estimate.
+            optimizer.hessian_period = update_period
+            optimizer.hessian_num_samples = num_samples
+            optimizer.hessian_distribution = hessian_dist
+            return optimizer
+
         except ImportError:
             logger.error("pytorch_optimizer_library_missing_for_sophiah")
             raise RuntimeError("pytorch_optimizer is required for SophiaH. Please install it.")

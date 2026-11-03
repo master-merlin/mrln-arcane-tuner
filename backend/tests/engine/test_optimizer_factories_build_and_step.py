@@ -41,8 +41,8 @@ def test_optimizer_builds_and_steps(key):
     _assert_moved_and_finite(model, before)
 
 
-def test_sophiah_steps_and_fills_its_hessian():
-    """Only with the graph this test builds: the trainer's backward() builds none."""
+def test_sophiah_builds_and_steps_with_a_plain_backward():
+    """The trainer's path; test_sophiah_trainer_estimate.py covers its estimate."""
     model, loss = _model_and_loss()
     before = [p.detach().clone() for p in model.parameters()]
     optimizer = OptimizerFactory.create(
@@ -52,11 +52,9 @@ def test_sophiah_steps_and_fills_its_hessian():
 
     for _ in range(4):
         optimizer.zero_grad()
-        loss().backward(create_graph=True)
+        loss().backward()
         optimizer.step()
 
-    for param in model.parameters():
-        assert torch.isfinite(optimizer.state[param]["hessian"]).all()
     _assert_moved_and_finite(model, before)
 
 

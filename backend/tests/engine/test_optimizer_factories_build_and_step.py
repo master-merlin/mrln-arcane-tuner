@@ -58,3 +58,54 @@ def test_sophiah_steps_and_fills_its_hessian():
     for param in model.parameters():
         assert torch.isfinite(optimizer.state[param]["hessian"]).all()
     _assert_moved_and_finite(model, before)
+
+
+def _sophiag(model):
+    optimizer = OptimizerFactory.create("SophiaG", model.parameters(), lr=0.001)
+    assert type(optimizer).__name__ == "SophiaG"
+    return optimizer
+
+
+def test_sophiag_is_the_real_class_and_steps_with_a_plain_backward():
+    model, loss = _model_and_loss()
+    before = [p.detach().clone() for p in model.parameters()]
+    optimizer = _sophiag(model)
+
+    for _ in range(4):
+        optimizer.zero_grad()
+        loss().backward()
+        optimizer.step()
+
+    _assert_moved_and_finite(model, before)
+
+
+def test_sophiag_state_survives_a_checkpoint_round_trip():
+    model, loss = _model_and_loss()
+    optimizer = _sophiag(model)
+    for _ in range(2):
+        optimizer.zero_grad()
+        loss().backward()
+        optimizer.step()
+
+    resumed = _sophiag(model)
+    resumed.load_state_dict(optimizer.state_dict())
+    for param in model.parameters():
+        assert torch.equal(
+            resumed.state[param]["hessian"], optimizer.state[param]["hessian"]
+        )
+
+    before = [p.detach().clone() for p in model.parameters()]
+    resumed.zero_grad()
+    loss().backward()
+    resumed.step()
+    _assert_moved_and_finite(model, before)
+
+
+def test_sophiag_fails_by_name_when_its_package_cannot_load(monkeypatch):
+    """Never another optimizer in its place: the user selected SophiaG."""
+    from app.engine.factories.optimizers import sophiag
+
+    monkeypatch.setattr(sophiag.importlib.util, "find_spec", lambda _name: None)
+    model, _ = _model_and_loss()
+    with pytest.raises(RuntimeError, match="SophiaG"):
+        OptimizerFactory.create("SophiaG", model.parameters(), lr=0.001)

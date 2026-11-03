@@ -1,8 +1,23 @@
 import threading as _threading
+import time
 
 import pytest
 from app.core.tasks.task_manager import TaskManager
 from app.core.tasks.task import TaskStatus
+
+# A worker a test holds outlasts every wait the test makes on it, so a wait that
+# gives up always means the awaited thing did not happen, never that the hold ended.
+_WORKER_HOLD_S = 30
+_WAIT_S = 10
+
+
+def _wait_until(condition) -> bool:
+    deadline = time.monotonic() + _WAIT_S
+    while time.monotonic() < deadline:
+        if condition():
+            return True
+        _threading.Event().wait(0.01)
+    return condition()
 
 
 @pytest.fixture
@@ -71,11 +86,13 @@ def test_list_is_insertion_ordered(tm):
 
 def test_lane_runs_sequentially(tm):
     order: list[str] = []
+    a_running = _threading.Event()
     gate = _threading.Event()
 
     def worker_a(task_id):
         order.append("a-start")
-        gate.wait(2)
+        a_running.set()
+        gate.wait(_WORKER_HOLD_S)
         order.append("a-end")
 
     def worker_b(task_id):
@@ -86,13 +103,16 @@ def test_lane_runs_sequentially(tm):
     tm.enqueue(a.id, worker_a, lane="gpu")
     tm.enqueue(b.id, worker_b, lane="gpu")
 
-    # b must NOT start until a finishes.
-    _threading.Event().wait(0.1)
-    assert order == ["a-start"]
-    assert tm.get(b.id).status.value == "pending"
+    try:
+        assert a_running.wait(_WAIT_S), "the first task never started"
+        # b must NOT start until a finishes.
+        _threading.Event().wait(0.1)
+        assert order == ["a-start"]
+        assert tm.get(b.id).status.value == "pending"
+    finally:
+        gate.set()
+        tm.join_lane("gpu", timeout=_WAIT_S)
 
-    gate.set()
-    tm.join_lane("gpu", timeout=2)
     assert order == ["a-start", "a-end", "b-start"]
     assert tm.get(a.id).status.value == "completed"
     assert tm.get(b.id).status.value == "completed"
@@ -222,48 +242,44 @@ class TestMaintenanceNeverBlocksUserWork:
     """
 
     def test_a_silent_task_does_not_delay_a_visible_one(self, tm):
-        started: list[str] = []
+        sweep_running = _threading.Event()
         release = _threading.Event()
 
         def slow_maintenance(task_id):
-            started.append("maintenance")
-            # Longer than the poll window below, so "the user's task ran" can
+            sweep_running.set()
+            # Longer than the wait below, so "the user's task finished" can
             # only mean it overtook the sweep, never that the sweep ended first.
-            release.wait(30)
-
-        def user_work(task_id):
-            started.append("user")
+            release.wait(_WORKER_HOLD_S)
 
         warm = tm.create(type="cache_stats_warmup", title="Cache stats",
                          user_visible=False)
         refine = tm.create(type="caption_refine_batch", title="Refine", total=1)
         tm.enqueue(warm.id, slow_maintenance, lane="background")
-        tm.enqueue(refine.id, user_work, lane="background")
 
-        # The user's task must reach a terminal state while the sweep runs on.
-        for _ in range(40):
-            if "user" in started:
-                break
-            _threading.Event().wait(0.05)
-
-        assert started[:1] == ["maintenance"], "the sweep never started"
-        assert "user" in started, (
-            "the user's task waited behind an invisible maintenance sweep"
-        )
-        assert tm.get(refine.id).status == TaskStatus.COMPLETED
-        assert tm.get(warm.id).status == TaskStatus.RUNNING
-        release.set()
-        tm.join_lane("background:maintenance", timeout=5)
+        try:
+            # The sweep is already running when the user's task arrives, as in
+            # the incident above: no ordering between the two lanes is assumed.
+            assert sweep_running.wait(_WAIT_S), "the sweep never started"
+            tm.enqueue(refine.id, lambda _id: None, lane="background")
+            assert _wait_until(
+                lambda: tm.get(refine.id).status == TaskStatus.COMPLETED
+            ), "the user's task waited behind an invisible maintenance sweep"
+            assert tm.get(warm.id).status == TaskStatus.RUNNING
+        finally:
+            release.set()
+            tm.join_lane("background:maintenance", timeout=_WAIT_S)
 
     def test_two_silent_tasks_still_serialise(self, tm):
         """The fix must not turn maintenance into unbounded fan-out: two silent
         sweeps share the maintenance lane and run one at a time."""
         order: list[str] = []
+        first_running = _threading.Event()
         gate = _threading.Event()
 
         def first(task_id):
             order.append("first-start")
-            gate.wait(5)
+            first_running.set()
+            gate.wait(_WORKER_HOLD_S)
             order.append("first-end")
 
         def second(task_id):
@@ -274,10 +290,14 @@ class TestMaintenanceNeverBlocksUserWork:
         tm.enqueue(a.id, first, lane="background")
         tm.enqueue(b.id, second, lane="background")
 
-        _threading.Event().wait(0.3)
-        assert order == ["first-start"]
-        gate.set()
-        tm.join_lane("background:maintenance", timeout=5)
+        try:
+            assert first_running.wait(_WAIT_S), "the first sweep never started"
+            _threading.Event().wait(0.3)
+            assert order == ["first-start"]
+        finally:
+            gate.set()
+            tm.join_lane("background:maintenance", timeout=_WAIT_S)
+
         assert order == ["first-start", "first-end", "second-start"]
 
     def test_a_silent_gpu_task_is_still_refused_while_draining(self, tm, monkeypatch):

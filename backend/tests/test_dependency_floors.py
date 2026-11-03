@@ -631,12 +631,16 @@ L172_BACKEND_TAKE = [
     ("zipp", "4.1.2", "#71"),
     ("pillow", "13.0.0", "#63"),
     ("rembg", "2.0.86", "#71, unlocks #63: 2.0.85 declares pillow<13"),
-    ("pytorch_optimizer", "4.0.0", "#62"),
 ]
 
-# 11 of #71 are the existing table, each ceiling still standing; pytest and #60 join it.
+# 11 of #71 are the existing table, each ceiling still standing; pytest, #60 and #62 join it.
 L172_BACKEND_HOLD = {
     **L163_BACKEND_HOLD,
+    "pytorch_optimizer": (
+        "3.10.1",
+        "#62: SophiaH 4.0.0 estimates its Hessian on step 1 and the trainer's backward() "
+        "builds no graph, so a run fails at once; Shampoo's inverse root also changes",
+    ),
     "pytest": (
         "9.1.1",
         "#71: 9.2.0 keeps a node's id in _id, and pytest-xdist 3.8.0 (the newest) tags a "

@@ -42,7 +42,7 @@ def test_optimizer_builds_and_steps(key):
 
 
 def test_sophiah_steps_and_fills_its_hessian():
-    """3.10.1 first updates the Hessian on step 3 of period 2, 4.0.0 on step 1."""
+    """Only with the graph this test builds: the trainer's backward() builds none."""
     model, loss = _model_and_loss()
     before = [p.detach().clone() for p in model.parameters()]
     optimizer = OptimizerFactory.create(

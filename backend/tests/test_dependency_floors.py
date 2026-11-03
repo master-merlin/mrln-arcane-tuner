@@ -9,6 +9,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 REQ = "backend/requirements.txt"
 
@@ -617,7 +619,6 @@ L172_BACKEND_TAKE = [
     ("platformdirs", "4.14.0", "#71"),
     ("pluggy", "1.7.0", "#71"),
     ("portalocker", "4.4.2", "#71"),
-    ("pytest", "9.2.0", "#71"),
     ("pytest-asyncio", "1.4.1", "#71"),
     ("ruff", "0.17.3", "#71"),
     ("scenedetect", "0.7.2", "#71"),
@@ -627,11 +628,18 @@ L172_BACKEND_TAKE = [
     ("wcwidth", "0.9.4", "#71"),
     ("websockets", "17.4", "#71"),
     ("zipp", "4.1.2", "#71"),
+    ("pillow", "13.0.0", "#63"),
+    ("rembg", "2.0.86", "#71, unlocks #63: 2.0.85 declares pillow<13"),
 ]
 
-# #71's other 11 are the existing table, each ceiling still standing; #60 joins it.
+# 11 of #71 are the existing table, each ceiling still standing; pytest and #60 join it.
 L172_BACKEND_HOLD = {
     **L163_BACKEND_HOLD,
+    "pytest": (
+        "9.1.1",
+        "#71: 9.2.0 keeps a node's id in _id, and pytest-xdist 3.8.0 (the newest) tags a "
+        "group by writing item._nodeid, so xdist_group silently stops grouping",
+    ),
     "huggingface-hub": (
         "1.33.0",
         "#60: diffusers 0.41.0, transformers 5.14.1, datasets 5.0.1, sam3 0.1.4 and "
@@ -657,6 +665,22 @@ def test_lane_172_dependabot_2026_11_floors():
                 f"LANE-172: held pin {name} is {have}; it must stay {want} ({ceiling})"
             )
     assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize("fmt", ["PNG", "JPEG", "AVIF"])
+def test_lane_172_pil_round_trips_each_format(fmt, tmp_path):
+    """AVIF comes from pillow-avif-plugin, whose own pin has to work with pillow's."""
+    if fmt == "AVIF":
+        import pillow_avif  # noqa: F401
+    from PIL import Image
+
+    path = tmp_path / f"a.{fmt.lower()}"
+    Image.new("RGB", (32, 16), "red").save(path, format=fmt)
+    with Image.open(path) as back:
+        assert back.format == fmt
+        assert back.size == (32, 16)
+        red, green, blue = back.convert("RGB").getpixel((8, 8))
+        assert red > 200 and green < 60 and blue < 60
 
 
 def test_lane_163_protobuf7_sentencepiece_conversion_loads():

@@ -67,7 +67,7 @@ optimum-quanto==0.2.7
 packaging==26.3
 pandas==3.1.0
 peft==0.20.0
-pillow==12.3.0
+pillow==13.0.0
 pillow-avif-plugin==1.6.0
 platformdirs==4.14.0
 pluggy==1.7.0
@@ -90,7 +90,7 @@ pyreadline3==3.5.6; sys_platform == 'win32'
 # here, and 0.8.0 caps at pytest<8, so installing it silently DOWNGRADES the pin
 # below rather than failing. Pinned by test_pytest_split_stays_uninstalled. (hpsv2 also
 # declares both pins — see its own line for why that one is inert.)
-pytest==9.2.0
+pytest==9.1.1
 pytest-asyncio==1.4.1
 # Test-only (DECISION-27, LANE-63): the gate runs `-n auto --dist loadgroup`;
 # pytest.ini stays serial-default. Exact pin because "latest compatible" is a
@@ -106,7 +106,7 @@ PyYAML==6.0.3
 qwen-vl-utils==0.0.14
 referencing==0.37.0
 regex==2026.9.29
-rembg==2.0.85
+rembg==2.0.86
 requests==2.34.2
 rich==15.0.0
 ruamel.yaml==0.19.1

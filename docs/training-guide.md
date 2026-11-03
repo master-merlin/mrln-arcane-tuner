@@ -450,7 +450,7 @@ this list.
 - **Sophia Maximize** (`sophia_maximize`) — Maximize the objective instead of minimizing (SophiaG). Placeholder: {sophia_maximize} *(schema: Maximize objective instead of minimize)*. Default `False`.
 - **Sophia Num Samples** (`sophia_num_samples`) — Number of random vectors for Hutchinson trace estimation. Placeholder: {sophia_num_samples} *(schema: Times to sample z for Hessian trace)*. Default `1` (range 1 to 10, step 1).
 - **Sophia P** (`sophia_p`) — Gradient clipping threshold for SophiaH. Placeholder: {sophia_p} *(schema: Clip effective gradient (p))*. Default `0.01` (range 0.001 to 0.1, step 0.001).
-- **Sophia Rho** (`sophia_rho`) — Hessian clipping threshold — controls per-parameter LR adaptation. ⚠️ SophiaH needs extra VRAM for Hessian estimates — may OOM on 9B+ models. Placeholder: {sophia_rho} *(schema: Hessian clipping threshold (rho))*. Default `0.04` (range 0.001 to 0.5, step 0.01).
+- **Sophia Rho** (`sophia_rho`) — Hessian clipping threshold — controls per-parameter LR adaptation. Placeholder: {sophia_rho} *(schema: Hessian clipping threshold (rho))*. Default `0.04` (range 0.001 to 0.5, step 0.01).
 - **Sophia Update Period** (`sophia_update_period`) — Steps between Hessian diagonal re-estimations. Placeholder: {sophia_update_period} *(schema: Hessian update period)*. Default `10` (min 1, step 1).
 - **Stableadamw Kahan Sum** (`stableadamw_kahan_sum`) — Use Kahan compensated summation for higher precision weight updates. Placeholder: {stableadamw_kahan_sum} *(schema: Enable Kahan summation for high precision (StableAdamW))*. Default `False`.
 <!-- schema-explainers:OPTIMIZER_EXPERT end -->

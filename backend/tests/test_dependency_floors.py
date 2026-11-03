@@ -638,8 +638,8 @@ L172_BACKEND_HOLD = {
     **L163_BACKEND_HOLD,
     "pytorch_optimizer": (
         "3.10.1",
-        "#62: SophiaH 4.0.0 estimates its Hessian on step 1 and the trainer's backward() "
-        "builds no graph, so a run fails at once; Shampoo's inverse root also changes",
+        "#62: Shampoo's inverse root moves to 2 * order, which changes training under saved "
+        "settings; SophiaH now takes the trainer's own estimate, not retested on 4.0.0",
     ),
     "pytest": (
         "9.1.1",

@@ -69,7 +69,7 @@ jobs:
         # Pinned to the venv's ruff (backend/requirements.txt) so CI and the local
         # gate judge by the same rule set — an unpinned ruff drifts with pip and
         # CI's first-ever run went red on a rule the local version had not seen.
-        run: python -m pip install --upgrade pip "ruff==0.16.5"
+        run: python -m pip install --upgrade pip "ruff==0.17.3"
 
       # The CI form of the gate command: CI has no venv.
       - name: ruff check
@@ -277,7 +277,7 @@ jobs:
       # the day, with the repository's own token. The comment names the release
       # the SHA resolves to; Dependabot (github-actions ecosystem) proposes bumps.
       - name: TruffleHog
-        uses: trufflesecurity/trufflehog@e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9 # v3.99.2
+        uses: trufflesecurity/trufflehog@31ce31ee1abbcc7dc8eee5764c17121c3044c8b2 # v3.99.7
         with:
           extra_args: --results=verified,unknown
 

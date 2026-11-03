@@ -43,7 +43,8 @@ BACKEND_TAKE = [
 ]
 
 # LANE-148: re-pinned 22.2.0 -> 22.2.1 and @lucide/angular 1.48.0 -> 1.50.0 (Dependabot PR #46 taken, frontend gate green).
-NG = "22.2.2"  # LANE-163: Dependabot #51 taken
+NG = "22.2.4"  # LANE-172: Dependabot #70 taken
+NG_TOOLING = "22.2.5"  # #70 moves @angular/build and @angular/cli further
 FRONTEND_MANIFEST = {
     "@angular/common": NG,
     "@angular/compiler": NG,
@@ -51,25 +52,25 @@ FRONTEND_MANIFEST = {
     "@angular/forms": NG,
     "@angular/platform-browser": NG,
     "@angular/router": NG,
-    "@angular/build": NG,
-    "@angular/cli": NG,
+    "@angular/build": NG_TOOLING,
+    "@angular/cli": NG_TOOLING,
     "@angular/compiler-cli": NG,
     "@codemirror/commands": "^6.11.1",
     "@codemirror/state": "^6.7.6",
-    "@codemirror/view": "^6.43.14",
-    "@lucide/angular": "1.55.0",
-    "@playwright/test": "^1.64.0",
-    "jsdom": "^30.1.2",
+    "@codemirror/view": "^6.43.15",
+    "@lucide/angular": "1.65.0",
+    "@playwright/test": "^1.64.1",
+    "jsdom": "^30.1.3",
 }
 
 # Lock targets: the manifest packages (range prefix stripped) plus the lock-only ones.
 FRONTEND_LOCK = {k: v.lstrip("^~") for k, v in FRONTEND_MANIFEST.items()}
-FRONTEND_LOCK.update({"postcss": "8.5.29", "undici": "8.12.2"})  # LANE-163: #51 postcss; undici moved with the re-resolve
+FRONTEND_LOCK.update({"postcss": "8.5.32", "undici": "8.12.2", "zod": "4.6.6", "fast-uri": "3.1.9"})  # LANE-172: #70 postcss, #66 zod, #65 fast-uri
 # ip-address is not a lock target: Dependabot #39 at head 3abbb6aca75e drops its only dependent (express-rate-limit,
 # via the Angular 22.2.0 tree), so the package leaves the lock and alert 150 is closed by absence.
 # The floor test below still fails if it ever returns below 10.7.2.
 
-TRUFFLEHOG_SHA = "e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9"  # LANE-163: v3.99.2
+TRUFFLEHOG_SHA = "31ce31ee1abbcc7dc8eee5764c17121c3044c8b2"  # LANE-172: v3.99.7, Dependabot #67
 
 # Hard-coded from main at ee1c575a.
 HELD_KEEP = {
@@ -518,7 +519,7 @@ L163_BACKEND_HOLD = {
     "typing_extensions": ("4.15.0", "sam3 0.1.4 declares typing_extensions<4.16.0"),
 }
 
-L163_NG = "22.2.2"
+L163_NG = "22.2.4"  # LANE-172 moves the exact values; the floors below stay
 L163_FRONTEND_MANIFEST = {
     **{
         k: L163_NG
@@ -529,22 +530,22 @@ L163_FRONTEND_MANIFEST = {
             "@angular/forms",
             "@angular/platform-browser",
             "@angular/router",
-            "@angular/build",
-            "@angular/cli",
             "@angular/compiler-cli",
         )
     },
+    "@angular/build": "22.2.5",
+    "@angular/cli": "22.2.5",
     "@codemirror/language": "^6.13.1",
-    "@codemirror/view": "^6.43.14",
-    "@lucide/angular": "1.55.0",
-    "@playwright/test": "^1.64.0",
-    "jsdom": "^30.1.2",
+    "@codemirror/view": "^6.43.15",
+    "@lucide/angular": "1.65.0",
+    "@playwright/test": "^1.64.1",
+    "jsdom": "^30.1.3",
 }
 # postcss is lock-only (not a manifest dependency of the app).
 L163_FRONTEND_LOCK_ONLY = {"postcss": "8.5.29"}
 
-# Dependabot #50: the sha of tag v3.99.2 (verified with gh api git/ref/tags/v3.99.2).
-L163_TRUFFLEHOG_SHA = "e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9"
+# Dependabot #67: the sha of tag v3.99.7 (verified with git ls-remote).
+L163_TRUFFLEHOG_SHA = "31ce31ee1abbcc7dc8eee5764c17121c3044c8b2"
 
 L163_SPM_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "spm_tiny.model"
 
@@ -593,7 +594,7 @@ def test_lane_163_dependabot_2026_10_14_floors():
     if want not in _read(".github/workflows/gate.yml"):
         problems.append(
             f"LANE-163: .github/workflows/gate.yml does not reference {want} "
-            "(v3.99.2, Dependabot PR #50)"
+            "(v3.99.7, Dependabot PR #67)"
         )
     assert not problems, "\n".join(problems)
 
@@ -665,6 +666,8 @@ def test_lane_172_dependabot_2026_11_floors():
             problems.append(
                 f"LANE-172: held pin {name} is {have}; it must stay {want} ({ceiling})"
             )
+    if '"ruff==0.17.3"' not in _read(".github/workflows/gate.yml"):
+        problems.append("LANE-172: .github/workflows/gate.yml must lint with the pinned ruff==0.17.3")
     assert not problems, "\n".join(problems)
 
 

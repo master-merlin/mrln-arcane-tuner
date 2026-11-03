@@ -9,6 +9,8 @@ import json
 import re
 from pathlib import Path
 
+import pytest
+
 REPO = Path(__file__).resolve().parents[2]
 REQ = "backend/requirements.txt"
 
@@ -41,7 +43,8 @@ BACKEND_TAKE = [
 ]
 
 # LANE-148: re-pinned 22.2.0 -> 22.2.1 and @lucide/angular 1.48.0 -> 1.50.0 (Dependabot PR #46 taken, frontend gate green).
-NG = "22.2.2"  # LANE-163: Dependabot #51 taken
+NG = "22.2.4"  # LANE-172: Dependabot #70 taken
+NG_TOOLING = "22.2.5"  # #70 moves @angular/build and @angular/cli further
 FRONTEND_MANIFEST = {
     "@angular/common": NG,
     "@angular/compiler": NG,
@@ -49,25 +52,25 @@ FRONTEND_MANIFEST = {
     "@angular/forms": NG,
     "@angular/platform-browser": NG,
     "@angular/router": NG,
-    "@angular/build": NG,
-    "@angular/cli": NG,
+    "@angular/build": NG_TOOLING,
+    "@angular/cli": NG_TOOLING,
     "@angular/compiler-cli": NG,
     "@codemirror/commands": "^6.11.1",
     "@codemirror/state": "^6.7.6",
-    "@codemirror/view": "^6.43.14",
-    "@lucide/angular": "1.55.0",
-    "@playwright/test": "^1.64.0",
-    "jsdom": "^30.1.2",
+    "@codemirror/view": "^6.43.15",
+    "@lucide/angular": "1.65.0",
+    "@playwright/test": "^1.64.1",
+    "jsdom": "^30.1.3",
 }
 
 # Lock targets: the manifest packages (range prefix stripped) plus the lock-only ones.
 FRONTEND_LOCK = {k: v.lstrip("^~") for k, v in FRONTEND_MANIFEST.items()}
-FRONTEND_LOCK.update({"postcss": "8.5.29", "undici": "8.12.2"})  # LANE-163: #51 postcss; undici moved with the re-resolve
+FRONTEND_LOCK.update({"postcss": "8.5.32", "undici": "8.12.2", "zod": "4.6.6", "fast-uri": "3.1.9"})  # LANE-172: #70 postcss, #66 zod, #65 fast-uri
 # ip-address is not a lock target: Dependabot #39 at head 3abbb6aca75e drops its only dependent (express-rate-limit,
 # via the Angular 22.2.0 tree), so the package leaves the lock and alert 150 is closed by absence.
 # The floor test below still fails if it ever returns below 10.7.2.
 
-TRUFFLEHOG_SHA = "e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9"  # LANE-163: v3.99.2
+TRUFFLEHOG_SHA = "31ce31ee1abbcc7dc8eee5764c17121c3044c8b2"  # LANE-172: v3.99.7, Dependabot #67
 
 # Hard-coded from main at ee1c575a.
 HELD_KEEP = {
@@ -516,7 +519,7 @@ L163_BACKEND_HOLD = {
     "typing_extensions": ("4.15.0", "sam3 0.1.4 declares typing_extensions<4.16.0"),
 }
 
-L163_NG = "22.2.2"
+L163_NG = "22.2.4"  # LANE-172 moves the exact values; the floors below stay
 L163_FRONTEND_MANIFEST = {
     **{
         k: L163_NG
@@ -527,22 +530,22 @@ L163_FRONTEND_MANIFEST = {
             "@angular/forms",
             "@angular/platform-browser",
             "@angular/router",
-            "@angular/build",
-            "@angular/cli",
             "@angular/compiler-cli",
         )
     },
+    "@angular/build": "22.2.5",
+    "@angular/cli": "22.2.5",
     "@codemirror/language": "^6.13.1",
-    "@codemirror/view": "^6.43.14",
-    "@lucide/angular": "1.55.0",
-    "@playwright/test": "^1.64.0",
-    "jsdom": "^30.1.2",
+    "@codemirror/view": "^6.43.15",
+    "@lucide/angular": "1.65.0",
+    "@playwright/test": "^1.64.1",
+    "jsdom": "^30.1.3",
 }
 # postcss is lock-only (not a manifest dependency of the app).
 L163_FRONTEND_LOCK_ONLY = {"postcss": "8.5.29"}
 
-# Dependabot #50: the sha of tag v3.99.2 (verified with gh api git/ref/tags/v3.99.2).
-L163_TRUFFLEHOG_SHA = "e76dff8a7e57d6df0c60ad8cbf5d5cba505a8fc9"
+# Dependabot #67: the sha of tag v3.99.7 (verified with git ls-remote).
+L163_TRUFFLEHOG_SHA = "31ce31ee1abbcc7dc8eee5764c17121c3044c8b2"
 
 L163_SPM_FIXTURE = Path(__file__).resolve().parent / "fixtures" / "spm_tiny.model"
 
@@ -591,9 +594,101 @@ def test_lane_163_dependabot_2026_10_14_floors():
     if want not in _read(".github/workflows/gate.yml"):
         problems.append(
             f"LANE-163: .github/workflows/gate.yml does not reference {want} "
-            "(v3.99.2, Dependabot PR #50)"
+            "(v3.99.7, Dependabot PR #67)"
         )
     assert not problems, "\n".join(problems)
+
+
+# ---------------------------------------------------------------------------
+# LANE-172: the Dependabot PRs of 2026-10-19 to 2026-11-02.
+# ---------------------------------------------------------------------------
+
+# (package, floor, PR)
+L172_BACKEND_TAKE = [
+    ("MarkupSafe", "3.0.4", "#59"),
+    ("rpds-py", "2026.9.1", "#61"),
+    ("certifi", "2026.10.23", "#71"),
+    ("fastapi", "0.162.0", "#71"),
+    ("filelock", "4.2.4", "#71, supersedes #64"),
+    ("hf-xet", "1.8.0", "#71"),
+    ("imageio-ffmpeg", "0.7.0", "#71"),
+    ("multidict", "7.2.1", "#71"),
+    ("numba", "0.68.1", "#71"),
+    ("opentelemetry-api", "1.45.2", "#71"),
+    ("onnxruntime-gpu", "1.31.1", "#71"),
+    ("pandas", "3.1.0", "#71"),
+    ("platformdirs", "4.14.0", "#71"),
+    ("pluggy", "1.7.0", "#71"),
+    ("portalocker", "4.4.2", "#71"),
+    ("pytest-asyncio", "1.4.1", "#71"),
+    ("ruff", "0.17.3", "#71"),
+    ("scenedetect", "0.7.2", "#71"),
+    ("starlette", "1.10.0", "#71"),
+    ("tifffile", "2026.10.15", "#71"),
+    ("tzdata", "2026.6", "#71"),
+    ("wcwidth", "0.9.4", "#71"),
+    ("websockets", "17.4", "#71"),
+    ("zipp", "4.1.2", "#71"),
+    ("pillow", "13.0.0", "#63"),
+    ("rembg", "2.0.86", "#71, unlocks #63: 2.0.85 declares pillow<13"),
+]
+
+# 11 of #71 are the existing table, each ceiling still standing; pytest, #60 and #62 join it.
+L172_BACKEND_HOLD = {
+    **L163_BACKEND_HOLD,
+    "pytorch_optimizer": (
+        "3.10.1",
+        "#62: SophiaH 4.0.0 estimates its Hessian on step 1 and the trainer's backward() "
+        "builds no graph, so a run fails at once; Shampoo's inverse root also changes",
+    ),
+    "pytest": (
+        "9.1.1",
+        "#71: 9.2.0 keeps a node's id in _id, and pytest-xdist 3.8.0 (the newest) tags a "
+        "group by writing item._nodeid, so xdist_group silently stops grouping",
+    ),
+    "huggingface-hub": (
+        "1.33.0",
+        "#60: diffusers 0.41.0, transformers 5.14.1, datasets 5.0.1, sam3 0.1.4 and "
+        "tokenizers 0.22.2 declare huggingface-hub<2.0",
+    ),
+}
+
+
+def test_lane_172_dependabot_2026_11_floors():
+    problems: list[str] = []
+    pins = _pins()
+    for name, floor, pr in L172_BACKEND_TAKE:
+        have = pins.get(_norm(name), ("absent", ""))[0]
+        if have == "absent" or _ver(have) < _ver(floor):
+            problems.append(
+                f"LANE-172: {name} is {have} in {REQ}; the floor is {floor} "
+                f"(Dependabot PR {pr})"
+            )
+    for name, (want, ceiling) in L172_BACKEND_HOLD.items():
+        have = pins.get(_norm(name), ("absent", ""))[0]
+        if have != want:
+            problems.append(
+                f"LANE-172: held pin {name} is {have}; it must stay {want} ({ceiling})"
+            )
+    if '"ruff==0.17.3"' not in _read(".github/workflows/gate.yml"):
+        problems.append("LANE-172: .github/workflows/gate.yml must lint with the pinned ruff==0.17.3")
+    assert not problems, "\n".join(problems)
+
+
+@pytest.mark.parametrize("fmt", ["PNG", "JPEG", "AVIF"])
+def test_lane_172_pil_round_trips_each_format(fmt, tmp_path):
+    """AVIF comes from pillow-avif-plugin, whose own pin has to work with pillow's."""
+    if fmt == "AVIF":
+        import pillow_avif  # noqa: F401
+    from PIL import Image
+
+    path = tmp_path / f"a.{fmt.lower()}"
+    Image.new("RGB", (32, 16), "red").save(path, format=fmt)
+    with Image.open(path) as back:
+        assert back.format == fmt
+        assert back.size == (32, 16)
+        red, green, blue = back.convert("RGB").getpixel((8, 8))
+        assert red > 200 and green < 60 and blue < 60
 
 
 def test_lane_163_protobuf7_sentencepiece_conversion_loads():

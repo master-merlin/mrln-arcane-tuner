@@ -596,6 +596,69 @@ def test_lane_163_dependabot_2026_10_14_floors():
     assert not problems, "\n".join(problems)
 
 
+# ---------------------------------------------------------------------------
+# LANE-172: the Dependabot PRs of 2026-10-19 to 2026-11-02.
+# ---------------------------------------------------------------------------
+
+# (package, floor, PR)
+L172_BACKEND_TAKE = [
+    ("MarkupSafe", "3.0.4", "#59"),
+    ("rpds-py", "2026.9.1", "#61"),
+    ("certifi", "2026.10.23", "#71"),
+    ("fastapi", "0.162.0", "#71"),
+    ("filelock", "4.2.4", "#71, supersedes #64"),
+    ("hf-xet", "1.8.0", "#71"),
+    ("imageio-ffmpeg", "0.7.0", "#71"),
+    ("multidict", "7.2.1", "#71"),
+    ("numba", "0.68.1", "#71"),
+    ("opentelemetry-api", "1.45.2", "#71"),
+    ("onnxruntime-gpu", "1.31.1", "#71"),
+    ("pandas", "3.1.0", "#71"),
+    ("platformdirs", "4.14.0", "#71"),
+    ("pluggy", "1.7.0", "#71"),
+    ("portalocker", "4.4.2", "#71"),
+    ("pytest", "9.2.0", "#71"),
+    ("pytest-asyncio", "1.4.1", "#71"),
+    ("ruff", "0.17.3", "#71"),
+    ("scenedetect", "0.7.2", "#71"),
+    ("starlette", "1.10.0", "#71"),
+    ("tifffile", "2026.10.15", "#71"),
+    ("tzdata", "2026.6", "#71"),
+    ("wcwidth", "0.9.4", "#71"),
+    ("websockets", "17.4", "#71"),
+    ("zipp", "4.1.2", "#71"),
+]
+
+# #71's other 11 are the existing table, each ceiling still standing; #60 joins it.
+L172_BACKEND_HOLD = {
+    **L163_BACKEND_HOLD,
+    "huggingface-hub": (
+        "1.33.0",
+        "#60: diffusers 0.41.0, transformers 5.14.1, datasets 5.0.1, sam3 0.1.4 and "
+        "tokenizers 0.22.2 declare huggingface-hub<2.0",
+    ),
+}
+
+
+def test_lane_172_dependabot_2026_11_floors():
+    problems: list[str] = []
+    pins = _pins()
+    for name, floor, pr in L172_BACKEND_TAKE:
+        have = pins.get(_norm(name), ("absent", ""))[0]
+        if have == "absent" or _ver(have) < _ver(floor):
+            problems.append(
+                f"LANE-172: {name} is {have} in {REQ}; the floor is {floor} "
+                f"(Dependabot PR {pr})"
+            )
+    for name, (want, ceiling) in L172_BACKEND_HOLD.items():
+        have = pins.get(_norm(name), ("absent", ""))[0]
+        if have != want:
+            problems.append(
+                f"LANE-172: held pin {name} is {have}; it must stay {want} ({ceiling})"
+            )
+    assert not problems, "\n".join(problems)
+
+
 def test_lane_163_protobuf7_sentencepiece_conversion_loads():
     # (1) the floor, so this fails on main's 5.29.6 in its call phase.
     import google.protobuf as pb

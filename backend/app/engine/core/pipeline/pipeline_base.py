@@ -28,6 +28,10 @@ logger = structlog.get_logger(__name__)
 class PipelineBaseMixin(BaseTrainer):
     """Abstract hooks + component wiring for the training pipeline."""
 
+    # True for a family whose ``t`` is in ``[0, 1]`` with ``t = 1`` clean, so the sigma
+    # histogram records ``1 - t`` and reports the noise fraction, as the others do.
+    timesteps_count_clean_fraction: bool = False
+
     @staticmethod
     def _reraise_resolver_failure(exc: AttributeError, *, prop: str) -> NoReturn:
         """Convert a resolver ``AttributeError`` (e.g. a family class that

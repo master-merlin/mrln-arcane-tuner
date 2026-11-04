@@ -88,6 +88,8 @@ class OmniGen2Trainer(GenericTrainingPipeline):
     INVERTED flow-match convention.
     """
 
+    timesteps_count_clean_fraction = True
+
     # ── Setup ────────────────────────────────────────────────────────────
 
     def _setup_family(self) -> None:

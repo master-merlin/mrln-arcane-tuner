@@ -294,7 +294,12 @@ curriculum currently favours is both sampled more often and counted more in
 the loss. The weight uses the centre of the batch's own draw, resolution
 cross-influence included: with the defaults, at the last step, a batch of 4096
 tokens or more has its draw and its weight centred on `0.05`, and one of 256
-tokens or fewer on `0.35`.
+tokens or fewer on `0.35`. Since the weight now follows the draw, it also sits
+higher where the draws are: at 4096 tokens or more, the batch's mean weight at
+the last step went from about 1.72 to 2.06 (about 20% more), and about 3% more
+halfway through a run. On a small image the last step's mean weight is about 2%
+lower. The loss of such a run reads a little differently from an earlier version's
+for that reason alone.
 
 ## Read the estimate before you start
 

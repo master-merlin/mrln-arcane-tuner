@@ -13,6 +13,7 @@ import torch
 
 from app.core.naming import model_part_from_definition_id
 from app.engine.components.checkpoints import CheckpointManager, _load_pt, _run_seed
+from app.engine.core.optimization.optimizer_remap import place_optimizer_state
 from app.engine.strategies.ema import EMAHandler
 from app.engine.components.latents import LatentManager
 from app.engine.factories.optimizer import OptimizerFactory, LRSchedulerFactory
@@ -892,9 +893,27 @@ class PipelineOptimizationMixin:
         else:
             self.logger.warning("router_state_missing_on_resume", path=state_path)
 
+        self._place_swapped_experts_optimizer_state()
+
         self._primary_before_resume = self._get_primary_model()
         start_step = self.global_step + 1 if self.global_step > 0 else 0
         self.driver.on_optimizer_step(start_step - 1)
+
+    def _place_swapped_experts_optimizer_state(self) -> None:
+        """In swap mode, put both experts' restored state where a run that never stopped has it.
+
+        The load cast it to the device each parameter has now, so the expert off the
+        card has its state off the card, and the swap moves only the model: the first
+        step on that expert would mix devices. A resident expert's state is on the card
+        already. A block-swapped expert is left alone: it's the one active at the load,
+        and each of its parameters steps on the device the load saw.
+        """
+        driver = self.driver
+        if self.optimizer is None or driver.swap_mode != "swap":
+            return
+        for name, model in (("high", driver.transformer_high), ("low", driver.transformer_low)):
+            if model is not None and name != driver.block_swap_active_expert:
+                place_optimizer_state(self.optimizer, model.parameters(), driver.device)
 
     def _load_router_state(self, router: Any, saved: Any, state_path: str) -> None:
         """Load ``saved`` into ``router`` unless it's malformed or from other settings."""

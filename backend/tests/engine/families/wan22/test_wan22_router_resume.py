@@ -28,6 +28,7 @@ from app.engine.models.families.wan22.expert_router import HIGH, LOW
 from app.engine.models.families.wan22.trainer import Wan22Trainer
 
 CPU = torch.device("cpu")
+CUDA_DEVICE = torch.device("cuda:0")
 MAX_STEPS = 100
 ROUTER_FILE = "router_state.pt"
 SAVED_VALUE = {HIGH: 3.0, LOW: 7.0}
@@ -212,6 +213,23 @@ def check_decisions_continue(
     assert resumed.logger.warnings == []
 
 
+def record_expert_moves(driver: Any) -> dict[str, str]:
+    """``driver.device`` becomes the card and each expert's ``.to`` is recorded: nothing moves."""
+    driver.device = torch.device("cuda:0")
+    placed: dict[str, str] = {}
+    for name in (HIGH, LOW):
+        model = driver._expert_model(name)
+        if model is None:
+            continue
+
+        def _to(target, name=name, model=model):
+            placed[name] = str(target)
+            return model
+
+        model.to = _to
+    return placed
+
+
 def check_right_expert_is_resident(family: Family, tmp_path: Path, *, swap: str) -> None:
     config = {"expert_swap_mode": swap}
     uninterrupted = run_steps(make_trainer(family, config, out=tmp_path / "ref"), 0, MAX_STEPS)
@@ -222,15 +240,7 @@ def check_right_expert_is_resident(family: Family, tmp_path: Path, *, swap: str)
 
     resumed = make_trainer(family, config, out=tmp_path / "run")
     driver = resumed.driver
-    driver.device = torch.device("cuda:0")  # .to is recorded below, nothing moves
-    placed: dict[str, str] = {}
-    for name in (HIGH, LOW):
-
-        def _to(target, name=name, model=driver._expert_model(name)):
-            placed[name] = str(target)
-            return model
-
-        driver._expert_model(name).to = _to
+    placed = record_expert_moves(driver)
     driver.configure_swap_mode(swap)
     driver.place_experts_for_start()  # as _configure_optimization does, before the resume
 
@@ -365,6 +375,195 @@ def check_only_a_unet_folder_loads_into_the_active_expert(family: Family, tmp_pa
     assert lora_value(other) == 0.0
     missing = resumed.logger.named("resume_partial_adapter_restore")
     assert len(missing) == 1 and missing[0]["missing"] == [f"unet_{LOW if startup == HIGH else HIGH}"]
+
+
+# ── The optimizer's state, on the card and off it ──
+
+
+def resume_point(expert_of: dict[int, str]) -> tuple[int, int]:
+    """``(save, stop)``: both experts have stepped by ``save``, ``save + 1`` isn't block 0's expert,
+    and the steps up to ``stop`` cross at least two switches."""
+    first = expert_of[0]
+    for save_step in range(1, MAX_STEPS - 1):
+        if first_other_expert_ran(expert_of, save_step) and expert_of[save_step + 1] != first:
+            switches = 0
+            for step in range(save_step + 2, MAX_STEPS):
+                switches += expert_of[step] != expert_of[step - 1]
+                if switches == 2:
+                    return save_step, step + 1
+    raise AssertionError(f"no such point: {expert_of}")
+
+
+def first_other_expert_ran(expert_of: dict[int, str], upto: int) -> bool:
+    return len({expert_of[s] for s in range(upto + 1)}) == 2
+
+
+def make_training_trainer(family: Family, config: dict, *, out: Path) -> Any:
+    """``make_trainer`` on the card, with the real optimizer, scheduler, scaler and start placement.
+
+    The seed makes two calls build the same frozen base layers: a checkpoint holds only the adapters.
+    """
+    torch.manual_seed(1234)
+    t = make_trainer(
+        family,
+        {"optimizer_type": "AdamW", "learning_rate": 1e-2, "mixed_precision": "no", "lr_scheduler": "constant", **config},
+        out=out,
+    )
+    t.device = t.driver.device = CUDA_DEVICE
+    set_lora(t.driver.transformer_high, 0.3)
+    set_lora(t.driver.transformer_low, 0.7)
+    t._configure_optimization(MAX_STEPS)
+    return t
+
+
+def train_steps(t: Any, start: int, stop: int) -> list[str]:
+    """Forward, backward, optimizer and hook, in the loop's order. The experts differ in their weights."""
+    t.max_train_steps = MAX_STEPS
+    experts: list[str] = []
+    for step in range(start, stop):
+        t.global_step = step
+        experts.append(t.driver.active_expert)
+        model = t.driver.get_primary_model()
+        model(torch.ones(2, 4, device=CUDA_DEVICE)).pow(2).mean().backward()
+        t.optimizer.step()
+        t.lr_scheduler.step()
+        t.optimizer.zero_grad(set_to_none=True)
+        t.driver.on_optimizer_step(step)
+    return experts
+
+
+def expert_params(t: Any, expert: str) -> list[torch.nn.Parameter]:
+    return [p for p in t.driver._expert_model(expert).parameters() if p.requires_grad]
+
+
+def optimizer_places(t: Any) -> dict[str, dict[str, set[str]]]:
+    """Each expert's state: key to the device types its tensors are on."""
+    places: dict[str, dict[str, set[str]]] = {}
+    for expert in (HIGH, LOW):
+        places[expert] = {}
+        for param in expert_params(t, expert):
+            for key, value in t.optimizer.state[param].items():
+                places[expert].setdefault(key, set()).add(value.device.type)
+    return places
+
+
+def optimizer_values(t: Any) -> dict[str, list[dict[str, torch.Tensor]]]:
+    return {
+        expert: [
+            {key: value.detach().clone().cpu() for key, value in t.optimizer.state[param].items()}
+            for param in expert_params(t, expert)
+        ]
+        for expert in (HIGH, LOW)
+    }
+
+
+def weights(t: Any, expert: str) -> list[torch.Tensor]:
+    return [p.detach().clone().cpu() for p in expert_params(t, expert)]
+
+
+def check_real_steps_across_switches(family: Family, tmp_path: Path, *, swap: str, startup: str) -> None:
+    """A resumed run steps across two switches on its restored moments, as the uninterrupted run does."""
+    config = {"seed": seed_starting_on(family, startup, tmp_path), "expert_swap_mode": swap}
+    save_step, stop = resume_point(run_steps(make_trainer(family, config, out=tmp_path / "plan"), 0, MAX_STEPS))
+
+    first = make_training_trainer(family, config, out=tmp_path / "run")
+    assert first.driver.active_expert == startup
+    train_steps(first, 0, save_step + 1)
+    saved_places = optimizer_places(first)
+    saved_values = optimizer_values(first)
+    folder = Path(
+        first.checkpoint_manager.save_checkpoint(
+            step=save_step,
+            components=first._build_trainable_components(),
+            optimizer=first.optimizer,
+            scheduler=first.lr_scheduler,
+            scaler=first.scaler,
+            config=dict(first.config),
+            optimizer_param_names=first._optimizer_param_names,
+        )
+    )
+    expected_experts = train_steps(first, save_step + 1, stop)
+    switches = sum(a != b for a, b in zip(expected_experts, expected_experts[1:]))
+    assert switches >= 2
+
+    resumed = make_training_trainer(family, config, out=tmp_path / "run")
+    assert resumed.driver.active_expert == startup
+    assert resume(resumed, folder) == save_step + 1
+    assert resumed.driver.active_expert != startup, "the first step needs the other expert"
+
+    assert optimizer_places(resumed) == saved_places, "where the uninterrupted run has its state"
+    assert saved_places[startup]["step"] == {"cpu"} and saved_places[startup]["exp_avg"] == {"cuda"}
+    restored = optimizer_values(resumed)
+    for expert in (HIGH, LOW):
+        for got, saved in zip(restored[expert], saved_values[expert]):
+            assert got.keys() == saved.keys()
+            assert all(torch.equal(got[key], saved[key]) for key in got), "restored, not begun again"
+
+    assert train_steps(resumed, save_step + 1, stop) == expected_experts
+
+    stepped = {expert: expected_experts.count(expert) for expert in (HIGH, LOW)}
+    assert all(stepped.values()), expected_experts
+    after = optimizer_values(resumed)
+    for expert in (HIGH, LOW):
+        for got, was in zip(after[expert], restored[expert]):
+            assert got["step"] == was["step"] + stepped[expert]
+            assert not torch.equal(got["exp_avg_sq"], was["exp_avg_sq"]), "this expert really stepped"
+        # Begun-again moments would take other steps, so the weights would part from the reference.
+        for got_weight, reference in zip(weights(resumed, expert), weights(first, expert)):
+            assert torch.allclose(got_weight, reference, rtol=1e-5, atol=1e-7)
+    assert optimizer_places(resumed) == saved_places
+
+
+def check_placement_is_asked_for(
+    family: Family, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, swap: str, managed: str | None, expected: set[str]
+) -> None:
+    """Without a card: which experts' state the resume sends to the training device."""
+    import app.engine.core.pipeline.pipeline_optimization as pipeline_optimization
+
+    config = {"expert_swap_mode": swap}
+    first = make_trainer(family, config, out=tmp_path / "run")
+    run_steps(first, 0, 6)
+    folder = save(first, 5)
+
+    asked: dict[str, tuple[Any, str, Any]] = {}
+    resumed = make_trainer(family, config, out=tmp_path / "run")
+    resumed.optimizer = torch.optim.AdamW(resumed._collect_expert_params(), lr=0.01)
+    names = {HIGH: resumed.driver.transformer_high, LOW: resumed.driver.transformer_low}
+
+    def _record(optimizer, params, device):
+        params = list(params)
+        expert = next(e for e, model in names.items() if params[0] is next(model.parameters()))
+        asked[expert] = (optimizer, str(device), params)
+
+    monkeypatch.setattr(pipeline_optimization, "place_optimizer_state", _record, raising=False)
+    record_expert_moves(resumed.driver)
+    resumed.driver.block_swap_active_expert = managed
+    resume(resumed, folder)
+
+    assert set(asked) == expected
+    for expert, (optimizer, device, params) in asked.items():
+        assert optimizer is resumed.optimizer
+        assert device == "cuda:0"
+        assert params == list(names[expert].parameters())
+
+
+def check_single_expert_places_nothing(family: Family, tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    """Swap mode needs two experts: a pinned job resolves it to resident."""
+    import app.engine.core.pipeline.pipeline_optimization as pipeline_optimization
+
+    calls: list[Any] = []
+    monkeypatch.setattr(pipeline_optimization, "place_optimizer_state", lambda *a: calls.append(a), raising=False)
+    config = {"expert_swap_mode": "swap"}
+    first = make_trainer(family, config, out=tmp_path / "run", expert_mode=HIGH)
+    run_steps(first, 0, 3)
+    folder = save(first, 2)
+
+    resumed = make_trainer(family, config, out=tmp_path / "run", expert_mode=HIGH)
+    resumed.optimizer = torch.optim.AdamW(resumed._collect_expert_params(), lr=0.01)
+    assert resumed.driver.swap_mode == "resident"
+    resume(resumed, folder)
+
+    assert calls == []
 
 
 # ── Acceptance 6: the decisions ──
@@ -570,6 +769,50 @@ def test_only_a_unet_folder_loads_into_the_active_expert(tmp_path, startup):
 
 def test_a_folder_in_todays_layout_resumes(tmp_path):
     check_today_layout_resumes(WAN22, tmp_path)
+
+
+# ── The optimizer's state ──
+
+
+@pytest.mark.xdist_group("gpu")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a card to move anything")
+@pytest.mark.parametrize("startup", [HIGH, LOW])
+@pytest.mark.parametrize("swap", ["swap", "resident"])
+def test_a_resumed_run_steps_across_switches_on_its_restored_moments(tmp_path, swap, startup):
+    check_real_steps_across_switches(WAN22, tmp_path, swap=swap, startup=startup)
+
+
+@pytest.mark.parametrize(
+    ("swap", "managed", "expected"),
+    [
+        ("swap", None, {HIGH, LOW}),
+        ("resident", None, set()),
+        # A block-swapped expert's state is where each of its parameters steps, already.
+        ("swap", HIGH, {LOW}),
+        ("swap", LOW, {HIGH}),
+    ],
+    ids=["swap", "resident", "swap-high-block-swapped", "swap-low-block-swapped"],
+)
+def test_the_resume_places_the_state_of_the_experts_swap_mode_moves(tmp_path, monkeypatch, swap, managed, expected):
+    check_placement_is_asked_for(WAN22, tmp_path, monkeypatch, swap=swap, managed=managed, expected=expected)
+
+
+def test_a_single_expert_job_places_nothing(tmp_path, monkeypatch):
+    check_single_expert_places_nothing(WAN22, tmp_path, monkeypatch)
+
+
+def test_a_family_without_a_router_places_nothing(tmp_path, monkeypatch):
+    """The whole of it hangs off the router, which only a dual-expert family builds."""
+    import app.engine.core.pipeline.pipeline_optimization as pipeline_optimization
+
+    calls: list[Any] = []
+    monkeypatch.setattr(pipeline_optimization, "place_optimizer_state", lambda *a: calls.append(a), raising=False)
+    t = make_trainer(WAN22, {"expert_swap_mode": "swap"}, out=tmp_path / "run")
+    t.optimizer = torch.optim.AdamW(t._collect_expert_params(), lr=0.01)
+    t.expert_router = None
+    t._resume_expert_router(str(tmp_path))
+
+    assert calls == []
 
 
 def test_a_pinned_job_loads_its_own_expert_from_a_dual_checkpoint(tmp_path):

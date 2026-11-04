@@ -336,6 +336,11 @@ streams of those present are restored. A checkpoint from before this has no
 saved streams: it resumes as it always did, from the seed, logged once as
 `rng_state_missing_on_resume`.
 
+In `swap` mode (`expert_swap_mode`), only a dual-expert job's model weights leave
+the GPU. Both experts' optimizer state stays on it, in a resumed run as in an
+uninterrupted one, and takes VRAM beside the active expert (with AdamW, two
+tensors the size of each expert's LoRA).
+
 ## Recipes
 
 **First run for a new model on a project.** Model Selection → pick the

@@ -7,6 +7,7 @@ and driver, whose router estimates through its own warped draw.
 from __future__ import annotations
 
 import pytest
+import torch
 
 from app.engine.models.families.bernini_r.driver import BerniniRDriver
 from app.engine.models.families.bernini_r.trainer import BerniniRTrainer
@@ -18,8 +19,11 @@ from tests.engine.families.wan22.test_wan22_router_resume import (
     check_mismatch_leaves_the_built_router,
     check_only_a_unet_folder_loads_into_the_active_expert,
     check_own_weights,
+    check_placement_is_asked_for,
+    check_real_steps_across_switches,
     check_right_expert_is_resident,
     check_save_writes_the_router_and_readers_accept_it,
+    check_single_expert_places_nothing,
     check_today_layout_resumes,
 )
 
@@ -84,3 +88,24 @@ def test_only_a_unet_folder_loads_into_the_active_expert(tmp_path, startup):
 
 def test_a_folder_in_todays_layout_resumes(tmp_path):
     check_today_layout_resumes(BERNINI, tmp_path)
+
+
+@pytest.mark.xdist_group("gpu")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a card to move anything")
+@pytest.mark.parametrize("startup", [HIGH, LOW])
+@pytest.mark.parametrize("swap", ["swap", "resident"])
+def test_a_resumed_run_steps_across_switches_on_its_restored_moments(tmp_path, swap, startup):
+    check_real_steps_across_switches(BERNINI, tmp_path, swap=swap, startup=startup)
+
+
+@pytest.mark.parametrize(
+    ("swap", "managed", "expected"),
+    [("swap", None, {HIGH, LOW}), ("resident", None, set()), ("swap", HIGH, {LOW}), ("swap", LOW, {HIGH})],
+    ids=["swap", "resident", "swap-high-block-swapped", "swap-low-block-swapped"],
+)
+def test_the_resume_places_the_state_of_the_experts_swap_mode_moves(tmp_path, monkeypatch, swap, managed, expected):
+    check_placement_is_asked_for(BERNINI, tmp_path, monkeypatch, swap=swap, managed=managed, expected=expected)
+
+
+def test_a_single_expert_job_places_nothing(tmp_path, monkeypatch):
+    check_single_expert_places_nothing(BERNINI, tmp_path, monkeypatch)

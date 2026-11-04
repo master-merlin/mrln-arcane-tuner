@@ -15,7 +15,10 @@ the next few hundred steps.
 from __future__ import annotations
 
 import copy
+from collections.abc import Iterable
 from typing import Any
+
+import torch
 
 # Prefix the pipeline gives a param it could not name (see
 # ``_name_optimizer_params``). Placeholders are POSITIONAL, so the same string
@@ -68,3 +71,39 @@ def remap_optimizer_state(
     group = copy.deepcopy(saved_groups[0])
     group["params"] = list(range(len(current_names)))
     return {"state": new_state, "param_groups": [group]}, unmapped
+
+
+def place_optimizer_state(
+    optimizer: torch.optim.Optimizer,
+    params: Iterable[torch.nn.Parameter],
+    device: torch.device | str,
+) -> None:
+    """Put the state of ``params`` on ``device``, as a load with them there would.
+
+    ``load_state_dict`` casts state to the device a param has at that moment. An
+    optimizer's lazy start would have put it on the device the param trains on, and
+    only the two differ for a dual-expert family's swapped-out expert, whose state a
+    run that never stopped keeps on the card.
+
+    Which tensors move is torch's own load policy, as every optimizer the product
+    offers has its state read through it or a copy of it: everything but a ``step``,
+    which stays where it is unless the group is ``capturable`` or ``fused``. Anything
+    else in the state, such as 8-bit's int ``step``, is left alone. A param with no
+    state gets none: empty state would stop an optimizer's lazy start.
+    """
+    wanted = {id(param) for param in params}
+    for group in optimizer.param_groups:
+        moves_step = bool(group.get("capturable") or group.get("fused"))
+        for param in group["params"]:
+            if id(param) in wanted and param in optimizer.state:
+                optimizer.state[param] = _placed(optimizer.state[param], None, moves_step, device)
+
+
+def _placed(value: Any, key: Any, moves_step: bool, device: torch.device | str) -> Any:
+    if isinstance(value, torch.Tensor):
+        return value if key == "step" and not moves_step else value.to(device)
+    if isinstance(value, dict):
+        return {k: _placed(v, k, moves_step, device) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return type(value)(_placed(v, None, moves_step, device) for v in value)
+    return value

@@ -589,8 +589,9 @@ class BerniniRTrainer(
     def _build_trainable_components(self) -> dict:
         """Expose BOTH PEFT experts to the dual saver as ``unet_high``/``unet_low``.
 
-        1.3B / single-expert: base behaviour (byte-identical). 14B: also thread
-        the router state for resume (mirrors :class:`Wan22Trainer`).
+        1.3B / single-expert: base behaviour (byte-identical). 14B: also hand over
+        the router, whose state the checkpoint writes for resume (mirrors
+        :class:`Wan22Trainer`).
         """
         comps = super()._build_trainable_components()
         driver = getattr(self, "driver", None)
@@ -600,7 +601,7 @@ class BerniniRTrainer(
         comps["unet_low"] = driver.transformer_low
         router = getattr(self, "expert_router", None)
         if router is not None:
-            comps["router_state"] = router.state_dict()
+            comps["router_state"] = router
         return comps
 
     # ── Text Encoding (UMT5-XXL via driver, with lazy cache) ─────────────

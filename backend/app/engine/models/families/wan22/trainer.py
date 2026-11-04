@@ -319,8 +319,8 @@ class Wan22Trainer(
 
         Keeps ``unet`` = the active expert for any generic consumer (resume
         state, training-log param counts), and adds the explicit high/low keys
-        the :class:`Wan22Saver` writes two files from. Also threads the router
-        state for resume.
+        the :class:`Wan22Saver` writes two files from. Also hands over the router,
+        whose state the checkpoint writes as ``router_state.pt`` for resume.
         """
         comps = super()._build_trainable_components()
         driver: Wan22Driver = self.driver  # type: ignore[assignment]
@@ -328,7 +328,7 @@ class Wan22Trainer(
         comps["unet_low"] = driver.transformer_low
         router = getattr(self, "expert_router", None)
         if router is not None:
-            comps["router_state"] = router.state_dict()
+            comps["router_state"] = router
         return comps
 
     # ── Text Encoding (UMT5-XXL via driver, with lazy cache) ─────────────

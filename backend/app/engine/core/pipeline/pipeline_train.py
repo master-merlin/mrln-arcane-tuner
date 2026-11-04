@@ -302,15 +302,10 @@ class PipelineTrainMixin:
             self.logger.warning("sophiah_hessian_estimate_skipped", step=step)
             return None
 
-        # step(hessian=) needs an entry per parameter, and storing one in empty state
-        # makes the library's init_group skip the rest, so its update raises KeyError.
+        # One entry per parameter; None for one this window didn't reach, whose
+        # state waits for its first gradient, on the device it has by then.
         by_param = {id(p): e for p, e in zip(reached, estimate)}
-        for p in params:
-            state = self.optimizer.state[p]
-            for key in ("momentum", "hessian_moment"):
-                if key not in state:
-                    state[key] = torch.zeros_like(p)
-        return [by_param.get(id(p), torch.zeros_like(p)) for p in params]
+        return [by_param.get(id(p)) for p in params]
 
     def _iter_training_batches(self, batch_size: int):
         """Infinite bucket-aware batch iterator for the training loop.

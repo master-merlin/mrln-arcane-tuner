@@ -5,6 +5,7 @@ No test here builds a graph: the trainer never does, and one test that passed
 """
 from __future__ import annotations
 
+import pytest
 import torch
 
 from app.engine.core.pipeline import pipeline_train
@@ -279,3 +280,31 @@ def test_the_factory_keeps_the_library_from_estimating_on_its_own():
         optimizer.zero_grad()
         model(x).pow(2).mean().backward()
         optimizer.step()
+
+
+def test_an_unreached_parameter_keeps_no_state_until_it_has_a_gradient(tmp_path):
+    """State made early would stay on the device the parameter had then."""
+    t = _Trainer(tmp_path, steps=4, period=2)
+    _run(t)
+    assert all(len(t.optimizer.state[p]) == 0 for p in t._second.parameters())
+
+
+@pytest.mark.xdist_group("gpu")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a CUDA device")
+def test_an_inactive_expert_moved_to_the_gpu_takes_its_first_step():
+    """A dual-expert family swaps an expert in after estimates have already run."""
+    active = torch.nn.Parameter(torch.ones(4, device="cuda"))
+    inactive = torch.nn.Parameter(torch.ones(4))
+    optimizer = OptimizerFactory.create(
+        "SophiaH", [active, inactive], lr=0.001, config={"sophia_update_period": 1}
+    )
+    active.grad = torch.ones(4, device="cuda")
+    optimizer.step(hessian=[torch.ones(4, device="cuda"), None])
+
+    inactive.data = inactive.data.to("cuda")
+    inactive.grad = torch.ones(4, device="cuda")
+    active.grad = None
+    before = inactive.detach().clone()
+    optimizer.step()
+
+    assert not torch.equal(inactive, before)

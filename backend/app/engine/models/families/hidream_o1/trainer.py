@@ -152,6 +152,9 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
     ``_configure_optimization`` collects exactly the right parameters.
     """
 
+    # Its forward pass adds the noise itself, and add_noise never runs.
+    validation_timestep_domain = None
+
     # ── Setup ────────────────────────────────────────────────────────────
 
     def _setup_family(self) -> None:

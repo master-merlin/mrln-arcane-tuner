@@ -51,6 +51,7 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
     settings: H3EffectiveSettings | None = None
 
     timesteps_count_clean_fraction = True
+    validation_timestep_domain = (0.0, 1.0)
 
     # H3 has ONE clock and the definition states it (`video.frame_rate` +
     # `video.ingest_at_native_fps`): the rotary positions (`packing.py`) and the

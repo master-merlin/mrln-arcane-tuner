@@ -53,6 +53,9 @@ class Wan22Trainer(
 
     DEFERRED_EXPERT_LOG_EVENT = "wan22_deferred_low_expert_materialized"
 
+    # Two experts, each for its own part of the noise range.
+    validation_timestep_domain = None
+
     # ── Setup ────────────────────────────────────────────────────────────
 
     def _setup_family(self) -> None:

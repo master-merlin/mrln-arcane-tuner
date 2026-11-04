@@ -32,6 +32,10 @@ class PipelineBaseMixin(BaseTrainer):
     # histogram records ``1 - t`` and reports the noise fraction, as the others do.
     timesteps_count_clean_fraction: bool = False
 
+    # The timesteps add_noise takes, for the validation pass's noise bands; None when
+    # a family can't be measured that way. See core/pipeline/noise_bands.py.
+    validation_timestep_domain: tuple[float, float] | None = (0.0, 1000.0)
+
     @staticmethod
     def _reraise_resolver_failure(exc: AttributeError, *, prop: str) -> NoReturn:
         """Convert a resolver ``AttributeError`` (e.g. a family class that

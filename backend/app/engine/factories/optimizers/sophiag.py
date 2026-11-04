@@ -1,12 +1,13 @@
-"""SophiaG optimizer strategy — standalone Sophia-Optimizer package.
+"""SophiaG optimizer strategy: the standalone ``Sophia-Optimizer`` package.
 
-Uses importlib workaround for the broken ``__init__.py`` in the
-``Sophia-Optimizer`` PyPI package (tries ``from .sophiag import SophiaG``
-but the class lives in ``sophia/sophia.py``).
+The package's ``__init__.py`` raises ``ImportError`` on ``import sophia``, so no
+form of that import can succeed. The class lives in ``sophia/sophia.py``, so that
+file is loaded by path, after locating the package without importing it.
 """
 
 import importlib.util
 import structlog
+import torch
 from pathlib import Path
 from typing import Any
 
@@ -15,39 +16,63 @@ from ..optimizer_base import OptimizerBase
 logger = structlog.get_logger(__name__)
 
 
+def _for_the_trainer(package_class: type) -> type:
+    """The package's class, with what the trainer's checkpoints and floats need."""
+
+    class SophiaG(package_class):
+        def load_state_dict(self, state_dict: dict) -> None:
+            """Keep this optimizer's fresh state over another optimizer's.
+
+            SophiaG jobs used to train with AdamW, so their checkpoints hold AdamW's
+            groups, and the first step would raise ``KeyError: 'rho'``. The weights
+            resume either way.
+            """
+            if any("rho" not in group for group in state_dict.get("param_groups", [])):
+                logger.warning("sophiag_ignored_other_optimizers_state")
+                return
+            super().load_state_dict(state_dict)
+
+        def step(self, closure=None, bs=5120):
+            """The package's capturable path needs a tensor lr; the scheduler owns a float."""
+            if not self.defaults["capturable"]:
+                return super().step(closure, bs)
+            floats = [group["lr"] for group in self.param_groups]
+            for group in self.param_groups:
+                group["lr"] = torch.as_tensor(group["lr"], device=group["params"][0].device)
+            try:
+                return super().step(closure, bs)
+            finally:
+                for group, lr in zip(self.param_groups, floats):
+                    group["lr"] = lr
+
+    return SophiaG
+
+
 def _load_sophia_class():
-    """Import SophiaG, working around the broken package __init__.py.
+    """Load SophiaG from ``sophia/sophia.py``, or raise naming it.
 
-    The official ``Sophia-Optimizer`` package has a broken ``__init__.py``
-    that does ``from .sophiag import SophiaG``, but the file is actually
-    ``sophia/sophia.py``.  We catch the ImportError and fall back to
-    direct file loading via ``importlib.util.spec_from_file_location``.
+    Never another optimizer in its place: a job that selected SophiaG and
+    trained with AdamW would look like a SophiaG result.
     """
-    # Try the normal import first (in case the package gets fixed)
-    try:
-        from sophia import SophiaG  # noqa: F401
-        return SophiaG
-    except ImportError:
-        pass
-
-    # Workaround: locate sophia/sophia.py in site-packages
-    try:
-        import sophia
-        package_dir = Path(sophia.__file__).parent
-        sophia_file = package_dir / "sophia.py"
-
-        if not sophia_file.exists():
-            raise ImportError(f"Could not find sophia.py in {package_dir}")
-
-        spec = importlib.util.spec_from_file_location("sophia.sophia", sophia_file)
-        mod = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(mod)
-        return mod.SophiaG
-    except Exception:
-        raise ImportError(
-            "Sophia-Optimizer package not found or broken. "
-            "Install with: pip install Sophia-Optimizer"
+    spec = importlib.util.find_spec("sophia")
+    if spec is None or spec.origin is None:
+        raise RuntimeError(
+            "SophiaG needs the Sophia-Optimizer package, which is not installed. "
+            "Install it, or choose another optimizer."
         )
+    sophia_file = Path(spec.origin).parent / "sophia.py"
+    try:
+        file_spec = importlib.util.spec_from_file_location(
+            "sophia_optimizer_file", sophia_file
+        )
+        module = importlib.util.module_from_spec(file_spec)
+        file_spec.loader.exec_module(module)
+        return _for_the_trainer(module.SophiaG)
+    except (ImportError, OSError, AttributeError) as e:
+        raise RuntimeError(
+            f"SophiaG could not be loaded from {sophia_file}: {e}. "
+            "Reinstall Sophia-Optimizer, or choose another optimizer."
+        ) from e
 
 
 class SophiaGStrategy(OptimizerBase):
@@ -79,20 +104,13 @@ class SophiaGStrategy(OptimizerBase):
             capturable=capturable,
         )
 
-        try:
-            SophiaG = _load_sophia_class()
-            return SophiaG(
-                params,
-                lr=lr,
-                betas=betas,
-                rho=rho,
-                weight_decay=weight_decay,
-                maximize=maximize,
-                capturable=capturable,
-            )
-        except ImportError:
-            logger.warning("sophiag_not_found_fallback_adamw")
-            import torch
-            return torch.optim.AdamW(
-                params, lr=lr, weight_decay=weight_decay, betas=betas,
-            )
+        SophiaG = _load_sophia_class()
+        return SophiaG(
+            params,
+            lr=lr,
+            betas=betas,
+            rho=rho,
+            weight_decay=weight_decay,
+            maximize=maximize,
+            capturable=capturable,
+        )

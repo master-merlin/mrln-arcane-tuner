@@ -32,8 +32,10 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import sys
 import traceback
 import argparse
+import atexit
 import json
 import asyncio
+import threading
 
 # FORCE UNBUFFERED OUTPUT IMMEDIATELY
 # Keeps stdout working for local debug even though IPC now uses files.
@@ -76,6 +78,12 @@ except Exception:
 # ── JobLogWriter integration ─────────────────────────────────────────────
 
 _log_writer = None  # Module-level reference for the logging handler bridge
+_gpu_recorder = None  # Set while the summary is still to be written
+_job_log_stuck = False  # A write to the job log didn't finish in time: wait on it no more
+
+# How long the way out waits for one job-log write, once the recorder has been left inside
+# a write or a read. A stuck disk then costs this twice, not the job's exit.
+_STUCK_WRITE_WAIT_S = 5.0
 
 
 def _resolve_output_dir(config: dict, definition_id: str) -> str:
@@ -268,6 +276,83 @@ def _finalize_before_exit(log_writer=None) -> None:
         pass
 
 
+def _start_gpu_health() -> None:
+    """Record the card beside this job. Nothing of it may reach the job."""
+    global _gpu_recorder
+    try:
+        from app.engine.components.gpu_health_recorder import GpuHealthRecorder
+        recorder = GpuHealthRecorder(_log_writer)
+        recorder.start()
+        _gpu_recorder = recorder
+    except Exception as exc:
+        # safety-net print: the job goes on with no record of the card
+        print(f"WARNING: GPU health recorder not started: {exc}", file=sys.stderr, flush=True)
+
+
+def _write_within_bound(write) -> bool:
+    """Run one job-log write on the side. Returns whether it finished in time."""
+    thread = threading.Thread(target=write, name="job-log-exit-write", daemon=True)
+    try:
+        thread.start()
+    except RuntimeError:
+        return False
+    thread.join(_STUCK_WRITE_WAIT_S)
+    return not thread.is_alive()
+
+
+def _stop_waiting_on_job_log() -> None:
+    """Leave nothing on this way out that waits on the writer's lock with no bound."""
+    global _job_log_stuck
+    _job_log_stuck = True
+    root = logging.getLogger()
+    for handler in list(root.handlers):
+        if isinstance(handler, _LogWriterHandler):
+            root.removeHandler(handler)
+    atexit.unregister(_log_writer.close)
+    # safety-net print: the job log is what is stuck; stderr reaches trainer_stdout.log
+    print("WARNING: job log is stuck, going on without it", file=sys.stderr, flush=True)
+
+
+def _end_gpu_health() -> None:
+    """Stop the recorder and write the job's summary, once, whichever way the job ends.
+
+    The summary comes from recorded values, so a dead card or a hung read can't prevent
+    it. A recorder that stopped cleanly holds nothing, and the line is written as any
+    other. One that didn't may hold the writer's lock in a stuck write, so then the wait
+    has a bound. Stop's own wait is bounded, by its timeout and its WRITE_WAIT_S.
+    """
+    global _gpu_recorder
+    recorder, _gpu_recorder = _gpu_recorder, None
+    if recorder is None:
+        return
+    try:
+        from app.engine.components.gpu_health_recorder import format_summary
+        ended = recorder.stop()
+        line = format_summary(recorder.summary(), ended=ended)
+        if ended:
+            _log_writer.log(line)
+        elif not _write_within_bound(lambda: _log_writer.log(line)):
+            _stop_waiting_on_job_log()
+    except Exception as exc:
+        # safety-net print: the summary is a record, and must not change how a job ends
+        print(f"WARNING: GPU health summary not written: {exc}", file=sys.stderr, flush=True)
+
+
+def _writable_log():
+    """The job log, or None when writing to it would only wait."""
+    return None if _job_log_stuck else _log_writer
+
+
+def _write_exit_line(code: int, error: str | None = None) -> None:
+    """The job's last line. On a stuck job log it gets one more bounded try."""
+    if _log_writer is None:
+        return
+    if _job_log_stuck:
+        _write_within_bound(lambda: _log_writer.exit(code, error=error))
+    else:
+        _log_writer.exit(code, error=error)
+
+
 def main():
     logger.info("trainer_entry_point_reached")
     
@@ -296,15 +381,17 @@ def main():
         logging.getLogger().addHandler(handler)
         
         _log_writer.log(f"Trainer started: definition_id={args.definition_id}")
-        
+        _start_gpu_health()
+
         # Initialize Registry
         registry.initialize()
         
         definition = registry.get_definition(args.definition_id)
         
         if not definition:
+             _end_gpu_health()
              logger.error(f"definition_not_found: {args.definition_id}")
-             _log_writer.exit(1, error=f"Definition ID '{args.definition_id}' not found")
+             _write_exit_line(1, error=f"Definition ID '{args.definition_id}' not found")
              sys.exit(1)
              
         logger.info(f"resolved_family: {definition.family}")
@@ -318,8 +405,9 @@ def main():
         try:
             family_cls = registry.get_family_class(definition.family)
         except ValueError as exc:
+            _end_gpu_health()
             logger.error("trainer_dispatch_failed", family=definition.family, error=str(exc))
-            _log_writer.exit(1, error=str(exc))
+            _write_exit_line(1, error=str(exc))
             sys.exit(1)
 
         family_instance = family_cls(definition, config)
@@ -333,9 +421,10 @@ def main():
         logger.info("starting_async_training", family=definition.family)
         asyncio.run(run_async_trainer(trainer, _log_writer))
 
+        _end_gpu_health()
         logger.info("training_completed_successfully")
-        _finalize_before_exit(_log_writer)
-        _log_writer.exit(0)
+        _finalize_before_exit(_writable_log())
+        _write_exit_line(0)
         sys.exit(0)
 
     except Exception as e:
@@ -346,12 +435,18 @@ def main():
         # The trainer is a detached subprocess: traceback.print_exc() above only
         # reaches trainer_stdout.log on disk, while the UI tails job_log.jsonl —
         # without this the operator sees just the one-line exit error.
-        if _log_writer:
+        # The summary goes first, so the traceback stays what a reader sees last.
+        _end_gpu_health()
+        if _writable_log():
             _log_writer.log_exception(e)
-        _finalize_before_exit(_log_writer)
-        if _log_writer:
-            _log_writer.exit(1, error=str(e))
+        _finalize_before_exit(_writable_log())
+        _write_exit_line(1, error=str(e))
         sys.exit(1)
+
+    finally:
+        # What neither way above catches: an interrupt, or a sys.exit inside the trainer.
+        # Those still end as they always did, with no finaliser and no exit line.
+        _end_gpu_health()
 
 if __name__ == "__main__":
     main()

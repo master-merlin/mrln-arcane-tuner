@@ -389,6 +389,41 @@ the GPU. Both experts' optimizer state stays on it, in a resumed run as in an
 uninterrupted one, and takes VRAM beside the active expert (with AdamW, two
 tensors the size of each expert's LoRA).
 
+### What a job records about the card
+
+Every job on an NVIDIA card writes the card's state to its `job_log.jsonl`, in
+the run's output folder, about every 10 seconds. It runs beside the training
+loop, so a stalled loop still leaves a record, and it only reads: it changes
+nothing about the training. Each `gpu_health` line holds the temperature, the
+margin to the card's limit, the fan, the clocks, the power draw and limit, and
+the throttle reasons and counters. A card that can't be read writes one line
+when it goes and one when it comes back, not one every 10 seconds. These lines
+stay out of the log you see on the Jobs screen. They add about 1.5 MB to the
+file over a 12-hour job.
+
+When the job ends, one line of that visible log sums it up:
+
+```text
+gpu_health_summary: recorded for 2 h 14 min; peak temperature 78 C, lowest margin 12 C to the card's limit, peak fan 62%; thermal throttling grew by 3 ms, power throttling grew by 3.2 min. The last good reading: 71 C, margin 19 C, fan 55%, 412.5 W of 600 W, throttle reasons sw_power_cap.
+```
+
+- **Lowest margin** is how close the card came to its limit. Near 0 C, heat is
+  what limits it.
+- **Thermal throttling** and **power throttling** are how much time the card
+  spent slowed down for that reason during this job. Power throttling is routine
+  with a power limit set; thermal throttling is the one to look at.
+- **Not known** means this card doesn't report that value.
+- **The card was unreadable** says when it stopped answering, for how long and
+  with what error, and the last good reading above it is what the card looked
+  like before that.
+- **Had not returned** means a read of the card, or a write to the log, was still
+  hanging when the job ended. The job ended all the same.
+
+A force stop from the Jobs screen kills the process at once, so that run has no
+summary: its `gpu_health` lines up to that moment are the record. On a stuck disk
+the job gives up on its log and exits, which can leave it without the summary
+and the last line, and the Jobs screen then reports it as stopped unexpectedly.
+
 ## Recipes
 
 **First run for a new model on a project.** Model Selection → pick the

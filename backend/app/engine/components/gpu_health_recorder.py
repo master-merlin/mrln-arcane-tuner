@@ -77,6 +77,99 @@ def _describe(exc: Exception) -> str:
         return type(exc).__name__
 
 
+def _duration(seconds: float) -> str:
+    if seconds < 60:
+        return f"{round(seconds, 1):g} s"
+    if seconds < 3600:
+        return f"{round(seconds / 60, 1):g} min"
+    hours, rest = divmod(round(seconds / 60), 60)
+    return f"{hours} h {rest} min"
+
+
+def _known(value: Any, unit: str) -> str:
+    return "not known" if value is None else f"{value:g}{unit}"
+
+
+def _growth(name: str, milliseconds: float | None) -> str:
+    if milliseconds is None:
+        return f"{name} not known"
+    if 0 < milliseconds < 1:
+        return f"{name} grew by under 1 ms"
+    if milliseconds < 1000:
+        return f"{name} grew by {round(milliseconds)} ms"
+    return f"{name} grew by {_duration(milliseconds / 1000)}"
+
+
+def _last_good_text(reading: dict[str, Any]) -> str:
+    draw, limit = reading.get("power_draw_w"), reading.get("power_limit_w")
+    power = (
+        "power not known" if draw is None
+        else f"{draw:g} W of {limit:g} W" if limit is not None
+        else f"{draw:g} W"
+    )
+    reasons = reading.get("throttle_reasons")
+    throttle = (
+        "throttle reasons not known" if reasons is None
+        else f"throttle reasons {', '.join(reasons)}" if reasons
+        else "no throttle reasons"
+    )
+    return (
+        f"The last good reading: {_known(reading.get('temperature_c'), ' C')}, "
+        f"margin {_known(reading.get('temperature_margin_c'), ' C')}, "
+        f"fan {_known(reading.get('fan_percent'), '%')}, {power}, {throttle}."
+    )
+
+
+def _unreadable_text(summary: dict[str, Any]) -> str:
+    first = summary.get("first_unreadable_after_seconds")
+    total = _duration(summary.get("unreadable_seconds") or 0.0)
+    error = summary.get("last_error")
+    said = "" if error is None else f": {' '.join(str(error).split())}"
+    since = "" if first is None else f", first {_duration(first)} into the record"
+    if summary["unreadable_at_end"]:
+        return f"The card was unreadable at the end of the job{since}, {total} in all{said}."
+    return f"The card was unreadable for {total}{since}, and came back{said}."
+
+
+def format_summary(summary: dict[str, Any], *, ended: bool = True) -> str:
+    """The job's ``gpu_health_summary`` line, for a person, from ``summary()``'s values.
+
+    ``ended`` is what ``stop`` returned: False means the recorder was still waiting.
+    """
+    last_good = summary["last_good"]
+    sentences: list[str] = []
+    if last_good is not None:
+        record = summary.get("record_seconds")
+        lasted = "" if record is None else f"recorded for {_duration(record)}; "
+        sentences.append(
+            f"{lasted}peak temperature {_known(summary['peak_temperature_c'], ' C')}, "
+            f"lowest margin {_known(summary['lowest_margin_c'], ' C')} to the card's limit, "
+            f"peak fan {_known(summary['peak_fan_percent'], '%')}; "
+            f"{_growth('thermal throttling', summary['thermal_throttle_growth_ms'])}, "
+            f"{_growth('power throttling', summary['power_throttle_growth_ms'])}.",
+        )
+        sentences.append(_last_good_text(last_good))
+    elif summary["was_unreadable"]:
+        sentences.append("no good reading of the card was recorded.")
+    elif ended:
+        sentences.append("no reading of the card was recorded: no NVML, or no card for this job.")
+    else:
+        sentences.append("no reading of the card was recorded.")
+    if summary["was_unreadable"]:
+        sentences.append(_unreadable_text(summary))
+    if not ended:
+        age = summary.get("last_reading_age_seconds")
+        last = "" if age is None else f"; the last reading came {_duration(age)} before the end"
+        sentences.append(
+            f"A read of the card or a write to the job log had not returned when the job ended{last}.",
+        )
+    failures = summary["write_failures"]
+    if failures:
+        noun = "reading" if failures == 1 else "readings"
+        sentences.append(f"{failures} {noun} could not be written to the job log.")
+    return "gpu_health_summary: " + " ".join(sentences)
+
+
 class _CounterGrowth:
     """The growth of a counter that normally only rises.
 
@@ -147,6 +240,12 @@ class GpuHealthRecorder:
         self._thermal_growth = _CounterGrowth()
         self._power_growth = _CounterGrowth()
         self._write_failures = 0
+        self._clock = time.monotonic
+        self._first_reading_at: float | None = None
+        self._last_reading_at: float | None = None
+        self._first_unreadable_at: float | None = None
+        self._unreadable_since: float | None = None
+        self._unreadable_before = 0.0
 
     # ── Public API ────────────────────────────────────────────────────
 
@@ -158,9 +257,9 @@ class GpuHealthRecorder:
         """Start the thread, and return whether it started. Makes no NVML call."""
         if self._thread is not None or self._stop_event.is_set():
             return False
-        # gpu_health keeps this flag from its nvmlInit at import. Asking the reader instead
-        # would be an NVML call, which can hang, on the job's own thread.
-        if not gpu_health._NVML_AVAILABLE or self._device is None:
+        # Only what is already known. To find out is an NVML call, which can hang, so it
+        # is for the thread to do: not on the job's own.
+        if gpu_health.nvml_ruled_out() or self._device is None:
             return False
         thread = threading.Thread(target=self._run, name="gpu-health-recorder", daemon=True)
         try:
@@ -194,7 +293,18 @@ class GpuHealthRecorder:
         A value the card never gave is None, and so is the growth of a counter it never gave.
         """
         with self._values_lock:
+            now = self._clock()
+            unreadable = self._unreadable_before
+            if self._unreadable_since is not None:
+                unreadable += now - self._unreadable_since
+            first, last, went = (
+                self._first_reading_at, self._last_reading_at, self._first_unreadable_at,
+            )
             return {
+                "record_seconds": None if first is None else now - first,
+                "last_reading_age_seconds": None if last is None else now - last,
+                "first_unreadable_after_seconds": None if went is None else went - first,
+                "unreadable_seconds": unreadable,
                 "peak_temperature_c": self._peak_temperature,
                 "lowest_margin_c": self._lowest_margin,
                 "peak_fan_percent": self._peak_fan,
@@ -221,6 +331,8 @@ class GpuHealthRecorder:
         """One reading, holding no lock. None means there is no NVML."""
         try:
             if isinstance(self._device, str):
+                if not gpu_health.nvml_ready():
+                    return None
                 self._device = _nvml_index_for_uuid(self._device)
             return self._reader(self._device)
         except Exception as exc:
@@ -239,12 +351,23 @@ class GpuHealthRecorder:
         """Keep what the reading says, and return whether it gets a line."""
         readable = reading.get("readable") is True
         with self._values_lock:
+            now = self._clock()
+            if self._first_reading_at is None:
+                self._first_reading_at = now
+            self._last_reading_at = now
             state_changed = readable != self._readable
             self._readable = readable
             if not readable:
                 self._was_unreadable = True
                 self._last_error = reading.get("error")
+                if self._first_unreadable_at is None:
+                    self._first_unreadable_at = now
+                if self._unreadable_since is None:
+                    self._unreadable_since = now
                 return state_changed
+            if self._unreadable_since is not None:
+                self._unreadable_before += now - self._unreadable_since
+                self._unreadable_since = None
             self._last_good = copy.deepcopy(reading)
             self._peak_temperature = _higher(self._peak_temperature, reading.get("temperature_c"))
             self._lowest_margin = _lower(self._lowest_margin, reading.get("temperature_margin_c"))

@@ -29,13 +29,14 @@ from app.engine.components import gpu_health_recorder
 from app.engine.components.gpu_health_recorder import (
     INTERVAL_S,
     GpuHealthRecorder,
+    format_summary,
     visible_device,
 )
 from app.engine.components.job_log_writer import JobLogWriter
 
 BACKEND = Path(__file__).resolve().parents[2]
 RECORDER_SOURCE = Path(gpu_health_recorder.__file__)
-REAL_NVML = gpu_health._NVML_AVAILABLE
+REAL_NVML = gpu_health.nvml_ready()
 
 MUST_HAPPEN_S = 30.0  # only spent when a test is about to fail
 
@@ -460,6 +461,313 @@ def test_a_write_hung_for_good_cannot_hold_stop_or_the_summary(
     finally:
         writer.release.set()
     finish(recorder)
+
+
+# ── A card whose NVML init hangs ────────────────────────────────────────
+
+
+class _HangingInit:
+    """Enough of pynvml for ``nvmlInit`` to hang until released, then fail."""
+
+    def __init__(self) -> None:
+        self.entered = threading.Event()
+        self.release = threading.Event()
+        self.threads: list[threading.Thread] = []
+
+    def nvmlInit(self) -> None:  # noqa: N802
+        self.threads.append(threading.current_thread())
+        self.entered.set()
+        self.release.wait(MUST_HAPPEN_S * 4)
+        raise OSError("no library")
+
+
+@pytest.fixture
+def hanging_init(monkeypatch: pytest.MonkeyPatch) -> Any:
+    nvml = _HangingInit()
+    monkeypatch.setattr(gpu_health, "pynvml", nvml)
+    monkeypatch.setitem(sys.modules, "pynvml", nvml)
+    monkeypatch.setattr(gpu_health, "_NVML_AVAILABLE", None)
+    yield nvml
+    nvml.release.set()
+
+
+def _returns_soon(call: Any) -> Any:
+    """``call``'s result, from the side, so that a hang fails the test."""
+    results: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: results.put(call()), daemon=True).start()
+    return results.get(timeout=MUST_HAPPEN_S)
+
+
+def test_a_hanging_init_runs_on_the_recorders_thread_and_holds_up_nothing(
+    hanging_init: _HangingInit,
+) -> None:
+    writer = FakeWriter()
+    recorder = GpuHealthRecorder(writer, interval_s=0.0)  # the real reader
+
+    assert _returns_soon(recorder.start) is True
+    assert hanging_init.entered.wait(MUST_HAPPEN_S)
+    assert [thread.name for thread in hanging_init.threads] == ["gpu-health-recorder"]
+
+    assert _returns_soon(lambda: recorder.stop(timeout=0.01)) is False
+    summary = _returns_soon(recorder.summary)
+    assert summary["last_good"] is None
+    assert summary["was_unreadable"] is False
+
+    # The init fails now, after the stop, and that writes no line.
+    hanging_init.release.set()
+    finish(recorder)
+    assert writer.lines == []
+
+
+def test_a_uuid_lookup_waits_for_the_init_on_the_same_thread(
+    hanging_init: _HangingInit, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("CUDA_VISIBLE_DEVICES", "GPU-aaaa")
+    writer = FakeWriter()
+    recorder = GpuHealthRecorder(writer, interval_s=0.0)
+    assert _returns_soon(recorder.start) is True
+    assert hanging_init.entered.wait(MUST_HAPPEN_S)
+    assert recorder.running is True
+    hanging_init.release.set()
+    finish(recorder)  # the init failed: no NVML, no lookup, and the thread ended
+    assert writer.lines == []
+
+
+def test_a_reader_not_yet_tried_is_no_reason_to_stay_down(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Only a known absence keeps the thread down: anything else takes a call to learn.
+    monkeypatch.setattr(gpu_health, "_NVML_AVAILABLE", None)
+    recorder = GpuHealthRecorder(FakeWriter(), reader=EndlessReader(), interval_s=3600)
+    assert recorder.start() is True
+    assert recorder.stop(timeout=MUST_HAPPEN_S) is True
+
+
+def test_the_recorder_reads_no_private_flag_of_the_reader() -> None:
+    assert "_NVML_AVAILABLE" not in RECORDER_SOURCE.read_text(encoding="utf-8")
+
+
+# ── How long the record lasted ──────────────────────────────────────────
+
+
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 1000.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+class _ClockedReader:
+    """Each reading comes with a time: the clock is set before it is handed over."""
+
+    def __init__(self, clock: _Clock, *timed: tuple[float, dict[str, Any]]) -> None:
+        self.clock = clock
+        self.timed = list(timed)
+
+    def __call__(self, _index: int) -> dict[str, Any] | None:
+        if not self.timed:
+            return None
+        self.clock.now, reading = self.timed.pop(0)
+        return reading
+
+
+def _timed_summary(end: float, *timed: tuple[float, dict[str, Any]]) -> dict[str, Any]:
+    clock = _Clock()
+    recorder = GpuHealthRecorder(
+        FakeWriter(), reader=_ClockedReader(clock, *timed), interval_s=0.0,
+    )
+    recorder._clock = clock
+    recorder.start()
+    finish(recorder)
+    clock.now = end
+    return recorder.summary()
+
+
+def test_the_record_knows_how_long_it_lasted() -> None:
+    summary = _timed_summary(1090.0, (1000.0, good()), (1080.0, good()))
+    assert summary["record_seconds"] == 90.0
+    assert summary["last_reading_age_seconds"] == 10.0
+    assert summary["first_unreadable_after_seconds"] is None
+    assert summary["unreadable_seconds"] == 0.0
+
+
+def test_the_record_knows_when_the_card_went_and_for_how_long() -> None:
+    summary = _timed_summary(
+        1300.0,
+        (1000.0, good()),
+        (1100.0, bad()),
+        (1120.0, bad()),
+        (1150.0, good()),
+        (1250.0, bad()),
+    )
+    assert summary["first_unreadable_after_seconds"] == 100.0
+    assert summary["unreadable_seconds"] == 100.0  # 50 and 50 up to the end
+    assert summary["unreadable_at_end"] is True
+
+
+def test_a_record_with_no_reading_has_no_times() -> None:
+    recorder = GpuHealthRecorder(FakeWriter(), reader=ScriptedReader(), interval_s=0.0)
+    recorder.start()
+    finish(recorder)
+    summary = recorder.summary()
+    assert summary["record_seconds"] is None
+    assert summary["last_reading_age_seconds"] is None
+
+
+# ── The summary line ────────────────────────────────────────────────────
+
+
+def _summary_of(**values: Any) -> dict[str, Any]:
+    return {
+        "peak_temperature_c": 78,
+        "lowest_margin_c": 12,
+        "peak_fan_percent": 62,
+        "thermal_throttle_growth_ms": 3.0,
+        "power_throttle_growth_ms": 192_000.0,
+        "last_good": good(
+            temperature_c=71, temperature_margin_c=19, fan_percent=55,
+            power_draw_w=412.5, power_limit_w=600.0, clock_graphics_mhz=2430,
+            clock_memory_mhz=10000, throttle_reasons=["sw_power_cap"],
+        ),
+        "was_unreadable": False,
+        "unreadable_at_end": False,
+        "last_error": None,
+        "write_failures": 0,
+        "record_seconds": 8040.0,
+        "last_reading_age_seconds": 4.0,
+        "first_unreadable_after_seconds": None,
+        "unreadable_seconds": 0.0,
+        **values,
+    }
+
+
+def test_the_line_says_it_all_in_words_and_units() -> None:
+    line = format_summary(_summary_of())
+    assert line.startswith("gpu_health_summary: ")
+    assert "\n" not in line
+    assert "recorded for 2 h 14 min" in line
+    assert "peak temperature 78 C" in line
+    assert "lowest margin 12 C" in line
+    assert "peak fan 62%" in line
+    assert "thermal throttling grew by 3 ms" in line
+    assert "power throttling grew by 3.2 min" in line
+    assert "last good reading: 71 C" in line
+    assert "margin 19 C" in line
+    assert "fan 55%" in line
+    assert "412.5 W of 600 W" in line
+    assert "sw_power_cap" in line
+    assert "unreadable" not in line
+    assert "None" not in line
+
+
+def test_the_line_says_what_is_not_known_rather_than_none() -> None:
+    line = format_summary(
+        _summary_of(
+            lowest_margin_c=None,
+            peak_fan_percent=None,
+            thermal_throttle_growth_ms=None,
+            power_throttle_growth_ms=None,
+            last_good=good(
+                temperature_margin_c=None, fan_percent=None, power_draw_w=None,
+                power_limit_w=None, throttle_reasons=None,
+            ),
+        ),
+    )
+    assert "lowest margin not known" in line
+    assert "peak fan not known" in line
+    assert "thermal throttling not known" in line
+    assert "power throttling not known" in line
+    assert "None" not in line
+
+
+def test_zero_reads_as_zero_and_not_as_unknown() -> None:
+    line = format_summary(
+        _summary_of(
+            lowest_margin_c=0, peak_fan_percent=0, thermal_throttle_growth_ms=0.0,
+        ),
+    )
+    assert "lowest margin 0 C" in line
+    assert "peak fan 0%" in line
+    assert "thermal throttling grew by 0 ms" in line
+
+
+def test_the_line_of_a_card_lost_to_the_end() -> None:
+    line = format_summary(
+        _summary_of(
+            was_unreadable=True,
+            unreadable_at_end=True,
+            last_error="GPU is lost",
+            first_unreadable_after_seconds=3600.0,
+            unreadable_seconds=120.0,
+        ),
+    )
+    assert "unreadable at the end of the job" in line
+    assert "first 1 h 0 min into the record" in line
+    assert "2 min in all" in line
+    assert "GPU is lost" in line
+    assert "last good reading: 71 C" in line
+
+
+def test_the_line_of_a_card_that_came_back() -> None:
+    line = format_summary(
+        _summary_of(
+            was_unreadable=True,
+            last_error="Unknown Error",
+            first_unreadable_after_seconds=30.0,
+            unreadable_seconds=20.0,
+        ),
+    )
+    assert "unreadable for 20 s" in line
+    assert "came back" in line
+    assert "at the end of the job" not in line
+
+
+def test_the_line_of_a_card_never_read() -> None:
+    line = format_summary(
+        _summary_of(
+            peak_temperature_c=None, lowest_margin_c=None, peak_fan_percent=None,
+            thermal_throttle_growth_ms=None, power_throttle_growth_ms=None,
+            last_good=None, record_seconds=None, last_reading_age_seconds=None,
+        ),
+    )
+    assert line.startswith("gpu_health_summary: no reading")
+    assert "None" not in line
+
+
+def test_the_line_of_a_card_unreadable_from_the_start() -> None:
+    line = format_summary(
+        _summary_of(
+            peak_temperature_c=None, lowest_margin_c=None, peak_fan_percent=None,
+            thermal_throttle_growth_ms=None, power_throttle_growth_ms=None,
+            last_good=None, was_unreadable=True, unreadable_at_end=True,
+            last_error="GPU is lost", first_unreadable_after_seconds=0.0,
+            unreadable_seconds=60.0,
+        ),
+    )
+    assert "no good reading" in line
+    assert "GPU is lost" in line
+    assert "None" not in line
+
+
+def test_the_line_says_when_the_recorder_was_still_waiting() -> None:
+    line = format_summary(_summary_of(last_reading_age_seconds=34.0), ended=False)
+    assert "had not returned" in line
+    assert "the last reading came 34 s before the end" in line
+    assert "had not returned" not in format_summary(_summary_of())
+
+
+def test_the_line_counts_the_readings_it_could_not_write() -> None:
+    assert "3 readings could not be written" in format_summary(_summary_of(write_failures=3))
+    assert "could not be written" not in format_summary(_summary_of())
+
+
+def test_an_error_text_stays_on_the_one_line() -> None:
+    line = format_summary(
+        _summary_of(was_unreadable=True, unreadable_at_end=True, last_error="a\r\nb"),
+    )
+    assert "\n" not in line
+    assert "\r" not in line
 
 
 # ── A writer that fails ─────────────────────────────────────────────────

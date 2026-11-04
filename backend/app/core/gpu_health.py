@@ -7,6 +7,9 @@ never shown as a card with some fields missing.
 
 NVML reads create no CUDA context and don't load the card. This module must stay
 free of torch: it is called beside a running training loop.
+
+Importing it makes no NVML call. ``nvmlInit`` has no bound and can hang on a bad card, so
+it runs at the first read, on the reader's thread: a trainer imports this on its main thread.
 """
 
 from __future__ import annotations
@@ -20,11 +23,10 @@ logger = structlog.get_logger(__name__)
 # ---------------------------------------------------------------------------
 # Try to import NVML — gracefully degrade if not available (e.g. no NVIDIA GPU)
 # ---------------------------------------------------------------------------
+# None: not tried yet. Loading the binding touches no driver.
+_NVML_AVAILABLE: bool | None = None
 try:
     import pynvml  # provided by nvidia-ml-py
-
-    pynvml.nvmlInit()
-    _NVML_AVAILABLE = True
 except Exception:
     _NVML_AVAILABLE = False
     logger.warning("nvml_unavailable", hint="GPU health readings disabled")
@@ -45,9 +47,32 @@ _NS_PER_MS = 1_000_000
 _MW_PER_W = 1000
 
 
+def nvml_ruled_out() -> bool:
+    """Whether NVML is already known to be missing. Makes no NVML call."""
+    return _NVML_AVAILABLE is False
+
+
+def nvml_ready() -> bool:
+    """Whether NVML can be used, initialising it if that wasn't tried yet. Can hang.
+
+    It holds no lock: two first callers both initialise, and NVML counts that. A failure
+    is told to nobody here. In a job this runs on the recorder's thread, where a log line
+    would reach the job log, and possibly after the job has stopped the recorder.
+    """
+    global _NVML_AVAILABLE
+    if _NVML_AVAILABLE is None:
+        try:
+            pynvml.nvmlInit()
+            _NVML_AVAILABLE = True
+        except Exception as exc:
+            _NVML_AVAILABLE = False
+            logger.debug("nvml_unavailable", error=_error_text(exc))
+    return _NVML_AVAILABLE
+
+
 def read_gpu_health(index: int) -> dict[str, Any] | None:
     """Read card ``index``. None without NVML; never raises."""
-    if not _NVML_AVAILABLE:
+    if not nvml_ready():
         return None
     try:
         return _read_fields(pynvml.nvmlDeviceGetHandleByIndex(index))

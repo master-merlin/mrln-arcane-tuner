@@ -9,6 +9,7 @@ from the ``NVML_ERROR_*`` constants. No test here calls into a driver.
 from __future__ import annotations
 
 import importlib.util
+import logging
 import sys
 from types import SimpleNamespace
 
@@ -333,27 +334,56 @@ def test_no_nvml_gives_none(monkeypatch):
 def test_a_missing_binding_degrades_at_import(monkeypatch):
     monkeypatch.setitem(sys.modules, "pynvml", None)
     module = load_fresh_copy()
-    assert module._NVML_AVAILABLE is False
+    assert module.nvml_ruled_out() is True
     assert module.read_gpu_health(0) is None
 
 
-def test_a_failing_init_degrades_at_import(monkeypatch):
+def test_importing_the_module_makes_no_nvml_call(monkeypatch):
+    calls: list[str] = []
+    fake = SimpleNamespace(nvmlInit=lambda: calls.append("init"))
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
+    module = load_fresh_copy()
+    assert calls == []
+    assert module.nvml_ruled_out() is False  # not known yet
+
+
+def test_a_failing_init_degrades_at_the_first_read_and_is_not_tried_again(monkeypatch):
+    calls: list[str] = []
+
+    def no_library():
+        calls.append("init")
+        raise real.NVMLError(real.NVML_ERROR_LIBRARY_NOT_FOUND)
+
+    monkeypatch.setitem(sys.modules, "pynvml", SimpleNamespace(nvmlInit=no_library))
+    module = load_fresh_copy()
+    assert module.read_gpu_health(0) is None
+    assert module.read_gpu_health(0) is None
+    assert calls == ["init"]
+    assert module.nvml_ruled_out() is True
+
+
+def test_a_working_init_runs_once_at_the_first_read(monkeypatch):
+    calls: list[str] = []
+    fake = make_fake()
+    fake.nvmlInit = lambda: calls.append("init")
+    monkeypatch.setitem(sys.modules, "pynvml", fake)
+    module = load_fresh_copy()
+    assert module.read_gpu_health(0)["readable"] is True
+    assert module.read_gpu_health(0)["readable"] is True
+    assert calls == ["init"]
+    assert module.nvml_ready() is True
+
+
+def test_a_failing_init_logs_nothing_a_job_log_would_show(monkeypatch, caplog):
     def no_library():
         raise real.NVMLError(real.NVML_ERROR_LIBRARY_NOT_FOUND)
 
     monkeypatch.setitem(sys.modules, "pynvml", SimpleNamespace(nvmlInit=no_library))
     module = load_fresh_copy()
-    assert module._NVML_AVAILABLE is False
-    assert module.read_gpu_health(0) is None
-
-
-def test_a_working_init_makes_the_reader_available(monkeypatch):
-    calls: list[str] = []
-    fake = SimpleNamespace(nvmlInit=lambda: calls.append("init"))
-    monkeypatch.setitem(sys.modules, "pynvml", fake)
-    module = load_fresh_copy()
-    assert module._NVML_AVAILABLE is True
-    assert calls == ["init"]
+    # On the recorder's thread this could land after the job's stop.
+    with caplog.at_level(logging.INFO):
+        assert module.read_gpu_health(0) is None
+    assert caplog.records == []
 
 
 # --- Throttle reasons --------------------------------------------------------

@@ -265,12 +265,27 @@ previews will visibly show you step to step.
 run picks the high-noise expert as often as the curve puts mass above the
 expert boundary. With the defaults, on a video-sized latent and boundary
 `0.875`, that is about 22% of steps at the start, 3% halfway and under 0.1% at
-the last step, so the high expert trains rarely late in a run. Each expert's
-timesteps stay in its range by redrawing, which gives up after 64 tries and
-puts the draw on the boundary (logged as `expert_timestep_rejection_exhausted`):
-about 38% of the high expert's draws at 60% of the run and over 90% at the end.
-A high-only job takes those draws on every step, so late in the run it mostly
-sees that one timestep; a higher `radc_end` or `radc_width` keeps it spread.
+the last step, so the high expert trains rarely late in a run.
+
+**On WAN 2.2 and Bernini-R, in every mode,** each expert's timesteps stay in its
+range by redrawing from the configured distribution, so within its range an
+expert sees that distribution's own shape. A draw used to give up after 64 tries
+and land on the boundary. On WAN 2.2 that was about 19% of the high expert's
+draws with the default `logit_normal` and most of them late in a `radc` run, all
+on timestep 875. Bernini-R, whose shift gives the high range more mass, had about
+1% there late in a `radc` run and none with its default `mode`. Those draws now
+spread over the range, so such a job trains differently from its next step, a
+resumed one too. A draw that lands in range at once uses the same random numbers as
+before; one that needs redraws uses more, so later draws of a seed differ from
+those of an earlier version. How often each expert trains doesn't change.
+
+Only a range with next to no mass still ends on the boundary, such as
+`radc_width` `0.1` late in a run: a draw stops after 1,000,000 candidates, which
+a batch of 4 fills on average down to a range of 1 in 250,000. Each such draw
+costs tens of milliseconds of CPU and logs a warning
+(`expert_timestep_rejection_exhausted` on WAN 2.2,
+`bernini_r_band_redraw_exhausted` on Bernini-R), and a job then mostly sees that
+one timestep; a higher `radc_end` or `radc_width` keeps it spread.
 
 On FLUX2, the same curve also weights each sample's training loss,
 not only which timesteps get drawn (`compute_loss_weight` in

@@ -173,10 +173,12 @@ def test_radc_router_built_before_the_loop_starts_estimates_at_progress_zero():
 # ── Acceptance 1: every other mode keeps its draws and p_high ──
 
 # Read from the code before ``progress`` was forwarded: seed 7, manual_seed(123), step 50 of 100.
+# The HIGH rows need redraws, so they follow the band's rounds of 4, 8, 16...: each is the first
+# four in-band values of those plain draws at progress 0, replayed outside the band code.
 BEFORE = {
-    ("logit_normal", HIGH): [881.988, 901.493, 896.846, 942.298],
+    ("logit_normal", HIGH): [980.07, 927.581, 939.549, 929.147],
     ("logit_normal", LOW): [472.162, 530.054, 408.629, 440.183],
-    ("flux_shift", HIGH): [903.469, 893.379, 929.695, 894.053],
+    ("flux_shift", HIGH): [955.039, 926.144, 876.026, 896.464],
     ("flux_shift", LOW): [740.493, 782.512, 687.91, 714.957],
 }
 BEFORE_P_HIGH = {"logit_normal": 0.025439999997615814, "flux_shift": 0.13311000168323517}

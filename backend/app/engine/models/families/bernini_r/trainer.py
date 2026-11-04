@@ -87,11 +87,6 @@ from .loader import BerniniRLoader
 
 logger = structlog.get_logger(__name__)
 
-# Hard cap on band redraw rounds so a pathological distribution (almost no mass
-# on one side of the boundary) can't spin forever; on exhaustion the remaining
-# slots are clamped strictly into the band (negligible bias vs. hanging).
-_MAX_BAND_REDRAW_ROUNDS = 64
-
 
 class BerniniRTrainer(
     WanTextCacheMixin, DualExpertDeferredLoadMixin, GenericTrainingPipeline
@@ -363,14 +358,13 @@ class BerniniRTrainer(
         samples inside the band, redrawing the rest (rejection) — exactly the
         upstream ``while True`` clamp to ``[noise_tmin, noise_tmax]`` (recon §4).
         Rejection (not rescale) preserves the mode+shift weighting shape within
-        the band. On redraw exhaustion the remaining slots clamp into the band.
+        the band. The redrawing is :meth:`TimestepSampler.draw_in_band`'s; only a
+        band with next to no mass, which its candidate limit doesn't reach, leaves
+        slots clamped into the band, with a warning on each such draw.
         """
         if progress is None:
             progress = self._progress()
         lo, hi = self._expert_band(expert)
-        out = torch.empty(batch_size, device=self.device)
-        filled = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
-
         def _in_band(t: torch.Tensor) -> torch.Tensor:
             # HIGH band is inclusive of the boundary (t >= lo); LOW band is
             # [0, boundary) (t < hi). Both stay within [0, 1000].
@@ -378,27 +372,18 @@ class BerniniRTrainer(
                 return t >= lo
             return t < hi
 
-        rounds = 0
-        while not bool(filled.all()) and rounds < _MAX_BAND_REDRAW_ROUNDS:
-            need = int((~filled).sum().item())
-            cand = self._warped_draw(
-                need, self.device, latents=latents, progress=progress
-            )
-            ok = _in_band(cand)
-            if bool(ok.any()):
-                idx_unfilled = torch.nonzero(~filled, as_tuple=False).flatten()
-                accept_pos = idx_unfilled[ok]
-                out[accept_pos] = cand[ok]
-                filled[accept_pos] = True
-            rounds += 1
+        def _draw(k: int) -> torch.Tensor:
+            return self._warped_draw(k, self.device, latents=latents, progress=progress)
+
+        out, filled = TimestepSampler.draw_in_band(_draw, batch_size, self.device, _in_band)
 
         if not bool(filled.all()):
-            # Pathological distribution: clamp the remaining slots strictly into
-            # the band rather than hang (logged so it's visible).
+            # Next to no mass in this band: clamp the remaining slots strictly into
+            # it rather than hang (logged so it's visible).
             getattr(self, "logger", logger).warning(
                 "bernini_r_band_redraw_exhausted",
                 expert=expert,
-                rounds=rounds,
+                candidates=TimestepSampler.BAND_MAX_CANDIDATES,
                 unfilled=int((~filled).sum().item()),
             )
             eps = 1e-3 * 1000.0

@@ -121,7 +121,7 @@ def refusal_reason(
 
 def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
     """The text of ``validation_split.json``: the split and the settings that made it."""
-    representative_fields = ("key", "path", "caption", "target_w", "target_h")
+    representative_fields = ("key", "path", "caption", "prefix", "target_w", "target_h")
     content = {
         "holdout": split.holdout_keys,
         "groups": split.groups,
@@ -130,6 +130,7 @@ def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
             for item in split.representatives
         ],
         "split_seed": int(config.get("validation_split_seed", 0)),
+        "global_triggerword": config.get("global_triggerword", ""),
         "holdout_fraction": float(config.get("validation_holdout_fraction", 0.15)),
         "validation_dataset": config.get("validation_dataset") or None,
         "hash_threshold_bits": NEAR_IDENTICAL_BITS,
@@ -146,7 +147,7 @@ def same_measurement(earlier: str, content: str) -> bool:
     different holdout doesn't: an image that trained could now be measured.
     """
     before, after = json.loads(earlier), json.loads(content)
-    return all(before.get(k) == after.get(k) for k in ("holdout", "representatives", "split_seed"))
+    return all(before.get(k) == after.get(k) for k in ("holdout", "representatives", "split_seed", "global_triggerword"))
 
 
 def split_holdout(

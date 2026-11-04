@@ -319,9 +319,9 @@ held-out images, whatever their training seed. To keep every image in training,
 name a separate dataset in `validation_dataset` instead.
 
 If a run's output folder records a different split, for example after you changed
-the split seed, the dataset or a held-out image's caption, the job stops rather
-than mix numbers that can't be compared. Restore them, or train under another
-LoRA name.
+the split seed, the dataset, the trigger word, a caption prefix or a held-out
+image's caption, the job stops rather than mix numbers that can't be compared.
+Restore them, or train under another LoRA name.
 
 **Reading the numbers.** Each pass measures every held-out image at the centre
 of each noise band, with the same noise every time and without the run's loss

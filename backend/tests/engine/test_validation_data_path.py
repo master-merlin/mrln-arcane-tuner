@@ -481,3 +481,25 @@ def test_a_dataset_that_trains_without_captions_measures_without_them(monkeypatc
     representative = dict(t._validation_split.representatives[0], use_captions=False)
 
     assert select_training_caption(representative, DEFINITION_ID) == ""
+
+
+@pytest.mark.parametrize(
+    "first, second",
+    [
+        ({"global_triggerword": "one"}, {"global_triggerword": "two"}),
+        ({"datasets": [{"dataset_name": "ds", "caption_prefix": "one"}]},
+         {"datasets": [{"dataset_name": "ds", "caption_prefix": "two"}]}),
+    ],
+    ids=["trigger word", "caption prefix"],
+)
+def test_a_resume_with_another_caption_setting_stops_naming_the_split_file(monkeypatch, tmp_path, first, second):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    earlier = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config(**first))), tmp_path)
+    earlier._enter_validation_split()
+    before = _written_split(tmp_path)
+
+    resumed = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config(**second))), tmp_path)
+
+    with pytest.raises(ValueError, match="validation_split.json"):
+        resumed._enter_validation_split()
+    assert _written_split(tmp_path) == before

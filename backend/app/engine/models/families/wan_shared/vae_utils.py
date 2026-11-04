@@ -38,6 +38,31 @@ WAN_VAE_SPATIAL = 8
 WAN_VAE_TEMPORAL = 4
 WAN_VAE_Z_DIM = 16
 
+# The reference latent of a dual-expert router's p_high estimate, when the job
+# names neither a resolution nor a frame count.
+DEFAULT_ROUTING_RESOLUTION = 1024
+DEFAULT_ROUTING_FRAMES = 81
+
+
+def routing_reference_shape(
+    config: dict[str, Any], definition: Any = None
+) -> tuple[int, int, int, int, int]:
+    """``[1, C, F, H, W]`` of ONE reference latent for a router's p_high estimate.
+
+    Resolution = ``resolutions[0]`` of the job config (the base resolution);
+    frames = the config's ``num_frames`` else the definition default; the
+    family's WAN VAE factors give the latent grid.
+    """
+    resolutions = config.get("resolutions") or [DEFAULT_ROUTING_RESOLUTION]
+    res = int(resolutions[0])
+    frames = config.get("num_frames")
+    if frames is None:
+        defaults = getattr(definition, "defaults", None) or {}
+        frames = defaults.get("num_frames", DEFAULT_ROUTING_FRAMES)
+    frames = max(int(frames), 1)
+    side = max(res // WAN_VAE_SPATIAL, 1)
+    return (1, WAN_VAE_Z_DIM, (frames - 1) // WAN_VAE_TEMPORAL + 1, side, side)
+
 
 def wan_latent_stats(
     config_or_mean: Any,

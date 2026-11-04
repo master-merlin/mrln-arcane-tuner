@@ -75,11 +75,7 @@ import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
-from app.engine.models.families.wan_shared.vae_utils import (
-    WAN_VAE_SPATIAL,
-    WAN_VAE_TEMPORAL,
-    WAN_VAE_Z_DIM,
-)
+from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
 from app.engine.strategies.timestep_sampling import TimestepSampler
 from app.engine.models.families.wan_shared.trainer_base import (
     DualExpertDeferredLoadMixin,
@@ -119,9 +115,6 @@ class BerniniRTrainer(
     DEFAULT_TIMESTEP_MODE: str = "mode"
     # Wan DiT patch size (1, 2, 2): the token count the resolution-aware modes need.
     PATCHIFY_FACTOR: int = 2
-    # Reference latent for the router estimate when the job names no resolution / frames.
-    DEFAULT_ROUTING_RESOLUTION: int = 1024
-    DEFAULT_ROUTING_FRAMES: int = 81
 
     # ── Setup ────────────────────────────────────────────────────────────
     def _setup_family(self) -> None:
@@ -325,21 +318,8 @@ class BerniniRTrainer(
         return (sigmas * 1000.0).clamp(0.0, 1000.0)
 
     def _routing_reference_shape(self) -> tuple[int, int, int, int, int]:
-        """``[1, C, F, H, W]`` of ONE reference latent for the router's p_high estimate.
-
-        Resolution = ``resolutions[0]`` of the job config (the base resolution);
-        frames = the config's ``num_frames`` else the definition default; the
-        family's WAN VAE factors give the latent grid.
-        """
-        resolutions = self.config.get("resolutions") or [self.DEFAULT_ROUTING_RESOLUTION]
-        res = int(resolutions[0])
-        frames = self.config.get("num_frames")
-        if frames is None:
-            defaults = getattr(getattr(self, "definition", None), "defaults", None) or {}
-            frames = defaults.get("num_frames", self.DEFAULT_ROUTING_FRAMES)
-        frames = max(int(frames), 1)
-        side = max(res // WAN_VAE_SPATIAL, 1)
-        return (1, WAN_VAE_Z_DIM, (frames - 1) // WAN_VAE_TEMPORAL + 1, side, side)
+        """``[1, C, F, H, W]`` of ONE reference latent for the router's p_high estimate."""
+        return routing_reference_shape(self.config, getattr(self, "definition", None))
 
     def _log_timestep_mode_once(self) -> None:
         """Once per job, on the first draw: which mode ran (D10: nothing silent)."""

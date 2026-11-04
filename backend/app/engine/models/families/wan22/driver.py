@@ -195,16 +195,19 @@ class Wan22Driver(WanDriverBase):
         device: torch.device,
         config: dict[str, Any],
         latents: torch.Tensor | None = None,
+        progress: float = 0.0,
     ) -> torch.Tensor:
         """Sample timesteps for the ACTIVE expert (truncated to its range).
 
-        Falls back to the base flow-match sampler if no router is attached
-        (e.g. before training setup).
+        ``progress`` is the training fraction, forwarded by the base hook because
+        this signature declares it; only a progress-dependent mode (``radc``)
+        reads it. Falls back to the base flow-match sampler if no router is
+        attached (e.g. before training setup).
         """
         if self.router is None:
             return super().sample_timesteps(batch_size, device, config, latents)
         return self.router.sample_timesteps_for(
-            self._active_expert, batch_size, device, config, latents
+            self._active_expert, batch_size, device, config, latents, progress=progress
         )
 
     # ── Optimizer-step hook (advance the router, swap for the NEXT step) ──

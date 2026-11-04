@@ -89,8 +89,8 @@ class ExpertRouter:
         reference_latent_shape: Optional ``[B, C, (F,) H, W]`` shape of ONE
             reference latent the p_high estimate is drawn at, for a
             resolution-aware mode (``flux_shift``, ``model_shift``, ``radc``
-            with ``radc_res_influence > 0``). ``None`` (wan22) = no latent.
-            The estimate is therefore a switch-scheduling hint at ONE
+            with ``radc_res_influence > 0``). ``None`` = no latent (wan22, in
+            every mode but ``radc``). The estimate is therefore a switch-scheduling hint at ONE
             resolution: a mixed-resolution bucket batch inside a switch
             interval is NOT followed (every sample still trains on the timestep
             its own band draw produced), so this value never decides a
@@ -99,8 +99,8 @@ class ExpertRouter:
             progress in ``[0, 1]``. When given, ``p_high`` is re-estimated at
             every NEW switch-interval block from it (a progress-dependent mode
             such as ``radc``); a resumed job estimates from its restored step
-            with no extra state. ``None`` (wan22) = the estimate is made once
-            at progress ``0.0``, exactly as before.
+            with no extra state. ``None`` (wan22, in every mode but ``radc``) =
+            the estimate is made once at progress ``0.0``.
     """
 
     def __init__(
@@ -278,6 +278,7 @@ class ExpertRouter:
         device: torch.device,
         config: dict[str, Any],
         latents: torch.Tensor | None = None,
+        progress: float = 0.0,
     ) -> torch.Tensor:
         """Sample ``[batch_size]`` timesteps in ``[0, scale]`` for ``expert``.
 
@@ -314,6 +315,7 @@ class ExpertRouter:
                 config,
                 scale=self.scale,
                 latents=latents,
+                progress=progress,
             )
             ok = _in_range(cand)
             if bool(ok.any()):

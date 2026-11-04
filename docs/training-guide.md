@@ -261,10 +261,18 @@ increasingly draw their training timesteps from the low-noise end as the run
 progresses; this is a training-time internal, not something the sample
 previews will visibly show you step to step.
 
-**Limits.** On WAN 2.2 dual-expert runs, the expert router draws the
-timesteps itself and is never told the training progress, so `radc` stays
-pinned at `radc_start` for the whole run on that family. Every other family,
-including the band-sampled ones, follows the curriculum. On FLUX2, the same curve also weights each sample's training loss,
+**On WAN 2.2,** `radc` also decides how often each expert trains: a dual-expert
+run picks the high-noise expert as often as the curve puts mass above the
+expert boundary. With the defaults, on a video-sized latent and boundary
+`0.875`, that is about 22% of steps at the start, 3% halfway and under 0.1% at
+the last step, so the high expert trains rarely late in a run. Each expert's
+timesteps stay in its range by redrawing, which gives up after 64 tries and
+puts the draw on the boundary (logged as `expert_timestep_rejection_exhausted`):
+about 38% of the high expert's draws at 60% of the run and over 90% at the end.
+A high-only job takes those draws on every step, so late in the run it mostly
+sees that one timestep; a higher `radc_end` or `radc_width` keeps it spread.
+
+On FLUX2, the same curve also weights each sample's training loss,
 not only which timesteps get drawn (`compute_loss_weight`,
 `backend/app/engine/models/families/flux2/trainer.py:245-265`, applied at
 `backend/app/engine/core/pipeline/pipeline_base.py:320`) — a timestep the

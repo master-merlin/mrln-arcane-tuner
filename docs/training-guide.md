@@ -305,6 +305,17 @@ configuration to the [Jobs screen](jobs-guide.md), where you watch it run,
 pause, resume or soft-stop it, and download the finished LoRA once it
 completes.
 
+**Resuming a run.** A checkpoint also saves the random streams (torch, CUDA,
+Python and NumPy), and a resume continues them, so a seeded job doesn't replay
+the noise and timesteps of its first steps. A resume still isn't identical to
+an uninterrupted run: the position in the batches isn't saved, so a resumed run
+starts a new shuffled epoch. A `seed` changed at resume wins: the streams start
+from the new seed and the saved ones are ignored, logged as
+`rng_state_seed_changed_on_resume`. On fewer GPUs than the checkpoint saw, the
+streams of those present are restored. A checkpoint from before this has no
+saved streams: it resumes as it always did, from the seed, logged once as
+`rng_state_missing_on_resume`.
+
 ## Recipes
 
 **First run for a new model on a project.** Model Selection → pick the

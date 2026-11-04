@@ -13,6 +13,7 @@ Handles:
 import gc
 import json
 import os
+import random
 import re
 import shutil
 import stat
@@ -20,6 +21,7 @@ import time
 import uuid
 import zipfile
 
+import numpy as np
 import structlog
 import torch
 from pathlib import Path
@@ -229,6 +231,7 @@ def resolve_lora_name(config: dict[str, Any]) -> str:
 
 MANIFEST_NAME = "checkpoint_manifest.json"
 MANIFEST_FORMAT = 2
+RNG_STATE_NAME = "rng_state.pt"
 STAGING_MARK = ".staging-"
 REPLACED_MARK = ".replaced-"
 _RESUMABLE_NAME_RE = re.compile(r"^(final|checkpoint-\d{3,})$")
@@ -467,6 +470,76 @@ def _load_pt(path: str, last_good: str | None) -> Any:
             f"{folder}/{os.path.basename(path)} is truncated or unreadable; "
             f"last good: {last_good or 'none'} ({type(e).__name__})"
         ) from e
+
+
+# ── The random streams ───────────────────────────────────────────────────
+
+
+def _run_seed(config: dict[str, Any]) -> int | None:
+    """``config["seed"]`` as ``_apply_run_seed`` reads it: None when unseeded."""
+    seed = config.get("seed")
+    if seed in (None, ""):
+        return None
+    try:
+        return int(seed)
+    except (TypeError, ValueError):
+        return None
+
+
+def _capture_rng_state(config: dict[str, Any]) -> dict[str, Any]:
+    """The process's streams as plain types and tensors, for ``weights_only``.
+
+    Reading a state moves no stream. A process that never started CUDA has no
+    CUDA draws to continue, and asking for them would start it.
+    """
+    numpy_state = np.random.get_state()
+    python_version, python_internal, python_gauss = random.getstate()
+    cuda_in_use = torch.cuda.is_available() and torch.cuda.is_initialized()
+    return {
+        "seed": _run_seed(config),
+        "torch": torch.get_rng_state(),
+        "cuda": torch.cuda.get_rng_state_all() if cuda_in_use else [],
+        "python": {
+            "version": python_version,
+            "internal": list(python_internal),
+            "gauss_next": python_gauss,
+        },
+        "numpy": {
+            "algorithm": str(numpy_state[0]),
+            "keys": torch.from_numpy(numpy_state[1].astype(np.int64)),
+            "pos": int(numpy_state[2]),
+            "has_gauss": int(numpy_state[3]),
+            "cached_gaussian": float(numpy_state[4]),
+        },
+    }
+
+
+def _validated_rng_state(saved: Any) -> dict[str, Any]:
+    """``saved`` as the arguments of each stream's restore; raises if malformed.
+
+    Each state is tried on a throwaway generator, so a bad file moves nothing.
+    """
+    numpy_saved = saved["numpy"]
+    python_saved = saved["python"]
+    states = {
+        "torch": saved["torch"],
+        "cuda": list(saved["cuda"]),
+        "python": (python_saved["version"], tuple(python_saved["internal"]), python_saved["gauss_next"]),
+        "numpy": (
+            numpy_saved["algorithm"],
+            numpy_saved["keys"].numpy().astype(np.uint32),
+            numpy_saved["pos"],
+            numpy_saved["has_gauss"],
+            numpy_saved["cached_gaussian"],
+        ),
+    }
+    torch.Generator().set_state(states["torch"])
+    random.Random().setstate(states["python"])
+    np.random.RandomState().set_state(states["numpy"])
+    for state in states["cuda"]:
+        if state.dtype != torch.uint8:
+            raise TypeError(f"a CUDA stream has dtype {state.dtype}")
+    return states
 
 
 def _own_unfinished_folders(output_dir: str) -> list[os.DirEntry]:
@@ -1064,6 +1137,15 @@ class CheckpointManager:
             except Exception as e:
                 logger.error("failed_to_save_te_cache", error=str(e))
 
+        # 6b. Random streams. Degraded, not fatal: a resume without them still
+        # loads everything else, as a checkpoint from before they were saved does.
+        try:
+            rng_path = os.path.join(path, RNG_STATE_NAME)
+            _atomic_torch_save(_capture_rng_state(config), rng_path)
+            manifest[RNG_STATE_NAME] = os.path.getsize(rng_path)
+        except Exception as e:  # noqa: BLE001 - logged, the save goes on
+            logger.error("failed_to_save_rng_state", error=str(e))
+
         # 7. Metadata — use atomic write to handle locked files on resume
         state = {
             "global_step": step,
@@ -1175,6 +1257,59 @@ class CheckpointManager:
             fresh=len(unmapped),
         )
         return remapped
+
+    def _restore_rng_state(
+        self,
+        path: str,
+        current_config: dict[str, Any] | None,
+        last_good: str | None,
+    ) -> None:
+        """Continue the streams the checkpoint saved, unless a new seed was chosen.
+
+        Every path that doesn't restore leaves the streams as they are, which
+        is as ``_apply_run_seed`` left them, and warns.
+        """
+        rng_path = os.path.join(path, RNG_STATE_NAME)
+        if not os.path.exists(rng_path):
+            logger.warning("rng_state_missing_on_resume", path=rng_path)
+            return
+        saved = _load_pt(rng_path, last_good)
+        try:
+            saved_seed = saved["seed"]
+            states = _validated_rng_state(saved)
+        except (AttributeError, IndexError, KeyError, RuntimeError, TypeError, ValueError) as e:
+            logger.warning("rng_state_unreadable_on_resume", path=rng_path, error=str(e))
+            return
+        # A config without the key keeps the checkpoint's seed (apply_overrides).
+        if current_config and "seed" in current_config:
+            current_seed = _run_seed(current_config)
+            if current_seed != saved_seed:
+                logger.warning(
+                    "rng_state_seed_changed_on_resume",
+                    saved_seed=saved_seed,
+                    current_seed=current_seed,
+                )
+                return
+        if states["cuda"]:
+            present = torch.cuda.device_count() if torch.cuda.is_available() else 0
+            if present < len(states["cuda"]):
+                logger.warning(
+                    "rng_state_fewer_cuda_devices_on_resume",
+                    saved=len(states["cuda"]),
+                    present=present,
+                )
+            try:
+                for device, state in enumerate(states["cuda"][:present]):
+                    torch.cuda.set_rng_state(state, device)
+            except (RuntimeError, TypeError) as e:
+                # Only the device can judge its state, so this comes before the
+                # streams that can't fail: a refusal here moves none of them.
+                logger.warning("rng_state_unreadable_on_resume", path=rng_path, error=str(e))
+                return
+        torch.set_rng_state(states["torch"])
+        random.setstate(states["python"])
+        np.random.set_state(states["numpy"])
+        logger.info("restored_rng_state", seed=saved_seed, cuda_streams=len(states["cuda"]))
 
     def load_checkpoint(
         self,
@@ -1414,6 +1549,9 @@ class CheckpointManager:
                 )
             except (OSError, RuntimeError, json.JSONDecodeError) as e:
                 logger.warning("failed_to_load_te_cache", error=str(e))
+
+        # 10. Random streams, LAST: loading the above may draw from them.
+        self._restore_rng_state(path, current_config, last_good)
 
         logger.info(
             "checkpoint_loaded",

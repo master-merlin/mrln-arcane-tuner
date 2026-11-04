@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import math
 from functools import lru_cache
-from typing import Any
+from typing import Any, Callable
 
 import structlog
 import torch
@@ -68,6 +68,15 @@ def _radc_cdf(center_q: int, width_q: int) -> torch.Tensor:
     """
     pdf = _make_radc_pdf(center_q / 1000.0, width_q / 1000.0)
     return torch.cumsum(pdf / pdf.sum(), dim=0)
+
+
+@lru_cache(maxsize=256)
+def _radc_pdf(center_q: int, width_q: int) -> torch.Tensor:
+    """Cached CPU weight curve for the quantized pair :func:`_radc_cdf` draws from.
+
+    The returned tensor is shared: index it, never modify it in place.
+    """
+    return _make_radc_pdf(center_q / 1000.0, width_q / 1000.0)
 
 
 def _make_radc_pdf(center: float, width: float) -> torch.Tensor:
@@ -159,6 +168,11 @@ class TimestepSampler:
         "radc",
         "model_shift",
     ]
+
+    # ``draw_in_band``'s limits. A batch of 4 spends them over 29 rounds, and fills on
+    # average down to a band of 1 in 250,000 of the distribution.
+    BAND_MAX_ROUND_CANDIDATES = 65536
+    BAND_MAX_CANDIDATES = 1_000_000
 
     # ── Core sampler ──────────────────────────────────────────────────
 
@@ -315,3 +329,47 @@ class TimestepSampler:
             mode, bs, device, config, latents=latents, progress=progress,
         )
         return (t * scale).clamp(0, scale)
+
+    # ── A distribution restricted to a band ───────────────────────────
+
+    @staticmethod
+    def draw_in_band(
+        draw: Callable[[int], torch.Tensor],
+        n: int,
+        device: torch.device,
+        in_band: Callable[[torch.Tensor], torch.Tensor],
+    ) -> tuple[torch.Tensor, torch.Tensor]:
+        """``n`` draws of a distribution conditioned on a band, by redrawing.
+
+        ``draw(k)`` gives ``k`` candidates on ``device``; ``in_band`` masks them. The first
+        round draws ``n``, so a band that takes all of them consumes the stream as one plain
+        draw. Each later round doubles, up to ``BAND_MAX_ROUND_CANDIDATES``, and the rounds
+        stop at ``BAND_MAX_CANDIDATES`` in all: a thin band costs a few rounds, and one with
+        no mass ends rather than spins.
+
+        Slots fill in order with the first accepted candidates, and a round's surplus is
+        dropped. Which candidates are kept depends only on their order, never on their
+        value, so the slots hold the distribution restricted to the band, whatever the
+        number of rounds.
+
+        Returns ``(out, filled)``. ``out`` is undefined where ``filled`` is False: the caller
+        decides what an unfilled slot becomes.
+        """
+        out = torch.empty(n, device=device)
+        got = 0
+        drawn = 0
+        size = n
+        while got < n and drawn < TimestepSampler.BAND_MAX_CANDIDATES:
+            candidates = draw(size)
+            drawn += size
+            accepted = candidates[in_band(candidates)][: n - got]
+            out[got : got + accepted.shape[0]] = accepted
+            got += accepted.shape[0]
+            size = min(
+                size * 2,
+                TimestepSampler.BAND_MAX_ROUND_CANDIDATES,
+                TimestepSampler.BAND_MAX_CANDIDATES - drawn,
+            )
+        filled = torch.zeros(n, dtype=torch.bool, device=device)
+        filled[:got] = True
+        return out, filled

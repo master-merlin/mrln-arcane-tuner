@@ -123,6 +123,8 @@ class BooguImageTrainer(GenericTrainingPipeline):
     tap) and Boogu's own INVERTED flow-match convention.
     """
 
+    timesteps_count_clean_fraction = True
+
     # ── Setup (override trio 1/3) ──────────────────────────────────────────
 
     def _setup_family(self) -> None:

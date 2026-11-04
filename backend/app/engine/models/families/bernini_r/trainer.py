@@ -75,11 +75,7 @@ import torch
 
 from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
-from app.engine.models.families.wan_shared.vae_utils import (
-    WAN_VAE_SPATIAL,
-    WAN_VAE_TEMPORAL,
-    WAN_VAE_Z_DIM,
-)
+from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
 from app.engine.strategies.timestep_sampling import TimestepSampler
 from app.engine.models.families.wan_shared.trainer_base import (
     DualExpertDeferredLoadMixin,
@@ -90,11 +86,6 @@ from .driver import BerniniRDriver
 from .loader import BerniniRLoader
 
 logger = structlog.get_logger(__name__)
-
-# Hard cap on band redraw rounds so a pathological distribution (almost no mass
-# on one side of the boundary) can't spin forever; on exhaustion the remaining
-# slots are clamped strictly into the band (negligible bias vs. hanging).
-_MAX_BAND_REDRAW_ROUNDS = 64
 
 
 class BerniniRTrainer(
@@ -119,9 +110,6 @@ class BerniniRTrainer(
     DEFAULT_TIMESTEP_MODE: str = "mode"
     # Wan DiT patch size (1, 2, 2): the token count the resolution-aware modes need.
     PATCHIFY_FACTOR: int = 2
-    # Reference latent for the router estimate when the job names no resolution / frames.
-    DEFAULT_ROUTING_RESOLUTION: int = 1024
-    DEFAULT_ROUTING_FRAMES: int = 81
 
     # ── Setup ────────────────────────────────────────────────────────────
     def _setup_family(self) -> None:
@@ -325,21 +313,8 @@ class BerniniRTrainer(
         return (sigmas * 1000.0).clamp(0.0, 1000.0)
 
     def _routing_reference_shape(self) -> tuple[int, int, int, int, int]:
-        """``[1, C, F, H, W]`` of ONE reference latent for the router's p_high estimate.
-
-        Resolution = ``resolutions[0]`` of the job config (the base resolution);
-        frames = the config's ``num_frames`` else the definition default; the
-        family's WAN VAE factors give the latent grid.
-        """
-        resolutions = self.config.get("resolutions") or [self.DEFAULT_ROUTING_RESOLUTION]
-        res = int(resolutions[0])
-        frames = self.config.get("num_frames")
-        if frames is None:
-            defaults = getattr(getattr(self, "definition", None), "defaults", None) or {}
-            frames = defaults.get("num_frames", self.DEFAULT_ROUTING_FRAMES)
-        frames = max(int(frames), 1)
-        side = max(res // WAN_VAE_SPATIAL, 1)
-        return (1, WAN_VAE_Z_DIM, (frames - 1) // WAN_VAE_TEMPORAL + 1, side, side)
+        """``[1, C, F, H, W]`` of ONE reference latent for the router's p_high estimate."""
+        return routing_reference_shape(self.config, getattr(self, "definition", None))
 
     def _log_timestep_mode_once(self) -> None:
         """Once per job, on the first draw: which mode ran (D10: nothing silent)."""
@@ -383,14 +358,13 @@ class BerniniRTrainer(
         samples inside the band, redrawing the rest (rejection) — exactly the
         upstream ``while True`` clamp to ``[noise_tmin, noise_tmax]`` (recon §4).
         Rejection (not rescale) preserves the mode+shift weighting shape within
-        the band. On redraw exhaustion the remaining slots clamp into the band.
+        the band. The redrawing is :meth:`TimestepSampler.draw_in_band`'s; only a
+        band with next to no mass, which its candidate limit doesn't reach, leaves
+        slots clamped into the band, with a warning on each such draw.
         """
         if progress is None:
             progress = self._progress()
         lo, hi = self._expert_band(expert)
-        out = torch.empty(batch_size, device=self.device)
-        filled = torch.zeros(batch_size, dtype=torch.bool, device=self.device)
-
         def _in_band(t: torch.Tensor) -> torch.Tensor:
             # HIGH band is inclusive of the boundary (t >= lo); LOW band is
             # [0, boundary) (t < hi). Both stay within [0, 1000].
@@ -398,27 +372,18 @@ class BerniniRTrainer(
                 return t >= lo
             return t < hi
 
-        rounds = 0
-        while not bool(filled.all()) and rounds < _MAX_BAND_REDRAW_ROUNDS:
-            need = int((~filled).sum().item())
-            cand = self._warped_draw(
-                need, self.device, latents=latents, progress=progress
-            )
-            ok = _in_band(cand)
-            if bool(ok.any()):
-                idx_unfilled = torch.nonzero(~filled, as_tuple=False).flatten()
-                accept_pos = idx_unfilled[ok]
-                out[accept_pos] = cand[ok]
-                filled[accept_pos] = True
-            rounds += 1
+        def _draw(k: int) -> torch.Tensor:
+            return self._warped_draw(k, self.device, latents=latents, progress=progress)
+
+        out, filled = TimestepSampler.draw_in_band(_draw, batch_size, self.device, _in_band)
 
         if not bool(filled.all()):
-            # Pathological distribution: clamp the remaining slots strictly into
-            # the band rather than hang (logged so it's visible).
+            # Next to no mass in this band: clamp the remaining slots strictly into
+            # it rather than hang (logged so it's visible).
             getattr(self, "logger", logger).warning(
                 "bernini_r_band_redraw_exhausted",
                 expert=expert,
-                rounds=rounds,
+                candidates=TimestepSampler.BAND_MAX_CANDIDATES,
                 unfilled=int((~filled).sum().item()),
             )
             eps = 1e-3 * 1000.0
@@ -609,8 +574,9 @@ class BerniniRTrainer(
     def _build_trainable_components(self) -> dict:
         """Expose BOTH PEFT experts to the dual saver as ``unet_high``/``unet_low``.
 
-        1.3B / single-expert: base behaviour (byte-identical). 14B: also thread
-        the router state for resume (mirrors :class:`Wan22Trainer`).
+        1.3B / single-expert: base behaviour (byte-identical). 14B: also hand over
+        the router, whose state the checkpoint writes for resume (mirrors
+        :class:`Wan22Trainer`).
         """
         comps = super()._build_trainable_components()
         driver = getattr(self, "driver", None)
@@ -620,7 +586,7 @@ class BerniniRTrainer(
         comps["unet_low"] = driver.transformer_low
         router = getattr(self, "expert_router", None)
         if router is not None:
-            comps["router_state"] = router.state_dict()
+            comps["router_state"] = router
         return comps
 
     # ── Text Encoding (UMT5-XXL via driver, with lazy cache) ─────────────

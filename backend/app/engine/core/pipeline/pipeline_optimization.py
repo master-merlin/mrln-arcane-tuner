@@ -12,7 +12,8 @@ import structlog
 import torch
 
 from app.core.naming import model_part_from_definition_id
-from app.engine.components.checkpoints import CheckpointManager
+from app.engine.components.checkpoints import CheckpointManager, _load_pt, _run_seed
+from app.engine.core.optimization.optimizer_remap import place_optimizer_state
 from app.engine.strategies.ema import EMAHandler
 from app.engine.components.latents import LatentManager
 from app.engine.factories.optimizer import OptimizerFactory, LRSchedulerFactory
@@ -436,8 +437,11 @@ class PipelineOptimizationMixin:
             at_config = AdaptiveTargetingConfig.model_validate(
                 self.config.get("adaptive_targeting_config") or {}
             )
+            # A resume may have made the other expert active; the controller stays
+            # on the one this process built, as it does on an uninterrupted run.
+            startup_model = getattr(self, "_primary_before_resume", None)
             controller = AdaptiveTargetingController(
-                model=self._get_primary_model(),
+                model=self._get_primary_model() if startup_model is None else startup_model,
                 config=at_config,
                 total_steps=int(self.config.get("max_train_steps", 1000)),
                 log_writer=log_writer,
@@ -750,37 +754,36 @@ class PipelineOptimizationMixin:
         try:
             from peft import PeftModel
 
-            peft_comps: dict[str, Any] = {}
-            model = self._get_primary_model()
-            if isinstance(model, PeftModel):
-                peft_comps["unet"] = model
-            for name, te in self._get_text_encoders().items():
-                if isinstance(te, PeftModel):
-                    peft_comps[name] = te
-
             # Dual-expert families (wan22 A14B / bernini_r 14B `both` mode)
-            # train a SECOND PEFT expert that the saver writes independently
-            # under its own key — see e.g. Wan22Trainer._build_trainable_components
-            # (`unet_high` / `unet_low`, alongside `unet` = whichever expert is
-            # currently active). Requesting only "unet" above restores the
-            # ACTIVE expert; the INACTIVE one would silently keep its
-            # freshly-initialized adapter with no signal anything is wrong —
-            # the same failure class the zero-adapter guard in
-            # CheckpointManager.load_checkpoint closes, except THAT guard never
-            # trips here because "unet" WAS requested and found (only the
-            # partial gap is missed). Mirror whatever the family's save side
-            # exposes — pull in any additional PEFT component from
-            # _build_trainable_components not already covered by IDENTITY
-            # ("unet" always aliases one of unet_high/unet_low, so the same
-            # object would otherwise be requested twice under different names).
+            # train a SECOND PEFT expert, and the saver writes each expert under
+            # its stable name (`unet_high` / `unet_low`), beside `unet` = the
+            # expert active AT THE SAVE. That needn't be the expert active now,
+            # so an expert with a stable-named folder always loads from it:
+            # requesting the alias for the active expert would hand it the other
+            # expert's weights. The alias serves only a component with no such
+            # folder, a checkpoint from before a second expert existed. A named
+            # component with no folder at all stays requested, so the partial
+            # restore below says it stayed fresh; the identity check keeps one
+            # object from being requested under two names.
+            named_comps = {
+                name: comp
+                for name, comp in self._build_trainable_components().items()
+                if name != "unet" and isinstance(comp, PeftModel)
+            }
+            peft_comps: dict[str, Any] = {
+                name: comp
+                for name, comp in named_comps.items()
+                if os.path.exists(os.path.join(resume_path, name, "adapter_config.json"))
+            }
             seen_ids = {id(comp) for comp in peft_comps.values()}
-            for name, comp in self._build_trainable_components().items():
-                if name == "unet" or not isinstance(comp, PeftModel):
-                    continue
-                if id(comp) in seen_ids:
-                    continue
-                peft_comps[name] = comp
-                seen_ids.add(id(comp))
+            model = self._get_primary_model()
+            if isinstance(model, PeftModel) and id(model) not in seen_ids:
+                peft_comps["unet"] = model
+                seen_ids.add(id(model))
+            for name, comp in (*self._get_text_encoders().items(), *named_comps.items()):
+                if isinstance(comp, PeftModel) and id(comp) not in seen_ids:
+                    peft_comps[name] = comp
+                    seen_ids.add(id(comp))
 
             checkpoint_state = self.checkpoint_manager.load_checkpoint(
                 resume_path,
@@ -862,9 +865,83 @@ class PipelineOptimizationMixin:
                     remaining_steps=remaining,
                     resumed_step=self.global_step,
                 )
+
+            self._resume_expert_router(resume_path)
         except (FileNotFoundError, ValueError, OSError, RuntimeError) as e:
             self.logger.error("failed_to_resume_checkpoint", error=str(e))
             raise
+
+    def _resume_expert_router(self, resume_path: str) -> None:
+        """Continue the dual-expert router, and activate the expert of the next step.
+
+        A file from other settings is ignored with a warning, and so is a missing
+        one: the router stays as built. Whichever it is, the driver's hook then
+        runs for the step before the one ``train()`` starts from, so that step
+        finds its expert active and, in swap mode, resident.
+        """
+        router = getattr(self, "expert_router", None)
+        if router is None:
+            return
+        # A progress-dependent router reads this for a block it hasn't decided yet,
+        # and ``train()``, which sets it, hasn't started.
+        self.max_train_steps = int(self.config.get("max_train_steps", 1000))
+
+        state_path = os.path.join(resume_path, "router_state.pt")
+        if os.path.exists(state_path):
+            last_good = self.checkpoint_manager._last_good_checkpoint(resume_path)
+            self._load_router_state(router, _load_pt(state_path, last_good), state_path)
+        else:
+            self.logger.warning("router_state_missing_on_resume", path=state_path)
+
+        self._place_swapped_experts_optimizer_state()
+
+        self._primary_before_resume = self._get_primary_model()
+        start_step = self.global_step + 1 if self.global_step > 0 else 0
+        self.driver.on_optimizer_step(start_step - 1)
+
+    def _place_swapped_experts_optimizer_state(self) -> None:
+        """In swap mode, put both experts' restored state where a run that never stopped has it.
+
+        The load cast it to the device each parameter has now, so the expert off the
+        card has its state off the card, and the swap moves only the model: the first
+        step on that expert would mix devices. A resident expert's state is on the card
+        already. A block-swapped expert is left alone: it's the one active at the load,
+        and each of its parameters steps on the device the load saw.
+        """
+        driver = self.driver
+        if self.optimizer is None or driver.swap_mode != "swap":
+            return
+        for name, model in (("high", driver.transformer_high), ("low", driver.transformer_low)):
+            if model is not None and name != driver.block_swap_active_expert:
+                place_optimizer_state(self.optimizer, model.parameters(), driver.device)
+
+    def _load_router_state(self, router: Any, saved: Any, state_path: str) -> None:
+        """Load ``saved`` into ``router`` unless it's malformed or from other settings."""
+        try:
+            changed = [
+                setting
+                for setting, differs in (
+                    ("pinned_expert", saved["pinned_expert"] != router.pinned_expert),
+                    # An unseeded router is built on seed 0, so that's what a file's 0 can mean.
+                    ("seed", "seed" in self.config and (_run_seed(self.config) or 0) != saved["seed"]),
+                    ("switch_interval", saved["switch_interval"] != router.switch_interval),
+                )
+                if differs
+            ]
+            # A scratch generator judges the state before anything is loaded.
+            torch.Generator().set_state(saved["rng_state"])
+            {int(block): str(expert) for block, expert in saved["block_decisions"].items()}
+        except (AttributeError, KeyError, RuntimeError, TypeError, ValueError) as e:
+            self.logger.warning("router_state_unreadable_on_resume", path=state_path, error=str(e))
+            return
+        if changed:
+            self.logger.warning("router_state_mismatch_on_resume", path=state_path, settings=changed)
+            return
+        router.load_state_dict(saved)
+        # The saved estimate belongs to the saved distribution, which a resume may
+        # change. With the same settings this estimate is the saved one again.
+        if router.pinned_expert is None:
+            router.p_high = router._estimate_p_high()
 
     # ── Trainable Components ─────────────────────────────────────────────
 

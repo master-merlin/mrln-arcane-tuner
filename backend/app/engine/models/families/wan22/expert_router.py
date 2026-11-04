@@ -46,11 +46,6 @@ logger = structlog.get_logger(__name__)
 HIGH = "high"
 LOW = "low"
 
-# Hard cap on rejection-sampling retries so a pathological distribution (almost
-# no mass on one side of the boundary) can't spin forever. On exhaustion we
-# clamp the last draw into the expert's range — a negligible bias vs. hanging.
-_MAX_REJECTION_ROUNDS = 64
-
 
 class ExpertRouter:
     """Routes optimizer steps + timesteps between the high/low WAN 2.2 experts.
@@ -89,8 +84,8 @@ class ExpertRouter:
         reference_latent_shape: Optional ``[B, C, (F,) H, W]`` shape of ONE
             reference latent the p_high estimate is drawn at, for a
             resolution-aware mode (``flux_shift``, ``model_shift``, ``radc``
-            with ``radc_res_influence > 0``). ``None`` (wan22) = no latent.
-            The estimate is therefore a switch-scheduling hint at ONE
+            with ``radc_res_influence > 0``). ``None`` = no latent (wan22, in
+            every mode but ``radc``). The estimate is therefore a switch-scheduling hint at ONE
             resolution: a mixed-resolution bucket batch inside a switch
             interval is NOT followed (every sample still trains on the timestep
             its own band draw produced), so this value never decides a
@@ -99,8 +94,8 @@ class ExpertRouter:
             progress in ``[0, 1]``. When given, ``p_high`` is re-estimated at
             every NEW switch-interval block from it (a progress-dependent mode
             such as ``radc``); a resumed job estimates from its restored step
-            with no extra state. ``None`` (wan22) = the estimate is made once
-            at progress ``0.0``, exactly as before.
+            with no extra state. ``None`` (wan22, in every mode but ``radc``) =
+            the estimate is made once at progress ``0.0``.
     """
 
     def __init__(
@@ -278,6 +273,7 @@ class ExpertRouter:
         device: torch.device,
         config: dict[str, Any],
         latents: torch.Tensor | None = None,
+        progress: float = 0.0,
     ) -> torch.Tensor:
         """Sample ``[batch_size]`` timesteps in ``[0, scale]`` for ``expert``.
 
@@ -291,46 +287,41 @@ class ExpertRouter:
         with probability ``p_high`` keeps the run's MARGINAL timestep
         distribution identical to single-model training (the routing is
         unbiased — see the module docstring).
+
+        The redrawing is :meth:`TimestepSampler.draw_in_band`'s, so a thin range
+        keeps the distribution's shape. Only a range with next to no mass, which
+        its candidate limit doesn't reach, leaves slots on the range's edge, with
+        a warning on each such draw.
         """
         expert = expert.lower()
         if expert not in (HIGH, LOW):
             raise ValueError(f"unknown expert {expert!r} (expected 'high'/'low')")
-
-        out = torch.empty(batch_size, device=device)
-        filled = torch.zeros(batch_size, dtype=torch.bool, device=device)
 
         def _in_range(t: torch.Tensor) -> torch.Tensor:
             if expert == HIGH:
                 return t >= self.boundary_scaled
             return t < self.boundary_scaled
 
-        rounds = 0
-        while not bool(filled.all()) and rounds < _MAX_REJECTION_ROUNDS:
-            need = int((~filled).sum().item())
-            cand = TimestepSampler.sample_scaled(
+        def _draw(k: int) -> torch.Tensor:
+            return TimestepSampler.sample_scaled(
                 self.mode,
-                need,
+                k,
                 device,
                 config,
                 scale=self.scale,
                 latents=latents,
+                progress=progress,
             )
-            ok = _in_range(cand)
-            if bool(ok.any()):
-                # Place accepted candidates into the still-unfilled slots.
-                idx_unfilled = torch.nonzero(~filled, as_tuple=False).flatten()
-                accept_pos = idx_unfilled[ok]
-                out[accept_pos] = cand[ok]
-                filled[accept_pos] = True
-            rounds += 1
+
+        out, filled = TimestepSampler.draw_in_band(_draw, batch_size, device, _in_range)
 
         if not bool(filled.all()):
-            # Pathological distribution: clamp the remaining slots strictly into
-            # the expert's range rather than hang. Logged so it's visible.
+            # Next to no mass in this range: clamp the remaining slots strictly into
+            # it rather than hang. Logged so it's visible.
             self.logger.warning(
                 "expert_timestep_rejection_exhausted",
                 expert=expert,
-                rounds=rounds,
+                candidates=TimestepSampler.BAND_MAX_CANDIDATES,
                 unfilled=int((~filled).sum().item()),
             )
             eps = 1e-3 * self.scale

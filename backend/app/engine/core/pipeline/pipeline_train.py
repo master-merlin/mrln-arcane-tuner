@@ -227,7 +227,11 @@ class PipelineTrainMixin:
         try:
             tracker = getattr(self, "_sigma_tracker", None)
             if tracker is not None:
-                tracker.update(timesteps)
+                # getattr: a trainer built on this mixin alone has no such attribute.
+                if getattr(self, "timesteps_count_clean_fraction", False):
+                    tracker.update(1.0 - timesteps, scale=1.0)
+                else:
+                    tracker.update(timesteps)
         except Exception:  # noqa: BLE001
             pass
 

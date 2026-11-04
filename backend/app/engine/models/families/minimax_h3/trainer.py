@@ -50,6 +50,8 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
 
     settings: H3EffectiveSettings | None = None
 
+    timesteps_count_clean_fraction = True
+
     # H3 has ONE clock and the definition states it (`video.frame_rate` +
     # `video.ingest_at_native_fps`): the rotary positions (`packing.py`) and the
     # audio fit (`driver.build_batch_extra`) are laid out on it, so the shared

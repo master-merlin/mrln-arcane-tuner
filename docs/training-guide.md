@@ -261,16 +261,45 @@ increasingly draw their training timesteps from the low-noise end as the run
 progresses; this is a training-time internal, not something the sample
 previews will visibly show you step to step.
 
-**Limits.** On WAN 2.2 dual-expert runs, the expert router draws the
-timesteps itself and is never told the training progress, so `radc` stays
-pinned at `radc_start` for the whole run on that family. Every other family,
-including the band-sampled ones, follows the curriculum. On FLUX2, the same curve also weights each sample's training loss,
-not only which timesteps get drawn (`compute_loss_weight`,
-`backend/app/engine/models/families/flux2/trainer.py:245-265`, applied at
-`backend/app/engine/core/pipeline/pipeline_base.py:320`) — a timestep the
+**On WAN 2.2,** `radc` also decides how often each expert trains: a dual-expert
+run picks the high-noise expert as often as the curve puts mass above the
+expert boundary. With the defaults, on a video-sized latent and boundary
+`0.875`, that is about 22% of steps at the start, 3% halfway and under 0.1% at
+the last step, so the high expert trains rarely late in a run.
+
+**On WAN 2.2 and Bernini-R, in every mode,** each expert's timesteps stay in its
+range by redrawing from the configured distribution, so within its range an
+expert sees that distribution's own shape. A draw used to give up after 64 tries
+and land on the boundary. On WAN 2.2 that was about 19% of the high expert's
+draws with the default `logit_normal` and most of them late in a `radc` run, all
+on timestep 875. Bernini-R, whose shift gives the high range more mass, had about
+1% there late in a `radc` run and none with its default `mode`. Those draws now
+spread over the range, so such a job trains differently from its next step, a
+resumed one too. A draw that lands in range at once uses the same random numbers as
+before; one that needs redraws uses more, so later draws of a seed differ from
+those of an earlier version. How often each expert trains doesn't change.
+
+Only a range with next to no mass still ends on the boundary, such as
+`radc_width` `0.1` late in a run: a draw stops after 1,000,000 candidates, which
+a batch of 4 fills on average down to a range of 1 in 250,000. Each such draw
+costs tens of milliseconds of CPU and logs a warning
+(`expert_timestep_rejection_exhausted` on WAN 2.2,
+`bernini_r_band_redraw_exhausted` on Bernini-R), and a job then mostly sees that
+one timestep; a higher `radc_end` or `radc_width` keeps it spread.
+
+On FLUX2, the same curve also weights each sample's training loss,
+not only which timesteps get drawn (`compute_loss_weight` in
+`backend/app/engine/models/families/flux2/trainer.py`) — a timestep the
 curriculum currently favours is both sampled more often and counted more in
-the loss; the resolution cross-influence term applies to the sampling draw
-only, not the loss weight.
+the loss. The weight uses the centre of the batch's own draw, resolution
+cross-influence included: with the defaults, at the last step, a batch of 4096
+tokens or more has its draw and its weight centred on `0.05`, and one of 256
+tokens or fewer on `0.35`. Since the weight now follows the draw, it also sits
+higher where the draws are: at 4096 tokens or more, the batch's mean weight at
+the last step went from about 1.72 to 2.06 (about 20% more), and about 3% more
+halfway through a run. On a small image the last step's mean weight is about 2%
+lower. The loss of such a run reads a little differently from an earlier version's
+for that reason alone.
 
 ## Read the estimate before you start
 
@@ -295,6 +324,22 @@ disabled until every section is valid. Queuing a job hands the whole
 configuration to the [Jobs screen](jobs-guide.md), where you watch it run,
 pause, resume or soft-stop it, and download the finished LoRA once it
 completes.
+
+**Resuming a run.** A checkpoint also saves the random streams (torch, CUDA,
+Python and NumPy), and a resume continues them, so a seeded job doesn't replay
+the noise and timesteps of its first steps. A resume still isn't identical to
+an uninterrupted run: the position in the batches isn't saved, so a resumed run
+starts a new shuffled epoch. A `seed` changed at resume wins: the streams start
+from the new seed and the saved ones are ignored, logged as
+`rng_state_seed_changed_on_resume`. On fewer GPUs than the checkpoint saw, the
+streams of those present are restored. A checkpoint from before this has no
+saved streams: it resumes as it always did, from the seed, logged once as
+`rng_state_missing_on_resume`.
+
+In `swap` mode (`expert_swap_mode`), only a dual-expert job's model weights leave
+the GPU. Both experts' optimizer state stays on it, in a resumed run as in an
+uninterrupted one, and takes VRAM beside the active expert (with AdamW, two
+tensors the size of each expert's LoRA).
 
 ## Recipes
 

@@ -10,7 +10,11 @@ import torch
 
 
 class SigmaTracker:
-    """Accumulate sampled timesteps (in [0,1]) into fixed deciles."""
+    """Accumulate sampled timesteps (in [0,1]) into fixed deciles.
+
+    The caller passes the noise fraction: a family whose clock counts the clean
+    fraction passes ``1 - t``.
+    """
 
     def __init__(self, bins: int = 10) -> None:
         self.bins = int(bins)

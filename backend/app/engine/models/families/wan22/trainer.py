@@ -33,6 +33,7 @@ from app.engine.models.families.wan_shared.trainer_base import (
     DualExpertDeferredLoadMixin,
     WanTextCacheMixin,
 )
+from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
 
 from .driver import Wan22Driver
 from .expert_router import ExpertRouter
@@ -77,17 +78,26 @@ class Wan22Trainer(
         always routes to that one expert and truncates its timesteps to the
         expert's boundary range — and force ``resident`` placement (only one
         transformer is loaded, so there is nothing to swap).
+
+        Only a progress-dependent mode (``radc``) needs the estimate refreshed per
+        interval, at the shape the draws see. Every other mode gets neither
+        argument and keeps the one estimate at setup.
         """
         switch_interval = int(self.config.get("expert_switch_interval", 1))
         seed = int(self.config.get("seed", 0) or 0)
         mode = getattr(self, "expert_mode", "both")
         pinned = None if mode == "both" else mode
+        progress_dependent = self.config.get("timestep_sampling") == "radc"
         router = ExpertRouter(
             boundary=self.driver.boundary,
             switch_interval=switch_interval,
             timestep_cfg=self.config,
             seed=seed,
             pinned_expert=pinned,
+            reference_latent_shape=(
+                self._routing_reference_shape() if progress_dependent else None
+            ),
+            progress_provider=self._progress if progress_dependent else None,
         )
         self.expert_router = router
         self.driver.set_router(router)
@@ -96,6 +106,15 @@ class Wan22Trainer(
         )
         self.driver.configure_swap_mode(swap)
         return router
+
+    def _progress(self) -> float:
+        """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""
+        max_steps = getattr(self, "max_train_steps", 1)
+        return getattr(self, "global_step", 0) / max(max_steps, 1)
+
+    def _routing_reference_shape(self) -> tuple[int, int, int, int, int]:
+        """``[1, C, F, H, W]`` of ONE reference latent for the router's p_high estimate."""
+        return routing_reference_shape(self.config, getattr(self, "definition", None))
 
     # ── Dual LoRA injection ──────────────────────────────────────────────
 
@@ -300,8 +319,8 @@ class Wan22Trainer(
 
         Keeps ``unet`` = the active expert for any generic consumer (resume
         state, training-log param counts), and adds the explicit high/low keys
-        the :class:`Wan22Saver` writes two files from. Also threads the router
-        state for resume.
+        the :class:`Wan22Saver` writes two files from. Also hands over the router,
+        whose state the checkpoint writes as ``router_state.pt`` for resume.
         """
         comps = super()._build_trainable_components()
         driver: Wan22Driver = self.driver  # type: ignore[assignment]
@@ -309,7 +328,7 @@ class Wan22Trainer(
         comps["unet_low"] = driver.transformer_low
         router = getattr(self, "expert_router", None)
         if router is not None:
-            comps["router_state"] = router.state_dict()
+            comps["router_state"] = router
         return comps
 
     # ── Text Encoding (UMT5-XXL via driver, with lazy cache) ─────────────

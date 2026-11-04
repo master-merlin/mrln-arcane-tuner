@@ -273,12 +273,13 @@ A high-only job takes those draws on every step, so late in the run it mostly
 sees that one timestep; a higher `radc_end` or `radc_width` keeps it spread.
 
 On FLUX2, the same curve also weights each sample's training loss,
-not only which timesteps get drawn (`compute_loss_weight`,
-`backend/app/engine/models/families/flux2/trainer.py:245-265`, applied at
-`backend/app/engine/core/pipeline/pipeline_base.py:320`) — a timestep the
+not only which timesteps get drawn (`compute_loss_weight` in
+`backend/app/engine/models/families/flux2/trainer.py`) — a timestep the
 curriculum currently favours is both sampled more often and counted more in
-the loss; the resolution cross-influence term applies to the sampling draw
-only, not the loss weight.
+the loss. The weight uses the centre of the batch's own draw, resolution
+cross-influence included: with the defaults, at the last step, a batch of 4096
+tokens or more has its draw and its weight centred on `0.05`, and one of 256
+tokens or fewer on `0.35`.
 
 ## Read the estimate before you start
 

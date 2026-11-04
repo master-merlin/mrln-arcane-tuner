@@ -70,6 +70,15 @@ def _radc_cdf(center_q: int, width_q: int) -> torch.Tensor:
     return torch.cumsum(pdf / pdf.sum(), dim=0)
 
 
+@lru_cache(maxsize=256)
+def _radc_pdf(center_q: int, width_q: int) -> torch.Tensor:
+    """Cached CPU weight curve for the quantized pair :func:`_radc_cdf` draws from.
+
+    The returned tensor is shared: index it, never modify it in place.
+    """
+    return _make_radc_pdf(center_q / 1000.0, width_q / 1000.0)
+
+
 def _make_radc_pdf(center: float, width: float) -> torch.Tensor:
     """Build a Gaussian PDF over 1000 bins with configurable center/width.
 

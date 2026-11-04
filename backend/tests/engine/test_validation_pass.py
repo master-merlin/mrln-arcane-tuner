@@ -506,3 +506,37 @@ def test_a_resumed_run_takes_the_next_due_pass(tmp_path):
     with patch.object(validation_pass, "run_validation_pass", lambda _t, _s, step: steps.append(step)):
         _train(t)
     assert steps == [6, 8]
+
+
+# ── Round 1 of the code review ───────────────────────────────────────────────
+
+
+class _StochasticEncoder:
+    """Encodes as a VAE does, sampling its posterior from the global stream."""
+
+    def encode_and_cache_batch(self, images, ids=None, cache_dirs=None, source_paths=None, **_):
+        return torch.randn(1, LATENT)
+
+
+def test_uncached_latents_are_the_same_in_every_pass(tmp_path):
+    t = _pipeline(tmp_path, cache_latents=False)
+    t.latent_manager = _StochasticEncoder()
+    first = _numbers(_run(t))
+    torch.rand(9)
+    random.random()
+    assert _numbers(_run(t, step=100)) == first
+
+
+def test_two_images_get_different_uncached_latents(tmp_path):
+    t = _pipeline(tmp_path, cache_latents=False)
+    seen = []
+    encoder = _StochasticEncoder()
+
+    def recording(*args, **kwargs):
+        seen.append(encoder.encode_and_cache_batch(*args, **kwargs))
+        return seen[-1]
+
+    t.latent_manager = SimpleNamespace(encode_and_cache_batch=recording)
+    _run(t)
+    assert len(seen) >= 2
+    assert not torch.equal(seen[0], seen[1])

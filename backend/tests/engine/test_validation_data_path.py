@@ -2,6 +2,7 @@
 import asyncio
 import json
 from types import SimpleNamespace
+from typing import Annotated
 from unittest.mock import MagicMock
 
 import httpx
@@ -213,7 +214,7 @@ def test_the_split_file_records_the_split(monkeypatch, tmp_path):
     assert {"path", "caption", "target_w", "target_h"} <= set(written["representatives"][0])
 
 
-def test_a_resume_gets_the_same_split_and_a_changed_one_warns(monkeypatch, tmp_path):
+def test_a_resume_gets_the_same_split(monkeypatch, tmp_path):
     datasets = {"ds": _dataset(tmp_path, "ds", 20)}
     first = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)
     first._enter_validation_split()
@@ -222,13 +223,6 @@ def test_a_resume_gets_the_same_split_and_a_changed_one_warns(monkeypatch, tmp_p
     second = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)
     second._enter_validation_split()
     assert (tmp_path / "validation_split.json").read_text(encoding="utf-8") == written
-    second.logger.warning.assert_not_called()
-
-    third = _with_output_dir(
-        _prepare(_pipeline(monkeypatch, datasets, _holdout_config(validation_split_seed=9))), tmp_path
-    )
-    third._enter_validation_split()
-    assert any(c.args[0] == "validation_split_changed" for c in third.logger.warning.call_args_list)
 
 
 # ── A separate validation dataset ────────────────────────────────────────────
@@ -332,3 +326,97 @@ def test_the_settings_and_their_bounds():
     assert extras["validation_split_seed"]["min"] == 0
     assert extras["validation_every_n_steps"]["min"] == 1
     assert (extras["validation_timestep_bands"]["min"], extras["validation_timestep_bands"]["max"]) == (2, 32)
+
+
+# ── Round 1 of the code review ───────────────────────────────────────────────
+
+
+def _written_split(tmp_path):
+    return json.loads((tmp_path / "validation_split.json").read_text(encoding="utf-8"))
+
+
+def test_a_changed_split_stops_the_run_and_keeps_the_record(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    first = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)
+    first._enter_validation_split()
+    before = _written_split(tmp_path)
+
+    changed = _with_output_dir(
+        _prepare(_pipeline(monkeypatch, datasets, _holdout_config(validation_split_seed=9))), tmp_path
+    )
+    with pytest.raises(ValueError, match="validation_split.json"):
+        changed._enter_validation_split()
+
+    assert _written_split(tmp_path) == before
+    assert len(changed.inventory) == 20 * 3  # the run never narrowed
+
+
+def test_a_changed_interval_is_not_a_changed_split(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    first = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)
+    first._enter_validation_split()
+    later = _with_output_dir(
+        _prepare(_pipeline(monkeypatch, datasets, _holdout_config(validation_every_n_steps=50))), tmp_path
+    )
+    later._enter_validation_split()
+    assert _written_split(tmp_path)["every_n_steps"] == 50
+
+
+def test_a_new_training_image_with_the_same_holdout_is_not_a_changed_split(monkeypatch, tmp_path):
+    from copy import deepcopy
+
+    from app.engine.core.pipeline.validation_split import ValidationSplit
+
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    first = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)
+    first._enter_validation_split()
+    held = _written_split(tmp_path)["holdout"]
+
+    later = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)
+    split = later._validation_split
+    later._validation_split = ValidationSplit(
+        training_items=split.training_items,
+        holdout_keys=split.holdout_keys,
+        representatives=deepcopy(split.representatives),
+        groups=[*split.groups, ["ds/extra.png"]],
+    )
+    later._enter_validation_split()
+
+    assert _written_split(tmp_path)["holdout"] == held
+    assert ["ds/extra.png"] in _written_split(tmp_path)["groups"]
+
+
+def test_a_valid_validation_dataset_with_no_training_images_fails_naming_it(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 0), "val": _dataset(tmp_path, "val", 2, first_seed=50)}
+    config = {"datasets": [{"dataset_name": "ds"}], "validation_enabled": True, "validation_dataset": "val"}
+    with pytest.raises(ValueError, match="training"):
+        _prepare(_pipeline(monkeypatch, datasets, config))
+
+
+_OUT_OF_BOUNDS = [
+    ("validation_every_n_steps", 0),
+    ("validation_every_n_steps", -1),
+    ("validation_timestep_bands", 1),
+    ("validation_timestep_bands", 33),
+    ("validation_holdout_fraction", 0.01),
+    ("validation_holdout_fraction", 0.9),
+    ("validation_split_seed", -1),
+]
+
+
+@pytest.mark.parametrize("setting, value", _OUT_OF_BOUNDS)
+def test_the_schema_rejects_a_value_out_of_bounds(setting, value):
+    from pydantic import TypeAdapter, ValidationError
+
+    from app.engine.models.base import BaseTrainingConfig
+
+    field = BaseTrainingConfig.model_fields[setting]
+    with pytest.raises(ValidationError):
+        TypeAdapter(Annotated[field.annotation, field]).validate_python(value)
+
+
+@pytest.mark.parametrize("setting, value", _OUT_OF_BOUNDS)
+def test_a_raw_config_out_of_bounds_stops_the_job_naming_the_setting(monkeypatch, tmp_path, setting, value):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    with pytest.raises(ValueError, match=setting):
+        _prepare(_pipeline(monkeypatch, datasets, _holdout_config(**{setting: value})))

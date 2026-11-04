@@ -16,6 +16,13 @@ from PIL import Image
 
 NEAR_IDENTICAL_BITS = 6
 _HASH_WIDTH = 8
+# A job's config reaches the trainer as a plain dict, so the schema's bounds don't apply.
+_BOUNDS = (
+    ("validation_holdout_fraction", 0.15, 0.05, 0.5),
+    ("validation_split_seed", 0, 0, math.inf),
+    ("validation_every_n_steps", 500, 1, math.inf),
+    ("validation_timestep_bands", 8, 2, 32),
+)
 
 Item = dict[str, Any]
 
@@ -93,6 +100,10 @@ def refusal_reason(
     config: dict[str, Any],
 ) -> str | None:
     """Why validation can't run on this job, or None when it can."""
+    for setting, default, low, high in _BOUNDS:
+        value = float(config.get(setting, default))
+        if value < low or value > high:
+            return f"{setting} is {value:g}; it must be from {low:g} to {high:g}."
     if domain is None:
         return f"Validation is unavailable for the {family_name} family in this version."
     for name, kind in sorted(dataset_kinds.items()):
@@ -126,6 +137,16 @@ def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
         "timestep_bands": int(config.get("validation_timestep_bands", 8)),
     }
     return json.dumps(content, indent=2, ensure_ascii=False)
+
+
+def same_measurement(earlier: str, content: str) -> bool:
+    """Whether two split files measure the same images the same way.
+
+    A changed interval, or a new image in training, keeps the numbers comparable. A
+    different holdout doesn't: an image that trained could now be measured.
+    """
+    before, after = json.loads(earlier), json.loads(content)
+    return all(before.get(k) == after.get(k) for k in ("holdout", "representatives", "split_seed"))
 
 
 def split_holdout(
@@ -172,6 +193,10 @@ def split_separate_dataset(
     """Training keeps everything; the named dataset is the validation set."""
     if not validation_items:
         raise ValueError("The validation dataset has no usable images.")
+    if not training_items:
+        raise ValueError(
+            "There are no training images: only the validation dataset has usable images."
+        )
     trained = {item["path"] for item in training_items}
     for item in validation_items:
         if item["path"] in trained:

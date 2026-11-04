@@ -9,9 +9,11 @@ import hashlib
 import json
 import math
 import os
+import random
 import time
 from typing import Any
 
+import numpy as np
 import torch
 
 from app.engine.core.pipeline.hessian_estimate import _capture_random_state, _restore_random_state
@@ -23,11 +25,23 @@ def is_due(step: int, every: int, max_steps: int) -> bool:
     return step % every == 0 or step == max_steps - 1
 
 
+def _image_seed(split_seed: int, key: str) -> int:
+    digest = hashlib.sha256(f"{split_seed}:{key}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") >> 1
+
+
 def fixed_noise(split_seed: int, key: str, like: torch.Tensor) -> torch.Tensor:
     """The noise for one image: the same in every pass and every arm."""
-    digest = hashlib.sha256(f"{split_seed}:{key}".encode()).digest()
-    generator = torch.Generator(device="cpu").manual_seed(int.from_bytes(digest[:8], "big") >> 1)
+    generator = torch.Generator(device="cpu").manual_seed(_image_seed(split_seed, key))
     return torch.randn(like.shape, generator=generator, dtype=like.dtype).to(like.device)
+
+
+def _seed_the_streams(split_seed: int, key: str) -> None:
+    """Fix whatever one image draws: without a latent cache, a VAE samples its posterior."""
+    seed = _image_seed(split_seed, key)
+    torch.manual_seed(seed)
+    random.seed(seed)
+    np.random.seed(seed % 2**32)
 
 
 def _clean_latents(trainer, batch: dict[str, Any]) -> torch.Tensor:
@@ -63,6 +77,7 @@ def _band_timesteps(trainer, count: int, prepared: torch.Tensor) -> torch.Tensor
 
 def _image_band_losses(trainer, representative: dict[str, Any], bands: int, split_seed: int) -> list[float]:
     # The original variant, with its caption: no masked draw and no caption dropout.
+    _seed_the_streams(split_seed, representative["key"])
     item = {**representative, "has_masked": False, "dropout_rate": 0.0}
     batch = trainer._get_batch([item])
     latents = _clean_latents(trainer, batch)

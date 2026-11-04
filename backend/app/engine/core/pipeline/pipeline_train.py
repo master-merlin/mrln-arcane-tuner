@@ -316,19 +316,26 @@ class PipelineTrainMixin:
         split = getattr(self, "_validation_split", None)
         if split is None:
             return
-        from app.engine.core.pipeline.validation_split import split_file_content
+        from app.engine.core.pipeline.validation_split import (
+            same_measurement,
+            split_file_content,
+        )
 
-        self.inventory = list(split.training_items)
         output_dir = self.checkpoint_manager.output_dir
         os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, "validation_split.json")
         content = split_file_content(split, self.config)
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as existing:
-                if existing.read() != content:
-                    self.logger.warning("validation_split_changed", path=path)
+                if not same_measurement(existing.read(), content):
+                    raise ValueError(
+                        f"{path} records another split, and its numbers couldn't be "
+                        "compared with this run's. Restore the dataset and the split "
+                        "seed, or train under another LoRA name."
+                    )
         with open(path, "w", encoding="utf-8") as written:
             written.write(content)
+        self.inventory = list(split.training_items)
 
     def _maybe_validate(self, step: int, max_steps: int) -> None:
         """Run the held-out pass when one is due; its time isn't step time."""

@@ -318,6 +318,10 @@ only on your files and `validation_split_seed`, so runs you compare see the same
 held-out images, whatever their training seed. To keep every image in training,
 name a separate dataset in `validation_dataset` instead.
 
+If a run's output folder records a different split, for example after you changed
+the split seed or the dataset, the job stops rather than mix numbers that can't
+be compared. Restore them, or train under another LoRA name.
+
 **Reading the numbers.** Each pass measures every held-out image at the centre
 of each noise band, with the same noise every time and without the run's loss
 weighting, so numbers from different steps and different runs can be compared.

@@ -1021,6 +1021,8 @@ class BaseTrainingConfig(BaseModel):
     )
     validation_holdout_fraction: float = Field(
         0.15,
+        ge=0.05,
+        le=0.5,
         description="Share of the source images to hold out, unless a validation dataset is named",
         json_schema_extra={
             "group": "ENGINE",
@@ -1032,6 +1034,7 @@ class BaseTrainingConfig(BaseModel):
     )
     validation_split_seed: int = Field(
         0,
+        ge=0,
         description="Seed of the split; independent of the training seed",
         json_schema_extra={"group": "ENGINE", "depends_on": "validation_enabled", "min": 0},
     )
@@ -1042,11 +1045,14 @@ class BaseTrainingConfig(BaseModel):
     )
     validation_every_n_steps: int = Field(
         500,
+        ge=1,
         description="Steps between validation passes",
         json_schema_extra={"group": "ENGINE", "depends_on": "validation_enabled", "min": 1},
     )
     validation_timestep_bands: int = Field(
         8,
+        ge=2,
+        le=32,
         description="Noise bands per image; a pass runs images × bands forward passes",
         json_schema_extra={"group": "ENGINE", "depends_on": "validation_enabled", "min": 2, "max": 32},
     )

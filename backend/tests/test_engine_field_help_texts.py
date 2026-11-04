@@ -65,9 +65,7 @@ def test_guide_strategy_block_carries_hidream_bounds():
     assert "HiDream-O1" in line and "radc_res_influence" in line
 
 
-def test_guide_radc_limits_no_longer_calls_bernini_progressless():
-    m = re.search(r"\*\*Limits\.\*\*(.*?)(?=^## )", GUIDE, re.S | re.M)
-    assert m, "guide lost the RADC Limits paragraph"
-    limits = " ".join(m.group(1).split())
-    assert "WAN 2.2" in limits
-    assert "Bernini-R" not in limits.split("FLUX2")[0]
+def test_guide_lists_no_expert_family_as_progressless():
+    # WAN 2.2 and Bernini-R both follow the curriculum, so the Limits paragraph is gone.
+    assert "**Limits.**" not in GUIDE
+    assert "**On WAN 2.2,** `radc` also decides how often each expert trains" in " ".join(GUIDE.split())

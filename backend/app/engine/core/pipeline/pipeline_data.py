@@ -1170,25 +1170,6 @@ class PipelineDataMixin:
             image_hash=validation_split.difference_hash,
         )
 
-    def _enter_validation_split(self) -> None:
-        """Narrow the inventory to the training items and record the split."""
-        split = getattr(self, "_validation_split", None)
-        if split is None:
-            return
-        from app.engine.core.pipeline.validation_split import split_file_content
-
-        self.inventory = list(split.training_items)
-        output_dir = self.checkpoint_manager.output_dir
-        os.makedirs(output_dir, exist_ok=True)
-        path = os.path.join(output_dir, "validation_split.json")
-        content = split_file_content(split, self.config)
-        if os.path.isfile(path):
-            with open(path, encoding="utf-8") as existing:
-                if existing.read() != content:
-                    self.logger.warning("validation_split_changed", path=path)
-        with open(path, "w", encoding="utf-8") as written:
-            written.write(content)
-
     # ── Batch Construction ───────────────────────────────────────────────
 
     def _select_variant(self, item: dict) -> tuple[str, str, str]:

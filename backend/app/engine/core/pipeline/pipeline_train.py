@@ -311,6 +311,43 @@ class PipelineTrainMixin:
         by_param = {id(p): e for p, e in zip(reached, estimate)}
         return [by_param.get(id(p)) for p in params]
 
+    def _enter_validation_split(self) -> None:
+        """Narrow the inventory to the training items and record the split."""
+        split = getattr(self, "_validation_split", None)
+        if split is None:
+            return
+        from app.engine.core.pipeline.validation_split import split_file_content
+
+        self.inventory = list(split.training_items)
+        output_dir = self.checkpoint_manager.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, "validation_split.json")
+        content = split_file_content(split, self.config)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as existing:
+                if existing.read() != content:
+                    self.logger.warning("validation_split_changed", path=path)
+        with open(path, "w", encoding="utf-8") as written:
+            written.write(content)
+
+    def _maybe_validate(self, step: int, max_steps: int) -> None:
+        """Run the held-out pass when one is due; its time isn't step time."""
+        split = getattr(self, "_validation_split", None)
+        if split is None:
+            return
+        from app.engine.core.pipeline import validation_pass
+
+        every = int(self.config.get("validation_every_n_steps", 500))
+        if not validation_pass.is_due(step, every, max_steps):
+            return
+        self._emit_status("Validating")
+        self.logger_component.pause_step_timer()
+        try:
+            validation_pass.run_validation_pass(self, split, step)
+        finally:
+            self.logger_component.resume_step_timer()
+            self._emit_status("Training")
+
     def _iter_training_batches(self, batch_size: int):
         """Infinite bucket-aware batch iterator for the training loop.
 
@@ -947,6 +984,10 @@ class PipelineTrainMixin:
                 text_emb,
                 batch,
             )
+
+            # 7a. Held-out validation (no-op unless enabled): after the step's
+            # tensors are gone, and before a save of this step.
+            self._maybe_validate(step, max_steps)
 
             # 7b. Adaptive rebuild exit (spec §5). The active set has shrunk
             # enough to be worth restarting over: save a full resumable

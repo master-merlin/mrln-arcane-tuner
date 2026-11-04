@@ -319,12 +319,16 @@ held-out images, whatever their training seed. To keep every image in training,
 name a separate dataset in `validation_dataset` instead.
 
 If a run's output folder records a different split, for example after you changed
-the split seed or the dataset, the job stops rather than mix numbers that can't
-be compared. Restore them, or train under another LoRA name.
+the split seed, the dataset or a held-out image's caption, the job stops rather
+than mix numbers that can't be compared. Restore them, or train under another
+LoRA name.
 
 **Reading the numbers.** Each pass measures every held-out image at the centre
 of each noise band, with the same noise every time and without the run's loss
 weighting, so numbers from different steps and different runs can be compared.
+It measures the weights a sample would use: the EMA weights with EMA on, and a
+schedule-free optimizer's evaluation weights. Each image keeps the caption it had
+when the job started.
 The output folder gets two files:
 
 - `validation_split.json`: which images were held out, and the settings that

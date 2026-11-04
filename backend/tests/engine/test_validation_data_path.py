@@ -420,3 +420,64 @@ def test_a_raw_config_out_of_bounds_stops_the_job_naming_the_setting(monkeypatch
     datasets = {"ds": _dataset(tmp_path, "ds", 20)}
     with pytest.raises(ValueError, match=setting):
         _prepare(_pipeline(monkeypatch, datasets, _holdout_config(**{setting: value})))
+
+
+# ── The caption a pass measures with ─────────────────────────────────────────
+
+
+def _variants(monkeypatch, text):
+    """A model-aware caption sidecar for every image, reading ``text[0]`` when asked."""
+    from app.core.captioning import caption_variants
+
+    monkeypatch.setattr(caption_variants, "read_variant", lambda *_args, **_kwargs: text[0])
+
+
+def test_a_representative_keeps_the_model_aware_caption_of_the_start(monkeypatch, tmp_path):
+    from app.engine.core.pipeline.caption_selection import select_training_caption
+
+    text = ["first sidecar"]
+    _variants(monkeypatch, text)
+    t = _prepare(_pipeline(monkeypatch, {"ds": _dataset(tmp_path, "ds", 20)}, _holdout_config()))
+    representatives = t._validation_split.representatives
+    assert {r["caption"] for r in representatives} == {"first sidecar"}
+
+    text[0] = "edited during the run"
+
+    assert {select_training_caption(r, DEFINITION_ID) for r in representatives} == {"first sidecar"}
+
+
+def test_freezing_the_caption_leaves_the_training_items_on_their_own_captions(monkeypatch, tmp_path):
+    from app.engine.core.pipeline.caption_selection import select_training_caption
+
+    text = ["first sidecar"]
+    _variants(monkeypatch, text)
+    t = _prepare(_pipeline(monkeypatch, {"ds": _dataset(tmp_path, "ds", 20)}, _holdout_config()))
+    text[0] = "edited during the run"
+
+    training = t._validation_split.training_items[0]
+    assert training.get("use_model_aware_captions", True) is True
+    assert select_training_caption(training, DEFINITION_ID) == "edited during the run"
+
+
+def test_a_resume_after_a_sidecar_edit_stops_naming_the_split_file(monkeypatch, tmp_path):
+    text = ["first sidecar"]
+    _variants(monkeypatch, text)
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    first = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)
+    first._enter_validation_split()
+
+    text[0] = "edited before the resume"
+    resumed = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)
+
+    with pytest.raises(ValueError, match="validation_split.json"):
+        resumed._enter_validation_split()
+
+
+def test_a_dataset_that_trains_without_captions_measures_without_them(monkeypatch, tmp_path):
+    from app.engine.core.pipeline.caption_selection import select_training_caption
+
+    _variants(monkeypatch, ["a sidecar"])
+    t = _prepare(_pipeline(monkeypatch, {"ds": _dataset(tmp_path, "ds", 20)}, _holdout_config()))
+    representative = dict(t._validation_split.representatives[0], use_captions=False)
+
+    assert select_training_caption(representative, DEFINITION_ID) == ""

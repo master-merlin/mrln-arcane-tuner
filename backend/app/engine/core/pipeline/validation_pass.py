@@ -123,14 +123,28 @@ def run_validation_pass(trainer, split, step: int) -> dict[str, Any]:
     model = trainer._get_primary_model()
     modes = [(module, module.training) for module in model.modules()]
     random_state = _capture_random_state()
+    # The weights a sample would use: a schedule-free optimizer's evaluation weights, and EMA's.
+    optimizer = getattr(trainer, "optimizer", None)
+    ema = getattr(trainer, "ema_handler", None)
+    optimizer_switched = swapped = False
     try:
         model.eval()
+        if optimizer is not None and hasattr(optimizer, "eval"):
+            optimizer.eval()
+            optimizer_switched = True
+        if ema:
+            ema.store_and_swap()
+            swapped = True
         with torch.no_grad():
             per_image = [
                 _image_band_losses(trainer, representative, bands, split_seed)
                 for representative in split.representatives
             ]
     finally:
+        if swapped:
+            ema.restore()
+        if optimizer_switched and hasattr(optimizer, "train"):
+            optimizer.train()
         for module, training in modes:
             module.training = training
         _restore_random_state(random_state)

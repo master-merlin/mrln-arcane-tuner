@@ -1159,16 +1159,28 @@ class PipelineDataMixin:
                 raise ValueError(
                     f"The validation dataset {validation_dataset} has no usable images."
                 )
-            return validation_split.split_separate_dataset(
+            split = validation_split.split_separate_dataset(
                 [it for it in inventory if not it.get("validation_only")],
                 validation_items,
             )
-        return validation_split.split_holdout(
-            inventory,
-            float(self.config.get("validation_holdout_fraction", 0.15)),
-            int(self.config.get("validation_split_seed", 0)),
-            image_hash=validation_split.difference_hash,
-        )
+        else:
+            split = validation_split.split_holdout(
+                inventory,
+                float(self.config.get("validation_holdout_fraction", 0.15)),
+                int(self.config.get("validation_split_seed", 0)),
+                image_hash=validation_split.difference_hash,
+            )
+        self._freeze_validation_captions(split)
+        return split
+
+    def _freeze_validation_captions(self, split) -> None:
+        """Fix each representative's caption now: a sidecar edited later can't change a pass."""
+        from app.engine.core.pipeline.caption_selection import select_training_caption
+
+        definition_id = getattr(getattr(self, "definition", None), "id", None)
+        for representative in split.representatives:
+            representative["caption"] = select_training_caption(representative, definition_id)
+            representative["use_model_aware_captions"] = False
 
     # ── Batch Construction ───────────────────────────────────────────────
 

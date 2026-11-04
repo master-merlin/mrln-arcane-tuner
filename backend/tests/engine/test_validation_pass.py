@@ -540,3 +540,119 @@ def test_two_images_get_different_uncached_latents(tmp_path):
     _run(t)
     assert len(seen) >= 2
     assert not torch.equal(seen[0], seen[1])
+
+
+class _ScheduleFree:
+    """Changes the model's weights between its modes, as a schedule-free optimizer does."""
+
+    def __init__(self, model):
+        self.model = model
+        self.calls = []
+
+    def eval(self):
+        self.calls.append("eval")
+        self.saved = self.model.linear.weight.detach().clone()
+        with torch.no_grad():
+            self.model.linear.weight.add_(1.0)
+
+    def train(self):
+        self.calls.append("train")
+        with torch.no_grad():
+            self.model.linear.weight.copy_(self.saved)
+
+
+class _Ema:
+    def __init__(self, model):
+        self.model = model
+        self.calls = []
+
+    def store_and_swap(self):
+        self.calls.append("swap")
+        self.saved = self.model.linear.weight.detach().clone()
+        with torch.no_grad():
+            self.model.linear.weight.add_(10.0)
+
+    def restore(self):
+        self.calls.append("restore")
+        with torch.no_grad():
+            self.model.linear.weight.copy_(self.saved)
+
+
+def _weights_at_forward(t):
+    seen = []
+    forward = t.forward_pass
+
+    def spy(*args):
+        seen.append(t._model.linear.weight.detach().clone())
+        return forward(*args)
+
+    t.forward_pass = spy
+    return seen
+
+
+def test_the_pass_measures_a_schedule_free_optimizers_evaluation_weights(tmp_path):
+    t = _pipeline(tmp_path)
+    before = t._model.linear.weight.detach().clone()
+    t.optimizer = _ScheduleFree(t._model)
+    seen = _weights_at_forward(t)
+
+    _run(t)
+
+    assert all(torch.equal(w, before + 1.0) for w in seen)
+    assert t.optimizer.calls == ["eval", "train"]
+    assert torch.equal(t._model.linear.weight, before)
+
+
+def test_the_pass_measures_the_ema_weights_when_ema_is_on(tmp_path):
+    t = _pipeline(tmp_path)
+    before = t._model.linear.weight.detach().clone()
+    t.ema_handler = _Ema(t._model)
+    seen = _weights_at_forward(t)
+
+    _run(t)
+
+    assert all(torch.equal(w, before + 10.0) for w in seen)
+    assert t.ema_handler.calls == ["swap", "restore"]
+    assert torch.equal(t._model.linear.weight, before)
+
+
+def test_the_optimizer_and_ema_come_back_when_a_forward_fails(tmp_path):
+    t = _pipeline(tmp_path)
+    before = t._model.linear.weight.detach().clone()
+    t.optimizer = _ScheduleFree(t._model)
+    t.ema_handler = _Ema(t._model)
+
+    def boom(*_args):
+        raise RuntimeError("forward failed")
+
+    t.forward_pass = boom
+    with pytest.raises(RuntimeError):
+        _run(t)
+
+    assert t.optimizer.calls == ["eval", "train"]
+    assert t.ema_handler.calls == ["swap", "restore"]
+    assert torch.equal(t._model.linear.weight, before)
+
+
+def test_an_optimizer_without_modes_is_left_alone(tmp_path):
+    t = _pipeline(tmp_path)
+    t.optimizer = torch.optim.SGD(t._model.parameters(), lr=0.01)
+    assert _run(t)["images"] > 0
+
+
+def test_the_optimizer_stays_out_of_eval_when_the_ema_swap_fails(tmp_path):
+    t = _pipeline(tmp_path)
+    before = t._model.linear.weight.detach().clone()
+    t.optimizer = _ScheduleFree(t._model)
+    t.ema_handler = _Ema(t._model)
+
+    def boom():
+        raise RuntimeError("swap failed")
+
+    t.ema_handler.store_and_swap = boom
+    with pytest.raises(RuntimeError):
+        _run(t)
+
+    assert t.optimizer.calls == ["eval", "train"]
+    assert t.ema_handler.calls == []
+    assert torch.equal(t._model.linear.weight, before)

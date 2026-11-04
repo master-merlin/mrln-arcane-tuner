@@ -304,3 +304,178 @@ class TestGpuVramEnrichment:
 
         monkeypatch.setattr(sm, "_NVML_AVAILABLE", False)
         assert sm.SystemMonitor._gpu_processes(handle=object()) == []
+
+
+# ── GPU snapshot: temperature margin, fan, throttling ──────────────────────
+
+
+class TestGpuHealthFields:
+    """The monitor's card carries what ``read_gpu_health`` read, through the real reader.
+
+    The fake NVML holds functions only: its constants and error classes are the
+    real binding's, so an error here is the one a driver call would raise.
+    """
+
+    HEALTH_FIELDS = (
+        "temperature_margin_c",
+        "fan_percent",
+        "throttle_raw",
+        "throttle_reasons",
+        "thermal_throttle_ms",
+        "power_throttle_ms",
+        "readable",
+        "health_error",
+    )
+
+    @staticmethod
+    def _install_nvml(monkeypatch, **overrides):
+        """One fake NVML behind both the monitor and the reader. Returns the monitor."""
+        from types import SimpleNamespace
+
+        import pytest
+
+        from app.core import gpu_health as gh
+        from app.core import system_monitor as sm
+
+        real = pytest.importorskip("pynvml")
+        functions = {
+            "nvmlDeviceGetCount": lambda: 1,
+            "nvmlDeviceGetHandleByIndex": lambda i: object(),
+            "nvmlDeviceGetName": lambda h: "fake card",
+            "nvmlDeviceGetMemoryInfo": lambda h: SimpleNamespace(
+                used=1024**3, total=4 * 1024**3, free=3 * 1024**3,
+            ),
+            "nvmlDeviceGetUtilizationRates": lambda h: SimpleNamespace(gpu=90, memory=30),
+            "nvmlDeviceGetTemperature": lambda h, sensor: 71,
+            "nvmlDeviceGetMarginTemperature": lambda h: 12,
+            "nvmlDeviceGetFanSpeed": lambda h: 64,
+            "nvmlDeviceGetClockInfo": lambda h, clock: 2610,
+            "nvmlDeviceGetPowerUsage": lambda h: 412500,
+            "nvmlDeviceGetEnforcedPowerLimit": lambda h: 600000,
+            "nvmlDeviceGetCurrentClocksEventReasons": lambda h: 0x44,
+            "nvmlDeviceGetViolationStatus": lambda h, policy: SimpleNamespace(
+                violationTime=2_000_000,
+            ),
+        }
+        functions.update(overrides)
+        constants = {
+            name: getattr(real, name)
+            for name in dir(real)
+            if name.startswith("NVML")
+        }
+        fake = SimpleNamespace(**constants, **functions)
+        monkeypatch.setattr(gh, "pynvml", fake)
+        monkeypatch.setattr(gh, "_NVML_AVAILABLE", True)
+        monkeypatch.setattr(sm, "pynvml", fake)
+        monkeypatch.setattr(sm, "_NVML_AVAILABLE", True)
+        monkeypatch.setattr(sm.SystemMonitor, "_gpu_processes", staticmethod(lambda h: []))
+        return sm
+
+    def _gone(self, *_args):
+        import pytest
+
+        real = pytest.importorskip("pynvml")
+        raise real.NVMLError(real.NVML_ERROR_GPU_IS_LOST)
+
+    def test_a_snapshot_carries_the_new_fields(self, monkeypatch):
+        sm = self._install_nvml(monkeypatch)
+
+        card = sm.SystemMonitor().snapshot().to_dict()["gpus"][0]
+
+        assert card["temperature_margin_c"] == 12
+        assert card["fan_percent"] == 64
+        assert card["throttle_raw"] == "0x44"
+        assert card["throttle_reasons"] == ["sw_power_cap", "hw_thermal"]
+        assert card["thermal_throttle_ms"] == 2.0
+        assert card["power_throttle_ms"] == 2.0
+        assert card["readable"] is True
+        assert card["health_error"] is None
+
+    def test_a_status_built_without_them_is_valid_and_gives_none(self):
+        from app.core.system_monitor import GPUStatus
+
+        card = GPUStatus(
+            index=0,
+            name="x",
+            vram_used_mb=100,
+            vram_total_mb=200,
+            vram_percent=50.0,
+            temperature_c=40,
+            power_draw_w=1.0,
+            power_limit_w=2.0,
+            gpu_utilization=10,
+            memory_utilization=5,
+            clock_graphics_mhz=1000,
+            clock_memory_mhz=2000,
+        ).to_dict()
+
+        for name in self.HEALTH_FIELDS:
+            assert name in card, name
+            assert card[name] is None, name
+
+    def test_a_field_the_card_does_not_offer_is_none_and_the_rest_stand(self, monkeypatch):
+        import pytest
+
+        real = pytest.importorskip("pynvml")
+
+        def not_supported(_handle):
+            raise real.NVMLError(real.NVML_ERROR_NOT_SUPPORTED)
+
+        sm = self._install_nvml(monkeypatch, nvmlDeviceGetFanSpeed=not_supported)
+
+        card = sm.SystemMonitor().snapshot().gpus[0]
+
+        assert card.fan_percent is None
+        assert card.temperature_margin_c == 12
+        assert card.readable is True
+
+    def test_a_card_that_stopped_answering_is_marked_not_blank(self, monkeypatch):
+        """The health queries fail while the monitor's own still answer: the card
+        stays, with its existing values, and says it is unreadable."""
+        sm = self._install_nvml(monkeypatch, nvmlDeviceGetMarginTemperature=self._gone)
+
+        card = sm.SystemMonitor().snapshot().gpus[0]
+
+        assert card.readable is False
+        assert card.health_error
+        assert card.temperature_margin_c is None
+        assert card.fan_percent is None
+        assert card.throttle_reasons is None
+        assert card.temperature_c == 71
+        assert card.power_draw_w == 412.5
+        assert card.vram_used_mb == 1024
+
+    def test_the_monitors_own_failure_still_drops_the_card(self, monkeypatch):
+        """Its existing behaviour: memory info failing ends the snapshot's GPU list."""
+        sm = self._install_nvml(monkeypatch, nvmlDeviceGetMemoryInfo=self._gone)
+
+        assert sm.SystemMonitor().snapshot().gpus == []
+
+    def test_no_reading_leaves_the_fields_none_and_the_card_stands(self, monkeypatch):
+        """The reader has no NVML while the monitor does: nothing to say, nothing shown."""
+        from app.core import gpu_health as gh
+
+        sm = self._install_nvml(monkeypatch)
+        monkeypatch.setattr(gh, "_NVML_AVAILABLE", False)
+
+        card = sm.SystemMonitor().snapshot().gpus[0]
+
+        assert card.temperature_c == 71
+        assert card.readable is None
+        assert card.temperature_margin_c is None
+
+    def test_the_readers_values_do_not_replace_the_monitors_own(self, monkeypatch):
+        """``temperature_c`` keeps its -1 for a failed read: an existing consumer's value."""
+        import pytest
+
+        real = pytest.importorskip("pynvml")
+
+        def no_temperature(_handle, _sensor):
+            raise real.NVMLError(real.NVML_ERROR_NOT_SUPPORTED)
+
+        sm = self._install_nvml(monkeypatch, nvmlDeviceGetTemperature=no_temperature)
+
+        card = sm.SystemMonitor().snapshot().gpus[0]
+
+        assert card.temperature_c == -1
+        assert card.readable is True

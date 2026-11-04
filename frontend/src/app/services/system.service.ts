@@ -49,6 +49,19 @@ export interface GPUStatus {
     clock_memory_mhz: number;
     /** Top VRAM-holding processes (ComfyUI, browser, this app, …). */
     processes?: GpuProcess[];
+    /** Distance to the card's temperature limit. Null: the card doesn't offer it. */
+    temperature_margin_c?: number | null;
+    fan_percent?: number | null;
+    /** The clock-event reasons bitmask, as a hex string. */
+    throttle_raw?: string | null;
+    /** Names of the set reason bits; a bit NVML doesn't name is `unknown_0x...`. */
+    throttle_reasons?: string[] | null;
+    /** Cumulative since boot. */
+    thermal_throttle_ms?: number | null;
+    power_throttle_ms?: number | null;
+    /** False when the card stopped answering; null when there is no reading at all. */
+    readable?: boolean | null;
+    health_error?: string | null;
 }
 
 export interface SystemStatus {

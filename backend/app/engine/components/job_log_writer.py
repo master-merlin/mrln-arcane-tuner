@@ -12,6 +12,7 @@ Message types:
     cache_ready  – List of dataset names whose caches are ready
     warning      – Warning message for the UI
     step         – Per-step training metrics dict
+    gpu_health   – One reading of the card, from the recorder's thread
     exit         – Trainer process exit (code + optional error)
 """
 
@@ -20,6 +21,7 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import threading
 import time
 from typing import Any
 
@@ -32,6 +34,11 @@ class JobLogWriter:
     Each call to :meth:`emit` writes a single JSON object on its own
     line, terminated by ``\\n``.  The file is opened in append mode with
     line buffering so every ``emit`` is immediately flushed to disk.
+
+    Two threads write: the training loop and the GPU health recorder. The lock
+    covers the write and nothing else. It is reentrant because logging is bridged
+    to this writer, so a finaliser or a warning that logs during a write comes back
+    here on the same thread, where a plain lock would hang the job.
     """
 
     def __init__(self, output_dir: str) -> None:
@@ -43,6 +50,7 @@ class JobLogWriter:
             self.log_path, "a", encoding="utf-8", buffering=1,
         )
         self._exit_emitted = False
+        self._lock = threading.RLock()
         # Ensure we close cleanly on process exit
         atexit.register(self.close)
 
@@ -64,10 +72,10 @@ class JobLogWriter:
             "data": data,
         }
         try:
-            self._file.write(
-                json.dumps(entry, separators=(",", ":"), default=str) + "\n",
-            )
-            self._file.flush()
+            line = json.dumps(entry, separators=(",", ":"), default=str) + "\n"
+            with self._lock:
+                self._file.write(line)
+                self._file.flush()
         except (OSError, ValueError):
             pass  # Non-fatal — never crash the trainer for a log write
 
@@ -136,14 +144,17 @@ class JobLogWriter:
         payload: dict[str, Any] = {"code": code}
         if error:
             payload["error"] = error
-        self.emit("exit", payload)
-        self.close()
+        # One step: the exit line is the last in the file, whichever thread writes next.
+        with self._lock:
+            self.emit("exit", payload)
+            self.close()
 
     def close(self) -> None:
         """Flush and close the backing file (idempotent)."""
-        if not self._file.closed:
-            try:
-                self._file.flush()
-                self._file.close()
-            except (OSError, ValueError):
-                pass
+        with self._lock:
+            if not self._file.closed:
+                try:
+                    self._file.flush()
+                    self._file.close()
+                except (OSError, ValueError):
+                    pass

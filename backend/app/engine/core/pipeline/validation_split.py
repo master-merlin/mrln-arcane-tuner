@@ -6,6 +6,7 @@ group is a connected component of those links. The split depends only on the fil
 ``split_seed``: not on the training seed, the order files arrive in, or other settings.
 """
 import hashlib
+import json
 import math
 from collections.abc import Callable, Iterable, Sequence
 from dataclasses import dataclass
@@ -82,6 +83,49 @@ def _representatives(items: Sequence[Item], keys: Iterable[str]) -> list[Item]:
     for item in items:
         by_key.setdefault(_source_key(item), []).append(item)
     return [{**_representative(by_key[key]), "key": key} for key in sorted(keys)]
+
+
+def refusal_reason(
+    family_name: str,
+    domain: tuple[float, float] | None,
+    items: Sequence[Item],
+    dataset_kinds: dict[str, str],
+    config: dict[str, Any],
+) -> str | None:
+    """Why validation can't run on this job, or None when it can."""
+    if domain is None:
+        return f"Validation is unavailable for the {family_name} family in this version."
+    for name, kind in sorted(dataset_kinds.items()):
+        if kind != "standard":
+            return f"Validation takes image datasets of the standard kind; {name} is of the {kind} kind."
+    if any(item.get("is_audio") for item in items):
+        return "Validation takes image datasets; this job's datasets hold audio."
+    if any(item.get("is_video") for item in items):
+        return "Validation takes image datasets; this job's datasets hold video."
+    adaptive = config.get("adaptive_targeting_config") or {}
+    if config.get("adaptive_targeting") and adaptive.get("action") == "rebuild":
+        return "Validation can't run with adaptive targeting's rebuild action, which restarts the run."
+    return None
+
+
+def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
+    """The text of ``validation_split.json``: the split and the settings that made it."""
+    representative_fields = ("key", "path", "caption", "target_w", "target_h")
+    content = {
+        "holdout": split.holdout_keys,
+        "groups": split.groups,
+        "representatives": [
+            {field: item.get(field) for field in representative_fields}
+            for item in split.representatives
+        ],
+        "split_seed": int(config.get("validation_split_seed", 0)),
+        "holdout_fraction": float(config.get("validation_holdout_fraction", 0.15)),
+        "validation_dataset": config.get("validation_dataset") or None,
+        "hash_threshold_bits": NEAR_IDENTICAL_BITS,
+        "every_n_steps": int(config.get("validation_every_n_steps", 500)),
+        "timestep_bands": int(config.get("validation_timestep_bands", 8)),
+    }
+    return json.dumps(content, indent=2, ensure_ascii=False)
 
 
 def split_holdout(

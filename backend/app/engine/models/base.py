@@ -1014,6 +1014,42 @@ class BaseTrainingConfig(BaseModel):
         description="Min-SNR Gamma weighting (SDXL only; hidden for every other family)",
         json_schema_extra={"group": "ENGINE", "min": 0.0, "max": 20.0, "step": 0.5},
     )
+    validation_enabled: bool = Field(
+        False,
+        description="Measure a held-out loss during the run, for comparing training settings (images are held out of training)",
+        json_schema_extra={"group": "ENGINE"},
+    )
+    validation_holdout_fraction: float = Field(
+        0.15,
+        description="Share of the source images to hold out, unless a validation dataset is named",
+        json_schema_extra={
+            "group": "ENGINE",
+            "depends_on": "validation_enabled",
+            "min": 0.05,
+            "max": 0.5,
+            "step": 0.01,
+        },
+    )
+    validation_split_seed: int = Field(
+        0,
+        description="Seed of the split; independent of the training seed",
+        json_schema_extra={"group": "ENGINE", "depends_on": "validation_enabled", "min": 0},
+    )
+    validation_dataset: str = Field(
+        "",
+        description="A dataset to validate on instead of holding out images; training then keeps every image",
+        json_schema_extra={"group": "ENGINE", "depends_on": "validation_enabled"},
+    )
+    validation_every_n_steps: int = Field(
+        500,
+        description="Steps between validation passes",
+        json_schema_extra={"group": "ENGINE", "depends_on": "validation_enabled", "min": 1},
+    )
+    validation_timestep_bands: int = Field(
+        8,
+        description="Noise bands per image; a pass runs images × bands forward passes",
+        json_schema_extra={"group": "ENGINE", "depends_on": "validation_enabled", "min": 2, "max": 32},
+    )
     low_vram: bool = Field(
         True,
         description="Offload VAE to CPU after caching (disable to keep VAE on GPU for sampling speed)",

@@ -414,6 +414,7 @@ class PipelineTrainMixin:
         max_steps = int(self.config.get("max_train_steps", 1000))
         self.max_train_steps = max_steps
         batch_size = int(self.config.get("train_batch_size", 1))
+        self._enter_validation_split()
 
         # Sigma distribution tracker — accumulates timestep histogram for diagnostics.
         try:

@@ -554,7 +554,7 @@ class PipelineDataMixin:
             timeout=60.0,
             headers=_internal_api_headers(),
         ) as client:
-            for ds_config in datasets_config:
+            for ds_config in [*datasets_config, *self._validation_dataset_entry()]:
                 if isinstance(ds_config, str):
                     ds_config = {"dataset_name": ds_config}
 
@@ -928,6 +928,7 @@ class PipelineDataMixin:
                                 "path": img_path,
                                 "id": img_rel,
                                 "caption": caption,
+                                "dataset_name": name,
                                 "dataset_path": ds_path,
                                 "prefix": prefix,
                                 "dropout_rate": float(
@@ -943,6 +944,8 @@ class PipelineDataMixin:
                                 "variant": "original",
                                 "is_video": is_video,
                             }
+                            if ds_config.get("validation_only"):
+                                item["validation_only"] = True
 
                             # ── Video temporal fields ──
                             if is_video:
@@ -1097,6 +1100,8 @@ class PipelineDataMixin:
                 items_without_masked=len(inventory) - masked_count,
             )
 
+        self._validation_split = self._split_for_validation(inventory, dataset_kinds)
+
         self.bucket_manager.log_distribution()
         self.logger.info(
             "data_prepared",
@@ -1115,6 +1120,74 @@ class PipelineDataMixin:
             device=self.device,
             arch_params=getattr(self.definition, "architecture_params", None),
         )
+
+    # ── Held-out validation ──────────────────────────────────────────────
+
+    def _validation_dataset_entry(self) -> list[dict[str, Any]]:
+        """The dataset entry a named validation dataset adds to the data path."""
+        name = self.config.get("validation_dataset")
+        if not self.config.get("validation_enabled", False) or not name:
+            return []
+        return [{"dataset_name": name, "validation_only": True}]
+
+    def _split_for_validation(self, inventory, dataset_kinds):
+        """The split, or None with validation off.
+
+        ``self.inventory`` stays complete until ``_enter_validation_split``: every
+        family's caching reads it, and held-out items need their latents and text
+        embeddings before the encoders are offloaded.
+        """
+        if not self.config.get("validation_enabled", False):
+            return None
+        from app.engine.core.pipeline import validation_split
+
+        family_name = getattr(self, "family_name", None) or type(self).__name__
+        reason = validation_split.refusal_reason(
+            family_name,
+            getattr(self, "validation_timestep_domain", None),
+            inventory,
+            dataset_kinds,
+            self.config,
+        )
+        if reason:
+            raise ValueError(reason)
+
+        validation_dataset = self.config.get("validation_dataset")
+        if validation_dataset:
+            validation_items = [it for it in inventory if it.get("validation_only")]
+            if not validation_items:
+                raise ValueError(
+                    f"The validation dataset {validation_dataset} has no usable images."
+                )
+            return validation_split.split_separate_dataset(
+                [it for it in inventory if not it.get("validation_only")],
+                validation_items,
+            )
+        return validation_split.split_holdout(
+            inventory,
+            float(self.config.get("validation_holdout_fraction", 0.15)),
+            int(self.config.get("validation_split_seed", 0)),
+            image_hash=validation_split.difference_hash,
+        )
+
+    def _enter_validation_split(self) -> None:
+        """Narrow the inventory to the training items and record the split."""
+        split = getattr(self, "_validation_split", None)
+        if split is None:
+            return
+        from app.engine.core.pipeline.validation_split import split_file_content
+
+        self.inventory = list(split.training_items)
+        output_dir = self.checkpoint_manager.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, "validation_split.json")
+        content = split_file_content(split, self.config)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as existing:
+                if existing.read() != content:
+                    self.logger.warning("validation_split_changed", path=path)
+        with open(path, "w", encoding="utf-8") as written:
+            written.write(content)
 
     # ── Batch Construction ───────────────────────────────────────────────
 

@@ -161,7 +161,7 @@ if "stall_s" in spec:
             return self.inner.closed
 
         def write(self, text):
-            if '"gpu_health"' in text:
+            if spec.get("stall_on", '"gpu_health"') in text:
                 ready.set()
                 threading.Event().wait(spec["stall_s"])
             self.inner.write(text)
@@ -592,6 +592,23 @@ def test_naming_the_card_starts_nothing_in_cuda(run_job) -> None:
     assert not [note for note in job.notes if note.startswith(("properties_of", "read"))]
     assert "gpu_health" not in job.types()
     assert "no reading" in job.summary()
+
+
+@pytest.mark.parametrize(("how", "code"), [("returns", 0), ("raises", 1)])
+def test_a_summary_write_stuck_on_the_disk_cannot_hold_the_way_out(
+    run_job, how: str, code: int,
+) -> None:
+    # The read hangs, so stop returns False; then the summary's own write never returns,
+    # with the writer's lock free. The job still ends, with what it could not write lost.
+    job = run_job(
+        train=how, readings=[good()], then="hang", stall_s=3600,
+        stall_on="gpu_health_summary", lock_wait_s=0.5, must_end_s=60,
+    )
+    assert job.code == code, job.stderr
+    assert "job log is stuck" in job.stderr
+    assert job.summaries() == []
+    assert "exit" not in job.types()
+    assert job.finalizing() == ["finalize summaries 0 exits 0 writer False"]
 
 
 def test_a_disk_that_comes_back_gets_the_summary_and_the_exit_line(run_job) -> None:

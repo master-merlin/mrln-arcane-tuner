@@ -24,11 +24,13 @@ import os
 import sys
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 LOG_FILENAME = "job_log.jsonl"
-# How long a line waits for another thread's write. One that takes longer is stuck on the
-# disk: the line is given up, and the log is stuck until a write gets through again.
+# How long a line waits for another thread's write, and on the way out for its own. One
+# that takes longer is stuck on the disk: the line is given up, and the log is stuck until
+# a write gets through again.
 LOCK_WAIT_S = 5.0
 
 
@@ -48,6 +50,13 @@ class JobLogWriter:
     must not stop the training, nor the job's way out. A line that has waited
     ``LOCK_WAIT_S`` is given up, and while the log is stuck the next ones give up at
     once, until a write gets through. Only the exit line waits its full bound each time.
+
+    On the way out (``bound_every_write``) no line waits on the disk itself without a
+    bound either: each write runs on a side thread, waited on for ``LOCK_WAIT_S``, so a
+    stalled disk can't keep the job from ending. The training's own lines don't pay for
+    a thread each: before the way out, a write stalled on the disk with the lock free
+    holds the thread that writes it, as it always has, and as that disk would hold the
+    training's own saves.
     """
 
     def __init__(self, output_dir: str) -> None:
@@ -61,6 +70,8 @@ class JobLogWriter:
         self._exit_emitted = False
         self._lock = threading.RLock()
         self._stuck = False
+        self._bounded = False  # on the way out: every write on a side thread, within a bound
+        self._local = threading.local()  # how deep this thread is inside a write
         self.last_error: str | None = None  # what cost the last line lost, for a warning
         # Ensure we close cleanly on process exit
         atexit.register(self.close)
@@ -71,6 +82,14 @@ class JobLogWriter:
     def stuck(self) -> bool:
         """Whether the last line was given up, waiting on a write stuck on the disk."""
         return self._stuck
+
+    def bound_every_write(self) -> None:
+        """From now on no write waits on the disk without a bound, on any thread.
+
+        For the job's way out, where a line costs a thread: the summary, a traceback, the
+        finaliser's warnings, the exit line and the close.
+        """
+        self._bounded = True
 
     def emit(self, msg_type: str, data: Any) -> bool:
         """Write a single structured JSON line, and return whether nothing failed.
@@ -96,21 +115,7 @@ class JobLogWriter:
         except (TypeError, ValueError) as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
             return False
-        if not self._acquire():
-            self.last_error = "the job log is stuck on another write"
-            return False
-        try:
-            if self._file.closed:
-                return True
-            self._file.write(line)
-            self._file.flush()
-        except (OSError, ValueError) as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
-            return False
-        finally:
-            self._lock.release()
-        self._stuck = False
-        return True
+        return bool(self._within_bound(lambda: self._write_line(line)))
 
     def log(self, message: str) -> bool:
         """Shorthand for ``emit("log", message)``."""
@@ -177,19 +182,46 @@ class JobLogWriter:
         payload: dict[str, Any] = {"code": code}
         if error:
             payload["error"] = error
-        # One step: the exit line is the last in the file, whichever thread writes next.
-        # It waits its full bound even on a stuck log: it is what ends the job for the backend.
-        if not self._acquire(LOCK_WAIT_S):
-            return
-        try:
-            self.emit("exit", payload)
-            self.close()
-        finally:
-            self._lock.release()
+        def exit_and_close() -> None:
+            # One step: the exit line is the last in the file, whichever thread writes
+            # next. It waits its full bound even on a stuck log: it is what ends the job
+            # for the backend.
+            if not self._enter(LOCK_WAIT_S):
+                return
+            try:
+                self.emit("exit", payload)
+                self.close()
+            finally:
+                self._leave()
+
+        self._within_bound(exit_and_close)
 
     def close(self) -> None:
         """Flush and close the backing file (idempotent). Left open on a stuck log."""
-        if self._file.closed or not self._acquire():
+        if not self._file.closed:
+            self._within_bound(self._close_file)
+
+    # ── Internals ─────────────────────────────────────────────────────
+
+    def _write_line(self, line: str) -> bool:
+        if not self._enter():
+            self.last_error = "the job log is stuck on another write"
+            return False
+        try:
+            if self._file.closed:
+                return True
+            self._file.write(line)
+            self._file.flush()
+        except (OSError, ValueError) as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+            return False
+        finally:
+            self._leave()
+        self._stuck = False
+        return True
+
+    def _close_file(self) -> None:
+        if not self._enter():
             return
         try:
             if not self._file.closed:
@@ -198,18 +230,49 @@ class JobLogWriter:
         except (OSError, ValueError):
             pass
         finally:
-            self._lock.release()
+            self._leave()
 
-    # ── Internals ─────────────────────────────────────────────────────
+    def _within_bound(self, work: Callable[[], Any]) -> Any:
+        """``work()``. On the way out it runs on a side thread, waited on for a bound.
 
-    def _acquire(self, wait_s: float | None = None) -> bool:
-        """The lock, within a bound. A stuck log is waited on no more, unless told so."""
+        A call from inside a write (logging from a finaliser, or the exit line's own
+        write and close) runs in place: it holds the lock, which a side thread would wait on.
+        """
+        if not self._bounded or getattr(self._local, "depth", 0) > 0:
+            return work()
+        result: list[Any] = []
+        thread = threading.Thread(
+            target=lambda: result.append(work()), name="job-log-write", daemon=True,
+        )
+        try:
+            thread.start()
+        except RuntimeError:
+            self.last_error = "no thread for a write to the job log"
+            return False
+        thread.join(LOCK_WAIT_S)
+        if thread.is_alive():
+            self.last_error = "a write to the job log did not return"
+            self._mark_stuck()
+            return False
+        return result[0] if result else False
+
+    def _enter(self, wait_s: float | None = None) -> bool:
+        """The lock, within a bound, counted for this thread. A stuck log is waited on no
+        more, unless told so."""
         if wait_s is None:
             wait_s = 0.0 if self._stuck else LOCK_WAIT_S
-        if self._lock.acquire(timeout=wait_s):
-            return True
+        if not self._lock.acquire(timeout=wait_s):
+            self._mark_stuck()
+            return False
+        self._local.depth = getattr(self._local, "depth", 0) + 1
+        return True
+
+    def _leave(self) -> None:
+        self._local.depth -= 1
+        self._lock.release()
+
+    def _mark_stuck(self) -> None:
         if not self._stuck:
             self._stuck = True
             # safety-net print: the job log is what is stuck; stderr reaches trainer_stdout.log
             print("WARNING: job log is stuck, going on without it", file=sys.stderr, flush=True)
-        return False

@@ -1472,6 +1472,68 @@ def test_a_stuck_write_bounds_the_exit_line_and_the_close(
         fake.release.set()
 
 
+class _FileThatStallsOn(_FileThatStallsOnAReading):
+    """A disk that stalls on the line holding ``marker``, with no other write going on."""
+
+    def __init__(self, marker: str) -> None:
+        super().__init__()
+        self.marker = marker
+
+    def write(self, text: str) -> None:
+        if self.marker in text:
+            self.in_write.set()
+            self.release.wait(MUST_HAPPEN_S * 4)
+        self.parts.append(text)
+
+
+def _on_the_way_out(writer: JobLogWriter) -> None:
+    # Red before the fix: the writer had no such mode, and every write waited on the disk.
+    getattr(writer, "bound_every_write", lambda: None)()
+
+
+def test_on_the_way_out_a_write_stuck_on_the_disk_holds_the_job_for_a_bound_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(job_log_writer, "LOCK_WAIT_S", 0.3)
+    fake = _FileThatStallsOn("gpu_health_summary")
+    writer = _writer_on(tmp_path, fake)
+    _on_the_way_out(writer)
+    try:
+        started = time.monotonic()
+        # The lock is free: it is the write itself that doesn't return.
+        assert _returns_within(5.0, lambda: writer.log("gpu_health_summary: x")) is False
+        assert writer.stuck is True
+        assert _returns_within(5.0, lambda: writer.log("a traceback line")) is False
+        assert _returns_within(5.0, lambda: writer.exit(1, error="broke")) is None
+        assert _returns_within(5.0, writer.close) is None
+        assert time.monotonic() - started < 2.5
+        assert not any('"exit"' in part for part in fake.parts)
+    finally:
+        fake.release.set()
+
+
+def test_on_the_way_out_lines_land_in_order_and_the_exit_line_last(tmp_path: Path) -> None:
+    writer = JobLogWriter(str(tmp_path))
+    _on_the_way_out(writer)
+    assert writer.log("summary") is True
+    writer.exit(0)
+    writer.log("too late")
+    lines = (tmp_path / "job_log.jsonl").read_text(encoding="utf-8").splitlines()
+    assert [json.loads(line)["type"] for line in lines] == ["log", "exit"]
+
+
+def test_on_the_way_out_a_log_from_inside_a_write_does_not_deadlock(tmp_path: Path) -> None:
+    writer = JobLogWriter(str(tmp_path))
+    atexit.unregister(writer.close)
+    writer._file.close()
+    fake = _FileThatLogsWhileWriting(writer)
+    writer._file = fake
+    _on_the_way_out(writer)
+    assert _returns_within(MUST_HAPPEN_S, lambda: writer.emit("log", "outer")) is True
+    assert len(fake.parts) == 2
+    assert writer.stuck is False
+
+
 def _returns_within(seconds: float, call: Any) -> Any:
     results: queue.Queue = queue.Queue()
     threading.Thread(target=lambda: results.put(call()), daemon=True).start()

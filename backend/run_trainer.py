@@ -306,12 +306,14 @@ def _name_the_gpu_health_card() -> None:
 def _end_gpu_health() -> None:
     """Stop the recorder and write the job's summary, once, whichever way the job ends.
 
-    The summary comes from recorded values, so a dead card or a hung read can't prevent
-    it. A recorder left inside a stuck write holds the writer's lock, and the writer
-    waits on that for a bound only. Stop's own wait is bounded, by its timeout and its
-    WRITE_WAIT_S.
+    It is the first step of every way out, so it is where every write from here on gets
+    its bound: on the disk itself, not only on the writer's lock. The summary comes from
+    recorded values, so a dead card or a hung read can't prevent it. Stop's own wait is
+    bounded, by its timeout and its WRITE_WAIT_S.
     """
     global _gpu_recorder
+    if _log_writer is not None:
+        _log_writer.bound_every_write()
     recorder, _gpu_recorder = _gpu_recorder, None
     if recorder is None:
         return
@@ -330,7 +332,8 @@ def _writable_log():
 
 
 def _write_exit_line(code: int, error: str | None = None) -> None:
-    """The job's last line. Even on a stuck job log, the writer gives it its full bound."""
+    """The job's last line. Even on a stuck job log, the writer gives it its full bound,
+    and on the way out a bound on the disk too."""
     if _log_writer is not None:
         _log_writer.exit(code, error=error)
 

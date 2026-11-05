@@ -144,10 +144,19 @@ def same_measurement(earlier: str, content: str) -> bool:
     """Whether two split files measure the same images the same way.
 
     A changed interval, or a new image in training, keeps the numbers comparable. A
-    different holdout doesn't: an image that trained could now be measured.
+    different holdout doesn't: an image that trained could now be measured. The folder a
+    dataset lies in isn't part of it: a checkpoint can move to a machine where it differs.
     """
-    before, after = json.loads(earlier), json.loads(content)
-    return all(before.get(k) == after.get(k) for k in ("holdout", "representatives", "split_seed", "global_triggerword"))
+
+    def measured(text: str) -> tuple:
+        split = json.loads(text)
+        representatives = [
+            {field: value for field, value in item.items() if field != "path"}
+            for item in split.get("representatives") or []
+        ]
+        return (representatives, *(split.get(k) for k in ("holdout", "split_seed", "global_triggerword")))
+
+    return measured(earlier) == measured(content)
 
 
 def split_holdout(

@@ -1,6 +1,9 @@
 """The held-out split on the real prepare_data: the dataset API faked at the HTTP client."""
 import asyncio
 import json
+import os
+import zipfile
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Annotated
 from unittest.mock import MagicMock
@@ -11,6 +14,12 @@ import pytest
 import torch
 from PIL import Image
 
+from app.engine.components.checkpoints import (
+    MANIFEST_NAME,
+    CheckpointManager,
+    checkpoint_resumable,
+    select_resumable_checkpoint,
+)
 from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.core.pipeline import validation_split
 from app.engine.models.registry import ModelRegistry
@@ -503,3 +512,192 @@ def test_a_resume_with_another_caption_setting_stops_naming_the_split_file(monke
     with pytest.raises(ValueError, match="validation_split.json"):
         resumed._enter_validation_split()
     assert _written_split(tmp_path) == before
+
+
+# ── The split travels with the checkpoint ────────────────────────────────────
+
+
+def _checkpoint_of(t, run_dir, **save):
+    """A real checkpoint folder of ``t``, saved after the run entered its split."""
+    t.checkpoint_manager = CheckpointManager(str(run_dir))
+    t._enter_validation_split()
+    return t.checkpoint_manager.save_checkpoint(step=100, components={}, config=t.config, **save)
+
+
+def _resuming(monkeypatch, datasets, checkpoint, output, **config):
+    """A run resuming ``checkpoint`` into ``output``, which holds nothing yet."""
+    t = _prepare(_pipeline(monkeypatch, datasets, _holdout_config(resume_from_checkpoint=checkpoint, **config)))
+    t.checkpoint_manager = CheckpointManager(str(output))
+    return t
+
+
+def _imported(monkeypatch, checkpoint, root):
+    """``checkpoint`` taken through the real ZIP export and unpacked elsewhere."""
+    from app.api.training import job_routes
+
+    source = Path(checkpoint)
+    monkeypatch.setattr(job_routes, "job_manager", SimpleNamespace(get_job=lambda _job_id: object()))
+    monkeypatch.setattr(job_routes, "_resolve_run_dir", lambda _job: source.parent)
+    response = asyncio.run(job_routes.download_checkpoint_zip("job", source.name))
+    target = root / "imported" / source.name
+    with zipfile.ZipFile(response.path) as archive:
+        archive.extractall(target)
+    os.remove(response.path)
+    return str(target)
+
+
+def _assert_refused(resumed, output):
+    with pytest.raises(ValueError, match="validation_split.json"):
+        resumed._enter_validation_split()
+    assert not (output / "validation_split.json").exists()
+    assert resumed.checkpoint_manager.validation_split_content is None
+    assert len(resumed.inventory) > len(resumed._validation_split.training_items)  # never narrowed
+
+
+def _changed_seed(_root):
+    return lambda datasets: datasets, {"validation_split_seed": 9}
+
+
+def _changed_dataset(root):
+    (root / "later").mkdir()
+    grown = _dataset(root / "later", "ds", 40)
+    return lambda _datasets: {"ds": grown}, {}
+
+
+_CHANGES = pytest.mark.parametrize("change", [_changed_seed, _changed_dataset], ids=["split seed", "dataset"])
+
+
+@_CHANGES
+def test_a_resume_under_another_name_with_a_changed_split_stops(monkeypatch, tmp_path, change):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+    later, config = change(tmp_path)
+    renamed = tmp_path / "renamed"
+
+    _assert_refused(_resuming(monkeypatch, later(datasets), checkpoint, renamed, **config), renamed)
+
+
+@_CHANGES
+def test_an_imported_checkpoint_with_a_changed_split_stops(monkeypatch, tmp_path, change):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+    imported = _imported(monkeypatch, checkpoint, tmp_path)
+    later, config = change(tmp_path)
+    fresh = tmp_path / "fresh"
+
+    _assert_refused(_resuming(monkeypatch, later(datasets), imported, fresh, **config), fresh)
+
+
+def test_a_resume_under_another_name_with_the_same_split_goes_on_and_stays_bound(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+    renamed = tmp_path / "renamed"
+    resumed = _resuming(monkeypatch, datasets, checkpoint, renamed)
+
+    next_checkpoint = _checkpoint_of(resumed, renamed)
+
+    assert len(resumed.inventory) == 17 * 3
+    held = json.loads((Path(checkpoint) / "validation_split.json").read_text(encoding="utf-8"))["holdout"]
+    assert _written_split(renamed)["holdout"] == held
+    assert _written_split(Path(next_checkpoint))["holdout"] == held
+
+
+def test_an_imported_checkpoint_with_the_same_split_goes_on(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+    imported = _imported(monkeypatch, checkpoint, tmp_path)
+    assert checkpoint_resumable(imported) == (True, "")
+    fresh = tmp_path / "fresh"
+    resumed = _resuming(monkeypatch, datasets, imported, fresh)
+
+    resumed._enter_validation_split()
+
+    assert len(resumed.inventory) == 17 * 3
+
+
+def test_the_same_images_in_another_folder_are_the_same_split(monkeypatch, tmp_path):
+    """A checkpoint moves to another machine, where the dataset lies elsewhere."""
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+    imported = _imported(monkeypatch, checkpoint, tmp_path)
+    (tmp_path / "there").mkdir()
+    moved = {"ds": _dataset(tmp_path / "there", "ds", 20)}
+    fresh = tmp_path / "fresh"
+    resumed = _resuming(monkeypatch, moved, imported, fresh)
+
+    resumed._enter_validation_split()
+
+    assert len(resumed.inventory) == 17 * 3
+
+
+def test_another_caption_on_a_held_out_image_is_still_another_split(monkeypatch, tmp_path):
+    """The folder doesn't count; which image is measured, and with what caption, does."""
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+    held = _written_split(Path(checkpoint))["representatives"][0]["key"].split("/", 1)[1]
+    for pair in datasets["ds"]["pairs"]:
+        if pair["media_file"] == held:
+            pair["caption_content"] = "another caption"
+    fresh = tmp_path / "fresh"
+
+    _assert_refused(_resuming(monkeypatch, datasets, checkpoint, fresh), fresh)
+
+
+def test_a_checkpoint_from_before_validation_resumes_as_before(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    off = {"datasets": [{"dataset_name": "ds"}]}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, off)), tmp_path / "first")
+    assert not (Path(checkpoint) / "validation_split.json").exists()
+    fresh = tmp_path / "fresh"
+    resumed = _resuming(monkeypatch, datasets, checkpoint, fresh, validation_split_seed=9)
+
+    resumed._enter_validation_split()
+
+    assert len(resumed.inventory) == 17 * 3
+    assert _written_split(fresh)["split_seed"] == 9
+
+
+def test_validation_off_writes_no_split_into_a_checkpoint(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    off = {"datasets": [{"dataset_name": "ds"}]}
+    run = tmp_path / "first"
+
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, off)), run, is_final=True)
+
+    assert checkpoint_resumable(checkpoint) == (True, "")
+    assert list(run.rglob("validation_split.json")) == []
+
+
+def test_validation_off_resumes_a_bound_checkpoint_and_writes_nothing(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+    off = {"datasets": [{"dataset_name": "ds"}], "resume_from_checkpoint": checkpoint, "validation_split_seed": 9}
+    renamed = tmp_path / "renamed"
+
+    next_checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, off)), renamed)
+
+    assert checkpoint_resumable(next_checkpoint) == (True, "")
+    assert list(renamed.rglob("validation_split.json")) == []
+
+
+def test_every_folder_of_a_final_save_carries_the_split_and_lists_it(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    run = tmp_path / "first"
+    _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), run, is_final=True)
+
+    for folder in (run / "final", run / "checkpoint-000100"):
+        files = json.loads((folder / MANIFEST_NAME).read_text(encoding="utf-8"))["files"]
+        assert files["validation_split.json"] == (folder / "validation_split.json").stat().st_size
+        assert checkpoint_resumable(folder) == (True, "")
+    best, skipped = select_resumable_checkpoint(run)
+    assert best[0] == "final" and skipped == []
+
+
+def test_a_checkpoint_stripped_of_its_split_isnt_resumable(monkeypatch, tmp_path):
+    """Deleting the file can't be the way past the guard."""
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+
+    (Path(checkpoint) / "validation_split.json").unlink()
+
+    assert checkpoint_resumable(checkpoint) == (False, "validation_split.json is missing")

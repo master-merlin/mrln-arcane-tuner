@@ -119,6 +119,11 @@ def refusal_reason(
     return None
 
 
+def _content_digest(path: str) -> str:
+    with open(path, "rb") as image:
+        return hashlib.file_digest(image, "sha256").hexdigest()
+
+
 def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
     """The text of ``validation_split.json``: the split and the settings that made it."""
     representative_fields = ("key", "path", "caption", "prefix", "target_w", "target_h")
@@ -126,7 +131,10 @@ def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
         "holdout": split.holdout_keys,
         "groups": split.groups,
         "representatives": [
-            {field: item.get(field) for field in representative_fields}
+            {
+                **{field: item.get(field) for field in representative_fields},
+                "sha256": _content_digest(item["path"]),
+            }
             for item in split.representatives
         ],
         "split_seed": int(config.get("validation_split_seed", 0)),
@@ -145,7 +153,8 @@ def same_measurement(earlier: str, content: str) -> bool:
 
     A changed interval, or a new image in training, keeps the numbers comparable. A
     different holdout doesn't: an image that trained could now be measured. The folder a
-    dataset lies in isn't part of it: a checkpoint can move to a machine where it differs.
+    dataset lies in isn't part of it, as a checkpoint can move to a machine where it
+    differs; each held-out file's content digest is, so a name can't change its picture.
     """
 
     def measured(text: str) -> tuple:

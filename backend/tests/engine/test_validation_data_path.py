@@ -630,6 +630,27 @@ def test_the_same_images_in_another_folder_are_the_same_split(monkeypatch, tmp_p
     assert len(resumed.inventory) == 17 * 3
 
 
+def test_a_moved_dataset_with_another_picture_under_a_held_out_name_is_another_split(monkeypatch, tmp_path):
+    """Same names and captions, but a picture the checkpoint trained on is now measured."""
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+    split = _written_split(Path(checkpoint))
+    imported = _imported(monkeypatch, checkpoint, tmp_path)
+    (tmp_path / "there").mkdir()
+    moved = {"ds": _dataset(tmp_path / "there", "ds", 20)}
+    folder = Path(moved["ds"]["info"]["path"])
+    held = split["representatives"][0]["key"].split("/", 1)[1]
+    trained = next(p["media_file"] for p in moved["ds"]["pairs"] if f"ds/{p['media_file']}" not in split["holdout"])
+    held_bytes, trained_bytes = (folder / held).read_bytes(), (folder / trained).read_bytes()
+    (folder / held).write_bytes(trained_bytes)
+    (folder / trained).write_bytes(held_bytes)
+    fresh = tmp_path / "fresh"
+    resumed = _resuming(monkeypatch, moved, imported, fresh)
+    assert sorted(resumed._validation_split.holdout_keys) == sorted(split["holdout"])  # only the pictures differ
+
+    _assert_refused(resumed, fresh)
+
+
 def test_another_caption_on_a_held_out_image_is_still_another_split(monkeypatch, tmp_path):
     """The folder doesn't count; which image is measured, and with what caption, does."""
     datasets = {"ds": _dataset(tmp_path, "ds", 20)}

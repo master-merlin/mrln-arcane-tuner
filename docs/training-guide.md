@@ -401,6 +401,13 @@ when it goes and one when it comes back, not one every 10 seconds. These lines
 stay out of the log you see on the Jobs screen. They add about 1.5 MB to the
 file over a 12-hour job.
 
+Each line names its card by the PCI bus id. With one card, that is the card.
+With several, the record is of the card the job trains on: it is known from the
+start when `CUDA_VISIBLE_DEVICES` names the card by its UUID or
+`CUDA_DEVICE_ORDER=PCI_BUS_ID` is set, and otherwise once training begins, as
+CUDA's own order of the cards can't be read from outside. Until then nothing is
+recorded, rather than a reading of another card.
+
 When the job ends, one line of that visible log sums it up:
 
 ```text
@@ -416,6 +423,9 @@ gpu_health_summary: recorded for 2 h 14 min; peak temperature 78 C, lowest margi
 - **The card was unreadable** says when it stopped answering, for how long and
   with what error, and the last good reading above it is what the card looked
   like before that.
+- **Which of the cards this job trains on was not known** means a job on a
+  machine with several cards ended before training began, so nothing was
+  recorded.
 - **Had not returned** means a read of the card, or a write to the log, was still
   hanging when the job ended. The job ended all the same.
 

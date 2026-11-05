@@ -17,6 +17,7 @@ import subprocess
 import sys
 import threading
 import time
+import types
 from pathlib import Path
 from typing import Any
 
@@ -73,6 +74,11 @@ class FakeWriter:
             return self._changed.wait_for(
                 lambda: len(self.lines) >= count, MUST_HAPPEN_S,
             )
+
+    def wait_for_briefly(self, count: int) -> bool:
+        """For a line that must not come: a short wait, which only correct code spends."""
+        with self._changed:
+            return self._changed.wait_for(lambda: len(self.lines) >= count, 0.3)
 
     def temperatures(self) -> list[Any]:
         return [data.get("temperature_c") for _, data in self.lines]
@@ -170,9 +176,12 @@ def finish(recorder: GpuHealthRecorder) -> None:
 
 @pytest.fixture(autouse=True)
 def _card_is_there(monkeypatch: pytest.MonkeyPatch) -> None:
-    # These tests run on machines with no NVML: the readers are fakes.
+    # These tests run on machines with no NVML: the readers are fakes, and so is the one
+    # card that NVML lists, unless a test lists others.
     monkeypatch.setattr(gpu_health, "_NVML_AVAILABLE", True)
     monkeypatch.delenv("CUDA_VISIBLE_DEVICES", raising=False)
+    monkeypatch.delenv("CUDA_DEVICE_ORDER", raising=False)
+    monkeypatch.setitem(sys.modules, "pynvml", _FakeNvml("GPU-0000"))
 
 
 def recorder_threads() -> list[threading.Thread]:
@@ -254,7 +263,9 @@ def test_one_line_at_each_change_of_readable_state() -> None:
 
     assert writer.readable() == [True, False, True, True, False, True]
     assert writer.temperatures() == [1, None, 2, 3, None, 4]
-    assert writer.lines[1] == ("gpu_health", bad("GPU is lost"))
+    assert writer.lines[1] == (
+        "gpu_health", {**bad("GPU is lost"), "pci_bus_id": "00000000:01:00.0"},
+    )
 
 
 def test_a_card_unreadable_from_the_start_writes_one_line() -> None:
@@ -965,26 +976,15 @@ def test_visible_device(value: str | None, expected: Any) -> None:
     assert visible_device(value) == expected
 
 
-@pytest.mark.parametrize(
-    ("value", "index"), [(None, 0), ("0", 0), ("2", 2), ("3,1", 3)],
-)
-def test_the_reader_gets_nvmls_index_for_the_jobs_device(
-    monkeypatch: pytest.MonkeyPatch, value: str | None, index: int,
-) -> None:
-    if value is not None:
-        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", value)
-    reader = ScriptedReader(good())
-    recorder = GpuHealthRecorder(FakeWriter(), reader=reader, interval_s=0.0)
-    recorder.start()
-    finish(recorder)
-    assert set(reader.calls) == {index}
-
-
 class _FakeNvml:
-    """Enough of pynvml to look a card up by the UUID it reports."""
+    """Enough of pynvml to look a card up by its UUID or its place on the PCI bus.
 
-    def __init__(self, *uuids: str) -> None:
+    ``buses`` gives each NVML index its bus number; by default they rise with the index.
+    """
+
+    def __init__(self, *uuids: str, buses: tuple[int, ...] | None = None) -> None:
         self.uuids = uuids
+        self.buses = buses or tuple(range(1, len(uuids) + 1))
         self.threads: list[threading.Thread] = []
 
     def nvmlDeviceGetCount(self) -> int:  # noqa: N802
@@ -996,6 +996,125 @@ class _FakeNvml:
 
     def nvmlDeviceGetUUID(self, handle: int) -> str:  # noqa: N802
         return self.uuids[handle]
+
+    def nvmlDeviceGetPciInfo(self, handle: int) -> Any:  # noqa: N802
+        return types.SimpleNamespace(domain=0, bus=self.buses[handle], device=0)
+
+
+def _cards(monkeypatch: pytest.MonkeyPatch, *uuids: str, **kwargs: Any) -> _FakeNvml:
+    nvml = _FakeNvml(*uuids, **kwargs)
+    monkeypatch.setitem(sys.modules, "pynvml", nvml)
+    return nvml
+
+
+@pytest.mark.parametrize("value", [None, "0"])
+def test_the_one_card_there_is_the_jobs_card(
+    monkeypatch: pytest.MonkeyPatch, value: str | None,
+) -> None:
+    _cards(monkeypatch, "GPU-aaaa", buses=(0x41,))
+    if value is not None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", value)
+    reader = ScriptedReader(good())
+    writer = FakeWriter()
+    recorder = GpuHealthRecorder(writer, reader=reader, interval_s=0.0)
+    recorder.start()
+    finish(recorder)
+    assert set(reader.calls) == {0}
+    assert writer.lines[0][1]["pci_bus_id"] == "00000000:41:00.0"  # which card it was
+
+
+@pytest.mark.parametrize(
+    ("value", "index"), [(None, 2), ("0", 2), ("1", 0), ("2,0", 1)],
+)
+def test_in_pci_bus_order_cudas_ordinal_is_the_cards_place_on_the_bus(
+    monkeypatch: pytest.MonkeyPatch, value: str | None, index: int,
+) -> None:
+    # NVML's own order need not be the bus order: here bus 0x01 is NVML's index 2.
+    _cards(monkeypatch, "GPU-a", "GPU-b", "GPU-c", buses=(0x21, 0x41, 0x01))
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    if value is not None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", value)
+    reader = ScriptedReader(good())
+    recorder = GpuHealthRecorder(FakeWriter(), reader=reader, interval_s=0.0)
+    recorder.start()
+    finish(recorder)
+    assert set(reader.calls) == {index}
+
+
+@pytest.mark.parametrize("value", [None, "0", "1"])
+def test_in_cudas_own_order_of_several_cards_no_card_is_guessed_until_the_trainer_says(
+    monkeypatch: pytest.MonkeyPatch, value: str | None,
+) -> None:
+    # CUDA puts its guess at the fastest card first, and NVML knows nothing of that guess.
+    _cards(monkeypatch, "GPU-a", "GPU-b", buses=(0x01, 0x41))
+    if value is not None:
+        monkeypatch.setenv("CUDA_VISIBLE_DEVICES", value)
+    writer = FakeWriter()
+    reader = ScriptedReader(good(), good())
+    recorder = GpuHealthRecorder(writer, reader=reader, interval_s=0.0)
+    assert recorder.start() is True
+    try:
+        assert not writer.wait_for_briefly(1)
+        assert reader.calls == []
+
+        recorder.bind_device(0, 0x41, 0)  # what torch says of the card it trains on
+        finish(recorder)
+    finally:
+        recorder.stop(timeout=MUST_HAPPEN_S)
+    assert set(reader.calls) == {1}
+    assert len(writer.lines) == 2
+    assert {data["pci_bus_id"] for _, data in writer.lines} == {"00000000:41:00.0"}
+
+
+def test_a_job_whose_card_was_never_named_says_so(monkeypatch: pytest.MonkeyPatch) -> None:
+    _cards(monkeypatch, "GPU-a", "GPU-b")
+    recorder = GpuHealthRecorder(FakeWriter(), reader=ScriptedReader(good()), interval_s=0.0)
+    recorder.start()
+    deadline = time.monotonic() + MUST_HAPPEN_S
+    while not recorder.summary().get("card_not_known") and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert recorder.stop(timeout=MUST_HAPPEN_S) is True
+    line = format_summary(recorder.summary())
+    assert "which of the cards this job trains on was not known" in line
+    assert "no NVML" not in line
+
+
+def test_the_trainers_card_wins_over_one_found_from_the_environment(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cards(monkeypatch, "GPU-a", "GPU-b", buses=(0x01, 0x41))
+    monkeypatch.setenv("CUDA_DEVICE_ORDER", "PCI_BUS_ID")
+    writer = FakeWriter()
+    reader = EndlessReader()
+    recorder = GpuHealthRecorder(writer, reader=reader, interval_s=3600)
+    recorder.start()
+    try:
+        assert writer.wait_for(1)
+        recorder.bind_device(0, 0x41, 0)
+        assert writer.wait_for(2)  # the bind wakes it: no wait for the next interval
+    finally:
+        assert recorder.stop(timeout=MUST_HAPPEN_S) is True
+    assert [data["pci_bus_id"] for _, data in writer.lines[:2]] == [
+        "00000000:01:00.0", "00000000:41:00.0",
+    ]
+
+
+def test_a_bound_card_that_nvml_does_not_have_is_unreadable_and_none_is_guessed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _cards(monkeypatch, "GPU-a", "GPU-b")
+    writer = FakeWriter()
+    calls: list[int] = []
+    recorder = GpuHealthRecorder(writer, reader=calls.append, interval_s=3600)
+    recorder.start()
+    recorder.bind_device(0, 0x99, 0)
+    try:
+        assert writer.wait_for(1)
+    finally:
+        assert recorder.stop(timeout=MUST_HAPPEN_S) is True
+    assert calls == []
+    assert writer.readable() == [False]
+    assert "00000000:99:00.0" in writer.lines[0][1]["error"]
 
 
 @pytest.mark.parametrize(

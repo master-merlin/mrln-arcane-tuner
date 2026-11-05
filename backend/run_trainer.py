@@ -190,6 +190,7 @@ async def run_async_trainer(trainer, log_writer=None):
         await trainer.prepare_for_training()
 
         # ── Train ────────────────────────────────────────────────────
+        _name_the_gpu_health_card()
         _emit_status("Training", log_writer)
         await trainer.train()
 
@@ -280,6 +281,26 @@ def _start_gpu_health() -> None:
     except Exception as exc:
         # safety-net print: the job goes on with no record of the card
         print(f"WARNING: GPU health recorder not started: {exc}", file=sys.stderr, flush=True)
+
+
+def _name_the_gpu_health_card() -> None:
+    """Tell the recorder which card trains, once torch has chosen it. Starts nothing in CUDA.
+
+    CUDA and NVML number the cards each in their own order, and only torch knows which
+    card it took. Its properties of an initialised device are kept on the host.
+    """
+    recorder = _gpu_recorder
+    if recorder is None:
+        return
+    try:
+        import torch
+        if not torch.cuda.is_initialized():
+            return
+        props = torch.cuda.get_device_properties(torch.cuda.current_device())
+        recorder.bind_device(props.pci_domain_id, props.pci_bus_id, props.pci_device_id)
+    except Exception as exc:
+        # safety-net print: the record is to follow the job, never to reach it
+        print(f"WARNING: GPU health card not named: {exc}", file=sys.stderr, flush=True)
 
 
 def _end_gpu_health() -> None:

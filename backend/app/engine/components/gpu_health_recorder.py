@@ -10,8 +10,13 @@ The rules of its locks:
 - ``_gate`` makes "are we stopped?" and the write one step, and ``stop`` passes through
   it. So once ``stop`` has passed, no line can follow, not even from a reading that was
   in flight.
-- ``_values_lock`` guards only the recorded values, so ``summary`` never waits for a
-  write. It is taken inside ``_gate`` and never the other way round.
+- ``_values_lock`` guards only the recorded values and which card is the job's, so
+  ``summary`` never waits for a write. It is taken inside ``_gate`` and never the other
+  way round.
+
+Which card is the job's: CUDA and NVML number the cards each in their own order, so a
+CUDA ordinal is never taken for NVML's index. NVML finds the card by its UUID or its place
+on the PCI bus, and where it can't tell, nothing is read until the trainer names the card.
 """
 
 from __future__ import annotations
@@ -34,14 +39,17 @@ WRITE_WAIT_S = 5.0
 
 _LINE_TYPE = "gpu_health"
 _ENV = "CUDA_VISIBLE_DEVICES"
+_ORDER_ENV = "CUDA_DEVICE_ORDER"
+_NOT_KNOWN = object()  # a reading of no card: which one is the job's isn't known yet
 
 
 def visible_device(value: str | None) -> int | str | None:
-    """The card a job uses, from the value of ``CUDA_VISIBLE_DEVICES``.
+    """The card a job uses, as CUDA names it, from the value of ``CUDA_VISIBLE_DEVICES``.
 
-    A job uses the first visible device. Gives NVML's index, as an int, or a UUID to look
-    up, or None if the job is shown no card. NVML ignores the variable, and CUDA stops at
-    the first entry it can't read, so an entry that isn't a device means no card.
+    A job uses the first visible device. Gives its CUDA ordinal, as an int, which is not
+    NVML's index (see ``_find_card``), or a UUID to look up, or None if the job is shown
+    no card. CUDA stops at the first entry it can't read, so an entry that isn't a device
+    means no card.
     """
     if value is None:
         return 0
@@ -51,22 +59,53 @@ def visible_device(value: str | None) -> int | str | None:
     return int(first) if first.isascii() and first.isdigit() else None
 
 
-def _nvml_index_for_uuid(uuid: str) -> int:
-    """NVML's index of the one whole card whose UUID starts with ``uuid``.
+def _pci_place(pynvml: Any, handle: Any) -> tuple[int, int, int]:
+    info = pynvml.nvmlDeviceGetPciInfo(handle)
+    return (int(info.domain), int(info.bus), int(info.device))
 
-    CUDA takes a prefix of a UUID. A MIG instance is no whole card and has no index here.
-    Raises if it names no single card: a reading of another card would be a false record.
+
+def _bus_id(place: tuple[int, int, int]) -> str:
+    domain, bus, device = place
+    return f"{domain:08X}:{bus:02X}:{device:02X}.0"
+
+
+def _find_card(
+    wanted: int | str | tuple[int, int, int], pci_order: bool,
+) -> tuple[int, str] | None:
+    """NVML's index of the card ``wanted`` names, and its PCI bus id. Makes NVML calls.
+
+    ``wanted`` is a CUDA ordinal, a UUID or the prefix CUDA takes of one, or the place on
+    the PCI bus (domain, bus, device) the trainer named. An ordinal is a place in CUDA's
+    order, which is the PCI bus order with ``CUDA_DEVICE_ORDER=PCI_BUS_ID`` and otherwise
+    CUDA's guess at the fastest card first, which NVML can't know: of several cards in that
+    order, this gives None and no card is guessed. A MIG instance is no whole card and has
+    no index here. Raises if ``wanted`` names no single card: a reading of another card
+    would be a false record.
     """
     import pynvml
 
-    matches = [
-        index
-        for index in range(pynvml.nvmlDeviceGetCount())
-        if pynvml.nvmlDeviceGetUUID(pynvml.nvmlDeviceGetHandleByIndex(index)).startswith(uuid)
-    ]
+    handles = [pynvml.nvmlDeviceGetHandleByIndex(i) for i in range(pynvml.nvmlDeviceGetCount())]
+    if isinstance(wanted, tuple):
+        named = f"the trainer names {_bus_id(wanted)}"
+        matches = [i for i, h in enumerate(handles) if _pci_place(pynvml, h) == wanted]
+    elif isinstance(wanted, str):
+        named = f"{_ENV} names {wanted}"
+        matches = [
+            i for i, h in enumerate(handles) if pynvml.nvmlDeviceGetUUID(h).startswith(wanted)
+        ]
+    elif pci_order:
+        named = f"CUDA device {wanted} in PCI bus order"
+        by_bus = sorted(range(len(handles)), key=lambda i: _pci_place(pynvml, handles[i]))
+        matches = by_bus[wanted:wanted + 1]
+    elif len(handles) > 1:
+        return None
+    else:
+        named = f"CUDA device {wanted}"
+        matches = list(range(len(handles)))[wanted:wanted + 1]
     if len(matches) != 1:
-        raise LookupError(f"{_ENV} names {uuid}: {len(matches)} cards match")
-    return matches[0]
+        raise LookupError(f"{named}: {len(matches)} cards match")
+    index = matches[0]
+    return index, _bus_id(_pci_place(pynvml, handles[index]))
 
 
 def _describe(exc: Exception) -> str:
@@ -138,7 +177,12 @@ def format_summary(summary: dict[str, Any], *, ended: bool = True) -> str:
     """
     last_good = summary["last_good"]
     sentences: list[str] = []
-    if last_good is not None:
+    if last_good is None and summary.get("card_not_known"):
+        sentences.append(
+            "no reading of the card was recorded: which of the cards this job trains on "
+            "was not known.",
+        )
+    elif last_good is not None:
         record = summary.get("record_seconds")
         lasted = "" if record is None else f"recorded for {_duration(record)}; "
         sentences.append(
@@ -224,9 +268,17 @@ class GpuHealthRecorder:
         self._writer = writer
         self._reader = reader
         self._interval_s = interval_s
-        self._device = visible_device(os.environ.get(_ENV))
+        # Which card is the job's, as CUDA or the trainer names it, and NVML's index and bus
+        # id of it once found. Both under ``_values_lock``.
+        self._wanted: int | str | tuple[int, int, int] | None = visible_device(
+            os.environ.get(_ENV),
+        )
+        self._pci_order = os.environ.get(_ORDER_ENV) == "PCI_BUS_ID"
+        self._card: tuple[int, str] | None = None
+        self._card_not_known = False
         self._thread: threading.Thread | None = None
         self._stop_event = threading.Event()
+        self._wake = threading.Event()  # the end of an interval: stopped, or a card named
         self._gate = threading.Lock()
         self._values_lock = threading.Lock()
 
@@ -261,7 +313,7 @@ class GpuHealthRecorder:
             return False
         # Only what is already known. To find out is an NVML call, which can hang, so it
         # is for the thread to do: not on the job's own.
-        if gpu_health.nvml_ruled_out() or self._device is None:
+        if gpu_health.nvml_ruled_out() or self._wanted is None:
             return False
         thread = threading.Thread(target=self._run, name="gpu-health-recorder", daemon=True)
         try:
@@ -281,12 +333,24 @@ class GpuHealthRecorder:
         """
         deadline = time.monotonic() + timeout
         self._stop_event.set()
+        self._wake.set()
         if self._gate.acquire(timeout=WRITE_WAIT_S + max(0.0, timeout)):
             self._gate.release()
         if self._thread is None:
             return True
         self._thread.join(max(0.0, deadline - time.monotonic()))
         return not self._thread.is_alive()
+
+    def bind_device(self, pci_domain: int, pci_bus: int, pci_device: int) -> None:
+        """Name the card the job trains on, by its place on the PCI bus. Makes no NVML call.
+
+        The trainer knows it once torch has chosen the card, and what it names wins over
+        what the environment gave. The next reading is of that card, and comes at once.
+        """
+        with self._values_lock:
+            self._wanted = (int(pci_domain), int(pci_bus), int(pci_device))
+            self._card = None
+        self._wake.set()
 
     def summary(self) -> dict[str, Any]:
         """What was recorded, for the job's summary line. Makes no NVML call.
@@ -317,6 +381,7 @@ class GpuHealthRecorder:
                 "unreadable_at_end": self._readable is False,
                 "last_error": self._last_error,
                 "write_failures": self._write_failures,
+                "card_not_known": self._card_not_known,
             }
 
     # ── The thread ────────────────────────────────────────────────────
@@ -324,21 +389,39 @@ class GpuHealthRecorder:
     def _run(self) -> None:
         while True:
             reading = self._read()
-            if reading is None or not self._take(reading):
+            if reading is None:
                 return
-            if self._stop_event.wait(self._interval_s):
+            if reading is not _NOT_KNOWN and not self._take(reading):
+                return
+            # A card not known yet waits for the trainer to name it, with no NVML call.
+            self._wake.wait(None if reading is _NOT_KNOWN else self._interval_s)
+            self._wake.clear()
+            if self._stop_event.is_set():
                 return
 
-    def _read(self) -> dict[str, Any] | None:
-        """One reading, holding no lock. None means there is no NVML."""
+    def _read(self) -> Any:
+        """One reading, holding no lock, with the bus id of its card.
+
+        None means there is no NVML, and ``_NOT_KNOWN`` that which card is the job's
+        isn't known yet.
+        """
         try:
-            if isinstance(self._device, str):
-                if not gpu_health.nvml_ready():
-                    return None
-                self._device = _nvml_index_for_uuid(self._device)
-            return self._reader(self._device)
+            if not gpu_health.nvml_ready():
+                return None
+            with self._values_lock:
+                wanted, card = self._wanted, self._card
+            if card is None:
+                card = _find_card(wanted, self._pci_order)
+                with self._values_lock:
+                    self._card_not_known = card is None
+                    if card is not None and self._wanted == wanted:  # not named anew
+                        self._card = card
+                if card is None:
+                    return _NOT_KNOWN
+            reading = self._reader(card[0])
         except Exception as exc:
             return {"readable": False, "error": _describe(exc)}
+        return None if reading is None else {**reading, "pci_bus_id": card[1]}
 
     def _take(self, reading: dict[str, Any]) -> bool:
         """Record a reading and write its line, unless stopped. Returns whether to go on."""

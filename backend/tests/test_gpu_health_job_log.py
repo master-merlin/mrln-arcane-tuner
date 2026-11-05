@@ -65,8 +65,24 @@ import torch
 torch.cuda.is_available = lambda: False
 if spec.get("card", True):
     os.environ.pop("CUDA_VISIBLE_DEVICES", None)
+    os.environ.pop("CUDA_DEVICE_ORDER", None)
 else:
     ready.set()
+if spec.get("ready_at_start"):
+    ready.set()
+
+# What torch says of the card it trains on, once CUDA is up: never, unless the spec says.
+torch_bus = spec.get("torch_bus")
+torch.cuda.is_initialized = lambda: torch_bus is not None
+
+
+def properties(index):
+    note("properties_of", index)
+    return types.SimpleNamespace(pci_domain_id=0, pci_bus_id=torch_bus, pci_device_id=0)
+
+
+torch.cuda.get_device_properties = properties
+torch.cuda.current_device = lambda: 0
 
 
 def job_log_text():
@@ -101,7 +117,19 @@ if "readings" in spec:
     readings = list(spec["readings"])
     real_recorder = ghr.GpuHealthRecorder
 
+    # The cards NVML lists, by their bus numbers in NVML's order.
+    buses = spec.get("cards", [0x01])
+    nvml = types.ModuleType("pynvml")
+    nvml.nvmlDeviceGetCount = lambda: len(buses)
+    nvml.nvmlDeviceGetHandleByIndex = lambda index: index
+    nvml.nvmlDeviceGetUUID = lambda handle: f"GPU-{handle}"
+    nvml.nvmlDeviceGetPciInfo = lambda handle: types.SimpleNamespace(
+        domain=0, bus=buses[handle], device=0,
+    )
+    sys.modules["pynvml"] = nvml
+
     def reader(_index):
+        note("read", _index)
         # A stalling disk is to stall on the way out, not while the job still starts up.
         if "stall_s" in spec:
             assert training.wait(60)
@@ -544,6 +572,28 @@ def test_a_write_stuck_for_good_cannot_hold_the_trainers_next_line(run_job, how:
         assert "trained_on" in job.notes
 
 
+# ── Which card it is ────────────────────────────────────────────────────
+
+
+def test_the_trainer_names_its_card_once_torch_has_chosen_it(run_job) -> None:
+    # Two cards, in CUDA's own order: only torch knows which one trains.
+    job = run_job(readings=[good()], cards=[0x01, 0x41], torch_bus=0x41)
+    assert job.code == 0, job.stderr
+    assert [note for note in job.notes if note.startswith("read")] == ["read 1", "read 1"]
+    readings = [entry["data"] for entry in job.entries if entry["type"] == "gpu_health"]
+    assert [data["pci_bus_id"] for data in readings] == ["00000000:41:00.0"]
+    assert "peak temperature 60 C" in job.summary()
+
+
+def test_naming_the_card_starts_nothing_in_cuda(run_job) -> None:
+    # CUDA not up: nothing is asked of torch, and of two cards none is guessed.
+    job = run_job(readings=[good()], cards=[0x01, 0x41], ready_at_start=True)
+    assert job.code == 0, job.stderr
+    assert not [note for note in job.notes if note.startswith(("properties_of", "read"))]
+    assert "gpu_health" not in job.types()
+    assert "no reading" in job.summary()
+
+
 def test_a_disk_that_comes_back_gets_the_summary_and_the_exit_line(run_job) -> None:
     job = run_job(readings=[good()], stall_s=3.0, write_wait_s=0.1, lock_wait_s=30.0)
     assert job.code == 0, job.stderr
@@ -554,8 +604,13 @@ def test_a_disk_that_comes_back_gets_the_summary_and_the_exit_line(run_job) -> N
 
 def test_a_force_stop_keeps_whole_lines_and_can_write_no_summary(tmp_path: Path) -> None:
     code = """
-import sys, threading
+import sys, threading, types
+nvml = types.ModuleType("pynvml")  # one card, so that only the writer is on trial
+nvml.nvmlDeviceGetCount = lambda: 1
+nvml.nvmlDeviceGetHandleByIndex = lambda index: index
+nvml.nvmlDeviceGetPciInfo = lambda _h: types.SimpleNamespace(domain=0, bus=1, device=0)
 from app.core import gpu_health
+sys.modules["pynvml"] = nvml
 from app.engine.components.gpu_health_recorder import GpuHealthRecorder
 from app.engine.components.job_log_writer import JobLogWriter
 gpu_health._NVML_AVAILABLE = True

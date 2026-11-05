@@ -465,7 +465,9 @@ def test_validation_on_leaves_the_random_stream_as_with_it_off(tmp_path):
     on = _MeasuredLoopTrainer(
         tmp_path, steps=5, config={"validation_every_n_steps": 1, "validation_timestep_bands": 2}
     )
-    on._validation_split = _fake_split([{"key": "ds/a.png", "id": "a.png"}])
+    held = tmp_path / "a.png"
+    Image.new("RGB", (16, 16)).save(held)
+    on._validation_split = _fake_split([{"key": "ds/a.png", "id": "a.png", "path": str(held)}])
     _train(on)
 
     assert on.stream == off.stream

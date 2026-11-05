@@ -25,7 +25,7 @@ import pytest
 
 from app.core import gpu_health
 from app.core.gpu_health import read_gpu_health
-from app.engine.components import gpu_health_recorder
+from app.engine.components import gpu_health_recorder, job_log_writer
 from app.engine.components.gpu_health_recorder import (
     INTERVAL_S,
     GpuHealthRecorder,
@@ -1276,6 +1276,93 @@ def test_nothing_can_be_written_between_the_exit_line_and_the_close(
 
     lines = (tmp_path / "job_log.jsonl").read_text(encoding="utf-8").splitlines()
     assert [json.loads(line)["type"] for line in lines] == ["exit"]
+
+
+class _FileThatStallsOnAReading(_FileThatWritesInTwoParts):
+    """A disk that stalls on the recorder's line, until released."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.in_write = threading.Event()
+        self.release = threading.Event()
+
+    def write(self, text: str) -> None:
+        if '"gpu_health"' in text:
+            self.in_write.set()
+            self.release.wait(MUST_HAPPEN_S * 4)
+        self.parts.append(text)
+
+
+def _writer_on(tmp_path: Path, fake: Any) -> JobLogWriter:
+    writer = JobLogWriter(str(tmp_path))
+    atexit.unregister(writer.close)
+    writer._file.close()
+    writer._file = fake
+    return writer
+
+
+def test_a_stuck_write_holds_another_threads_line_for_one_bound_only(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(job_log_writer, "LOCK_WAIT_S", 0.5, raising=False)
+    fake = _FileThatStallsOnAReading()
+    writer = _writer_on(tmp_path, fake)
+    stuck = threading.Thread(
+        target=writer.emit, args=("gpu_health", {"readable": True}), daemon=True,
+    )
+    stuck.start()
+    assert fake.in_write.wait(MUST_HAPPEN_S)
+    try:
+        results: queue.Queue = queue.Queue()
+
+        def training_thread() -> None:
+            started = time.monotonic()
+            written = [writer.step({"step": n}) for n in range(4)] + [writer.log("next")]
+            results.put((written, time.monotonic() - started))
+
+        threading.Thread(target=training_thread, daemon=True).start()
+        # Waiting on the stuck write for good would leave this queue empty.
+        written, seconds = results.get(timeout=10.0)
+        assert written == [False] * 5  # each line lost, and each one says so
+        assert seconds < 1.5  # one bound of 0.5 s, and no more waiting while it is stuck
+    finally:
+        fake.release.set()
+    stuck.join(MUST_HAPPEN_S)
+
+    # The disk is back: the next line gets through, and waits as before.
+    assert writer.log("back") is True
+    assert writer.stuck is False
+    assert '"back"' in fake.parts[-1]
+
+
+def test_a_stuck_write_bounds_the_exit_line_and_the_close(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(job_log_writer, "LOCK_WAIT_S", 0.1, raising=False)
+    fake = _FileThatStallsOnAReading()
+    writer = _writer_on(tmp_path, fake)
+    threading.Thread(
+        target=writer.emit, args=("gpu_health", {"readable": True}), daemon=True,
+    ).start()
+    assert fake.in_write.wait(MUST_HAPPEN_S)
+    try:
+        assert _returns_within(5.0, lambda: writer.exit(0)) is None
+        assert _returns_within(5.0, writer.close) is None
+        assert not any('"exit"' in part for part in fake.parts)
+    finally:
+        fake.release.set()
+
+
+def _returns_within(seconds: float, call: Any) -> Any:
+    results: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: results.put(call()), daemon=True).start()
+    return results.get(timeout=seconds)
+
+
+def test_a_line_is_written_and_says_so(tmp_path: Path) -> None:
+    writer = JobLogWriter(str(tmp_path))
+    assert writer.log("one") is True
+    writer.close()
 
 
 def test_emit_after_close_writes_nothing_and_does_not_raise(tmp_path: Path) -> None:

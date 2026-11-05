@@ -29,7 +29,7 @@ from app.core.gpu_health import read_gpu_health
 
 INTERVAL_S = 10.0
 # How long ``stop`` waits for a write in progress, beyond its own timeout. A write that
-# takes longer means a stuck disk, on which the next line of the job would wait as well.
+# takes longer means a stuck disk, which the writer then waits on for a bound only.
 WRITE_WAIT_S = 5.0
 
 _LINE_TYPE = "gpu_health"

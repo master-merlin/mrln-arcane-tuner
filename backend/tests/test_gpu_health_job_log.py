@@ -116,8 +116,10 @@ if "readings" in spec:
     if "write_wait_s" in spec:
         ghr.WRITE_WAIT_S = spec["write_wait_s"]
 
-if "stuck_wait_s" in spec:
-    run_trainer._STUCK_WRITE_WAIT_S = spec["stuck_wait_s"]
+if "lock_wait_s" in spec:
+    from app.engine.components import job_log_writer as jlw
+
+    jlw.LOCK_WAIT_S = spec["lock_wait_s"]
 
 if "stall_s" in spec:
     from app.engine.components import job_log_writer as jlw
@@ -222,6 +224,10 @@ class Trainer:
             sys.exit(3)
         if how == "rebuild":
             self._rebuild_exit = True
+        if how == "logs":
+            self._log_writer.step({"step": 1})
+            self._log_writer.log("a line after the stall")
+            note("trained_on")
         if how == "soft_stop":
             from app.engine.components.signal_manager import TrainingSignalManager
 
@@ -328,7 +334,7 @@ def run_job(tmp_path: Path):
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=MUST_END_S,
+            timeout=spec.get("must_end_s", MUST_END_S),
             check=False,
         )
         return Job(done, tmp_path)
@@ -506,7 +512,7 @@ def test_a_hanging_nvml_init_holds_up_neither_the_job_nor_its_exit(run_job) -> N
 
 
 def test_a_write_stuck_for_good_cannot_hold_the_process(run_job) -> None:
-    job = run_job(readings=[good()], stall_s=3600, write_wait_s=0.1, stuck_wait_s=0.1)
+    job = run_job(readings=[good()], stall_s=3600, write_wait_s=0.1, lock_wait_s=0.1)
     assert job.code == 0, job.stderr
     assert "job log is stuck" in job.stderr
     # The process ended with no line after the stuck one, and the finaliser wrote nothing.
@@ -516,14 +522,30 @@ def test_a_write_stuck_for_good_cannot_hold_the_process(run_job) -> None:
 
 def test_a_write_stuck_for_good_also_bounds_the_failure_path(run_job) -> None:
     job = run_job(
-        train="raises", readings=[good()], stall_s=3600, write_wait_s=0.1, stuck_wait_s=0.1,
+        train="raises", readings=[good()], stall_s=3600, write_wait_s=0.1, lock_wait_s=0.1,
     )
     assert job.code == 1, job.stderr
     assert "the trainer broke" in job.stderr
 
 
+@pytest.mark.parametrize("how", ["logs", "rebuild"])
+def test_a_write_stuck_for_good_cannot_hold_the_trainers_next_line(run_job, how: str) -> None:
+    # The trainer writes again while the recorder's write is stuck: it waits once, for a
+    # bound, and the job then ends as it would on a stuck log, rather than not at all.
+    job = run_job(
+        train=how, readings=[good()], stall_s=3600, write_wait_s=0.1, lock_wait_s=0.1,
+        must_end_s=60,
+    )
+    assert job.code == 0, job.stderr
+    assert "job log is stuck" in job.stderr
+    assert "exit" not in job.types()
+    assert job.finalizing() == ["finalize summaries 0 exits 0 writer False"]
+    if how == "logs":
+        assert "trained_on" in job.notes
+
+
 def test_a_disk_that_comes_back_gets_the_summary_and_the_exit_line(run_job) -> None:
-    job = run_job(readings=[good()], stall_s=3.0, write_wait_s=0.1, stuck_wait_s=30.0)
+    job = run_job(readings=[good()], stall_s=3.0, write_wait_s=0.1, lock_wait_s=30.0)
     assert job.code == 0, job.stderr
     assert job.types()[-1] == "exit"
     assert job.types().count("gpu_health") == 1

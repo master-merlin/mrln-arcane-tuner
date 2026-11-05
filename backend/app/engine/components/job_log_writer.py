@@ -21,11 +21,15 @@ from __future__ import annotations
 import atexit
 import json
 import os
+import sys
 import threading
 import time
 from typing import Any
 
 LOG_FILENAME = "job_log.jsonl"
+# How long a line waits for another thread's write. One that takes longer is stuck on the
+# disk: the line is given up, and the log is stuck until a write gets through again.
+LOCK_WAIT_S = 5.0
 
 
 class JobLogWriter:
@@ -39,6 +43,11 @@ class JobLogWriter:
     covers the write and nothing else. It is reentrant because logging is bridged
     to this writer, so a finaliser or a warning that logs during a write comes back
     here on the same thread, where a plain lock would hang the job.
+
+    No line waits for another thread's write without a bound: a write stuck on the disk
+    must not stop the training, nor the job's way out. A line that has waited
+    ``LOCK_WAIT_S`` is given up, and while the log is stuck the next ones give up at
+    once, until a write gets through. Only the exit line waits its full bound each time.
     """
 
     def __init__(self, output_dir: str) -> None:
@@ -51,21 +60,31 @@ class JobLogWriter:
         )
         self._exit_emitted = False
         self._lock = threading.RLock()
+        self._stuck = False
         # Ensure we close cleanly on process exit
         atexit.register(self.close)
 
     # ── Public API ────────────────────────────────────────────────────
 
-    def emit(self, msg_type: str, data: Any) -> None:
-        """Write a single structured JSON line.
+    @property
+    def stuck(self) -> bool:
+        """Whether the last line was given up, waiting on a write stuck on the disk."""
+        return self._stuck
+
+    def emit(self, msg_type: str, data: Any) -> bool:
+        """Write a single structured JSON line, and return whether nothing failed.
+
+        Never raises: a log write must not crash the trainer. False means the line is
+        lost, to a disk error or to a write stuck past the bound. A closed writer takes
+        no more lines, as it should, which is no failure.
 
         Args:
             msg_type: One of ``log``, ``status``, ``cache_ready``,
-                      ``warning``, ``step``, ``exit``.
+                      ``warning``, ``step``, ``gpu_health``, ``exit``.
             data: Arbitrary JSON-serialisable payload.
         """
         if self._file.closed:
-            return
+            return True
         entry = {
             "t": time.time(),
             "type": msg_type,
@@ -73,27 +92,37 @@ class JobLogWriter:
         }
         try:
             line = json.dumps(entry, separators=(",", ":"), default=str) + "\n"
-            with self._lock:
-                self._file.write(line)
-                self._file.flush()
+        except (TypeError, ValueError):
+            return False
+        if not self._acquire():
+            return False
+        try:
+            if self._file.closed:
+                return True
+            self._file.write(line)
+            self._file.flush()
         except (OSError, ValueError):
-            pass  # Non-fatal — never crash the trainer for a log write
+            return False
+        finally:
+            self._lock.release()
+        self._stuck = False
+        return True
 
-    def log(self, message: str) -> None:
+    def log(self, message: str) -> bool:
         """Shorthand for ``emit("log", message)``."""
-        self.emit("log", message)
+        return self.emit("log", message)
 
-    def status(self, label: str) -> None:
+    def status(self, label: str) -> bool:
         """Shorthand for ``emit("status", label)``."""
-        self.emit("status", label)
+        return self.emit("status", label)
 
-    def warning(self, message: str) -> None:
+    def warning(self, message: str) -> bool:
         """Shorthand for ``emit("warning", message)``."""
-        self.emit("warning", message)
+        return self.emit("warning", message)
 
-    def step(self, metrics: dict[str, Any]) -> None:
+    def step(self, metrics: dict[str, Any]) -> bool:
         """Shorthand for ``emit("step", metrics)``."""
-        self.emit("step", metrics)
+        return self.emit("step", metrics)
 
     def log_exception(
         self,
@@ -145,16 +174,38 @@ class JobLogWriter:
         if error:
             payload["error"] = error
         # One step: the exit line is the last in the file, whichever thread writes next.
-        with self._lock:
+        # It waits its full bound even on a stuck log: it is what ends the job for the backend.
+        if not self._acquire(LOCK_WAIT_S):
+            return
+        try:
             self.emit("exit", payload)
             self.close()
+        finally:
+            self._lock.release()
 
     def close(self) -> None:
-        """Flush and close the backing file (idempotent)."""
-        with self._lock:
+        """Flush and close the backing file (idempotent). Left open on a stuck log."""
+        if self._file.closed or not self._acquire():
+            return
+        try:
             if not self._file.closed:
-                try:
-                    self._file.flush()
-                    self._file.close()
-                except (OSError, ValueError):
-                    pass
+                self._file.flush()
+                self._file.close()
+        except (OSError, ValueError):
+            pass
+        finally:
+            self._lock.release()
+
+    # ── Internals ─────────────────────────────────────────────────────
+
+    def _acquire(self, wait_s: float | None = None) -> bool:
+        """The lock, within a bound. A stuck log is waited on no more, unless told so."""
+        if wait_s is None:
+            wait_s = 0.0 if self._stuck else LOCK_WAIT_S
+        if self._lock.acquire(timeout=wait_s):
+            return True
+        if not self._stuck:
+            self._stuck = True
+            # safety-net print: the job log is what is stuck; stderr reaches trainer_stdout.log
+            print("WARNING: job log is stuck, going on without it", file=sys.stderr, flush=True)
+        return False

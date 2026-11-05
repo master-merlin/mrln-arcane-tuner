@@ -32,10 +32,8 @@ os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 import sys
 import traceback
 import argparse
-import atexit
 import json
 import asyncio
-import threading
 
 # FORCE UNBUFFERED OUTPUT IMMEDIATELY
 # Keeps stdout working for local debug even though IPC now uses files.
@@ -79,11 +77,6 @@ except Exception:
 
 _log_writer = None  # Module-level reference for the logging handler bridge
 _gpu_recorder = None  # Set while the summary is still to be written
-_job_log_stuck = False  # A write to the job log didn't finish in time: wait on it no more
-
-# How long the way out waits for one job-log write, once the recorder has been left inside
-# a write or a read. A stuck disk then costs this twice, not the job's exit.
-_STUCK_WRITE_WAIT_S = 5.0
 
 
 def _resolve_output_dir(config: dict, definition_id: str) -> str:
@@ -289,37 +282,13 @@ def _start_gpu_health() -> None:
         print(f"WARNING: GPU health recorder not started: {exc}", file=sys.stderr, flush=True)
 
 
-def _write_within_bound(write) -> bool:
-    """Run one job-log write on the side. Returns whether it finished in time."""
-    thread = threading.Thread(target=write, name="job-log-exit-write", daemon=True)
-    try:
-        thread.start()
-    except RuntimeError:
-        return False
-    thread.join(_STUCK_WRITE_WAIT_S)
-    return not thread.is_alive()
-
-
-def _stop_waiting_on_job_log() -> None:
-    """Leave nothing on this way out that waits on the writer's lock with no bound."""
-    global _job_log_stuck
-    _job_log_stuck = True
-    root = logging.getLogger()
-    for handler in list(root.handlers):
-        if isinstance(handler, _LogWriterHandler):
-            root.removeHandler(handler)
-    atexit.unregister(_log_writer.close)
-    # safety-net print: the job log is what is stuck; stderr reaches trainer_stdout.log
-    print("WARNING: job log is stuck, going on without it", file=sys.stderr, flush=True)
-
-
 def _end_gpu_health() -> None:
     """Stop the recorder and write the job's summary, once, whichever way the job ends.
 
     The summary comes from recorded values, so a dead card or a hung read can't prevent
-    it. A recorder that stopped cleanly holds nothing, and the line is written as any
-    other. One that didn't may hold the writer's lock in a stuck write, so then the wait
-    has a bound. Stop's own wait is bounded, by its timeout and its WRITE_WAIT_S.
+    it. A recorder left inside a stuck write holds the writer's lock, and the writer
+    waits on that for a bound only. Stop's own wait is bounded, by its timeout and its
+    WRITE_WAIT_S.
     """
     global _gpu_recorder
     recorder, _gpu_recorder = _gpu_recorder, None
@@ -328,28 +297,20 @@ def _end_gpu_health() -> None:
     try:
         from app.engine.components.gpu_health_recorder import format_summary
         ended = recorder.stop()
-        line = format_summary(recorder.summary(), ended=ended)
-        if ended:
-            _log_writer.log(line)
-        elif not _write_within_bound(lambda: _log_writer.log(line)):
-            _stop_waiting_on_job_log()
+        _log_writer.log(format_summary(recorder.summary(), ended=ended))
     except Exception as exc:
         # safety-net print: the summary is a record, and must not change how a job ends
         print(f"WARNING: GPU health summary not written: {exc}", file=sys.stderr, flush=True)
 
 
 def _writable_log():
-    """The job log, or None when writing to it would only wait."""
-    return None if _job_log_stuck else _log_writer
+    """The job log, or None when it is stuck and a line would only be given up."""
+    return None if _log_writer is None or _log_writer.stuck else _log_writer
 
 
 def _write_exit_line(code: int, error: str | None = None) -> None:
-    """The job's last line. On a stuck job log it gets one more bounded try."""
-    if _log_writer is None:
-        return
-    if _job_log_stuck:
-        _write_within_bound(lambda: _log_writer.exit(code, error=error))
-    else:
+    """The job's last line. Even on a stuck job log, the writer gives it its full bound."""
+    if _log_writer is not None:
         _log_writer.exit(code, error=error)
 
 

@@ -61,6 +61,7 @@ class JobLogWriter:
         self._exit_emitted = False
         self._lock = threading.RLock()
         self._stuck = False
+        self.last_error: str | None = None  # what cost the last line lost, for a warning
         # Ensure we close cleanly on process exit
         atexit.register(self.close)
 
@@ -92,16 +93,19 @@ class JobLogWriter:
         }
         try:
             line = json.dumps(entry, separators=(",", ":"), default=str) + "\n"
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
             return False
         if not self._acquire():
+            self.last_error = "the job log is stuck on another write"
             return False
         try:
             if self._file.closed:
                 return True
             self._file.write(line)
             self._file.flush()
-        except (OSError, ValueError):
+        except (OSError, ValueError) as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
             return False
         finally:
             self._lock.release()

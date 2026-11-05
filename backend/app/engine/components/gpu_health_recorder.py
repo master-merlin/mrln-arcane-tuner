@@ -240,6 +240,8 @@ class GpuHealthRecorder:
         self._thermal_growth = _CounterGrowth()
         self._power_growth = _CounterGrowth()
         self._write_failures = 0
+        # The change to unreadable whose line was lost: the next unreadable reading owes it.
+        self._change_unwritten = False
         self._clock = time.monotonic
         self._first_reading_at: float | None = None
         self._last_reading_at: float | None = None
@@ -343,8 +345,9 @@ class GpuHealthRecorder:
         with self._gate:
             if self._stop_event.is_set():
                 return False
-            if self._record(reading):
-                self._write(reading)
+            if self._record(reading) or self._change_unwritten:
+                written = self._write(reading)
+                self._change_unwritten = not written and reading.get("readable") is not True
         return True
 
     def _record(self, reading: dict[str, Any]) -> bool:
@@ -376,19 +379,20 @@ class GpuHealthRecorder:
             self._power_growth.add(reading.get("power_throttle_ms"))
             return True
 
-    def _write(self, reading: dict[str, Any]) -> None:
-        """Costs the line on failure and nothing more: the values are already recorded."""
+    def _write(self, reading: dict[str, Any]) -> bool:
+        """Whether the line was written. A failure costs the line and nothing more: the
+        values are already recorded. The writer says so by returning False, or raises."""
         try:
-            self._writer.emit(_LINE_TYPE, reading)
+            if self._writer.emit(_LINE_TYPE, reading) is not False:
+                return True
+            error = getattr(self._writer, "last_error", None) or "the job log refused it"
         except Exception as exc:
-            with self._values_lock:
-                self._write_failures += 1
-                first_failure = self._write_failures == 1
-            if first_failure:
-                # safety-net print: the job log is what just failed, and logging would
-                # route back into it; stderr reaches trainer_stdout.log.
-                print(
-                    f"WARNING: gpu_health line not written: {_describe(exc)}",
-                    file=sys.stderr,
-                    flush=True,
-                )
+            error = _describe(exc)
+        with self._values_lock:
+            self._write_failures += 1
+            first_failure = self._write_failures == 1
+        if first_failure:
+            # safety-net print: the job log is what just failed, and logging would
+            # route back into it; stderr reaches trainer_stdout.log.
+            print(f"WARNING: gpu_health line not written: {error}", file=sys.stderr, flush=True)
+        return False

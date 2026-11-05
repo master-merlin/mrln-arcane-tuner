@@ -1370,3 +1370,57 @@ def test_emit_after_close_writes_nothing_and_does_not_raise(tmp_path: Path) -> N
     writer.close()
     writer.emit("log", "late")
     assert (tmp_path / "job_log.jsonl").read_text(encoding="utf-8") == ""
+
+
+# ── A disk error, through the real writer ───────────────────────────────
+
+
+class _FileThatFailsOn(_FileThatWritesInTwoParts):
+    """A disk that is full for the writes it is told, and fine for the rest."""
+
+    def __init__(self, *failing: int) -> None:
+        super().__init__()
+        self.failing = set(failing)
+        self.writes = 0
+
+    def write(self, text: str) -> None:
+        self.writes += 1
+        if self.writes in self.failing:
+            raise OSError(28, "No space left on device")
+        self.parts.append(text)
+
+    def lines(self) -> list[dict[str, Any]]:
+        return [json.loads(part)["data"] for part in self.parts]
+
+
+def test_a_disk_error_in_the_real_writer_is_counted_and_told_once(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    fake = _FileThatFailsOn(1, 2)
+    writer = _writer_on(tmp_path, fake)
+    reader = ScriptedReader(
+        good(temperature_c=90), good(temperature_c=50), good(temperature_c=51),
+    )
+    recorder = GpuHealthRecorder(writer, reader=reader, interval_s=0.0)
+    recorder.start()
+    finish(recorder)
+
+    assert [line["temperature_c"] for line in fake.lines()] == [51]
+    summary = recorder.summary()
+    assert summary["peak_temperature_c"] == 90  # recorded all the same
+    assert summary["write_failures"] == 2
+    assert capsys.readouterr().err.count("No space left on device") == 1
+
+
+def test_a_lost_change_to_unreadable_is_written_at_the_next_reading(tmp_path: Path) -> None:
+    fake = _FileThatFailsOn(2)  # the line saying the card went
+    writer = _writer_on(tmp_path, fake)
+    reader = ScriptedReader(good(), bad("lost once"), bad("lost twice"), bad("lost thrice"))
+    recorder = GpuHealthRecorder(writer, reader=reader, interval_s=0.0)
+    recorder.start()
+    finish(recorder)
+
+    # The change is on record once the disk takes it, and only once.
+    assert [line["readable"] for line in fake.lines()] == [True, False]
+    assert fake.lines()[1]["error"] == "lost twice"
+    assert recorder.summary()["write_failures"] == 1

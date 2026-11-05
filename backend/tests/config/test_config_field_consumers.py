@@ -232,6 +232,13 @@ UNIVERSAL_FIELDS = frozenset(
         "sample_skip_first_n_steps",
         "sample_prompts",
         "sampling_min_free_vram_fraction",
+        # a family without a measurable clock refuses these by name at the start of the run
+        "validation_enabled",
+        "validation_holdout_fraction",
+        "validation_split_seed",
+        "validation_dataset",
+        "validation_every_n_steps",
+        "validation_timestep_bands",
     }
 )
 

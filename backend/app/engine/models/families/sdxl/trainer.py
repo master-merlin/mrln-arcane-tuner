@@ -29,6 +29,10 @@ logger = structlog.get_logger(__name__)
 class SDXLTrainer(GenericTrainingPipeline):
     """SDXL (1.0 / Turbo) LoRA trainer."""
 
+    # add_noise scales the latents and the noise separately, so no one number is its
+    # noise fraction.
+    validation_timestep_domain = None
+
     # ── Setup ────────────────────────────────────────────────────────────
 
     def _setup_family(self) -> None:

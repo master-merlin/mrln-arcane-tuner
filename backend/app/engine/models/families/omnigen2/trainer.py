@@ -89,6 +89,7 @@ class OmniGen2Trainer(GenericTrainingPipeline):
     """
 
     timesteps_count_clean_fraction = True
+    validation_timestep_domain = (0.0, 1.0)
 
     # ── Setup ────────────────────────────────────────────────────────────
 

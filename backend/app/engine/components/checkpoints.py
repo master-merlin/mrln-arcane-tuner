@@ -232,6 +232,7 @@ def resolve_lora_name(config: dict[str, Any]) -> str:
 MANIFEST_NAME = "checkpoint_manifest.json"
 MANIFEST_FORMAT = 2
 RNG_STATE_NAME = "rng_state.pt"
+VALIDATION_SPLIT_NAME = "validation_split.json"
 STAGING_MARK = ".staging-"
 REPLACED_MARK = ".replaced-"
 _RESUMABLE_NAME_RE = re.compile(r"^(final|checkpoint-\d{3,})$")
@@ -453,6 +454,14 @@ def _atomic_write_json(path: str, data: Any, **dump_kwargs: Any) -> None:
     _atomic_write_bytes_file(path, _w)
 
 
+def _atomic_write_text(path: str, text: str) -> None:
+    def _w(tmp: str) -> None:
+        with open(tmp, "w", encoding="utf-8") as f:
+            f.write(text)
+
+    _atomic_write_bytes_file(path, _w)
+
+
 def _fsync_tree(root: str) -> None:
     """Flush every file under ``root`` to disk (adapters, safetensors, ...)."""
     for dirpath, _dirs, files in os.walk(root):
@@ -654,6 +663,10 @@ class CheckpointManager:
         # identical JSON entries for a high-rank 14B LoRA. Only the first
         # save (recorded at least once) and the final save need it.
         self._weight_shapes_written = False
+        # The text of the run's held-out split, None with validation off. On the
+        # manager, so no save path can publish a folder without it: a checkpoint
+        # moves without its run folder, and the split must move with the weights.
+        self.validation_split_content: str | None = None
 
     # ── Save ─────────────────────────────────────────────────────────
 
@@ -1145,6 +1158,13 @@ class CheckpointManager:
             manifest[RNG_STATE_NAME] = os.path.getsize(rng_path)
         except Exception as e:  # noqa: BLE001 - logged, the save goes on
             logger.error("failed_to_save_rng_state", error=str(e))
+
+        # 6c. The held-out split. Fatal when it fails: a folder without it could
+        # be resumed on another split with nothing to say so.
+        if self.validation_split_content is not None:
+            split_path = os.path.join(path, VALIDATION_SPLIT_NAME)
+            _atomic_write_text(split_path, self.validation_split_content)
+            manifest[VALIDATION_SPLIT_NAME] = os.path.getsize(split_path)
 
         # 7. Metadata — use atomic write to handle locked files on resume
         state = {

@@ -311,6 +311,71 @@ class PipelineTrainMixin:
         by_param = {id(p): e for p, e in zip(reached, estimate)}
         return [by_param.get(id(p)) for p in params]
 
+    def _enter_validation_split(self) -> None:
+        """Narrow the inventory to the training items and record the split."""
+        split = getattr(self, "_validation_split", None)
+        if split is None:
+            return
+        from app.engine.components.checkpoints import VALIDATION_SPLIT_NAME
+        from app.engine.core.pipeline.validation_split import (
+            same_measurement,
+            split_file_content,
+        )
+
+        content = split_file_content(split, self.config)
+        # The weights' own record, wherever the run now writes. No file: an older
+        # checkpoint, or one from a job without validation. isfile would call a
+        # locked file absent, and let the run past.
+        resumed_from = self.config.get("resume_from_checkpoint")
+        if resumed_from:
+            source = os.path.join(resumed_from, VALIDATION_SPLIT_NAME)
+            try:
+                with open(source, encoding="utf-8") as saved:
+                    measured = same_measurement(saved.read(), content)
+            except FileNotFoundError:
+                measured = True
+            if not measured:
+                raise ValueError(
+                    f"{source} records another split than this run's, on which the "
+                    "checkpoint's weights were trained, so the numbers couldn't be "
+                    "compared and images that trained could be measured. Restore the "
+                    "dataset and the split seed, or start without this checkpoint."
+                )
+
+        output_dir = self.checkpoint_manager.output_dir
+        os.makedirs(output_dir, exist_ok=True)
+        path = os.path.join(output_dir, VALIDATION_SPLIT_NAME)
+        if os.path.isfile(path):
+            with open(path, encoding="utf-8") as existing:
+                if not same_measurement(existing.read(), content):
+                    raise ValueError(
+                        f"{path} records another split, and its numbers couldn't be "
+                        "compared with this run's. Restore the dataset and the split "
+                        "seed, or train under another LoRA name."
+                    )
+        with open(path, "w", encoding="utf-8") as written:
+            written.write(content)
+        self.checkpoint_manager.validation_split_content = content
+        self.inventory = list(split.training_items)
+
+    def _maybe_validate(self, step: int, max_steps: int) -> None:
+        """Run the held-out pass when one is due; its time isn't step time."""
+        split = getattr(self, "_validation_split", None)
+        if split is None:
+            return
+        from app.engine.core.pipeline import validation_pass
+
+        every = int(self.config.get("validation_every_n_steps", 500))
+        if not validation_pass.is_due(step, every, max_steps):
+            return
+        self._emit_status("Validating")
+        self.logger_component.pause_step_timer()
+        try:
+            validation_pass.run_validation_pass(self, split, step)
+        finally:
+            self.logger_component.resume_step_timer()
+            self._emit_status("Training")
+
     def _iter_training_batches(self, batch_size: int):
         """Infinite bucket-aware batch iterator for the training loop.
 
@@ -414,6 +479,7 @@ class PipelineTrainMixin:
         max_steps = int(self.config.get("max_train_steps", 1000))
         self.max_train_steps = max_steps
         batch_size = int(self.config.get("train_batch_size", 1))
+        self._enter_validation_split()
 
         # Sigma distribution tracker — accumulates timestep histogram for diagnostics.
         try:
@@ -946,6 +1012,10 @@ class PipelineTrainMixin:
                 text_emb,
                 batch,
             )
+
+            # 7a. Held-out validation (no-op unless enabled): after the step's
+            # tensors are gone, and before a save of this step.
+            self._maybe_validate(step, max_steps)
 
             # 7b. Adaptive rebuild exit (spec §5). The active set has shrunk
             # enough to be worth restarting over: save a full resumable

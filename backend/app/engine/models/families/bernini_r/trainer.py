@@ -99,6 +99,9 @@ class BerniniRTrainer(
 
     DEFERRED_EXPERT_LOG_EVENT = "bernini_r_deferred_low_expert_materialized"
 
+    # Two experts, each for its own part of the noise range.
+    validation_timestep_domain = None
+
     # ── Timestep-sampling constants (upstream ``bernini/training/data.py``) ──
     # SD3 mode weighting scale. Recon §4 leaves ``mode_scale`` symbolic in the
     # quoted formula; the SD3 convention (and the BR3 brief) pin it at 1.29.

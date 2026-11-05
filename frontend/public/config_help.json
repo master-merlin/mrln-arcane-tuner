@@ -279,6 +279,30 @@
         "tip": "Adds a global brightness shift to training noise for better dynamic range. Not offered for HiDream-O1; refused by MiniMax-H3. Placeholder: {noise_offset}",
         "detail": "Standard diffusion training struggles to generate very dark or very bright images because the noise distribution is zero-centered. Noise offset adds a small random shift to the noise, teaching the model about global brightness.\n\n- **0.0**: Disabled (default)\n- **0.05–0.1**: Recommended range. Noticeably improves dark/light scene generation.\n- **0.15+**: Can cause color shifting artifacts.\n\n**Recommendation:** `0.05` is a safe starting point for most training.\n\n**Exceptions:** HiDream-O1 does not offer this field (it draws its own patch-space noise), and MiniMax-H3 refuses a non-zero value with an error."
     },
+    "validation_enabled": {
+        "tip": "Measures a loss on images training never sees, to compare settings. Off by default. Placeholder: {validation_enabled}",
+        "detail": "For experiments, not for the LoRA you keep: held-out images don't train, so retrain the best settings on all images afterwards.\n\nEach pass runs one forward pass per held-out image and noise band, and writes `validation_metrics.jsonl` in the output folder.\n\nStandard image datasets only: video, audio and paired-edit datasets, adaptive targeting's rebuild action, and the SDXL, HiDream-O1, WAN 2.2 and Bernini-R families stop the job with the reason."
+    },
+    "validation_holdout_fraction": {
+        "tip": "Share of the source images to hold out. Placeholder: {validation_holdout_fraction}",
+        "detail": "Counted over source images, so repeats and buckets don't change it. Near-identical images stay on the same side, so slightly more than this share can be held out.\n\nA few images show clear differences and overfitting, not small ones. Ignored when a validation dataset is named."
+    },
+    "validation_split_seed": {
+        "tip": "Seed of the split, independent of the training seed. Placeholder: {validation_split_seed}",
+        "detail": "Keep it the same across the runs you compare, so they all see the same held-out images. The noise of each pass also comes from this seed."
+    },
+    "validation_dataset": {
+        "tip": "A dataset to validate on instead of holding out images. Placeholder: {validation_dataset}",
+        "detail": "Training then keeps every image of its datasets. A file in both stops the job, naming the file."
+    },
+    "validation_every_n_steps": {
+        "tip": "Steps between validation passes. Placeholder: {validation_every_n_steps}",
+        "detail": "A pass also runs at step 0 and at the last step. Passes add to the run's time: 8 images and 8 bands are 64 forward passes each."
+    },
+    "validation_timestep_bands": {
+        "tip": "Noise bands per image. Placeholder: {validation_timestep_bands}",
+        "detail": "The noise range is cut into bands of equal width, and each image is measured at each band's centre. The result is one loss per band, their mean and the worst band.\n\nCompare runs by their numbers per band: a change can help at one noise level and hurt at another."
+    },
     "min_snr_gamma": {
         "tip": "Reduces the contribution of 'easy' (low-noise) timesteps to the loss. SDXL only; hidden for every other family. Placeholder: {min_snr_gamma}",
         "detail": "Min-SNR (Signal-to-Noise Ratio) Gamma weighting rebalances the training loss so that easy timesteps (where the model already performs well) contribute less.\n\nThe formula: `weight = min(SNR, gamma) / SNR`\n\n- **5.0**: Default from the paper. Good balance.\n- **1.0**: Aggressive reweighting — heavily downweights easy timesteps.\n- **20.0**: Mild reweighting — close to uniform.\n\n**Applies to SDXL only.** No other family applies this weighting, so the field is hidden for them and the LoRA file records `ss_min_snr_gamma` only for SDXL.\n\n**When to use:** SDXL epsilon-prediction training. Can improve detail quality."

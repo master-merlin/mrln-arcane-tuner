@@ -301,6 +301,54 @@ halfway through a run. On a small image the last step's mean weight is about 2%
 lower. The loss of such a run reads a little differently from an earlier version's
 for that reason alone.
 
+### Held-out validation
+
+To compare training settings, turn on `validation_enabled` under **Advanced
+Engine**. A share of your images then stays out of training, and at regular
+steps the run measures its loss on them, on images the LoRA never saw. It's off
+by default, and with it off a run trains on every image exactly as before.
+
+Use it for experiments. The held-out images don't train, so once you've found
+the settings you like, retrain them on all your images: that's the LoRA to keep.
+
+**How the split works.** The split is by source image: all repeats, buckets and
+captions of a file stay together, and near-identical images stay on the same
+side, so a held-out photo can't have a near-copy in training. The split depends
+only on your files and `validation_split_seed`, so runs you compare see the same
+held-out images, whatever their training seed. To keep every image in training,
+name a separate dataset in `validation_dataset` instead.
+
+If a run's output folder records a different split, for example after you changed
+the split seed, the dataset, the trigger word, a caption prefix or a held-out
+image's caption, the job stops rather than mix numbers that can't be compared.
+Restore them, or train under another LoRA name.
+
+**Reading the numbers.** Each pass measures every held-out image at the centre
+of each noise band, with the same noise every time and without the run's loss
+weighting, so numbers from different steps and different runs can be compared.
+It measures the weights a sample would use: the EMA weights with EMA on, and a
+schedule-free optimizer's evaluation weights. Each image keeps the caption it had
+when the job started.
+The output folder gets two files:
+
+- `validation_split.json`: which images were held out, and the settings that
+  chose them.
+- `validation_metrics.jsonl`: one line per pass, with the loss per band, their
+  mean, the worst band and the seconds the pass took.
+
+Compare runs band by band, since a change can help at one noise level and hurt
+at another. A loss that rises while the training loss keeps falling points to
+overfitting. A few images show clear differences, not small ones.
+
+**What it costs.** A pass is `images × bands` forward passes: 8 images and 8
+bands are 64 per pass. Each runs at step 0, every `validation_every_n_steps` and
+at the last step.
+
+**What it doesn't take.** Validation works on standard image datasets. Video,
+audio and paired-edit datasets, adaptive targeting's rebuild action, and the
+SDXL, HiDream-O1, WAN 2.2 and Bernini-R families stop the job at the start, with
+the reason.
+
 ## Read the estimate before you start
 
 The **Estimate** card at the top of the right rail (the same one Quick Train
@@ -514,6 +562,12 @@ this list.
 - **Noise Offset** (`noise_offset`) — Adds a global brightness shift to training noise for better dynamic range. Not offered for HiDream-O1; refused by MiniMax-H3. Placeholder: {noise_offset} *(schema: Noise offset for dynamic range (not offered for HiDream-O1; refused by MiniMax-H3))*. Default `0.0` (range 0.0 to 0.2, step 0.005).
 - **Offload To Cpu** (`offload_to_cpu`) — Move inactive model components to CPU RAM to free GPU VRAM. Placeholder: {offload_to_cpu} *(schema: Offload model blocks to CPU to save VRAM)*. Default `False`.
 - **Unload Text Encoder** (`unload_text_encoder`) — Remove the text encoder from GPU after embeddings are cached. Placeholder: {unload_text_encoder} *(schema: Delete text encoders after caching (max VRAM savings, disables live prompt encoding for sampling))*. Default `False`.
+- **Validation Dataset** (`validation_dataset`) — A dataset to validate on instead of holding out images. Placeholder: {validation_dataset} *(schema: A dataset to validate on instead of holding out images; training then keeps every image)*. Default `""` (empty).
+- **Validation Enabled** (`validation_enabled`) — Measures a loss on images training never sees, to compare settings. Off by default. Placeholder: {validation_enabled} *(schema: Measure a held-out loss during the run, for comparing training settings (images are held out of training))*. Default `False`.
+- **Validation Every N Steps** (`validation_every_n_steps`) — Steps between validation passes. Placeholder: {validation_every_n_steps}. Default `500` (min 1).
+- **Validation Holdout Fraction** (`validation_holdout_fraction`) — Share of the source images to hold out. Placeholder: {validation_holdout_fraction} *(schema: Share of the source images to hold out, unless a validation dataset is named)*. Default `0.15` (range 0.05 to 0.5, step 0.01).
+- **Validation Split Seed** (`validation_split_seed`) — Seed of the split, independent of the training seed. Placeholder: {validation_split_seed} *(schema: Seed of the split; independent of the training seed)*. Default `0` (min 0).
+- **Validation Timestep Bands** (`validation_timestep_bands`) — Noise bands per image. Placeholder: {validation_timestep_bands} *(schema: Noise bands per image; a pass runs images × bands forward passes)*. Default `8` (range 2 to 32).
 - **Vram Safe Bucket Order** (`vram_safe_bucket_order`) — From the schema: Feed the largest aspect-ratio bucket first each epoch so the CUDA allocator reserves its peak segment up front; smaller buckets then reuse it. Eliminates the order-dependent fragmentation that makes reserved VRAM vary run-to-run and spill past the card. Order stays shuffled within each bucket. Disable for fully-random bucket order. Default `True`.
 <!-- schema-explainers:ENGINE end -->
 

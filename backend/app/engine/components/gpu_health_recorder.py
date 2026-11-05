@@ -23,7 +23,6 @@ from __future__ import annotations
 
 import copy
 import os
-import sys
 import threading
 import time
 from collections.abc import Callable
@@ -31,6 +30,7 @@ from typing import Any
 
 from app.core import gpu_health
 from app.core.gpu_health import read_gpu_health
+from app.engine.components.job_log_writer import note
 
 INTERVAL_S = 10.0
 # How long ``stop`` waits for a write in progress, beyond its own timeout. A write that
@@ -475,7 +475,8 @@ class GpuHealthRecorder:
             self._write_failures += 1
             first_failure = self._write_failures == 1
         if first_failure:
-            # safety-net print: the job log is what just failed, and logging would
-            # route back into it; stderr reaches trainer_stdout.log.
-            print(f"WARNING: gpu_health line not written: {error}", file=sys.stderr, flush=True)
+            # The job log is what just failed, and logging would route back into it;
+            # stderr reaches trainer_stdout.log. Best-effort: this runs inside the gate
+            # that stop waits on.
+            note(f"WARNING: gpu_health line not written: {error}")
         return False

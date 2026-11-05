@@ -205,9 +205,10 @@ async def run_async_trainer(trainer, log_writer=None):
                     "the backend relaunches this job from the checkpoint"
                 )
     except Exception as e:
-        # safety-net print: fallback, async-trainer wrapper exception; _log_writer may not exist
-        print(f"CRITICAL: Async Trainer Exception: {str(e)}", file=sys.stderr)
-        traceback.print_exc()
+        # The training is over: from here on this is the way out.
+        _begin_way_out()
+        _note(f"CRITICAL: Async Trainer Exception: {str(e)}")
+        _note(traceback.format_exc().rstrip())
         raise e
 
 
@@ -270,6 +271,35 @@ def _finalize_before_exit(log_writer=None) -> None:
         pass
 
 
+def _note(text: str) -> None:
+    """One line to stderr that never holds the job without a bound. Never raises."""
+    try:
+        from app.engine.components.job_log_writer import note
+        note(text)
+    except Exception:
+        pass
+
+
+def _begin_way_out() -> None:
+    """From here on, no write of ours on the way out waits without a bound. Idempotent.
+
+    The job log's writes get their bound on the disk itself, and so does the console
+    handler that our log lines also reach on stdout, which a job sends to
+    trainer_stdout.log on the same disk. Our own stderr lines go through ``_note``.
+    """
+    try:
+        if _log_writer is not None:
+            _log_writer.bound_every_write()
+        from app.engine.components.job_log_writer import BestEffortStream
+        for handler in logging.getLogger().handlers:
+            stream = getattr(handler, "stream", None)
+            if isinstance(handler, logging.StreamHandler) and stream in (sys.stdout, sys.stderr):
+                # Assigned, not setStream: that flushes the old stream, and could wait on it.
+                handler.stream = BestEffortStream.of(stream)
+    except Exception:
+        pass  # the way out goes on, as it did before
+
+
 def _start_gpu_health() -> None:
     """Record the card beside this job. Nothing of it may reach the job."""
     global _gpu_recorder
@@ -279,8 +309,7 @@ def _start_gpu_health() -> None:
         recorder.start()
         _gpu_recorder = recorder
     except Exception as exc:
-        # safety-net print: the job goes on with no record of the card
-        print(f"WARNING: GPU health recorder not started: {exc}", file=sys.stderr, flush=True)
+        _note(f"WARNING: GPU health recorder not started: {exc}")  # the job goes on
 
 
 def _name_the_gpu_health_card() -> None:
@@ -299,21 +328,19 @@ def _name_the_gpu_health_card() -> None:
         props = torch.cuda.get_device_properties(torch.cuda.current_device())
         recorder.bind_device(props.pci_domain_id, props.pci_bus_id, props.pci_device_id)
     except Exception as exc:
-        # safety-net print: the record is to follow the job, never to reach it
-        print(f"WARNING: GPU health card not named: {exc}", file=sys.stderr, flush=True)
+        _note(f"WARNING: GPU health card not named: {exc}")  # never to reach the job
 
 
 def _end_gpu_health() -> None:
     """Stop the recorder and write the job's summary, once, whichever way the job ends.
 
-    It is the first step of every way out, so it is where every write from here on gets
-    its bound: on the disk itself, not only on the writer's lock. The summary comes from
-    recorded values, so a dead card or a hung read can't prevent it. Stop's own wait is
-    bounded, by its timeout and its WRITE_WAIT_S.
+    It is the first step of every way out, so it is where every write of ours from here
+    on gets its bound (``_begin_way_out``). The summary comes from recorded values, so a
+    dead card or a hung read can't prevent it. Stop's own wait is bounded, by its timeout
+    and its WRITE_WAIT_S, and stop and summary write nothing.
     """
     global _gpu_recorder
-    if _log_writer is not None:
-        _log_writer.bound_every_write()
+    _begin_way_out()
     recorder, _gpu_recorder = _gpu_recorder, None
     if recorder is None:
         return
@@ -322,8 +349,7 @@ def _end_gpu_health() -> None:
         ended = recorder.stop()
         _log_writer.log(format_summary(recorder.summary(), ended=ended))
     except Exception as exc:
-        # safety-net print: the summary is a record, and must not change how a job ends
-        print(f"WARNING: GPU health summary not written: {exc}", file=sys.stderr, flush=True)
+        _note(f"WARNING: GPU health summary not written: {exc}")  # a record, not the job
 
 
 def _writable_log():
@@ -413,9 +439,11 @@ def main():
         sys.exit(0)
 
     except Exception as e:
-        # safety-net print: fallback, outermost exception handler; _log_writer may not exist
-        print("CRITICAL: Unhandled exception in main execution block.", file=sys.stderr)
-        traceback.print_exc()
+        # The way out begins: stderr reaches trainer_stdout.log on the job's own disk, so
+        # these lines too have a bound. _log_writer may not exist.
+        _begin_way_out()
+        _note("CRITICAL: Unhandled exception in main execution block.")
+        _note(traceback.format_exc().rstrip())
         # Bridge the FULL traceback into the job log so it surfaces in the UI.
         # The trainer is a detached subprocess: traceback.print_exc() above only
         # reaches trainer_stdout.log on disk, while the UI tails job_log.jsonl —

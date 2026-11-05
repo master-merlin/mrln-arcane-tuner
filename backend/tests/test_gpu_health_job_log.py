@@ -149,6 +149,37 @@ if "lock_wait_s" in spec:
 
     jlw.LOCK_WAIT_S = spec["lock_wait_s"]
 
+if "note_wait_s" in spec:
+    from app.engine.components import job_log_writer as jlw
+
+    jlw.NOTE_WAIT_S = spec["note_wait_s"]
+
+# stdout and stderr, which a job sends to trainer_stdout.log, stall once this is set.
+streams_stall = threading.Event()
+if spec.get("streams_stall"):
+    import logging
+
+    class StallingStream:
+        def __init__(self, inner):
+            self.inner = inner
+
+        def write(self, text):
+            if streams_stall.is_set():
+                note("stream_stalled")
+                threading.Event().wait(3600)
+            return self.inner.write(text)
+
+        def flush(self):
+            self.inner.flush()
+
+    real_streams = (sys.stdout, sys.stderr)
+    sys.stdout, sys.stderr = StallingStream(sys.stdout), StallingStream(sys.stderr)
+    for handler in logging.getLogger().handlers:
+        if getattr(handler, "stream", None) is real_streams[0]:
+            handler.stream = sys.stdout
+        elif getattr(handler, "stream", None) is real_streams[1]:
+            handler.stream = sys.stderr
+
 if "stall_s" in spec:
     from app.engine.components import job_log_writer as jlw
 
@@ -243,6 +274,7 @@ class Trainer:
     async def train(self):
         training.set()
         assert ready.wait(60), "the recorder never got that far"
+        streams_stall.set()
         how = spec.get("train", "returns")
         if how == "raises":
             raise RuntimeError("the trainer broke")
@@ -606,6 +638,22 @@ def test_a_summary_write_stuck_on_the_disk_cannot_hold_the_way_out(
     )
     assert job.code == code, job.stderr
     assert "job log is stuck" in job.stderr
+    assert job.summaries() == []
+    assert "exit" not in job.types()
+    assert job.finalizing() == ["finalize summaries 0 exits 0 writer False"]
+
+
+@pytest.mark.parametrize(("how", "code"), [("returns", 0), ("raises", 1)])
+def test_a_stalled_stdout_and_stderr_cannot_hold_the_way_out(run_job, how: str, code: int) -> None:
+    # As above, and the stdout and stderr every warning and log line of the way out goes
+    # to stall as well, from the moment training ends.
+    job = run_job(
+        train=how, readings=[good()], then="hang", stall_s=3600,
+        stall_on="gpu_health_summary", lock_wait_s=0.5, note_wait_s=0.5,
+        streams_stall=True, must_end_s=60,
+    )
+    assert job.code == code, job.stderr
+    assert "stream_stalled" in job.notes
     assert job.summaries() == []
     assert "exit" not in job.types()
     assert job.finalizing() == ["finalize summaries 0 exits 0 writer False"]

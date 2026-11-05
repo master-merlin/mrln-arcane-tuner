@@ -24,6 +24,7 @@ import os
 import sys
 import threading
 import time
+import weakref
 from collections.abc import Callable
 from typing import Any
 
@@ -32,6 +33,79 @@ LOG_FILENAME = "job_log.jsonl"
 # that takes longer is stuck on the disk: the line is given up, and the log is stuck until
 # a write gets through again.
 LOCK_WAIT_S = 5.0
+# How long a diagnostic line waits on stderr or stdout, which a job sends to
+# trainer_stdout.log in its output folder: the same disk as its job log.
+NOTE_WAIT_S = 1.0
+
+
+class BestEffortStream:
+    """A stream whose writes hold the caller for ``NOTE_WAIT_S`` at most.
+
+    Each write runs on a side thread. One that doesn't return in time is left behind,
+    and the lines after it are dropped at once while it hangs; once it has landed, lines
+    get through again. ``flush`` does nothing: each write flushes on its own thread.
+    """
+
+    _of: weakref.WeakKeyDictionary = weakref.WeakKeyDictionary()
+
+    def __init__(self, stream: Any) -> None:
+        self._stream = stream
+        self._stuck_on: threading.Thread | None = None
+
+    @classmethod
+    def of(cls, stream: Any) -> BestEffortStream:
+        """The one best-effort stream over ``stream``, so that all its callers share
+        what they know of a stall."""
+        if isinstance(stream, cls):
+            return stream
+        try:
+            found = cls._of.get(stream)
+            if found is None:
+                found = cls._of[stream] = cls(stream)
+            return found
+        except TypeError:  # a stream that takes no weak reference
+            return cls(stream)
+
+    def write(self, text: str) -> int:
+        """Write ``text``, and give the number of characters written: 0 if it was given up."""
+        stuck = self._stuck_on
+        if stuck is not None:
+            if stuck.is_alive():
+                return 0
+            self._stuck_on = None
+        thread = threading.Thread(
+            target=self._write, args=(text,), name="best-effort-write", daemon=True,
+        )
+        try:
+            thread.start()
+        except RuntimeError:
+            return 0
+        thread.join(NOTE_WAIT_S)
+        if thread.is_alive():
+            self._stuck_on = thread
+            return 0
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+    def _write(self, text: str) -> None:
+        try:
+            self._stream.write(text)
+            self._stream.flush()
+        except Exception:
+            pass  # a diagnostic that can't be written is lost, and says nothing more
+
+
+def note(text: str) -> bool:
+    """Write one diagnostic line to stderr, best-effort: it never holds the caller for
+    longer than ``NOTE_WAIT_S``. Returns whether it was written.
+
+    For the lines a person reads in trainer_stdout.log when the job log can't take them,
+    and for everything the job's way out says there.
+    """
+    line = f"{text}\n"
+    return BestEffortStream.of(sys.stderr).write(line) == len(line)
 
 
 class JobLogWriter:
@@ -167,15 +241,11 @@ class JobLogWriter:
         in flight, makes the UI lose track of a live job.
         """
         if self._exit_emitted:
-            import sys
-            # safety-net print: writer can't be trusted (double-exit corner);
-            # the log channel is already closed, so this is the only way to
-            # surface the bug.
-            print(
+            # The writer can't be trusted (double-exit corner); the log channel is
+            # already closed, so stderr is the only way to surface the bug.
+            note(
                 f"WARNING: JobLogWriter.exit() called twice (code={code}); "
                 "ignoring second call to avoid spurious terminal event.",
-                file=sys.stderr,
-                flush=True,
             )
             return
         self._exit_emitted = True
@@ -274,5 +344,6 @@ class JobLogWriter:
     def _mark_stuck(self) -> None:
         if not self._stuck:
             self._stuck = True
-            # safety-net print: the job log is what is stuck; stderr reaches trainer_stdout.log
-            print("WARNING: job log is stuck, going on without it", file=sys.stderr, flush=True)
+            # The job log is what is stuck; stderr reaches trainer_stdout.log, on the same
+            # disk, so this too has a bound.
+            note("WARNING: job log is stuck, going on without it")

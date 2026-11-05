@@ -1534,6 +1534,84 @@ def test_on_the_way_out_a_log_from_inside_a_write_does_not_deadlock(tmp_path: Pa
     assert writer.stuck is False
 
 
+class _StallingStream:
+    """A stderr whose writes stall until released, as a stalled trainer_stdout.log does."""
+
+    def __init__(self) -> None:
+        self.text: list[str] = []
+        self.in_write = threading.Event()
+        self.release = threading.Event()
+
+    def write(self, text: str) -> int:
+        self.in_write.set()
+        self.release.wait(MUST_HAPPEN_S * 4)
+        self.text.append(text)
+        return len(text)
+
+    def flush(self) -> None:
+        pass
+
+
+def _say(text: str) -> Any:
+    # Red before the fix: there was no best-effort note, only a print that waits.
+    note = getattr(job_log_writer, "note", None)
+    if note is None:
+        print(text, file=sys.stderr, flush=True)
+        return None
+    return note(text)
+
+
+def test_on_the_way_out_a_stalled_stderr_cannot_hold_the_stuck_warning(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(job_log_writer, "LOCK_WAIT_S", 0.3)
+    monkeypatch.setattr(job_log_writer, "NOTE_WAIT_S", 0.3, raising=False)
+    stderr = _StallingStream()
+    monkeypatch.setattr(sys, "stderr", stderr)
+    fake = _FileThatStallsOn("gpu_health_summary")
+    writer = _writer_on(tmp_path, fake)
+    _on_the_way_out(writer)
+    try:
+        started = time.monotonic()
+        # The job log stalls, and so does the stderr the warning about it goes to.
+        assert _returns_within(5.0, lambda: writer.log("gpu_health_summary: x")) is False
+        assert writer.stuck is True
+        assert _returns_within(5.0, lambda: writer.exit(0)) is None
+        assert time.monotonic() - started < 2.5
+    finally:
+        fake.release.set()
+        stderr.release.set()
+
+
+def test_a_note_to_a_stalled_stderr_waits_once_for_a_bound_then_not_at_all(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(job_log_writer, "NOTE_WAIT_S", 0.3, raising=False)
+    stderr = _StallingStream()
+    monkeypatch.setattr(sys, "stderr", stderr)
+    try:
+        started = time.monotonic()
+        assert _returns_within(5.0, lambda: _say("first")) is False
+        assert _returns_within(5.0, lambda: _say("second")) is False
+        assert time.monotonic() - started < 1.0  # one bound, then given up at once
+        assert stderr.in_write.is_set()
+    finally:
+        stderr.release.set()
+    # The stalled write has landed: notes get through again, and in order.
+    deadline = time.monotonic() + MUST_HAPPEN_S
+    while stderr.text != ["first\n"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+    assert _say("third") is True
+    assert stderr.text == ["first\n", "third\n"]
+
+
+def test_a_note_says_what_it_says_when_stderr_is_fine(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    assert _say("WARNING: something") in (True, None)
+    assert capsys.readouterr().err == "WARNING: something\n"
+
+
 def _returns_within(seconds: float, call: Any) -> Any:
     results: queue.Queue = queue.Queue()
     threading.Thread(target=lambda: results.put(call()), daemon=True).start()

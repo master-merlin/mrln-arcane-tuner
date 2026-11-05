@@ -192,7 +192,13 @@ async def run_async_trainer(trainer, log_writer=None):
         # ── Train ────────────────────────────────────────────────────
         _name_the_gpu_health_card()
         _emit_status("Training", log_writer)
-        await trainer.train()
+        try:
+            await trainer.train()
+        finally:
+            # Every way out of the training (a return, a rebuild restart, a soft stop, an
+            # exception, an interrupt or a sys.exit inside it) begins here, before any line
+            # of ours is written after it.
+            _begin_way_out()
 
         # Adaptive layer targeting asked for a rebuild restart: train() already
         # saved the resumable checkpoint and emitted the `adapt` event naming

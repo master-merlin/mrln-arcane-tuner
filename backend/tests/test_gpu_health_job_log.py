@@ -659,6 +659,19 @@ def test_a_stalled_stdout_and_stderr_cannot_hold_the_way_out(run_job, how: str, 
     assert job.finalizing() == ["finalize summaries 0 exits 0 writer False"]
 
 
+def test_a_rebuild_message_stuck_on_the_disk_cannot_hold_the_relaunch(run_job) -> None:
+    # train() asks for a rebuild restart, and the message saying so stalls on the disk
+    # itself, with the lock free and no recorder write in the way. The job must still end,
+    # so that the backend can relaunch it from its checkpoint.
+    job = run_job(
+        train="rebuild", readings=[good()], stall_s=3600,
+        stall_on="Adaptive rebuild restart", lock_wait_s=0.5, note_wait_s=0.5, must_end_s=60,
+    )
+    assert job.code == 0, job.stderr
+    assert "job log is stuck" in job.stderr
+    assert "exit" not in job.types()
+
+
 def test_a_disk_that_comes_back_gets_the_summary_and_the_exit_line(run_job) -> None:
     job = run_job(readings=[good()], stall_s=3.0, write_wait_s=0.1, lock_wait_s=30.0)
     assert job.code == 0, job.stderr

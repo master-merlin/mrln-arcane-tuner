@@ -215,6 +215,70 @@ def test_a_load_of_state_that_has_its_params_dtype_is_as_before():
     assert _same(_as_loaded(optimizer, model), saved)
 
 
+# ── ProdigyPlusSF keeps its running d with the params that step ──
+#
+# A swapped-out expert's params are off the card while the other expert steps on it. A param on
+# ``meta`` without a gradient stands in for one here, swapped in after the build, so the
+# accumulators start on the CPU and never have to be copied off ``meta``.
+
+
+def _cpu_param(with_grad: bool) -> nn.Parameter:
+    param = nn.Parameter(torch.ones(2))
+    if with_grad:
+        param.grad = torch.ones(2)
+    return param
+
+
+def _prodigy(groups: list[list[nn.Parameter]], split: bool = True) -> torch.optim.Optimizer:
+    return OptimizerFactory.create(
+        "ProdigyPlusSF", [{"params": params} for params in groups], lr=1.0, config={"ppsf_split_groups": split}
+    )
+
+
+def _swapped_out(optimizer: torch.optim.Optimizer, group: int) -> None:
+    optimizer.param_groups[group]["params"][0] = nn.Parameter(torch.zeros(2, device="meta"))
+
+
+def _running_places(optimizer: torch.optim.Optimizer, group: dict[str, Any]) -> set[str]:
+    return {value.device.type for value in optimizer.get_running_values_for_group(group)}
+
+
+def test_running_values_of_one_group_follow_the_params_that_step():
+    optimizer = _prodigy([[_cpu_param(False), _cpu_param(True)]])
+    _swapped_out(optimizer, 0)
+
+    assert _running_places(optimizer, optimizer.param_groups[0]) == {"cpu"}
+
+
+def test_running_values_of_split_groups_follow_each_groups_own_params_that_step():
+    optimizer = _prodigy([[_cpu_param(False), _cpu_param(True)], [_cpu_param(False), _cpu_param(True)]], split=True)
+    _swapped_out(optimizer, 0)
+    _swapped_out(optimizer, 1)
+
+    for group in optimizer.param_groups:
+        numerator, denom = optimizer.get_running_values_for_group(group)
+        assert {numerator.device.type, denom.device.type} == {"cpu"}
+        assert numerator is group["running_d_numerator"] and denom is group["running_d_denom"]
+
+
+def test_shared_running_values_follow_a_later_groups_params_that_step():
+    optimizer = _prodigy([[_cpu_param(False)], [_cpu_param(True)]], split=False)
+    _swapped_out(optimizer, 0)
+
+    numerator, denom = optimizer.get_running_values_for_group(optimizer.param_groups[1])
+
+    assert {numerator.device.type, denom.device.type} == {"cpu"}
+    first = optimizer.param_groups[0]
+    assert numerator is first["running_d_numerator"] and denom is first["running_d_denom"]
+
+
+def test_running_values_without_any_gradient_follow_the_first_param_as_before():
+    optimizer = _prodigy([[_cpu_param(False), _cpu_param(False)]])
+    _swapped_out(optimizer, 0)
+
+    assert _running_places(optimizer, optimizer.param_groups[0]) == {"meta"}
+
+
 # ── Every optimizer offered, on a card ──
 
 
@@ -299,29 +363,9 @@ def test_restored_state_is_where_the_run_that_made_it_has_it(key):
     assert [_places(optimizer, expert) for expert in experts] == fresh_places
 
 
-# Each fails with or without a resume, and with or without this placement. See the marks' reasons.
-_ALSO_FAILS_WITHOUT_RESTORED_PLACEMENT = {
-    "ProdigyPlusSF": (
-        "a swap-mode run that never stopped, too: it keeps its running d on group['params'][0]'s "
-        "device, which leaves the card with the first expert"
-    ),
-}
-
-
 @needs_a_card
 @pytest.mark.xdist_group("gpu")
-@pytest.mark.parametrize(
-    "key",
-    [
-        pytest.param(
-            key,
-            marks=[pytest.mark.xfail(reason=_ALSO_FAILS_WITHOUT_RESTORED_PLACEMENT[key], raises=RuntimeError, strict=True)]
-            if key in _ALSO_FAILS_WITHOUT_RESTORED_PLACEMENT
-            else [],
-        )
-        for key in EVERY_OPTIMIZER
-    ],
-)
+@pytest.mark.parametrize("key", EVERY_OPTIMIZER)
 def test_restored_state_steps_across_switches(key):
     optimizer, experts, _ = _restored(key)
     place_optimizer_state(optimizer, experts[1].parameters(), CARD)

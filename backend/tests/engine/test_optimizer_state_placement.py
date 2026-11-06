@@ -137,6 +137,84 @@ def test_an_empty_list_of_params_and_a_real_optimizer_on_the_cpu_change_nothing(
     assert all(torch.equal(optimizer.state[param][key], value) for key, value in before.items())
 
 
+# ── A load gives back the state as it was saved ──
+
+
+def _through_a_file(state_dict: dict[str, Any]) -> dict[str, Any]:
+    buffer = io.BytesIO()
+    torch.save(state_dict, buffer)
+    buffer.seek(0)
+    return torch.load(buffer, map_location="cpu", weights_only=True)
+
+
+def _stepped(key: str, model: nn.Module, steps: int = 2) -> torch.optim.Optimizer:
+    optimizer = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    for _ in range(steps):
+        model(torch.ones(2, 4)).pow(2).mean().backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+    return optimizer
+
+
+def _tensors(entry: dict[str, Any]) -> dict[str, torch.Tensor]:
+    return {key: value.clone() for key, value in entry.items() if torch.is_tensor(value)}
+
+
+def _loaded_beside_saved(key: str) -> tuple[torch.optim.Optimizer, nn.Module, list[dict[str, torch.Tensor]]]:
+    torch.manual_seed(0)
+    model = nn.Linear(4, 4)
+    saved = _through_a_file(_stepped(key, model).state_dict())
+    expected = [_tensors(saved["state"][index]) for index in range(len(list(model.parameters())))]
+    fresh = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    fresh.load_state_dict(saved)
+    return fresh, model, expected
+
+
+def _as_loaded(optimizer: torch.optim.Optimizer, model: nn.Module) -> list[dict[str, torch.Tensor]]:
+    return [_tensors(optimizer.state[param]) for param in model.parameters()]
+
+
+def _same(left: list[dict[str, torch.Tensor]], right: list[dict[str, torch.Tensor]]) -> bool:
+    return [sorted(entry) for entry in left] == [sorted(entry) for entry in right] and all(
+        a[key].dtype == b[key].dtype and torch.equal(a[key], b[key]) for a, b in zip(left, right) for key in a
+    )
+
+
+def test_a_load_gives_back_adafactors_state_as_saved_and_its_next_step_runs():
+    optimizer, model, saved = _loaded_beside_saved("Adafactor")
+    assert any(value.dtype == torch.bfloat16 for entry in saved for value in entry.values()), (
+        "Adafactor keeps no bf16 state here, so this shows nothing"
+    )
+
+    assert _same(_as_loaded(optimizer, model), saved)
+
+    model(torch.ones(2, 4)).pow(2).mean().backward()
+    optimizer.step()
+
+
+def test_a_load_gives_back_state_as_saved_where_the_params_dtype_is_narrower():
+    param = nn.Parameter(torch.ones(4, dtype=torch.bfloat16))
+    optimizer = OptimizerFactory.create("AdamW", [param], lr=1e-3)
+    wide = torch.full((4,), 1 + 2**-12, dtype=torch.float32)
+    assert not torch.equal(wide.to(torch.bfloat16).float(), wide), "bf16 holds this value, so this shows nothing"
+    saved = {
+        "state": {0: {"step": torch.tensor(1.0), "exp_avg": wide.clone(), "exp_avg_sq": wide.clone()}},
+        "param_groups": optimizer.state_dict()["param_groups"],
+    }
+
+    optimizer.load_state_dict(saved)
+
+    for key in ("exp_avg", "exp_avg_sq"):
+        assert optimizer.state[param][key].dtype == torch.float32
+        assert torch.equal(optimizer.state[param][key], wide)
+
+
+def test_a_load_of_state_that_has_its_params_dtype_is_as_before():
+    optimizer, model, saved = _loaded_beside_saved("AdamW")
+
+    assert _same(_as_loaded(optimizer, model), saved)
+
+
 # ── Every optimizer offered, on a card ──
 
 
@@ -223,10 +301,6 @@ def test_restored_state_is_where_the_run_that_made_it_has_it(key):
 
 # Each fails with or without a resume, and with or without this placement. See the marks' reasons.
 _ALSO_FAILS_WITHOUT_RESTORED_PLACEMENT = {
-    "Adafactor": (
-        "any family's resume on Adafactor: the load casts its bf16 exp_avg to the parameter's "
-        "float32, and its next step refuses the mix"
-    ),
     "ProdigyPlusSF": (
         "a swap-mode run that never stopped, too: it keeps its running d on group['params'][0]'s "
         "device, which leaves the card with the first expert"

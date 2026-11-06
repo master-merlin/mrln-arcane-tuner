@@ -86,7 +86,53 @@ class OptimizerFactory:
             logger.info("optimizer_unknown_fallback_adamw", type=optimizer_type)
             strategy = OptimizerFactory.SUPPORTED_OPTIMIZERS["AdamW"]
             
-        return strategy.create_optimizer(params, lr, weight_decay, adam_betas, cfg)
+        optimizer = strategy.create_optimizer(params, lr, weight_decay, adam_betas, cfg)
+        _load_state_as_saved(optimizer)
+        return optimizer
+
+
+def _load_state_as_saved(optimizer: torch.optim.Optimizer) -> None:
+    """Make ``load_state_dict`` give back each floating state tensor as it was saved.
+
+    torch's load casts every floating state tensor but a ``step`` to its param's dtype.
+    An optimizer that keeps state at another dtype, like Adafactor's bf16 ``exp_avg``
+    on float32 params, then gets state its next step refuses. Where the saved dtype is
+    the wider one the cast also rounds, and no cast back undoes that. So the saved
+    tensor itself takes the loaded one's place, on the device torch chose for it.
+    State whose dtype the load kept is left as torch loaded it.
+
+    bitsandbytes' optimizers have their own ``load_state_dict``, which runs no hooks,
+    and they keep their non-floating state uncast.
+    """
+    saved: dict[str, Any] = {}
+
+    def keep(_optimizer: torch.optim.Optimizer, state_dict: dict[str, Any]) -> None:
+        saved["state"] = state_dict.get("state", {})
+        saved["groups"] = [group["params"] for group in state_dict.get("param_groups", [])]
+
+    def restore(optimizer: torch.optim.Optimizer) -> None:
+        state, groups = saved.pop("state", {}), saved.pop("groups", [])
+        # Matched to params as torch's own load matches them.
+        for ids, group in zip(groups, optimizer.param_groups):
+            for saved_id, param in zip(ids, group["params"]):
+                if saved_id in state and param in optimizer.state:
+                    optimizer.state[param] = _as_saved(state[saved_id], optimizer.state[param])
+
+    optimizer.register_load_state_dict_pre_hook(keep)
+    optimizer.register_load_state_dict_post_hook(restore)
+
+
+def _as_saved(saved: Any, loaded: Any) -> Any:
+    if torch.is_tensor(saved) and torch.is_tensor(loaded):
+        if saved.is_floating_point() and saved.dtype != loaded.dtype:
+            return saved.to(device=loaded.device)
+        return loaded
+    if isinstance(saved, dict) and isinstance(loaded, dict):
+        return {key: _as_saved(saved[key], value) if key in saved else value for key, value in loaded.items()}
+    if isinstance(saved, (list, tuple)) and type(saved) is type(loaded) and len(saved) == len(loaded):
+        return type(loaded)(_as_saved(s, value) for s, value in zip(saved, loaded))
+    return loaded
+
 
 class LRSchedulerFactory:
     """

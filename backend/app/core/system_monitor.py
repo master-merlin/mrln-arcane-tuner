@@ -1,7 +1,8 @@
 """System and GPU monitoring service.
 
 Provides live GPU metrics (VRAM, temperature, power, utilization) via
-``nvidia-ml-py`` (NVML bindings) and system metrics (RAM, CPU) via ``psutil``.
+``nvidia-ml-py`` (NVML bindings), the card's margin, fan and throttling via
+``gpu_health``, and system metrics (RAM, CPU) via ``psutil``.
 Designed for both snapshot REST endpoints and periodic WebSocket broadcasting.
 """
 
@@ -13,6 +14,8 @@ from typing import Any
 
 import psutil
 import structlog
+
+from app.core.gpu_health import read_gpu_health
 
 logger = structlog.get_logger(__name__)
 
@@ -64,9 +67,40 @@ class GPUStatus:
     clock_memory_mhz: int
     vram_free_mb: int = 0          # total − used (device-wide)
     processes: list[GpuProcess] = field(default_factory=list)  # top VRAM holders
+    # From read_gpu_health. None: this card doesn't offer the field, or no reading.
+    temperature_margin_c: int | None = None  # distance to the card's limit
+    fan_percent: int | None = None
+    throttle_raw: str | None = None          # reasons bitmask, as a hex string
+    throttle_reasons: list[str] | None = None
+    thermal_throttle_ms: float | None = None  # cumulative since boot
+    power_throttle_ms: float | None = None    # cumulative since boot
+    readable: bool | None = None             # False: the card stopped answering
+    health_error: str | None = None
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
+
+
+# What GPUStatus takes from a reading. The reading's temperature, power and clocks
+# aren't here: the monitor's own reads keep their fallbacks for their consumers.
+_HEALTH_FIELDS = (
+    "temperature_margin_c",
+    "fan_percent",
+    "throttle_raw",
+    "throttle_reasons",
+    "thermal_throttle_ms",
+    "power_throttle_ms",
+    "readable",
+)
+
+
+def _health_fields(index: int) -> dict[str, Any]:
+    """The GPUStatus fields of one reading; an unreadable card says so."""
+    reading = read_gpu_health(index) or {}
+    return {
+        **{name: reading.get(name) for name in _HEALTH_FIELDS},
+        "health_error": reading.get("error"),
+    }
 
 
 @dataclass
@@ -195,6 +229,7 @@ class SystemMonitor:
                     clock_graphics_mhz=clock_gfx,
                     clock_memory_mhz=clock_mem,
                     processes=SystemMonitor._gpu_processes(handle),
+                    **_health_fields(i),
                 ))
         except pynvml.NVMLError as e:
             logger.error("gpu_snapshot_failed", error=str(e))

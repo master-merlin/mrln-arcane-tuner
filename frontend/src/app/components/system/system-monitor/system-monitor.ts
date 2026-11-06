@@ -24,6 +24,17 @@ interface HeatCell {
 const HISTORY_CAP = 80;
 
 /**
+ * Reasons worth a chip. A power cap is routine with a limit the user set, idle
+ * isn't throttling, and an unnamed bit says nothing.
+ */
+const SLOWDOWN_REASONS: ReadonlySet<string> = new Set([
+    'sw_thermal',
+    'hw_thermal',
+    'hw_slowdown',
+    'hw_power_brake',
+]);
+
+/**
  * System rail (Jobs screen, right pane) — per Hi-Fi `screen-jobs.jsx`.
  *
  * CPU / RAM / GPU / VRAM / Power rows each show a live value, a rolling
@@ -41,6 +52,16 @@ const HISTORY_CAP = 80;
             <div class="sys-head">
                 <div class="eyebrow sys-eyebrow"><span class="sys-live"></span>SYSTEM</div>
                 @if (primaryGpu(); as g) {
+                    @if (g.readable === false) {
+                        <span class="chip danger temp-chip mono"
+                              data-testid="sys-unreadable-chip"
+                              [title]="g.health_error ?? ''">Card unreadable</span>
+                    }
+                    @if (slowdownReasons().length > 0) {
+                        <span class="chip danger temp-chip mono"
+                              data-testid="sys-throttle-chip"
+                              [title]="slowdownReasons().join(', ')">Throttling</span>
+                    }
                     <span class="chip danger temp-chip mono">{{ g.temperature_c }}°C</span>
                 }
             </div>
@@ -49,6 +70,26 @@ const HISTORY_CAP = 80;
             }
 
             <div class="sys-metrics">
+                @if (primaryGpu(); as g) {
+                    @if (g.temperature_margin_c != null || g.fan_percent != null) {
+                        <div class="sys-metric" data-testid="sys-gpu-health"
+                             style="--tone: var(--color-danger)">
+                            @if (g.temperature_margin_c != null) {
+                                <div class="sys-metric-head" data-testid="sys-temp-margin"
+                                     title="Distance to the card's temperature limit">
+                                    <span class="sys-metric-label">Temp margin</span>
+                                    <span class="sys-metric-val mono">{{ g.temperature_margin_c }}°C</span>
+                                </div>
+                            }
+                            @if (g.fan_percent != null) {
+                                <div class="sys-metric-head" data-testid="sys-fan">
+                                    <span class="sys-metric-label">Fan</span>
+                                    <span class="sys-metric-val mono">{{ g.fan_percent }}%</span>
+                                </div>
+                            }
+                        </div>
+                    }
+                }
                 @for (row of rows(); track row.key) {
                     <div class="sys-metric" [style.--tone]="row.sparkColor">
                         <div class="sys-metric-head">
@@ -135,6 +176,10 @@ export class SystemMonitorComponent implements OnInit, OnDestroy {
     });
     /** Top VRAM-holding processes on the primary GPU (ComfyUI, browser, …). */
     protected readonly gpuProcesses = computed(() => this.primaryGpu()?.processes ?? []);
+    /** The set reasons that mean heat or hardware is slowing the card. */
+    protected readonly slowdownReasons = computed(() =>
+        (this.primaryGpu()?.throttle_reasons ?? []).filter((r) => SLOWDOWN_REASONS.has(r)),
+    );
 
     /** A process's share of total card VRAM, as a percentage (for its bar). */
     protected procPct(usedMb: number): number {

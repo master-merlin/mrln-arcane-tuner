@@ -53,6 +53,13 @@ def _stepping_prodigy_class() -> type:
 class ProdigyPlusSFStrategy(OptimizerBase):
     """ProdigyPlus ScheduleFree optimizer strategy."""
 
+    def kept_state_dtypes(self, optimizer: Any, param: torch.Tensor, group: dict[str, Any]) -> dict[str, torch.dtype]:
+        # As the library makes them: Prodigy's p0 and s at bf16 on a float32 param, else at
+        # the param's dtype; the factored variance at float32 when factored_fp32, the default.
+        sliced = torch.bfloat16 if param.dtype == torch.float32 else param.dtype
+        factored = torch.float32 if group.get("factored_fp32", True) else param.dtype
+        return {"p0": sliced, "s": sliced, "exp_avg_sq_row": factored, "exp_avg_sq_col": factored}
+
     def create_optimizer(
         self,
         params: Any,

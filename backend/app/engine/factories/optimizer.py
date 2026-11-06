@@ -114,16 +114,13 @@ def _load_kept_dtypes_back(optimizer: torch.optim.Optimizer, strategy: Optimizer
 
     def restore(optimizer: torch.optim.Optimizer) -> None:
         state, groups = saved.pop("state", {}), saved.pop("groups", [])
-        kept = strategy.kept_state_dtypes(optimizer)
-        if not kept:
-            return
         # Matched to params as torch's own load matches them.
         for ids, group in zip(groups, optimizer.param_groups):
             for saved_id, param in zip(ids, group["params"]):
                 entry = optimizer.state.get(param)
                 if saved_id not in state or entry is None:
                     continue
-                for key, dtype in kept.items():
+                for key, dtype in strategy.kept_state_dtypes(optimizer, param, group).items():
                     loaded, before = entry.get(key), state[saved_id].get(key)
                     if not torch.is_tensor(loaded) or not loaded.is_floating_point():
                         continue

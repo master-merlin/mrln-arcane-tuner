@@ -28,8 +28,10 @@ class OptimizerBase(ABC):
         """
         pass
 
-    def kept_state_dtypes(self, optimizer: torch.optim.Optimizer) -> dict[str, torch.dtype]:
-        """The state this optimizer keeps at a dtype of its own, not its param's, by key.
+    def kept_state_dtypes(
+        self, optimizer: torch.optim.Optimizer, param: torch.Tensor, group: dict[str, Any]
+    ) -> dict[str, torch.dtype]:
+        """The state this optimizer keeps for ``param`` at a dtype of its own, not the param's, by key.
 
         torch's ``load_state_dict`` casts floating state to its param's dtype, which
         is what an optimizer whose state follows its param needs. State named here

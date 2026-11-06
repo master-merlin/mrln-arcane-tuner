@@ -255,6 +255,39 @@ def test_state_an_optimizer_keeps_wider_than_its_param_comes_back_unrounded():
         assert exp_avg.dtype == torch.float32 and bool((exp_avg == unrounded).all())
 
 
+# bitsandbytes runs on a card only; the card tests below cover it.
+ON_THE_CPU = [key for key in OptimizerFactory.SUPPORTED_OPTIMIZERS if key != "AdamW8bit"]
+
+
+def _cpu_step(optimizer: torch.optim.Optimizer, model: nn.Module, dtype: torch.dtype) -> None:
+    model(torch.ones(2, 32, dtype=dtype)).pow(2).mean().backward()
+    kwargs: dict[str, Any] = {}
+    if getattr(optimizer, "hessian_period", None) is not None:
+        params = [p for group in optimizer.param_groups for p in group["params"]]
+        kwargs["hessian"] = [None if p.grad is None else p.grad.abs() for p in params]
+    optimizer.step(**kwargs)
+    optimizer.zero_grad(set_to_none=True)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["float32", "bf16"])
+@pytest.mark.parametrize("key", ON_THE_CPU)
+def test_a_resume_onto_the_same_params_has_the_state_a_run_that_never_stopped_has(key, dtype):
+    """32 wide, so factored optimizers factor. Any state kept at its own dtype that its
+    strategy doesn't name comes back at the param's dtype here, and fails."""
+    torch.manual_seed(0)
+    model = nn.Linear(32, 32).to(dtype)
+    optimizer = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    for _ in range(2):
+        _cpu_step(optimizer, model, dtype)
+    kept = [_tensors(optimizer.state[param]) for param in model.parameters()]
+    fresh = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+
+    fresh.load_state_dict(_through_a_file(optimizer.state_dict()))
+
+    assert _same(_as_loaded(fresh, model), kept)
+    _cpu_step(fresh, model, dtype)
+
+
 def test_a_load_of_state_that_has_its_params_dtype_is_as_before():
     optimizer, model, saved = _loaded_beside_saved("AdamW")
 

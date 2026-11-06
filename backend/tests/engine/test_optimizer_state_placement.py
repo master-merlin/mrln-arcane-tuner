@@ -192,21 +192,67 @@ def test_a_load_gives_back_adafactors_state_as_saved_and_its_next_step_runs():
     optimizer.step()
 
 
-def test_a_load_gives_back_state_as_saved_where_the_params_dtype_is_narrower():
-    param = nn.Parameter(torch.ones(4, dtype=torch.bfloat16))
-    optimizer = OptimizerFactory.create("AdamW", [param], lr=1e-3)
-    wide = torch.full((4,), 1 + 2**-12, dtype=torch.float32)
-    assert not torch.equal(wide.to(torch.bfloat16).float(), wide), "bf16 holds this value, so this shows nothing"
-    saved = {
-        "state": {0: {"step": torch.tensor(1.0), "exp_avg": wide.clone(), "exp_avg_sq": wide.clone()}},
-        "param_groups": optimizer.state_dict()["param_groups"],
-    }
+def _resumed_at(key: str, dtype: torch.dtype, before: Any = None) -> tuple[torch.optim.Optimizer, nn.Module]:
+    """A float32 run's state, loaded into one whose params are ``dtype`` now."""
+    torch.manual_seed(0)
+    model = nn.Linear(4, 4)
+    optimizer = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    if before:
+        before(optimizer)
+    for _ in range(2):
+        model(torch.ones(2, 4)).pow(2).mean().backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+    saved = _through_a_file(optimizer.state_dict())
+    model.to(dtype)
+    fresh = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    if before:
+        before(fresh)
+    fresh.load_state_dict(saved)
+    return fresh, model
 
-    optimizer.load_state_dict(saved)
 
-    for key in ("exp_avg", "exp_avg_sq"):
-        assert optimizer.state[param][key].dtype == torch.float32
-        assert torch.equal(optimizer.state[param][key], wide)
+def _steps(optimizer: torch.optim.Optimizer, model: nn.Module, dtype: torch.dtype) -> None:
+    model(torch.ones(2, 4, dtype=dtype)).pow(2).mean().backward()
+    optimizer.step()
+
+
+@pytest.mark.parametrize("key", ["AdamW", "Adafactor"])
+def test_a_resume_onto_params_of_another_dtype_steps(key):
+    optimizer, model = _resumed_at(key, torch.bfloat16)
+
+    _steps(optimizer, model, torch.bfloat16)
+
+
+def test_state_an_optimizer_keeps_at_its_own_dtype_comes_back_at_that_dtype_after_a_dtype_change():
+    optimizer, model = _resumed_at("Adafactor", torch.bfloat16, before=lambda o: setattr(o, "momentum_dtype", torch.float32))
+
+    for param in model.parameters():
+        assert optimizer.state[param]["exp_avg"].dtype == torch.float32
+    _steps(optimizer, model, torch.bfloat16)
+
+
+def test_state_an_optimizer_keeps_wider_than_its_param_comes_back_unrounded():
+    def wide(optimizer):
+        optimizer.momentum_dtype = torch.float32
+
+    torch.manual_seed(0)
+    model = nn.Linear(4, 4).to(torch.bfloat16)
+    optimizer = OptimizerFactory.create("Adafactor", model.parameters(), lr=1e-3)
+    wide(optimizer)
+    _steps(optimizer, model, torch.bfloat16)
+    unrounded = 1 + 2**-12
+    for param in model.parameters():
+        optimizer.state[param]["exp_avg"].fill_(unrounded)
+    saved = _through_a_file(optimizer.state_dict())
+    fresh = OptimizerFactory.create("Adafactor", model.parameters(), lr=1e-3)
+    wide(fresh)
+
+    fresh.load_state_dict(saved)
+
+    for param in model.parameters():
+        exp_avg = fresh.state[param]["exp_avg"]
+        assert exp_avg.dtype == torch.float32 and bool((exp_avg == unrounded).all())
 
 
 def test_a_load_of_state_that_has_its_params_dtype_is_as_before():

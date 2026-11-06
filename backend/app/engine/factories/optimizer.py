@@ -87,19 +87,21 @@ class OptimizerFactory:
             strategy = OptimizerFactory.SUPPORTED_OPTIMIZERS["AdamW"]
             
         optimizer = strategy.create_optimizer(params, lr, weight_decay, adam_betas, cfg)
-        _load_state_as_saved(optimizer)
+        _load_kept_dtypes_back(optimizer, strategy)
         return optimizer
 
 
-def _load_state_as_saved(optimizer: torch.optim.Optimizer) -> None:
-    """Make ``load_state_dict`` give back each floating state tensor as it was saved.
+def _load_kept_dtypes_back(optimizer: torch.optim.Optimizer, strategy: OptimizerBase) -> None:
+    """Make ``load_state_dict`` give back state an optimizer keeps at its own dtype at that dtype.
 
     torch's load casts every floating state tensor but a ``step`` to its param's dtype.
-    An optimizer that keeps state at another dtype, like Adafactor's bf16 ``exp_avg``
-    on float32 params, then gets state its next step refuses. Where the saved dtype is
-    the wider one the cast also rounds, and no cast back undoes that. So the saved
-    tensor itself takes the loaded one's place, on the device torch chose for it.
-    State whose dtype the load kept is left as torch loaded it.
+    That is right for state that follows its param, even after a resume onto params
+    of another dtype. But state an optimizer keeps at a dtype of its own, like
+    Adafactor's bf16 ``exp_avg`` on float32 params, then has a dtype its next step
+    refuses. The strategy names that state (``kept_state_dtypes``). Each named
+    tensor comes back at its own dtype, on the device torch chose. If it was saved at
+    that dtype, the saved tensor itself comes back, because where the kept dtype is
+    the wider one, torch's cast has already rounded the values.
 
     bitsandbytes' optimizers have their own ``load_state_dict``, which runs no hooks,
     and they keep their non-floating state uncast.
@@ -112,26 +114,26 @@ def _load_state_as_saved(optimizer: torch.optim.Optimizer) -> None:
 
     def restore(optimizer: torch.optim.Optimizer) -> None:
         state, groups = saved.pop("state", {}), saved.pop("groups", [])
+        kept = strategy.kept_state_dtypes(optimizer)
+        if not kept:
+            return
         # Matched to params as torch's own load matches them.
         for ids, group in zip(groups, optimizer.param_groups):
             for saved_id, param in zip(ids, group["params"]):
-                if saved_id in state and param in optimizer.state:
-                    optimizer.state[param] = _as_saved(state[saved_id], optimizer.state[param])
+                entry = optimizer.state.get(param)
+                if saved_id not in state or entry is None:
+                    continue
+                for key, dtype in kept.items():
+                    loaded, before = entry.get(key), state[saved_id].get(key)
+                    if not torch.is_tensor(loaded) or not loaded.is_floating_point():
+                        continue
+                    if torch.is_tensor(before) and before.dtype == dtype:
+                        entry[key] = before.to(device=loaded.device)
+                    else:
+                        entry[key] = loaded.to(dtype)
 
     optimizer.register_load_state_dict_pre_hook(keep)
     optimizer.register_load_state_dict_post_hook(restore)
-
-
-def _as_saved(saved: Any, loaded: Any) -> Any:
-    if torch.is_tensor(saved) and torch.is_tensor(loaded):
-        if saved.is_floating_point() and saved.dtype != loaded.dtype:
-            return saved.to(device=loaded.device)
-        return loaded
-    if isinstance(saved, dict) and isinstance(loaded, dict):
-        return {key: _as_saved(saved[key], value) if key in saved else value for key, value in loaded.items()}
-    if isinstance(saved, (list, tuple)) and type(saved) is type(loaded) and len(saved) == len(loaded):
-        return type(loaded)(_as_saved(s, value) for s, value in zip(saved, loaded))
-    return loaded
 
 
 class LRSchedulerFactory:

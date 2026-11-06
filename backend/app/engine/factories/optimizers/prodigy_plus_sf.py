@@ -22,12 +22,16 @@ def _stepping_prodigy_class() -> type:
     The library keeps its running d numerator and denominator on ``group['params'][0]``'s
     device. In a dual-expert swap-mode run that is the first expert, which goes to the CPU
     while the second one steps on the card, and the step then mixes devices.
+
+    It keeps the library's class name, which checkpoints record. The import runs on
+    every call, so a missing package still raises ImportError here.
     """
     global _STEPPING_CLASS
-    if _STEPPING_CLASS is None:
-        from prodigyplus import ProdigyPlusScheduleFree
+    from prodigyplus import ProdigyPlusScheduleFree as library_class
 
-        class SteppingProdigyPlusScheduleFree(ProdigyPlusScheduleFree):
+    if _STEPPING_CLASS is None or library_class not in _STEPPING_CLASS.__mro__:
+
+        class ProdigyPlusScheduleFree(library_class):
             @torch.no_grad()
             def get_running_values_for_group(self, group):
                 if group["split_groups"]:
@@ -43,7 +47,7 @@ def _stepping_prodigy_class() -> type:
                     group["running_d_denom"] = denom = denom.to(device)
                 return numerator, denom
 
-        _STEPPING_CLASS = SteppingProdigyPlusScheduleFree
+        _STEPPING_CLASS = ProdigyPlusScheduleFree
     return _STEPPING_CLASS
 
 class ProdigyPlusSFStrategy(OptimizerBase):

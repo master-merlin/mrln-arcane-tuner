@@ -81,12 +81,16 @@ def batch(width: int = WIDTH, seed: int = 1, requires_grad: bool = True) -> torc
 
 
 def train_steps(model: nn.Module, steps: int = 3) -> tuple[bool, torch.Tensor]:
+    return train_steps_at(model, WIDTH, steps)
+
+
+def train_steps_at(model: nn.Module, width: int, steps: int = 3) -> tuple[bool, torch.Tensor]:
     """``steps`` AdamW steps; whether the LoRA params changed, and the input's grad at the last."""
     params = [p for p in model.parameters() if p.requires_grad]
     assert params, "nothing to train"
     before = [p.detach().clone() for p in params]
     optimizer = torch.optim.AdamW(params, lr=1e-2)
-    x = batch()
+    x = batch(width)
     for _ in range(steps):
         x.grad = None
         model(x).float().pow(2).mean().backward()
@@ -271,3 +275,35 @@ def test_a_current_cached_entry_still_hits(tmp_path):
     path = os.path.join(tmp_path, "cache")
     _cache_of("int8", "int8", path)
     assert QuantizationFactory.load_quantized(frozen_net(), path, "int8") is not None
+
+
+# ── Task 4's draws: layers a scheme cannot quantize ──
+
+
+ODD = 200  # no int4 group (128) and no NVFP4 block (16) divides it
+
+
+@pytest.mark.parametrize("scheme", ["int4", "nvfp4"])
+def test_a_layer_the_scheme_cannot_quantize_stays_unquantized_and_trains(scheme):
+    if ("torchao", scheme) not in offered():
+        pytest.skip(f"{scheme} is not offered on this card")
+    net = QuantizationFactory.quantize(frozen_net(width=ODD, layers=1), scheme, backend_name="torchao")
+    assert type(net.layers[0].weight) is nn.Parameter  # left as it was, not raised on
+    changed, _ = train_steps_at(with_lora(net), ODD)
+    assert changed
+
+
+def test_a_cached_int4_entry_with_no_layer_int4_could_quantize_still_hits(tmp_path):
+    if ("torchao", "int4") not in offered():
+        pytest.skip("int4 is not offered on this card")
+    source = frozen_net(width=ODD)
+    signature = QuantizationFactory.state_shape_signature(source)
+    q = QuantizationFactory.quantize(source, "int4", backend_name="torchao")
+    path = os.path.join(tmp_path, "cache")
+    QuantizationFactory.save_quantized(q, path, "int4", source_param_count=2 * (ODD * ODD + ODD), source_signature=signature)
+    loaded = QuantizationFactory.load_quantized(frozen_net(width=ODD).to("cpu"), path, "int4")
+    assert loaded is not None
+    # Where quantize() would have put it: a plain-tensor (safetensors) entry loaded onto the CPU.
+    assert all(p.device.type == "cuda" for p in loaded.parameters())
+    changed, _ = train_steps_at(with_lora(loaded), ODD)
+    assert changed

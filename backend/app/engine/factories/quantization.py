@@ -360,15 +360,14 @@ class QuantizationFactory:
         """Why a cached entry of ``scheme`` holds weights ``quantize`` no longer makes, else None.
 
         Only schemes whose representation changed are checked (``TorchAOBackend.weight_type``);
-        every other scheme's entries load as before. A checked entry must hold at least one quantized
-        weight, and every quantized (subclass) tensor in it must be of the current type.
+        every other scheme's entries load as before. Every quantized (subclass) tensor in a checked
+        entry must be of the current type. An entry with none is valid: a model none of whose layers
+        the scheme can quantize (widths no group size divides) is cached as it is.
         """
         expected = TorchAOBackend.weight_type(scheme)
         if expected is None:
             return None
         quantized = [t for t in state_dict.values() if isinstance(t, torch.Tensor) and type(t) is not torch.Tensor]
-        if not quantized:
-            return "no quantized weight"
         other = next((t for t in quantized if not isinstance(t, expected)), None)
         return None if other is None else type(other).__name__
 
@@ -422,7 +421,10 @@ class QuantizationFactory:
         try:
             if format == "safetensors":
                 from safetensors.torch import load_file
-                state_dict = load_file(os.path.join(cache_path, "model.safetensors"))
+                # Onto the device quantize() puts the model on, as a torch-format entry's tensors
+                # come back on theirs. Only an entry with no quantized tensor is safetensors.
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                state_dict = load_file(os.path.join(cache_path, "model.safetensors"), device=device)
             else:
                 # weights_only=True: this is a cache file under backend/models,
                 # and the legacy torch.save fallback path is only ever a plain

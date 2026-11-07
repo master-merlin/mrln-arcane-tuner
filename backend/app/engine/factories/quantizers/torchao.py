@@ -38,6 +38,12 @@ from app.core.logger import get_logger
 
 logger = get_logger(__name__)
 
+_NVFP4_BLOCK = 16
+
+
+def _nvfp4_quantizable(module: nn.Module, fqn: str) -> bool:
+    return isinstance(module, nn.Linear) and all(d % _NVFP4_BLOCK == 0 for d in module.weight.shape)
+
 
 class TorchAOBackend(QuantizationBase):
     """
@@ -113,8 +119,10 @@ class TorchAOBackend(QuantizationBase):
         elif scheme == "fp8_dynamic":
             quantize_(module, Float8DynamicActivationFloat8WeightConfig())
         elif scheme == "nvfp4":
-            # Weight-only NVFP4: its tensor dequantizes in the matmul, so it trains as it is.
-            quantize_(module, NVFP4WeightOnlyConfig())
+            # Weight-only NVFP4: its tensor dequantizes in the matmul, so it trains as it is. It
+            # raises on a weight whose dims 16 does not divide; such a layer stays unquantized, as
+            # int4 and fp8_dynamic leave theirs.
+            quantize_(module, NVFP4WeightOnlyConfig(), filter_fn=_nvfp4_quantizable)
         else:
             raise ValueError(f"Unknown torchao scheme: {scheme}")
 

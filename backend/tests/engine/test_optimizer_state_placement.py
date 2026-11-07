@@ -137,6 +137,227 @@ def test_an_empty_list_of_params_and_a_real_optimizer_on_the_cpu_change_nothing(
     assert all(torch.equal(optimizer.state[param][key], value) for key, value in before.items())
 
 
+# ── A load gives back the state as it was saved ──
+
+
+def _through_a_file(state_dict: dict[str, Any]) -> dict[str, Any]:
+    buffer = io.BytesIO()
+    torch.save(state_dict, buffer)
+    buffer.seek(0)
+    return torch.load(buffer, map_location="cpu", weights_only=True)
+
+
+def _stepped(key: str, model: nn.Module, steps: int = 2) -> torch.optim.Optimizer:
+    optimizer = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    for _ in range(steps):
+        model(torch.ones(2, 4)).pow(2).mean().backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+    return optimizer
+
+
+def _tensors(entry: dict[str, Any]) -> dict[str, torch.Tensor]:
+    return {key: value.clone() for key, value in entry.items() if torch.is_tensor(value)}
+
+
+def _loaded_beside_saved(key: str) -> tuple[torch.optim.Optimizer, nn.Module, list[dict[str, torch.Tensor]]]:
+    torch.manual_seed(0)
+    model = nn.Linear(4, 4)
+    saved = _through_a_file(_stepped(key, model).state_dict())
+    expected = [_tensors(saved["state"][index]) for index in range(len(list(model.parameters())))]
+    fresh = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    fresh.load_state_dict(saved)
+    return fresh, model, expected
+
+
+def _as_loaded(optimizer: torch.optim.Optimizer, model: nn.Module) -> list[dict[str, torch.Tensor]]:
+    return [_tensors(optimizer.state[param]) for param in model.parameters()]
+
+
+def _same(left: list[dict[str, torch.Tensor]], right: list[dict[str, torch.Tensor]]) -> bool:
+    return [sorted(entry) for entry in left] == [sorted(entry) for entry in right] and all(
+        a[key].dtype == b[key].dtype and torch.equal(a[key], b[key]) for a, b in zip(left, right) for key in a
+    )
+
+
+def test_a_load_gives_back_adafactors_state_as_saved_and_its_next_step_runs():
+    optimizer, model, saved = _loaded_beside_saved("Adafactor")
+    assert any(value.dtype == torch.bfloat16 for entry in saved for value in entry.values()), (
+        "Adafactor keeps no bf16 state here, so this shows nothing"
+    )
+
+    assert _same(_as_loaded(optimizer, model), saved)
+
+    model(torch.ones(2, 4)).pow(2).mean().backward()
+    optimizer.step()
+
+
+def _resumed_at(key: str, dtype: torch.dtype, before: Any = None) -> tuple[torch.optim.Optimizer, nn.Module]:
+    """A float32 run's state, loaded into one whose params are ``dtype`` now."""
+    torch.manual_seed(0)
+    model = nn.Linear(4, 4)
+    optimizer = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    if before:
+        before(optimizer)
+    for _ in range(2):
+        model(torch.ones(2, 4)).pow(2).mean().backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+    saved = _through_a_file(optimizer.state_dict())
+    model.to(dtype)
+    fresh = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    if before:
+        before(fresh)
+    fresh.load_state_dict(saved)
+    return fresh, model
+
+
+def _steps(optimizer: torch.optim.Optimizer, model: nn.Module, dtype: torch.dtype) -> None:
+    model(torch.ones(2, 4, dtype=dtype)).pow(2).mean().backward()
+    optimizer.step()
+
+
+@pytest.mark.parametrize("key", ["AdamW", "Adafactor"])
+def test_a_resume_onto_params_of_another_dtype_steps(key):
+    optimizer, model = _resumed_at(key, torch.bfloat16)
+
+    _steps(optimizer, model, torch.bfloat16)
+
+
+def test_state_an_optimizer_keeps_at_its_own_dtype_comes_back_at_that_dtype_after_a_dtype_change():
+    optimizer, model = _resumed_at("Adafactor", torch.bfloat16, before=lambda o: setattr(o, "momentum_dtype", torch.float32))
+
+    for param in model.parameters():
+        assert optimizer.state[param]["exp_avg"].dtype == torch.float32
+    _steps(optimizer, model, torch.bfloat16)
+
+
+def test_state_an_optimizer_keeps_wider_than_its_param_comes_back_unrounded():
+    def wide(optimizer):
+        optimizer.momentum_dtype = torch.float32
+
+    torch.manual_seed(0)
+    model = nn.Linear(4, 4).to(torch.bfloat16)
+    optimizer = OptimizerFactory.create("Adafactor", model.parameters(), lr=1e-3)
+    wide(optimizer)
+    _steps(optimizer, model, torch.bfloat16)
+    unrounded = 1 + 2**-12
+    for param in model.parameters():
+        optimizer.state[param]["exp_avg"].fill_(unrounded)
+    saved = _through_a_file(optimizer.state_dict())
+    fresh = OptimizerFactory.create("Adafactor", model.parameters(), lr=1e-3)
+    wide(fresh)
+
+    fresh.load_state_dict(saved)
+
+    for param in model.parameters():
+        exp_avg = fresh.state[param]["exp_avg"]
+        assert exp_avg.dtype == torch.float32 and bool((exp_avg == unrounded).all())
+
+
+# bitsandbytes runs on a card only; the card tests below cover it.
+ON_THE_CPU = [key for key in OptimizerFactory.SUPPORTED_OPTIMIZERS if key != "AdamW8bit"]
+
+
+def _cpu_step(optimizer: torch.optim.Optimizer, model: nn.Module, dtype: torch.dtype) -> None:
+    model(torch.ones(2, 32, dtype=dtype)).pow(2).mean().backward()
+    kwargs: dict[str, Any] = {}
+    if getattr(optimizer, "hessian_period", None) is not None:
+        params = [p for group in optimizer.param_groups for p in group["params"]]
+        kwargs["hessian"] = [None if p.grad is None else p.grad.abs() for p in params]
+    optimizer.step(**kwargs)
+    optimizer.zero_grad(set_to_none=True)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.bfloat16], ids=["float32", "bf16"])
+@pytest.mark.parametrize("key", ON_THE_CPU)
+def test_a_resume_onto_the_same_params_has_the_state_a_run_that_never_stopped_has(key, dtype):
+    """32 wide, so factored optimizers factor. Any state kept at its own dtype that its
+    strategy doesn't name comes back at the param's dtype here, and fails."""
+    torch.manual_seed(0)
+    model = nn.Linear(32, 32).to(dtype)
+    optimizer = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+    for _ in range(2):
+        _cpu_step(optimizer, model, dtype)
+    kept = [_tensors(optimizer.state[param]) for param in model.parameters()]
+    fresh = OptimizerFactory.create(key, model.parameters(), lr=1e-3)
+
+    fresh.load_state_dict(_through_a_file(optimizer.state_dict()))
+
+    assert _same(_as_loaded(fresh, model), kept)
+    _cpu_step(fresh, model, dtype)
+
+
+def test_a_load_of_state_that_has_its_params_dtype_is_as_before():
+    optimizer, model, saved = _loaded_beside_saved("AdamW")
+
+    assert _same(_as_loaded(optimizer, model), saved)
+
+
+# ── ProdigyPlusSF keeps its running d with the params that step ──
+#
+# A swapped-out expert's params are off the card while the other expert steps on it. A param on
+# ``meta`` without a gradient stands in for one here, swapped in after the build, so the
+# accumulators start on the CPU and never have to be copied off ``meta``.
+
+
+def _cpu_param(with_grad: bool) -> nn.Parameter:
+    param = nn.Parameter(torch.ones(2))
+    if with_grad:
+        param.grad = torch.ones(2)
+    return param
+
+
+def _prodigy(groups: list[list[nn.Parameter]], split: bool = True) -> torch.optim.Optimizer:
+    return OptimizerFactory.create(
+        "ProdigyPlusSF", [{"params": params} for params in groups], lr=1.0, config={"ppsf_split_groups": split}
+    )
+
+
+def _swapped_out(optimizer: torch.optim.Optimizer, group: int) -> None:
+    optimizer.param_groups[group]["params"][0] = nn.Parameter(torch.zeros(2, device="meta"))
+
+
+def _running_places(optimizer: torch.optim.Optimizer, group: dict[str, Any]) -> set[str]:
+    return {value.device.type for value in optimizer.get_running_values_for_group(group)}
+
+
+def test_running_values_of_one_group_follow_the_params_that_step():
+    optimizer = _prodigy([[_cpu_param(False), _cpu_param(True)]])
+    _swapped_out(optimizer, 0)
+
+    assert _running_places(optimizer, optimizer.param_groups[0]) == {"cpu"}
+
+
+def test_running_values_of_split_groups_follow_each_groups_own_params_that_step():
+    optimizer = _prodigy([[_cpu_param(False), _cpu_param(True)], [_cpu_param(False), _cpu_param(True)]], split=True)
+    _swapped_out(optimizer, 0)
+    _swapped_out(optimizer, 1)
+
+    for group in optimizer.param_groups:
+        numerator, denom = optimizer.get_running_values_for_group(group)
+        assert {numerator.device.type, denom.device.type} == {"cpu"}
+        assert numerator is group["running_d_numerator"] and denom is group["running_d_denom"]
+
+
+def test_shared_running_values_follow_a_later_groups_params_that_step():
+    optimizer = _prodigy([[_cpu_param(False)], [_cpu_param(True)]], split=False)
+    _swapped_out(optimizer, 0)
+
+    numerator, denom = optimizer.get_running_values_for_group(optimizer.param_groups[1])
+
+    assert {numerator.device.type, denom.device.type} == {"cpu"}
+    first = optimizer.param_groups[0]
+    assert numerator is first["running_d_numerator"] and denom is first["running_d_denom"]
+
+
+def test_running_values_without_any_gradient_follow_the_first_param_as_before():
+    optimizer = _prodigy([[_cpu_param(False), _cpu_param(False)]])
+    _swapped_out(optimizer, 0)
+
+    assert _running_places(optimizer, optimizer.param_groups[0]) == {"meta"}
+
+
 # ── Every optimizer offered, on a card ──
 
 
@@ -221,33 +442,9 @@ def test_restored_state_is_where_the_run_that_made_it_has_it(key):
     assert [_places(optimizer, expert) for expert in experts] == fresh_places
 
 
-# Each fails with or without a resume, and with or without this placement. See the marks' reasons.
-_ALSO_FAILS_WITHOUT_RESTORED_PLACEMENT = {
-    "Adafactor": (
-        "any family's resume on Adafactor: the load casts its bf16 exp_avg to the parameter's "
-        "float32, and its next step refuses the mix"
-    ),
-    "ProdigyPlusSF": (
-        "a swap-mode run that never stopped, too: it keeps its running d on group['params'][0]'s "
-        "device, which leaves the card with the first expert"
-    ),
-}
-
-
 @needs_a_card
 @pytest.mark.xdist_group("gpu")
-@pytest.mark.parametrize(
-    "key",
-    [
-        pytest.param(
-            key,
-            marks=[pytest.mark.xfail(reason=_ALSO_FAILS_WITHOUT_RESTORED_PLACEMENT[key], raises=RuntimeError, strict=True)]
-            if key in _ALSO_FAILS_WITHOUT_RESTORED_PLACEMENT
-            else [],
-        )
-        for key in EVERY_OPTIMIZER
-    ],
-)
+@pytest.mark.parametrize("key", EVERY_OPTIMIZER)
 def test_restored_state_steps_across_switches(key):
     optimizer, experts, _ = _restored(key)
     place_optimizer_state(optimizer, experts[1].parameters(), CARD)

@@ -14,6 +14,11 @@ class AdafactorStrategy(OptimizerBase):
     user's explicit LR (typically 1e-4) is used directly.
     """
 
+    def kept_state_dtypes(self, optimizer: Any, param: Any, group: dict[str, Any]) -> dict[str, Any]:
+        # Its momentum is made at ``momentum_dtype`` (bf16 by default); the rest follows the grad.
+        momentum_dtype = getattr(optimizer, "momentum_dtype", None)
+        return {"exp_avg": momentum_dtype} if momentum_dtype is not None else {}
+
     def create_optimizer(
         self,
         params: Any,

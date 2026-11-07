@@ -356,7 +356,8 @@ class PipelineOptimizationMixin:
 
             # Swap the first N blocks (deepest blocks first = most savings)
             blocks_to_swap = list(attr)[:count]
-            manager = BlockSwappingManager(blocks_to_swap, device=self.device)
+            # root: a weight tied to a module outside the swapped blocks is never freed.
+            manager = BlockSwappingManager(blocks_to_swap, device=self.device, root=model)
             manager.apply()
 
             # Store manager for cleanup on end

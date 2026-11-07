@@ -443,39 +443,57 @@ def _every_optimizer() -> dict[str, Callable[[list[nn.Parameter]], torch.optim.O
 
 EVERY_OPTIMIZER = _every_optimizer()
 FRESH_STEPS, RESUMED_STEPS = 8, 3
+# A LoRA A of rank 4 at this width has 4096 elements: AdamW8bit's min_8bit_size, so its state is 8-bit.
+OPTIMIZER_WIDTH = 1024
 
 
-def _fresh_then_resumed(make: Callable, swapped: list[int]) -> list[list[torch.Tensor]]:
-    """8 steps, a save through a file, a new model and optimizer loaded from it, 3 more steps."""
+def _trainable_names(model: nn.Module) -> list[str]:
+    return [name for name, p in model.named_parameters() if p.requires_grad]
+
+
+def _fresh_then_resumed(key: str, swapped: list[int]) -> list[list[torch.Tensor]]:
+    """8 steps, a save through a file, then the restore the checkpoint manager does (a load, a
+    remap by name, ``load_state_dict``) into a new model and optimizer, and 3 more steps."""
     import io
 
-    model = build()
+    from app.engine.core.optimization.optimizer_remap import remap_optimizer_state
+
+    make = EVERY_OPTIMIZER[key]
+    model = build(width=OPTIMIZER_WIDTH)
     managers = [swap(model, swapped)] if swapped else []
     optimizer = make(trainable(model))
     snapshots = run(model, FRESH_STEPS, managers, optimizer=optimizer)
+    if "8bit" in key:
+        dtypes = {v.dtype for state in optimizer.state.values() for v in state.values() if torch.is_tensor(v)}
+        assert torch.uint8 in dtypes, f"{key} made no 8-bit state at this size: {dtypes}"
     buffer = io.BytesIO()
-    torch.save({"optimizer": optimizer.state_dict(), "params": [p.detach().clone() for p in trainable(model)]}, buffer)
+    torch.save(
+        {"optimizer": optimizer.state_dict(), "names": _trainable_names(model),
+         "params": [p.detach().clone() for p in trainable(model)]},
+        buffer,
+    )
     for manager in managers:
         manager.remove()
     del model, optimizer, managers
 
     buffer.seek(0)
     saved = torch.load(buffer, weights_only=False)
-    model = build()  # the base weights a resume loads again; the LoRA values come from the save
+    model = build(width=OPTIMIZER_WIDTH)  # the base weights a resume loads again; LoRA values from the save
     with torch.no_grad():
         for param, value in zip(trainable(model), saved["params"], strict=True):
             param.copy_(value)
     managers = [swap(model, swapped)] if swapped else []
     optimizer = make(trainable(model))
-    optimizer.load_state_dict(saved["optimizer"])
+    state, unmapped = remap_optimizer_state(saved["optimizer"], saved["names"], _trainable_names(model))
+    assert unmapped == []
+    optimizer.load_state_dict(state)
     return snapshots + run(model, RESUMED_STEPS, managers, optimizer=optimizer)
 
 
 @pytest.mark.parametrize("key", list(EVERY_OPTIMIZER))
 def test_every_optimizer_trains_a_swapped_run_bitwise_like_the_unswapped_one_across_a_resume(key):
-    make = EVERY_OPTIMIZER[key]
-    reference = _fresh_then_resumed(make, [])
-    swapped = _fresh_then_resumed(make, [0, 1, 2])
+    reference = _fresh_then_resumed(key, [])
+    swapped = _fresh_then_resumed(key, [0, 1, 2])
     assert_bitwise_equal(reference, swapped)
 
 
@@ -558,6 +576,157 @@ def test_every_quantized_scheme_that_trains_unswapped_trains_swapped_within_its_
             bound = (x - y).abs().max().item()
             seen = (x - z).abs().max().item()
             assert seen <= bound, f"step {step}, param {i}: swapped differs by {seen}, unswapped runs by {bound}"
+
+
+# ── Graphs, aliases, failures and placements the chain of blocks above does not have ──────────────
+
+
+class TwoStreamBlock(Block):
+    """Returns ``(h, side)``, where ``side`` is one no later block reads:
+
+    - ``passthrough``: its second input, unchanged;
+    - ``branch``: a second output only the loss reads;
+    - ``leaf``: a leaf tensor it was handed outside its inputs. Autograd accumulates a leaf's grad
+      at top priority, so the hook on this output fires at the start of backward.
+    """
+
+    carried: torch.Tensor | None = None
+
+    def __init__(self, width: int, side: str) -> None:
+        super().__init__(width)
+        self.side = side
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+        h = super().forward(x)
+        if self.side == "leaf":
+            return h, self.carried
+        return h, (y if self.side == "passthrough" else h * 2.0)
+
+
+class TwoStreamNet(nn.Module):
+    def __init__(self, n_blocks: int, width: int, side: str, ckpt: str | None = None) -> None:
+        super().__init__()
+        self.blocks = nn.ModuleList([TwoStreamBlock(width, side) for _ in range(n_blocks)])
+        self.ckpt = ckpt
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        from torch.utils.checkpoint import checkpoint
+
+        sides = []
+        for block in self.blocks:
+            block.carried = y
+            # A leaf handed in as an input as well would get its grad only once every block is done.
+            second = y.detach() if block.side == "leaf" else y
+            if self.ckpt is None or not torch.is_grad_enabled():
+                x, side = block(x, second)
+            else:
+                x, side = checkpoint(block, x, second, use_reentrant=self.ckpt == "reentrant")
+            sides.append(side)
+        return x.pow(2).mean() + sum(s.pow(2).mean() for s in sides)
+
+
+def build_two_stream(
+    n_blocks: int, width: int, side: str, ckpt: str | None = None, lora_blocks: Iterable[int] | None = None
+) -> nn.Module:
+    """``build``'s PEFT model and LoRA values, over blocks with a second output."""
+    from peft import LoraConfig, get_peft_model
+
+    torch.manual_seed(0)
+    targets = ["lin"] if lora_blocks is None else [f"blocks.{i}.lin" for i in lora_blocks]
+    model = get_peft_model(TwoStreamNet(n_blocks, width, side, ckpt), LoraConfig(r=4, target_modules=targets))
+    model = model.to("cuda")
+    gen = torch.Generator().manual_seed(1)
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "lora_B" in name:
+                param.copy_(torch.randn(param.shape, generator=gen))
+    return model
+
+
+@pytest.mark.parametrize("side", ["passthrough", "branch", "leaf"])
+def test_a_block_with_an_output_no_later_block_reads_trains_bitwise_like_unswapped(side):
+    # An output whose grad is ready before the block's own backward must not end the block before it.
+    def train(swapped: bool) -> list[list[torch.Tensor]]:
+        m = build_two_stream(4, 64, side)
+        managers = [swap(m, [0, 1, 2, 3])] if swapped else []
+        optimizer = torch.optim.AdamW(trainable(m), lr=1e-2)
+        x, y = batch(64, requires_grad=True), batch(64, seed=9, requires_grad=True)
+        out = []
+        for _ in range(3):
+            m(x, y).backward()
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+            if managers:
+                check_i3_idle(managers)
+            out.append([p.detach().cpu().clone() for p in trainable(m)])
+        return out
+
+    assert_bitwise_equal(train(False), train(True))
+
+
+def test_a_leaf_a_block_hands_back_collects_no_hook_across_steps():
+    # A hook on a leaf outlives the graph: one per step would pile up and all fire every backward.
+    model = build_two_stream(3, 64, "leaf")
+    manager = swap(model, [0, 1, 2])
+    y = batch(64, seed=9, requires_grad=True)
+    for _ in range(3):
+        model(batch(64), y).backward()
+    assert not y._backward_hooks, f"{len(y._backward_hooks)} hooks left on the leaf"
+    check_i3_idle([manager])
+
+
+def test_a_frozen_param_that_shares_storage_with_a_trainable_param_or_a_buffer_leaves_it_whole():
+    model = build()
+    block = blocks_of(model)[0]
+    block.alias = nn.Parameter(block.lin.weight.detach())  # trainable, same storage as a frozen weight
+    block.register_buffer("w_copy", block.w.detach())       # a buffer over a frozen weight's storage
+    manager = swap(model, [0, 1])
+    with torch.no_grad():
+        model(batch(64))
+    assert block.alias.untyped_storage().nbytes() == block.alias.numel() * 4
+    assert block.w_copy.untyped_storage().nbytes() == block.w_copy.numel() * 4
+    check_i3_idle([manager])
+
+
+def test_a_frozen_weight_tied_to_a_module_outside_the_swapped_blocks_stays_whole():
+    model = build()
+    blocks = blocks_of(model)
+    outside = nn.Linear(64, 64).to("cuda")
+    outside.weight = blocks[0].lin.base_layer.weight  # tied: the head reads it after the blocks ran
+    manager = BlockSwappingManager([blocks[0], blocks[1]], device=torch.device("cuda"), root=nn.ModuleList([model, outside]))
+    manager.apply()
+    with torch.no_grad():
+        model(batch(64))
+    assert outside.weight.untyped_storage().nbytes() == outside.weight.numel() * 4  # before any read of it
+    assert torch.equal(outside.weight.detach().cpu(), blocks[0].lin.base_layer.weight.detach().cpu())
+    check_i3_idle([manager])
+
+
+def test_a_forward_that_raises_leaves_no_swapped_block_filled():
+    model = build()
+    manager = swap(model, [0, 1, 2])
+    failing = blocks_of(model)[2]
+
+    def boom(_module: nn.Module, _args: tuple) -> None:
+        raise ValueError("out of memory, say")
+
+    handle = failing.register_forward_pre_hook(boom)
+    for grad in (False, True):
+        with torch.set_grad_enabled(grad), pytest.raises(ValueError):
+            model(batch(64))
+        assert manager.filled_blocks() == [], f"grad={grad}: {len(manager.filled_blocks())} left filled"
+    handle.remove()
+    run(model, 2, [manager])
+
+
+def test_a_block_still_on_the_host_when_the_swap_is_applied_trains_on_the_card():
+    reference = run(build(), 3)
+    model = build(device="cpu")
+    manager = swap(model, range(4))
+    assert manager.seated_bytes() > 0
+    assert all(p.device.type == "cuda" for p in model.parameters())
+    swapped = run(model, 3, [manager])
+    assert_bitwise_equal(reference, swapped)
 
 
 # ── The VRAM saving, measured: each twin in its own process ──────────────────────────────────────

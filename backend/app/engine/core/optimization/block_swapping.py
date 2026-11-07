@@ -9,17 +9,24 @@ the card storage alive, so training saved almost nothing.
 - **Trainable params** are never touched, so a param's grad and optimizer state stay beside it.
   A param that trains at any point, even one frozen again later (an adapter that targeted training
   or adaptive targeting turns off), stays resident: the LoRA save and EMA read it.
-- **Params frozen when the swap is applied**, on the execution device, are *seated*: each storage under them (tensor
+- **Params frozen when the swap is applied** are *seated*: each storage under them (tensor
   subclasses are walked through ``__tensor_flatten__``) gets one pinned host copy of its bytes,
   and its card memory is then freed in place (``untyped_storage().resize_(0)``). The tensor, and
   every view autograd saved of it, keeps its device and shape; only the bytes come and go.
+  A block still on the host when the swap is applied is first moved to the card.
+- **A storage something else owns is never seated**: one a trainable param or a buffer reaches,
+  one two swapped blocks share, or one a param outside the swapped blocks reaches (``root``).
 - **Before the block runs** the storages are refilled from the pinned copies. Frozen weights
   never change, so nothing is copied back.
-- **After the block's forward** the storages are freed. With grad, a hook on the block's outputs
-  refills the block just before its own backward and frees the block refilled before it; an
-  end-of-backward callback frees the last one.
-- **A gradient-checkpoint recompute** runs inside backward. Its pre-hook frees the blocks backward
-  has passed and keeps this one, as a non-reentrant recompute stops early and skips its post-hook.
+- **After the block's forward** the storages are freed, also when the forward raised.
+- **Backward**, the way FSDP does it: a hook on the block's outputs refills it before its own
+  backward, and an identity function on its inputs frees it once its inputs' grads are made, so
+  its backward is done. A block with no input that needs a grad is freed by an end-of-backward
+  callback, as is anything a failed backward left.
+- **A gradient-checkpoint recompute** runs inside backward. Its pre-hook refills the block and its
+  post-hook, which runs even when a non-reentrant recompute stops early by raising, marks it
+  pending. The reentrant kind's inputs get the identity function as well; the non-reentrant
+  kind's block is freed by the function from the original forward.
 - **Buffers** stay resident: they are small, and a forward may change one.
 - **``.to()``** on a swapped block refills it, applies, and seats it again; a block moved off the
   card is whole there.
@@ -27,7 +34,7 @@ the card storage alive, so training saved almost nothing.
 
 Usage::
 
-    manager = BlockSwappingManager(blocks, device=torch.device("cuda"))
+    manager = BlockSwappingManager(blocks, device=torch.device("cuda"), root=model)
     manager.apply()          # seat the blocks and register the hooks
     # ... training loop ...
     manager.remove()         # refill, and remove the hooks
@@ -42,7 +49,7 @@ import structlog
 import torch
 import torch.nn as nn
 from torch.utils._python_dispatch import is_traceable_wrapper_subclass
-from torch.utils._pytree import tree_leaves
+from torch.utils._pytree import tree_flatten, tree_leaves, tree_unflatten
 
 logger = structlog.get_logger(__name__)
 
@@ -55,6 +62,12 @@ def _leaves(tensor: torch.Tensor) -> Iterator[torch.Tensor]:
             yield from _leaves(getattr(tensor, name))
     else:
         yield tensor
+
+
+def _keys(tensor: torch.Tensor) -> Iterator[int]:
+    """Identities of the storages under ``tensor``."""
+    for leaf in _leaves(tensor):
+        yield leaf.untyped_storage()._cdata
 
 
 def _bytes(storage: torch.UntypedStorage) -> torch.Tensor:
@@ -73,17 +86,31 @@ def _normalized(device: torch.device | str) -> torch.device:
     return device
 
 
+class _FreeAfterBackward(torch.autograd.Function):
+    """Identity on a block's inputs; its backward runs once their grads are made: the block is done."""
+
+    @staticmethod
+    def forward(ctx: Any, manager: BlockSwappingManager, block: nn.Module, *inputs: torch.Tensor) -> Any:
+        ctx.manager, ctx.block = manager, block
+        return inputs
+
+    @staticmethod
+    def backward(ctx: Any, *grads: torch.Tensor) -> Any:
+        ctx.manager._after_backward(ctx.block)
+        return (None, None, *grads)
+
+
 class BlockSwappingManager:
     """Frees the card memory of swapped blocks' frozen weights between the times each block runs."""
 
-    def __init__(self, blocks: list[nn.Module], device: torch.device) -> None:
+    def __init__(self, blocks: list[nn.Module], device: torch.device, root: nn.Module | None = None) -> None:
         self.blocks = list(blocks)
         self.execution_device = _normalized(device)
+        self.root = root
         self._hooks: list[torch.utils.hooks.RemovableHandle] = []
         # block -> [(storage, pinned host copy of its bytes)]
         self._seated: dict[nn.Module, list[tuple[torch.UntypedStorage, torch.Tensor]]] = {}
         self._signature: dict[nn.Module, tuple] = {}
-        self._shared: set[int] = set()
         # Params frozen when the swap was applied, and never trainable since: the only ones seated.
         self._never_trained: set[int] = set()
         self._pending: list[nn.Module] = []
@@ -94,14 +121,17 @@ class BlockSwappingManager:
     def apply(self) -> None:
         """Seat every block and register its hooks."""
         logger.info("block_swapping_apply", num_blocks=len(self.blocks))
-        self._shared = self._storages_in_more_than_one_block()
+        if self._frees:
+            for block in self.blocks:  # one block at a time, so the card never holds two extra
+                if any(t.device != self.execution_device for t in [*block.parameters(), *block.buffers()]):
+                    block.to(self.execution_device)
         self._never_trained = {id(p) for block in self.blocks for p in block.parameters() if not p.requires_grad}
         for block in self.blocks:
             self._seat(block)
             self._wrap_apply(block)
             self._hooks.extend([
-                block.register_forward_pre_hook(self._pre_forward_hook),
-                block.register_forward_hook(self._post_forward_hook),
+                block.register_forward_pre_hook(self._pre_forward_hook, with_kwargs=True),
+                block.register_forward_hook(self._post_forward_hook, always_call=True),
             ])
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
@@ -139,55 +169,55 @@ class BlockSwappingManager:
     def _frees(self) -> bool:
         return self.execution_device.type != "cpu"
 
-    def _frozen_on_device(self, block: nn.Module) -> Iterator[nn.Parameter]:
-        """The params to seat: frozen when the swap was applied and never trainable since.
-
-        An adapter that targeted training or adaptive targeting turns off later stays resident:
-        the LoRA save, EMA and the adaptive probe read it outside any forward.
-        """
+    def _seatable(self, block: nn.Module) -> Iterator[nn.Parameter]:
+        """Params frozen when the swap was applied, never trainable since, on the execution device."""
         for param in block.parameters():
             if param.requires_grad:
                 self._never_trained.discard(id(param))
             elif id(param) in self._never_trained and param.device == self.execution_device:
                 yield param
 
-    def _storages_in_more_than_one_block(self) -> set[int]:
-        """Storages two swapped blocks share: freeing one block's would break the other's."""
-        owner: dict[int, nn.Module] = {}
-        shared: set[int] = set()
-        for block in self.blocks:
-            for param in block.parameters():
-                for leaf in _leaves(param.data):
-                    key = leaf.untyped_storage()._cdata
-                    if owner.setdefault(key, block) is not block:
-                        shared.add(key)
-        return shared
+    def _owned_elsewhere(self, block: nn.Module) -> set[int]:
+        """Storages ``block`` must leave whole: another owner reads them outside its forward.
+
+        Any storage a trainable param or a buffer reaches, anywhere; any another swapped block
+        reaches; and any a param of ``root`` outside the swapped blocks reaches.
+        """
+        inside = {id(m) for m in block.modules()}
+        owned: set[int] = set()
+        for top in [*self.blocks, *([self.root] if self.root is not None else [])]:
+            for module in top.modules():
+                for buffer in module._buffers.values():
+                    if buffer is not None:
+                        owned.update(_keys(buffer))
+                for param in module._parameters.values():
+                    # Held by a module outside this block (the same Parameter object tied there
+                    # too), or trainable: someone reads it while this block is freed.
+                    if param is not None and (param.requires_grad or id(module) not in inside):
+                        owned.update(_keys(param.data))
+        return owned
 
     def _block_signature(self, block: nn.Module) -> tuple:
         """What seating depends on: which storages each param has, where, and whether it trains."""
         for param in block.parameters():
             if param.requires_grad:
                 self._never_trained.discard(id(param))
-        return tuple(
-            (id(p), p.requires_grad, p.device, tuple(leaf.untyped_storage()._cdata for leaf in _leaves(p.data)))
-            for p in block.parameters()
-        )
+        return tuple((id(p), p.requires_grad, p.device, tuple(_keys(p.data))) for p in block.parameters())
 
     def _seat(self, block: nn.Module) -> None:
         """Pin a host copy of each frozen storage on the device, then free it. The block must be filled."""
         entries: list[tuple[torch.UntypedStorage, torch.Tensor]] = []
         previous = {st._cdata: pinned for st, pinned in self._seated.get(block, [])}
         if self._frees:
+            owned = self._owned_elsewhere(block)
             seen: set[int] = set()
-            for param in self._frozen_on_device(block):
+            for param in self._seatable(block):
                 for leaf in _leaves(param.data):
                     storage = leaf.untyped_storage()
                     key = storage._cdata
-                    if key in seen or key in self._shared or storage.nbytes() == 0:
+                    if key in seen or key in owned or storage.nbytes() == 0 or not storage.resizable():
                         continue
                     seen.add(key)
-                    if not storage.resizable():
-                        continue
                     pinned = previous.get(key)
                     if pinned is None or pinned.numel() != storage.nbytes():
                         pinned = torch.empty(storage.nbytes(), dtype=torch.uint8, pin_memory=True)
@@ -228,7 +258,10 @@ class BlockSwappingManager:
 
     # ── Backward bookkeeping ─────────────────────────────────────────────
 
-    def _queue_end(self) -> None:
+    def _keep_until_done(self, block: nn.Module) -> None:
+        """Inside backward: ``block`` stays filled until its backward is done or backward ends."""
+        if block not in self._pending:
+            self._pending.append(block)
         task = torch._C._current_graph_task_id()
         if self._end_queued_for != task:
             torch.autograd.Variable._execution_engine.queue_callback(self._end_of_backward)
@@ -239,37 +272,47 @@ class BlockSwappingManager:
         while self._pending:
             self._free(self._pending.pop())
 
-    def _retain(self, block: nn.Module) -> None:
-        """Inside backward: free the blocks backward is done with, keep ``block`` until the next one."""
-        while self._pending:
-            previous = self._pending.pop()
-            if previous is not block:
-                self._free(previous)
-        self._pending.append(block)
-        self._queue_end()
-
     def _reload(self, block: nn.Module) -> None:
-        """The block's outputs got their grads: its own backward is next."""
-        self._retain(block)
+        """One of the block's outputs got its grad: its own backward may come next."""
+        self._keep_until_done(block)
         self._fill(block)
+
+    def _after_backward(self, block: nn.Module) -> None:
+        """The grads of the block's inputs are made: nothing in its backward reads its weights again."""
+        if block in self._pending:
+            self._pending.remove(block)
+        self._free(block)
+
+    def _free_after_backward(self, block: nn.Module, args: tuple, kwargs: dict) -> tuple[tuple, dict]:
+        flat, spec = tree_flatten((args, kwargs))
+        where = [i for i, t in enumerate(flat) if torch.is_tensor(t) and t.requires_grad]
+        if not where or not self._seated.get(block):
+            return args, kwargs
+        wrapped = _FreeAfterBackward.apply(self, block, *(flat[i] for i in where))
+        for i, tensor in zip(where, wrapped, strict=True):
+            flat[i] = tensor
+        return tree_unflatten(flat, spec)
 
     # ── Hook Callbacks ───────────────────────────────────────────────────
 
-    def _pre_forward_hook(self, module: nn.Module, args: tuple) -> None:
+    def _pre_forward_hook(self, module: nn.Module, args: tuple, kwargs: dict) -> tuple[tuple, dict] | None:
         self._reseat_if_changed(module)
-        if _in_backward():
-            self._retain(module)  # a checkpoint recompute
         self._fill(module)
+        if torch.is_grad_enabled():
+            return self._free_after_backward(module, args, kwargs)
+        return None
 
     def _post_forward_hook(self, module: nn.Module, args: tuple, output: Any) -> None:
         if _in_backward():
-            # A recompute: the block's own backward runs next, so it stays filled until then.
-            if module not in self._pending:
-                self._pending.append(module)
-            self._queue_end()
+            # A recompute (a non-reentrant one stops early by raising): its backward is next.
+            self._keep_until_done(module)
             return
-        if self._seated.get(module):
-            outputs = [t for t in tree_leaves(output) if torch.is_tensor(t) and t.requires_grad]
+        if output is not None and self._seated.get(module):
+            # Made in this forward: a hook on a leaf (a tensor the block hands back without making
+            # it) would outlive the graph and pile up, one more at every step.
+            outputs = [
+                t for t in tree_leaves(output) if torch.is_tensor(t) and t.requires_grad and t.grad_fn is not None
+            ]
             if outputs:
                 torch.autograd.graph.register_multi_grad_hook(
                     outputs, lambda _grads, block=module: self._reload(block), mode="any"

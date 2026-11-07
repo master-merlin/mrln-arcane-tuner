@@ -60,6 +60,8 @@ def test_block_swap_engages_on_the_main_blocks():
         host._configure_block_swapping()
         assert _hooked(model.transformer_blocks) == [0]  # round(2 * 50 / 100) = 1, the first block
         assert [len(m.blocks) for m in host._block_swap_managers] == [1]
+        # The whole model, so a weight tied outside the swapped blocks is never freed.
+        assert host._block_swap_managers[0].root is model
     finally:
         for manager in getattr(host, "_block_swap_managers", []):
             manager.remove()

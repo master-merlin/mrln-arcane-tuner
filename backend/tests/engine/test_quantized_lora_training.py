@@ -110,12 +110,7 @@ def test_a_scheme_whose_kernel_has_no_derivative_trains_a_lora(backend, scheme):
     assert grad is not None and torch.isfinite(grad).all()
 
 
-def _nvfp4_until_task_2(pairs: list[tuple[str, str]]) -> list:
-    nvfp4 = pytest.mark.xfail(strict=True, reason="nvfp4 still falls back to int4 that needs mslk")
-    return [pytest.param(*p, marks=nvfp4) if p == ("torchao", "nvfp4") else p for p in pairs]
-
-
-@pytest.mark.parametrize(("backend", "scheme"), _nvfp4_until_task_2(offered()), ids=lambda v: str(v))
+@pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))
 def test_the_base_layer_alone_passes_the_grad_to_its_input(backend, scheme):
     # No LoRA: a grad the input gets can only come through the quantized base layer. int8_dynamic's
     # kernel dropped it without a word, and a LoRA run still "trained" on the adapters' own branches.
@@ -199,3 +194,49 @@ def test_the_dense_weight_lives_only_inside_backward(backend, scheme):
     torch.cuda.synchronize()
     grew = torch.cuda.memory_allocated() - before
     assert grew <= x.numel() * x.element_size(), f"backward left {grew} bytes behind (the input grad is {x.numel() * 2})"
+
+
+# ── Task 2: nvfp4 is NVFP4, and a cached entry of another representation is never loaded ──
+
+
+@pytest.mark.skipif(("torchao", "nvfp4") not in offered(), reason="nvfp4 is not offered on this card")
+def test_nvfp4_quantizes_to_nvfp4_without_a_fallback(caplog):
+    from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
+
+    lin = quantized("torchao", "nvfp4", layers=1).layers[0]
+    assert isinstance(lin.weight, NVFP4Tensor), type(lin.weight).__name__
+    assert "nvfp4_not_yet_implemented_in_torchao" not in caplog.text
+
+
+def _cache_of(scheme_made: str, labeled: str, path: str) -> None:
+    source = frozen_net()
+    signature = QuantizationFactory.state_shape_signature(source)
+    count = sum(p.numel() for p in source.parameters())
+    q = QuantizationFactory.quantize(source, scheme_made, backend_name="torchao")
+    QuantizationFactory.save_quantized(q, path, labeled, source_param_count=count, source_signature=signature)
+    assert os.path.exists(os.path.join(path, "metadata.json")), f"{scheme_made}: no cache was written"
+
+
+@pytest.mark.parametrize(
+    ("made", "labeled"), [("int4", "nvfp4"), ("int8", "int4")], ids=["int4-labeled-nvfp4", "int8-labeled-int4"],
+)
+def test_a_cached_entry_of_another_representation_is_never_loaded(made, labeled, tmp_path, caplog):
+    if ("torchao", labeled) not in offered() or ("torchao", made) not in offered():
+        pytest.skip(f"{made} or {labeled} is not offered on this card")
+    path = os.path.join(tmp_path, "cache")
+    _cache_of(made, labeled, path)
+    fresh = frozen_net()
+    before = {k: v.clone() for k, v in fresh.state_dict().items()}
+    assert QuantizationFactory.load_quantized(fresh, path, labeled) is None
+    assert "quantized_cache_stale_representation" in caplog.text
+    after = fresh.state_dict()
+    assert all(type(after[k]) is torch.Tensor and torch.equal(after[k], v) for k, v in before.items())
+    # The caller then quantizes fresh, as on any miss, and that trains.
+    changed, _ = train_steps(with_lora(QuantizationFactory.quantize(fresh, labeled, backend_name="torchao")))
+    assert changed
+
+
+def test_a_current_cached_entry_still_hits(tmp_path):
+    path = os.path.join(tmp_path, "cache")
+    _cache_of("int8", "int8", path)
+    assert QuantizationFactory.load_quantized(frozen_net(), path, "int8") is not None

@@ -21,6 +21,18 @@ try:
 except Exception:  # noqa: BLE001 — see the note above
     torchao = None
 
+# NVFP4 is a torchao prototype: guarded on its own, so its absence disables nvfp4 only.
+try:
+    from torchao.prototype.mx_formats import NVFP4WeightOnlyConfig
+    from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
+except Exception:  # noqa: BLE001 — see the note above
+    NVFP4WeightOnlyConfig = NVFP4Tensor = None
+
+try:
+    from torchao.quantization import Int4TilePackedTo4dTensor
+except Exception:  # noqa: BLE001 — see the note above
+    Int4TilePackedTo4dTensor = None
+
 from ..quantization_base import QuantizationBase
 from app.core.logger import get_logger
 
@@ -68,7 +80,7 @@ class TorchAOBackend(QuantizationBase):
             
         # Blackwell specific (SM 100+)
         if scheme == "nvfp4":
-            return major >= 10
+            return NVFP4WeightOnlyConfig is not None and major >= 10
 
         # General integer schemes (SM 80+)
         return major >= 8
@@ -101,11 +113,19 @@ class TorchAOBackend(QuantizationBase):
         elif scheme == "fp8_dynamic":
             quantize_(module, Float8DynamicActivationFloat8WeightConfig())
         elif scheme == "nvfp4":
-            # Future-proofing for torchao NVFP4 additions
-            # For now, fallback to int4 or wait for native torchao support
-            logger.warning("nvfp4_not_yet_implemented_in_torchao", fallback="int4")
-            quantize_(module, Int4WeightOnlyConfig())
+            # Weight-only NVFP4: its tensor dequantizes in the matmul, so it trains as it is.
+            quantize_(module, NVFP4WeightOnlyConfig())
         else:
             raise ValueError(f"Unknown torchao scheme: {scheme}")
 
         return module
+
+    @classmethod
+    def weight_type(cls, scheme: str) -> type | None:
+        """The tensor type ``quantize`` makes for ``scheme``, where an older build made another.
+
+        A cached entry for these schemes is loaded only if its quantized weights are of this type:
+        until 2026-11 ``int4`` (and ``nvfp4``, through a fallback) quantized to torchao's plain int4,
+        which has no Windows kernel and no backward.
+        """
+        return {"int4": Int4TilePackedTo4dTensor, "nvfp4": NVFP4Tensor}.get(scheme)

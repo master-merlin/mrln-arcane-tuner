@@ -356,6 +356,23 @@ class QuantizationFactory:
         )
 
     @staticmethod
+    def _stale_representation(scheme: str, state_dict: dict[str, Any]) -> str | None:
+        """Why a cached entry of ``scheme`` holds weights ``quantize`` no longer makes, else None.
+
+        Only schemes whose representation changed are checked (``TorchAOBackend.weight_type``);
+        every other scheme's entries load as before. A checked entry must hold at least one quantized
+        weight, and every quantized (subclass) tensor in it must be of the current type.
+        """
+        expected = TorchAOBackend.weight_type(scheme)
+        if expected is None:
+            return None
+        quantized = [t for t in state_dict.values() if isinstance(t, torch.Tensor) and type(t) is not torch.Tensor]
+        if not quantized:
+            return "no quantized weight"
+        other = next((t for t in quantized if not isinstance(t, expected)), None)
+        return None if other is None else type(other).__name__
+
+    @staticmethod
     def load_quantized(
         module: nn.Module,
         cache_path: str,
@@ -415,6 +432,13 @@ class QuantizationFactory:
                 state_dict = torch.load(
                     os.path.join(cache_path, "model.pt"), weights_only=True
                 )
+
+            stale = QuantizationFactory._stale_representation(scheme, state_dict)
+            if stale is not None:
+                logger.warning(
+                    "quantized_cache_stale_representation", path=cache_path, scheme=scheme, found=stale
+                )
+                return None
 
             module.load_state_dict(state_dict, strict=False, assign=True)
             trainable_backward.make_quantized_linears_trainable(module)  # the cached weights are the same subclasses

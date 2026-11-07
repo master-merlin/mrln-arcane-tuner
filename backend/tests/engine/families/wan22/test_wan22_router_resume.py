@@ -244,7 +244,12 @@ def check_adaptive_targeting_keeps_its_expert_across_a_resume(family: Family, tm
     assert controller_model(resumed) is resumed.driver.transformer_high
 
 
-BAD_AND_ODD_SEEDS =["abc", "12.5", [1], {"a": 1}, None, "", 12.7, "7", 7]
+# A swapped block's params go back to the CPU after its forward, while backward makes
+# their grads on the card: the first optimizer step mixes the two, on a fresh run too.
+BLOCK_SWAP_STEPS_ON_TWO_DEVICES = True
+BLOCK_SWAP_REASON = "a swapped block's LoRA steps on two devices (the first step, with or without a resume)"
+
+BAD_AND_ODD_SEEDS = ["abc", "12.5", [1], {"a": 1}, None, "", 12.7, "7", 7]
 
 
 def check_router_reads_the_run_seed(family: Family, tmp_path: Path, seed: Any) -> None:
@@ -472,25 +477,53 @@ def first_other_expert_ran(expert_of: dict[int, str], upto: int) -> bool:
     return len({expert_of[s] for s in range(upto + 1)}) == 2
 
 
-def make_training_trainer(family: Family, config: dict, *, out: Path) -> Any:
-    """``make_trainer`` on the card, with the real optimizer, scheduler, scaler and start placement.
+def make_training_trainer(
+    family: Family,
+    config: dict,
+    *,
+    out: Path,
+    device: torch.device = CUDA_DEVICE,
+    expert_mode: str = "both",
+    before_optimizer: Any = None,
+) -> Any:
+    """``make_trainer`` on ``device``, with the real optimizer, scheduler, scaler and start placement.
 
     The seed makes two calls build the same frozen base layers: a checkpoint holds only the adapters.
+    ``before_optimizer(t)`` runs where setup's freezing steps run, before the optimizer is built.
     """
     torch.manual_seed(1234)
     t = make_trainer(
         family,
         {"optimizer_type": "AdamW", "learning_rate": 1e-2, "mixed_precision": "no", "lr_scheduler": "constant", **config},
         out=out,
+        expert_mode=expert_mode,
     )
-    t.device = t.driver.device = CUDA_DEVICE
-    set_lora(t.driver.transformer_high, 0.3)
-    set_lora(t.driver.transformer_low, 0.7)
+    t.device = t.driver.device = device
+    for model, fill in ((t.driver.transformer_high, 0.3), (t.driver.transformer_low, 0.7)):
+        if model is not None:
+            set_lora(model, fill)
+    if before_optimizer is not None:
+        before_optimizer(t)
     t._configure_optimization(MAX_STEPS)
     return t
 
 
-def train_steps(t: Any, start: int, stop: int) -> list[str]:
+def save_training(t: Any, step: int) -> Path:
+    """The loop's save: adapters, router, optimizer, scheduler, scaler and the optimizer's names."""
+    return Path(
+        t.checkpoint_manager.save_checkpoint(
+            step=step,
+            components=t._build_trainable_components(),
+            optimizer=t.optimizer,
+            scheduler=t.lr_scheduler,
+            scaler=t.scaler,
+            config=dict(t.config),
+            optimizer_param_names=t._optimizer_param_names,
+        )
+    )
+
+
+def train_steps(t: Any, start: int, stop: int, *, device: torch.device = CUDA_DEVICE) -> list[str]:
     """Forward, backward, optimizer and hook, in the loop's order. The experts differ in their weights."""
     t.max_train_steps = MAX_STEPS
     experts: list[str] = []
@@ -498,7 +531,7 @@ def train_steps(t: Any, start: int, stop: int) -> list[str]:
         t.global_step = step
         experts.append(t.driver.active_expert)
         model = t.driver.get_primary_model()
-        model(torch.ones(2, 4, device=CUDA_DEVICE)).pow(2).mean().backward()
+        model(torch.ones(2, 4, device=device)).pow(2).mean().backward()
         t.optimizer.step()
         t.lr_scheduler.step()
         t.optimizer.zero_grad(set_to_none=True)
@@ -638,6 +671,186 @@ def check_single_expert_places_nothing(family: Family, tmp_path: Path, monkeypat
     resume(resumed, folder)
 
     assert calls == []
+
+
+def state_of(t: Any, params: list[torch.nn.Parameter]) -> list[dict[str, torch.Tensor]]:
+    """Each param's optimizer state, copied off whatever device it is on."""
+    return [{key: value.detach().clone().cpu() for key, value in t.optimizer.state[p].items()} for p in params]
+
+
+def assert_states_equal(got: list[dict[str, torch.Tensor]], saved: list[dict[str, torch.Tensor]]) -> None:
+    assert len(got) == len(saved)
+    for restored, was in zip(got, saved):
+        assert restored.keys() == was.keys()
+        assert all(torch.equal(restored[key], was[key]) for key in restored), "restored, not begun again"
+
+
+def check_pinned_job_restores_its_optimizer_exactly(family: Family, tmp_path: Path, *, expert: str) -> None:
+    """A single-expert job comes back on its exact moments, and the next step steps on them."""
+    first = make_training_trainer(family, {}, out=tmp_path / "run", device=CPU, expert_mode=expert)
+    assert first.driver.active_expert == expert
+    assert first.driver._expert_model(LOW if expert == HIGH else HIGH) is None
+    train_steps(first, 0, 4, device=CPU)
+    saved = state_of(first, expert_params(first, expert))
+    assert saved and all(saved), "every trainable param has stepped"
+    folder = save_training(first, 3)
+
+    resumed = make_training_trainer(family, {}, out=tmp_path / "run", device=CPU, expert_mode=expert)
+    assert resume(resumed, folder) == 4
+
+    restored = state_of(resumed, expert_params(resumed, expert))
+    assert_states_equal(restored, saved)
+
+    before = weights(resumed, expert)
+    train_steps(resumed, 4, 5, device=CPU)
+    for got, was in zip(state_of(resumed, expert_params(resumed, expert)), restored):
+        assert got["step"] == was["step"] + 1
+    for now, then in zip(weights(resumed, expert), before):
+        assert not torch.equal(now, then), "the step after the resume moved this weight"
+
+
+def _high_lora_a(t: Any) -> torch.nn.Parameter:
+    return t.driver.transformer_high.base_model.model[0].lora_A["default"].weight
+
+
+def check_rebuild_resume_in_swap_mode(family: Family, tmp_path: Path, *, startup: str) -> None:
+    """A rebuild restart in swap mode: the optimizer over a narrowed set of both experts' params
+    takes each kept param's moments by name, holds nothing of the removed one, and steps on."""
+    config = {"seed": seed_starting_on(family, startup, tmp_path), "expert_swap_mode": "swap"}
+    save_step, stop = resume_point(run_steps(make_trainer(family, config, out=tmp_path / "plan"), 0, MAX_STEPS))
+
+    first = make_training_trainer(family, config, out=tmp_path / "run", device=CPU)
+    assert first.driver.swap_mode == "swap" and first.driver.active_expert == startup
+    train_steps(first, 0, save_step + 1, device=CPU)
+    saved_names = list(first._optimizer_param_names)
+    saved_params = first.optimizer.param_groups[0]["params"]
+    saved_by_name = dict(zip(saved_names, state_of(first, saved_params)))
+    assert all(saved_by_name.values()), "both experts have stepped by the save"
+    removed_name = saved_names[next(i for i, p in enumerate(saved_params) if p is _high_lora_a(first))]
+    folder = save_training(first, save_step)
+
+    removed: list[torch.nn.Parameter] = []
+
+    def narrow(t: Any) -> None:
+        """What the restart's narrowed ``targeted_layers`` does: one adapter param is frozen."""
+        param = _high_lora_a(t)
+        param.requires_grad_(False)
+        removed.append(param)
+
+    resumed = make_training_trainer(family, config, out=tmp_path / "run", device=CPU, before_optimizer=narrow)
+    kept_names = list(resumed._optimizer_param_names)
+    assert set(kept_names) == set(saved_names) - {removed_name}
+    assert kept_names != saved_names[: len(kept_names)], "positions moved: only a remap by name restores them"
+    kept = [p for group in resumed.optimizer.param_groups for p in group["params"]]
+    high = {id(p) for p in resumed.driver.transformer_high.parameters()}
+    low = {id(p) for p in resumed.driver.transformer_low.parameters()}
+    assert any(id(p) in high for p in kept) and any(id(p) in low for p in kept), "the kept set spans both experts"
+
+    assert resume(resumed, folder) == save_step + 1
+
+    for name, got in zip(kept_names, state_of(resumed, kept)):
+        assert got.keys() == saved_by_name[name].keys(), name
+        assert all(torch.equal(got[key], saved_by_name[name][key]) for key in got), name
+    assert all(p is not removed[0] for group in resumed.optimizer.param_groups for p in group["params"])
+    assert removed[0] not in resumed.optimizer.state
+
+    before = [p.detach().clone().cpu() for p in kept]
+    experts = train_steps(resumed, save_step + 1, stop, device=CPU)
+    assert len(set(experts)) == 2, f"the resumed run crosses a switch: {experts}"
+    for param, was in zip(kept, before):
+        expert = HIGH if id(param) in high else LOW
+        if expert in experts:
+            assert not torch.equal(param.detach().cpu(), was), f"a kept {expert} param that stepped"
+
+
+class _TwoBlocks(nn.Module):
+    def __init__(self) -> None:
+        super().__init__()
+        self.blocks = nn.ModuleList([nn.Linear(4, 4), nn.Linear(4, 4)])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+
+def _two_block_expert(fill: float) -> PeftModel:
+    pm = get_peft_model(_TwoBlocks(), LoraConfig(r=2, lora_alpha=2, target_modules=["blocks.0", "blocks.1"]))
+    with torch.no_grad():
+        for block in pm.base_model.model.blocks:
+            block.lora_B["default"].weight.fill_(fill)
+    return pm
+
+
+def make_block_swapped_trainer(family: Family, config: dict, *, out: Path) -> Any:
+    """Setup's order on the card: the active expert on it, then ``_configure_block_swapping``
+    swaps one of its two blocks, then the optimizer and start placement."""
+    torch.manual_seed(1234)
+    t = make_trainer(
+        family,
+        {
+            "optimizer_type": "AdamW", "learning_rate": 1e-2, "mixed_precision": "no", "lr_scheduler": "constant",
+            "block_swap_config": {"blocks": 50},
+            **config,
+        },
+        out=out,
+    )
+    t.driver.transformer_high = _two_block_expert(0.3)
+    t.driver.transformer_low = _two_block_expert(0.7)
+    t.device = t.driver.device = CUDA_DEVICE
+    t.driver._set_active(t.driver.active_expert)  # resident: the active expert onto the card
+    t.driver.get_block_topology = lambda: [{"name": "blocks", "attr_path": "blocks"}]
+    t._configure_block_swapping()
+    assert len(t._block_swap_managers) == 1 and len(t._block_swap_managers[0].blocks) == 1
+    t._configure_optimization(MAX_STEPS)
+    assert t.driver.block_swap_active_expert == t.driver.active_expert
+    return t
+
+
+def check_block_swapped_expert_steps_after_resume(family: Family, tmp_path: Path) -> None:
+    """A resume with a real ``BlockSwappingManager`` on the active expert, then a real step through it."""
+    config = {"seed": seed_starting_on(family, HIGH, tmp_path)}
+    plan = run_steps(make_trainer(family, config, out=tmp_path / "plan"), 0, MAX_STEPS)
+    save_step = next(s for s in range(1, MAX_STEPS - 1) if plan[s + 1] == HIGH)
+
+    first = make_block_swapped_trainer(family, config, out=tmp_path / "run")
+    resumed = None
+    try:
+        train_steps(first, 0, save_step + 1, device=CUDA_DEVICE)
+        folder = save_training(first, save_step)
+
+        resumed = make_block_swapped_trainer(family, config, out=tmp_path / "run")
+        manager = resumed._block_swap_managers[0]
+        swapped = manager.blocks[0]
+        assert any(swapped is m for m in resumed.driver.transformer_high.modules())
+        assert len(manager._hooks) == 2, "its forward hooks are on"
+        lora = [p for name, p in swapped.named_parameters() if "lora_" in name]
+        assert lora and all(p.requires_grad for p in lora)
+
+        assert resume(resumed, folder) == save_step + 1
+        assert resumed.driver.active_expert == HIGH
+        assert resumed.driver.get_primary_model() is resumed.driver.transformer_high
+
+        before = [p.detach().clone().cpu() for p in lora]
+        resumed.global_step = save_step + 1
+        model = resumed.driver.get_primary_model()
+        model(torch.ones(2, 4, device=CUDA_DEVICE)).pow(2).mean().backward()
+        step_devices = [p.device for p in lora]
+        resumed.optimizer.step()
+
+        for param, was in zip(lora, before):
+            assert not torch.equal(param.detach().cpu(), was), "a LoRA param inside the swapped block stepped"
+        for param, device in zip(lora, step_devices):
+            state = resumed.optimizer.state[param]
+            assert state
+            for key, value in state.items():
+                # torch keeps a non-capturable AdamW's ``step`` on the host wherever the param is.
+                expected = torch.device("cpu") if key == "step" else device
+                assert value.device == expected, (key, value.device, device)
+    finally:
+        for t in (first, resumed):
+            for m in getattr(t, "_block_swap_managers", None) or []:
+                m.remove()
 
 
 # ── Acceptance 6: the decisions ──
@@ -916,3 +1129,20 @@ def test_a_pinned_job_loads_its_own_expert_from_a_dual_checkpoint(tmp_path):
     resume(pinned, folder)
 
     assert lora_value(pinned.driver.transformer_low) == SAVED_VALUE[LOW]
+
+
+@pytest.mark.parametrize("expert", [HIGH, LOW])
+def test_a_pinned_job_restores_its_optimizer_exactly(tmp_path, expert):
+    check_pinned_job_restores_its_optimizer_exactly(WAN22, tmp_path, expert=expert)
+
+
+@pytest.mark.parametrize("startup", [HIGH, LOW])
+def test_a_rebuild_resume_in_swap_mode_restores_the_kept_params_by_name(tmp_path, startup):
+    check_rebuild_resume_in_swap_mode(WAN22, tmp_path, startup=startup)
+
+
+@pytest.mark.xdist_group("gpu")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="block swapping pins host memory and pages onto a card")
+@pytest.mark.xfail(BLOCK_SWAP_STEPS_ON_TWO_DEVICES, raises=RuntimeError, strict=True, reason=BLOCK_SWAP_REASON)
+def test_a_block_swapped_expert_steps_through_its_swapped_block_after_a_resume(tmp_path):
+    check_block_swapped_expert_steps_after_resume(WAN22, tmp_path)

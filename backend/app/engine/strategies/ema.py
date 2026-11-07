@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import logging
 
+import torch
 import torch.nn as nn
 import structlog
 
 logger = structlog.get_logger(__name__)
+
+# The step count's key in ``state_dict()``: a parameter name never has spaces.
+STEP_COUNT_KEY = "ema step count"
 
 
 class EMAHandler:
@@ -153,7 +157,8 @@ class EMAHandler:
         logger.debug("ema_restored", direction="backup_to_model")
 
     def state_dict(self):
-        return self.shadow
+        """The shadow, plus the step count under a key no parameter can have."""
+        return {**self.shadow, STEP_COUNT_KEY: torch.tensor(self._step_count)}
 
     def load_state_dict(self, state_dict):
         """Adopt a saved shadow, tolerating a live parameter set whose names
@@ -193,10 +198,19 @@ class EMAHandler:
           parameter, log the same loud warning — a partial adopt must
           never be silent about which params it left uncovered.
         """
+        state_dict = dict(state_dict)
+        # A checkpoint from before the count was saved has none: it starts at 0.
+        step_count = state_dict.pop(STEP_COUNT_KEY, None)
+        if step_count is not None:
+            self._step_count = int(step_count)
+
         param_dict = dict(self._named_parameters())
         live_names = set(param_dict)
         loaded_names = set(state_dict)
         overlap = live_names & loaded_names
+        # The shadow covers the trainable params only (``__init__``), so a frozen
+        # base weight the checkpoint has no shadow for is not missing from it.
+        trainable_names = {name for name in live_names if param_dict[name].requires_grad}
 
         if live_names and not overlap:
             logger.warning(
@@ -220,12 +234,12 @@ class EMAHandler:
         self.shadow = merged
         self._refresh_shadow_param_cache(param_dict)
 
-        missing_live = live_names - overlap
+        missing_live = trainable_names - overlap
         if missing_live:
             logger.warning(
                 "ema_shadow_key_mismatch",
                 reason="partial_overlap",
-                live_params=len(live_names),
+                live_params=len(trainable_names),
                 loaded_keys=len(loaded_names),
                 overlap=len(overlap),
                 sample_missing_live=sorted(missing_live)[:5],

@@ -244,11 +244,6 @@ def check_adaptive_targeting_keeps_its_expert_across_a_resume(family: Family, tm
     assert controller_model(resumed) is resumed.driver.transformer_high
 
 
-# A swapped block's params go back to the CPU after its forward, while backward makes
-# their grads on the card: the first optimizer step mixes the two, on a fresh run too.
-BLOCK_SWAP_STEPS_ON_TWO_DEVICES = True
-BLOCK_SWAP_REASON = "a swapped block's LoRA steps on two devices (the first step, with or without a resume)"
-
 BAD_AND_ODD_SEEDS = ["abc", "12.5", [1], {"a": 1}, None, "", 12.7, "7", 7]
 
 
@@ -832,15 +827,16 @@ def _two_block_expert(fill: float) -> PeftModel:
     return pm
 
 
-def make_block_swapped_trainer(family: Family, config: dict, *, out: Path) -> Any:
+def make_block_swapped_trainer(family: Family, config: dict, *, out: Path, swapped: bool = True) -> Any:
     """Setup's order on the card: the active expert on it, then ``_configure_block_swapping``
-    swaps one of its two blocks, then the optimizer and start placement."""
+    swaps one of its two blocks, then the optimizer and start placement. ``swapped=False`` builds
+    the same trainer with no block swapped, as the twin a swapped run is compared with."""
     torch.manual_seed(1234)
     t = make_trainer(
         family,
         {
             "optimizer_type": "AdamW", "learning_rate": 1e-2, "mixed_precision": "no", "lr_scheduler": "constant",
-            "block_swap_config": {"blocks": 50},
+            "block_swap_config": {"blocks": 50 if swapped else 0},
             **config,
         },
         out=out,
@@ -848,13 +844,57 @@ def make_block_swapped_trainer(family: Family, config: dict, *, out: Path) -> An
     t.driver.transformer_high = _two_block_expert(0.3)
     t.driver.transformer_low = _two_block_expert(0.7)
     t.device = t.driver.device = CUDA_DEVICE
+    if config.get("expert_swap_mode"):
+        t.driver.configure_swap_mode(config["expert_swap_mode"])
     t.driver._set_active(t.driver.active_expert)  # resident: the active expert onto the card
     t.driver.get_block_topology = lambda: [{"name": "blocks", "attr_path": "blocks"}]
     t._configure_block_swapping()
-    assert len(t._block_swap_managers) == 1 and len(t._block_swap_managers[0].blocks) == 1
+    if swapped:
+        assert len(t._block_swap_managers) == 1 and len(t._block_swap_managers[0].blocks) == 1
     t._configure_optimization(MAX_STEPS)
-    assert t.driver.block_swap_active_expert == t.driver.active_expert
+    if swapped:
+        assert t.driver.block_swap_active_expert == t.driver.active_expert
     return t
+
+
+def check_swap_mode_with_block_swap_steps_across_switches(family: Family, tmp_path: Path) -> None:
+    """Swap mode moves the block-swapped expert off the card and back at each switch. The run steps
+    across at least two switches, keeps every trainable param, grad and state of the active expert on
+    the card, leaves no swapped weight filled after a step, and trains bitwise like an unswapped twin."""
+    config = {"seed": seed_starting_on(family, HIGH, tmp_path), "expert_swap_mode": "swap"}
+
+    def trained(swapped: bool) -> tuple[list[str], list[torch.Tensor], int]:
+        t = make_block_swapped_trainer(family, config, out=tmp_path / f"run-{swapped}", swapped=swapped)
+        managers = list(getattr(t, "_block_swap_managers", None) or [])
+        experts: list[str] = []
+        seated_while_active = 0
+        try:
+            for step in range(MAX_STEPS):
+                experts += train_steps(t, step, step + 1)
+                active = t.driver.get_primary_model()
+                for param in (p for p in active.parameters() if p.requires_grad):
+                    assert param.device == CUDA_DEVICE, "the active expert's trainable param is on the card"
+                    for key, value in t.optimizer.state.get(param, {}).items():
+                        if torch.is_tensor(value) and key != "step":
+                            assert value.device == param.device, (key, value.device, param.device)
+                for manager in managers:
+                    assert manager.filled_blocks() == [], f"step {step}: a swapped block still holds its weights"
+                    if t.driver.active_expert == HIGH:
+                        seated_while_active = max(seated_while_active, manager.seated_bytes())
+            params = [p.detach().cpu().clone() for group in t.optimizer.param_groups for p in group["params"]]
+            return experts, params, seated_while_active
+        finally:
+            for manager in managers:
+                manager.remove()
+
+    experts, swapped_params, seated = trained(True)
+    switches = sum(1 for a, b in zip(experts, experts[1:]) if a != b)
+    assert switches >= 2, f"the run crosses two switches: {experts}"
+    assert seated > 0, "the swapped expert's block was seated while it was on the card"
+    plain_experts, plain_params, _ = trained(False)
+    assert plain_experts == experts
+    for got, want in zip(swapped_params, plain_params, strict=True):
+        assert torch.equal(got, want), (got - want).abs().max()
 
 
 def check_block_swapped_expert_steps_after_resume(family: Family, tmp_path: Path) -> None:
@@ -1199,6 +1239,11 @@ def test_a_rebuild_resume_in_swap_mode_restores_the_kept_params_by_name(tmp_path
 
 @pytest.mark.xdist_group("gpu")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="block swapping pins host memory and pages onto a card")
-@pytest.mark.xfail(BLOCK_SWAP_STEPS_ON_TWO_DEVICES, raises=RuntimeError, strict=True, reason=BLOCK_SWAP_REASON)
 def test_a_block_swapped_expert_steps_through_its_swapped_block_after_a_resume(tmp_path):
     check_block_swapped_expert_steps_after_resume(WAN22, tmp_path)
+
+
+@pytest.mark.xdist_group("gpu")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="block swapping frees card memory: needs a card")
+def test_swap_mode_with_block_swap_steps_across_two_switches_like_an_unswapped_run(tmp_path):
+    check_swap_mode_with_block_swap_steps_across_switches(WAN22, tmp_path)

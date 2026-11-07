@@ -648,11 +648,10 @@ class GenericSamplingPipeline(ABC):
     def _ensure_transformer_on_device(self, transformer: torch.nn.Module) -> None:
         """Place the transformer on the sampling device for denoise.
 
-        Skipped when block swapping is active: the swap manager's
-        pre-forward hooks pull blocks to GPU on demand, and a bulk
-        ``module.to(device)`` would put every block on GPU at once
-        (~40 GB on Qwen-class models), defeating the swap and bloating
-        the sampling peak by the full base-model size.
+        Skipped when block swapping is active: the transformer is already
+        on the device, and the swap manager refills each swapped block's
+        weights only while it runs. A bulk ``module.to(device)`` would
+        refill and re-seat every swapped block for nothing.
         """
         if getattr(self.pipeline, "_block_swap_managers", None):
             return

@@ -156,10 +156,11 @@ class BerniniRDriver(WanDriverBase):
         device-mismatch ``RuntimeError`` mid-forward.
 
         Skipped when ``expert`` is under active block-swap management
-        (``self.block_swap_active_expert``) — its blocks are cycled between
-        pinned CPU shadow buffers and GPU by ``BlockSwappingManager``'s
-        forward hooks, so a bulk ``model.to(device)`` here would defeat the
-        swap (mirrors :class:`Wan22Driver._set_active`).
+        (``self.block_swap_active_expert``) — it is on the device already,
+        and ``BlockSwappingManager`` frees its swapped blocks' frozen weights
+        between the times each block runs, so a bulk ``model.to(device)``
+        here would only refill and re-seat them (mirrors
+        :class:`Wan22Driver._set_active`).
         """
         self._active_expert = expert
         model = self._expert_model(expert)

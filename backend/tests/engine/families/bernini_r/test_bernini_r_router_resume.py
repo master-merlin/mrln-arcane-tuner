@@ -18,6 +18,7 @@ from tests.engine.families.wan22.test_wan22_router_resume import (
     BLOCK_SWAP_STEPS_ON_TWO_DEVICES,
     Family,
     check_adaptive_targeting_keeps_its_expert_across_a_resume,
+    check_ema_follows_the_experts_across_swaps,
     check_block_swapped_expert_steps_after_resume,
     check_fresh_run_starts_on_the_routers_expert,
     check_pinned_job_restores_its_optimizer_exactly,
@@ -128,6 +129,12 @@ def test_a_fresh_run_starts_on_the_routers_expert(tmp_path, startup):
 
 def test_adaptive_targeting_keeps_its_expert_across_a_resume(tmp_path):
     check_adaptive_targeting_keeps_its_expert_across_a_resume(BERNINI, tmp_path)
+
+
+@pytest.mark.xdist_group("gpu")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a card to swap an expert onto")
+def test_ema_follows_the_experts_across_swaps(tmp_path):
+    check_ema_follows_the_experts_across_swaps(BERNINI, tmp_path)
 
 
 def test_a_single_expert_job_places_nothing(tmp_path, monkeypatch):

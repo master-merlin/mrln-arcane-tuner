@@ -534,9 +534,59 @@ def train_steps(t: Any, start: int, stop: int, *, device: torch.device = CUDA_DE
         model(torch.ones(2, 4, device=device)).pow(2).mean().backward()
         t.optimizer.step()
         t.lr_scheduler.step()
+        if getattr(t, "ema_handler", None) is not None:
+            t.ema_handler.step()
         t.optimizer.zero_grad(set_to_none=True)
         t.driver.on_optimizer_step(step)
     return experts
+
+
+def check_ema_follows_the_experts_across_swaps(family: Family, tmp_path: Path) -> None:
+    """Swap mode with EMA, as setup builds it: the load makes HIGH active, placement puts it on the
+    card and LOW off it, EMA shadows both where they are, and the fresh start swaps to the router's
+    LOW. Every EMA step after that, across switches and after a resume, runs on each param's device."""
+    config = {
+        "seed": seed_starting_on(family, LOW, tmp_path),
+        "expert_swap_mode": "swap",
+        "ema": True,
+        "ema_decay": 0.9,
+        "optimizer_type": "AdamW",
+        "learning_rate": 1e-2,
+        "mixed_precision": "no",
+        "lr_scheduler": "constant",
+    }
+
+    def built(out: Path) -> Any:
+        torch.manual_seed(1234)
+        t = through_assignment(make_trainer(family, config, out=out))
+        t.device = t.driver.device = CUDA_DEVICE
+        t.driver.configure_swap_mode("swap")
+        t._configure_optimization(MAX_STEPS)
+        t._configure_ema()
+        return t
+
+    first = built(tmp_path / "run")
+    first._resume_if_needed()  # the fresh start: LOW goes onto the card
+    save_step, stop = resume_point(run_steps(make_trainer(family, config, out=tmp_path / "plan"), 0, MAX_STEPS))
+    experts = train_steps(first, 0, save_step + 1)
+    assert set(experts) == {HIGH, LOW}, "the run crossed a switch"
+    folder = Path(
+        first.checkpoint_manager.save_checkpoint(
+            step=save_step, components=first._build_trainable_components(), optimizer=first.optimizer,
+            scheduler=first.lr_scheduler, scaler=first.scaler, config=dict(first.config),
+            ema_handler=first.ema_handler, optimizer_param_names=first._optimizer_param_names,
+        )
+    )
+
+    resumed = built(tmp_path / "run")
+    resume(resumed, folder)
+    after = train_steps(resumed, save_step + 1, stop)
+    assert set(after) == {HIGH, LOW}, "the resumed run crossed a switch"
+    # The last hook may have swapped again: the next EMA step is where the shadows follow.
+    resumed.ema_handler.step()
+    params = dict(resumed.ema_handler._named_parameters())
+    for name, shadow in resumed.ema_handler.shadow.items():
+        assert shadow.device == params[name].device, name
 
 
 def expert_params(t: Any, expert: str) -> list[torch.nn.Parameter]:
@@ -950,6 +1000,12 @@ def test_the_router_reads_the_seed_the_run_reads(tmp_path, seed):
 @pytest.mark.parametrize("startup", [HIGH, LOW])
 def test_a_fresh_run_starts_on_the_routers_expert(tmp_path, startup):
     check_fresh_run_starts_on_the_routers_expert(WAN22, tmp_path, startup=startup)
+
+
+@pytest.mark.xdist_group("gpu")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a card to swap an expert onto")
+def test_ema_follows_the_experts_across_swaps(tmp_path):
+    check_ema_follows_the_experts_across_swaps(WAN22, tmp_path)
 
 
 def test_adaptive_targeting_keeps_its_expert_across_a_resume(tmp_path):

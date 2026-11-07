@@ -70,12 +70,8 @@ class PipelineOptimizationMixin:
         # Reset measured-VRAM snapshots for this run (estimation-wall calibration).
         self._vram_snapshots = {}
 
-        # 1-2. Freeze ALL components before quantization
-        self._freeze_all()
-
-        # 3. Quantize frozen components ON CPU (cache load or fresh)
-        #    before moving to GPU so we never allocate full bf16 on the card.
-        self._quantize_components()
+        # 1-3. Fuse QKV (FLUX.2), freeze everything, quantize on the CPU
+        self._fuse_freeze_and_quantize()
 
         # 4. Move (now quantized / FP8) primary model to GPU
         self._move_component_to_gpu("unet")
@@ -92,11 +88,7 @@ class PipelineOptimizationMixin:
         #     fall back to math SDPA (quadratic in image area — see the module).
         self._configure_gqa_attention()
 
-        # 5a. Fuse QKV projections (Flux2: to_q/k/v → to_qkv) before PEFT
-        #     so PEFT trains a single shared lora_A per fused QKV layer
-        self._fuse_qkv_projections()
-
-        # 5b. PEFT / LoRA (inject adapters into Float8Linear modules)
+        # 5. PEFT / LoRA (QKV was fused in step 1, so PEFT trains one shared lora_A per fused QKV)
         self._apply_peft()
 
         # Snapshot after adapters inject — delta vs "model" = LoRA adapter VRAM.
@@ -135,6 +127,20 @@ class PipelineOptimizationMixin:
             self.logger.info("sampling_pipeline_initialized")
 
     # ── PEFT / LoRA ──────────────────────────────────────────────────────
+
+    def _fuse_freeze_and_quantize(self) -> None:
+        """Fuse QKV (FLUX.2), then freeze every component, then quantize the frozen ones.
+
+        Fusion first: it concatenates the Q/K/V weights into a new ``to_qkv`` Linear, and a
+        quantized weight cannot be concatenated (torchao's int4, int8 and NVFP4 tensors have no
+        ``cat``; a concatenated Float8 tensor does not load into the new layer). Fused first, the
+        new layer is a plain Linear that freezing covers and quantizing treats as any other, and the
+        cache is keyed on the fused model it is loaded into. Entries written unfused have another
+        parameter count and miss.
+        """
+        self._fuse_qkv_projections()
+        self._freeze_all()
+        self._quantize_components()
 
     def _fuse_qkv_projections(self) -> None:
         """Fuse separate Q/K/V projections into single ``to_qkv`` modules.

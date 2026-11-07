@@ -17,6 +17,7 @@ from .quantization_base import QuantizationBase
 from .quantizers.torchao import TorchAOBackend
 from .quantizers.quanto import QuantoBackend
 from .quantizers.bitsandbytes import BitsAndBytesBackend
+from .quantizers import trainable_backward
 
 logger = structlog.get_logger(__name__)
 
@@ -154,7 +155,11 @@ class QuantizationFactory:
         param_count = sum(p.numel() for p in module.parameters())
         logger.info("quantizing_model", backend=resolved_backend, scheme=resolved_scheme, params=param_count)
 
-        return backend.quantize(module, resolved_scheme, device=device)
+        quantized = backend.quantize(module, resolved_scheme, device=device)
+        wrapped = trainable_backward.make_quantized_linears_trainable(quantized)
+        if wrapped:
+            logger.info("quantized_layers_dequantized_backward", scheme=resolved_scheme, layers=wrapped)
+        return quantized
 
     @classmethod
     def get_supported_capabilities(cls) -> dict[str, list[str]]:
@@ -351,6 +356,22 @@ class QuantizationFactory:
         )
 
     @staticmethod
+    def _stale_representation(scheme: str, state_dict: dict[str, Any]) -> str | None:
+        """Why a cached entry of ``scheme`` holds weights ``quantize`` no longer makes, else None.
+
+        Only schemes whose representation changed are checked (``TorchAOBackend.weight_type``);
+        every other scheme's entries load as before. Every quantized (subclass) tensor in a checked
+        entry must be of the current type. An entry with none is valid: a model none of whose layers
+        the scheme can quantize (widths no group size divides) is cached as it is.
+        """
+        expected = TorchAOBackend.weight_type(scheme)
+        if expected is None:
+            return None
+        quantized = [t for t in state_dict.values() if isinstance(t, torch.Tensor) and type(t) is not torch.Tensor]
+        other = next((t for t in quantized if not isinstance(t, expected)), None)
+        return None if other is None else type(other).__name__
+
+    @staticmethod
     def load_quantized(
         module: nn.Module,
         cache_path: str,
@@ -400,7 +421,10 @@ class QuantizationFactory:
         try:
             if format == "safetensors":
                 from safetensors.torch import load_file
-                state_dict = load_file(os.path.join(cache_path, "model.safetensors"))
+                # Onto the device quantize() puts the model on, as a torch-format entry's tensors
+                # come back on theirs. Only an entry with no quantized tensor is safetensors.
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+                state_dict = load_file(os.path.join(cache_path, "model.safetensors"), device=device)
             else:
                 # weights_only=True: this is a cache file under backend/models,
                 # and the legacy torch.save fallback path is only ever a plain
@@ -411,7 +435,15 @@ class QuantizationFactory:
                     os.path.join(cache_path, "model.pt"), weights_only=True
                 )
 
+            stale = QuantizationFactory._stale_representation(scheme, state_dict)
+            if stale is not None:
+                logger.warning(
+                    "quantized_cache_stale_representation", path=cache_path, scheme=scheme, found=stale
+                )
+                return None
+
             module.load_state_dict(state_dict, strict=False, assign=True)
+            trainable_backward.make_quantized_linears_trainable(module)  # the cached weights are the same subclasses
             logger.info("quantized_model_loaded", path=cache_path, scheme=scheme)
             return module
         except Exception as e:

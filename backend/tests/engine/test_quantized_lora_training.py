@@ -141,8 +141,10 @@ def test_the_input_grad_is_the_output_grad_times_the_dense_weight(backend, schem
     assert torch.equal(x.grad, g @ dense)
     if scheme == "int4":
         # Weight-only: the dense weight is the very weight the kernel multiplies by. The kernel adds
-        # the bias after its product (a fused addmm would round once, not twice).
-        assert torch.equal(F.linear(x.detach(), dense) + lin.bias, lin(x.detach()))
+        # the bias after its product, and sums in another order than cuBLAS: equal to that order's
+        # bf16 rounding (2 ulps of the output's magnitude), not bit for bit at every width.
+        want, got = F.linear(x.detach(), dense) + lin.bias, lin(x.detach())
+        assert (got.float() - want.float()).abs().max() <= 2.0**-6 * want.float().abs().max()
 
 
 @pytest.mark.parametrize(("backend", "scheme"), _offered_only(UNTOUCHED), ids=lambda v: str(v))
@@ -275,6 +277,152 @@ def test_a_current_cached_entry_still_hits(tmp_path):
     path = os.path.join(tmp_path, "cache")
     _cache_of("int8", "int8", path)
     assert QuantizationFactory.load_quantized(frozen_net(), path, "int8") is not None
+
+
+# ── Review round 1: the precisions, pipeline order and memory production uses ──
+
+# What layer_manifest.resolve_precision yields: fp32 weights (SDXL) honour the configured autocast;
+# bf16 weights make autocast follow the model, so they never run under fp16.
+PRECISIONS = [
+    (torch.float32, None), (torch.float32, torch.bfloat16), (torch.float32, torch.float16),
+    (torch.bfloat16, None), (torch.bfloat16, torch.bfloat16),
+]
+
+
+def _precision_id(p) -> str:
+    dtype, autocast = p
+    return f"{str(dtype)[6:]}-{'none' if autocast is None else str(autocast)[6:]}"
+
+
+def amp(autocast: torch.dtype | None):
+    import contextlib
+
+    return torch.autocast("cuda", dtype=autocast) if autocast is not None else contextlib.nullcontext()
+
+
+@pytest.mark.parametrize("precision", PRECISIONS, ids=_precision_id)
+@pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))
+def test_every_offered_scheme_trains_at_every_production_precision(backend, scheme, precision):
+    dtype, autocast = precision
+
+    def layer() -> nn.Module:
+        torch.manual_seed(0)
+        return nn.Sequential(nn.Linear(WIDTH, WIDTH, dtype=dtype)).to("cuda").requires_grad_(False)
+
+    def through(module: nn.Module) -> tuple[torch.Tensor, torch.Tensor]:
+        gen = torch.Generator("cuda").manual_seed(4)
+        x = torch.randn(8, WIDTH, device="cuda", dtype=dtype, generator=gen).requires_grad_(True)
+        g = torch.randn(8, WIDTH, device="cuda", dtype=dtype, generator=gen)
+        with amp(autocast):
+            out = module(x)
+        out.backward(g.to(out.dtype))
+        return out.detach().float(), x.grad.float()
+
+    want_out, want_grad = through(layer())
+    q = QuantizationFactory.quantize(layer(), scheme, backend_name=backend)
+    got_out, got_grad = through(q)
+    for what, got, want in (("output", got_out, want_out), ("input grad", got_grad, want_grad)):
+        error = ((got - want).norm() / want.norm()).item()
+        assert error <= 0.15, f"{backend}/{scheme} {_precision_id(precision)}: {what} {error:.4f} off the unquantized"
+
+    model = with_lora(QuantizationFactory.quantize(frozen_net().to(dtype), scheme, backend_name=backend))
+    params = [p for p in model.parameters() if p.requires_grad]
+    before = [p.detach().clone() for p in params]
+    optimizer = torch.optim.AdamW(params, lr=1e-2)
+    x = batch().to(dtype).detach().requires_grad_(True)
+    with amp(autocast):
+        loss = model(x).float().pow(2).mean()
+    loss.backward()
+    optimizer.step()
+    assert any(not torch.equal(a, b) for a, b in zip(before, params, strict=True))
+    assert torch.isfinite(x.grad).all()
+
+
+from app.engine.core.pipeline.pipeline_optimization import PipelineOptimizationMixin  # noqa: E402
+
+
+class _FusionHost(PipelineOptimizationMixin):
+    """What prepare_for_training's first steps touch, with the real fusion and the real factory."""
+
+    def __init__(self, model: nn.Module, scheme: str, cache: str | None = None) -> None:
+        import structlog
+
+        from app.engine.models.families.flux2.driver import Flux2Driver
+
+        self.driver = object.__new__(Flux2Driver)  # should_fuse_qkv_projections() is True
+        self.logger = structlog.get_logger("test")
+        self.model, self.scheme, self.cache = model, scheme, cache
+
+    def _get_primary_model(self) -> nn.Module:
+        return self.model
+
+    def _freeze_all(self) -> None:
+        self.model.requires_grad_(False)
+
+    def _quantize_components(self) -> None:  # _quantize_primary_model's cache-then-quantize, in short
+        if self.cache and os.path.exists(os.path.join(self.cache, "metadata.json")):
+            loaded = QuantizationFactory.load_quantized(self.model, self.cache, self.scheme)
+            assert loaded is not None, "the fused model's cache did not hit"
+            self.model = loaded
+            return
+        count = sum(p.numel() for p in self.model.parameters())
+        signature = QuantizationFactory.state_shape_signature(self.model)
+        self.model = QuantizationFactory.quantize(self.model, self.scheme, backend_name="torchao")
+        if self.cache:
+            QuantizationFactory.save_quantized(
+                self.model, self.cache, self.scheme, source_param_count=count, source_signature=signature
+            )
+
+
+def _flux2_attention() -> nn.Module:
+    from diffusers.models.transformers.transformer_flux2 import Flux2Attention
+
+    torch.manual_seed(0)
+    attention = Flux2Attention(query_dim=WIDTH, heads=2, dim_head=WIDTH // 2, added_kv_proj_dim=WIDTH)
+    return nn.ModuleDict({"attn": attention}).to("cuda", torch.bfloat16)
+
+
+@pytest.mark.parametrize("scheme", [s for b, s in offered() if b == "torchao"])
+def test_flux2_fuses_its_qkv_before_quantizing_and_trains_fresh_and_cached(scheme, tmp_path):
+    from peft import LoraConfig, get_peft_model
+
+    cache = os.path.join(tmp_path, "cache")
+    for _run in ("fresh", "cached"):
+        host = _FusionHost(_flux2_attention(), scheme, cache)
+        host._fuse_freeze_and_quantize()
+        attn = host.model["attn"]
+        assert attn.fused_projections and not any(p.requires_grad for p in host.model.parameters())
+        model = get_peft_model(host.model, LoraConfig(r=4, target_modules=["to_qkv"]))
+        with torch.no_grad():
+            for name, param in model.named_parameters():
+                if "lora_B" in name:
+                    param.normal_(std=0.01)
+        params = [p for p in model.parameters() if p.requires_grad]
+        before = [p.detach().clone() for p in params]
+        x = batch()
+        attn.to_qkv(x).float().pow(2).mean().backward()
+        torch.optim.AdamW(params, lr=1e-2).step()
+        assert any(not torch.equal(a, b) for a, b in zip(before, params, strict=True)), _run
+        assert x.grad is not None and torch.isfinite(x.grad).all(), _run
+
+
+def test_the_int4_backward_peak_is_bounded_by_the_dense_weight():
+    # Wan-like rectangular FFN shape, scaled down: the identity a whole-matrix rebuild needs is
+    # in_features², far above the in x out dense weight itself.
+    fin, fout = 8192, 1024
+    torch.manual_seed(0)
+    net = nn.Sequential(nn.Linear(fin, fout, bias=False, dtype=torch.bfloat16)).to("cuda").requires_grad_(False)
+    lin = QuantizationFactory.quantize(net, "int4", backend_name="torchao")[0]
+    x = torch.randn(2, fin, device="cuda", dtype=torch.bfloat16, requires_grad=True)
+    out = lin(x)
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    out.float().pow(2).mean().backward()
+    torch.cuda.synchronize()
+    dense = fin * fout * 2
+    grew = torch.cuda.max_memory_allocated() - base
+    assert grew <= 1.5 * dense, f"backward peaked {grew / 2**20:.1f} MiB over a {dense / 2**20:.1f} MiB dense weight"
 
 
 # ── Task 4's draws: layers a scheme cannot quantize ──

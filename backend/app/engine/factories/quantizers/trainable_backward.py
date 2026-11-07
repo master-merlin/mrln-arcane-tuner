@@ -29,6 +29,7 @@ except Exception:  # noqa: BLE001 - see quantizers/torchao.py
     Float8Tensor = Int4TilePackedTo4dTensor = LinearActivationQuantizedTensor = None
 
 _WRAPPED_FLAG = "_dequantized_backward"
+_EYE_BLOCK = 1 << 20  # elements of identity per block of the int4 rebuild: 2 MiB in bf16
 
 
 def needs_dequantized_backward(weight: torch.Tensor) -> bool:
@@ -47,10 +48,21 @@ def dense_weight(weight: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
 
     Its own ``dequantize()``, or, for tinygemm int4, which has none, the forward kernel on an
     identity: ``linear(I, W) = I @ W.T = W.T``, so the values are exactly the ones the kernel uses.
+    The identity goes in row blocks of at most ``_EYE_BLOCK`` elements, never in_features²: each
+    output row has one nonzero term, so the blocks give the same values bit for bit.
     """
     if Int4TilePackedTo4dTensor is not None and isinstance(weight, Int4TilePackedTo4dTensor):
-        eye = torch.eye(weight.shape[1], device=weight.device, dtype=dtype)
-        return F.linear(eye, weight).t().contiguous()
+        out_features, in_features = weight.shape
+        rows = max(1, min(in_features, _EYE_BLOCK // in_features))
+        dense_t = torch.empty(in_features, out_features, device=weight.device, dtype=dtype)
+        for start in range(0, in_features, rows):
+            stop = min(start + rows, in_features)
+            eye = torch.zeros(stop - start, in_features, device=weight.device, dtype=dtype)
+            index = torch.arange(stop - start, device=weight.device)
+            eye[index, index + start] = 1
+            dense_t[start:stop] = F.linear(eye, weight)
+            del eye
+        return dense_t.t()
     if LinearActivationQuantizedTensor is not None and isinstance(weight, LinearActivationQuantizedTensor):
         weight = weight.original_weight_tensor  # the activation quantization wraps the int8 weight
     return weight.dequantize().to(dtype)
@@ -77,12 +89,26 @@ class _DequantizedBackwardLinear(torch.autograd.Function):
 
 
 def _forward(linear: nn.Linear, x: torch.Tensor) -> torch.Tensor:
-    if linear.weight.requires_grad:
+    """The kernel in its weight's own dtype, outside autocast; the output as autocast would give it.
+
+    These kernels are not autocast-safe: under fp16 autocast, int8_dynamic's output was thousands of
+    times off, and tile-packed int4 takes bf16 only (an fp32 model's int4 layers are kept in bf16, see
+    quantizers/torchao.py). So the input is cast to the weight's dtype, autocast is off around the
+    kernel, and the output is cast to what a plain Linear returns here: the autocast dtype under
+    autocast, else the input's dtype. In bf16 with no autocast every cast is a no-op.
+    """
+    weight = linear.weight
+    if weight.requires_grad:
         raise RuntimeError(
             "This quantized layer's weight must stay frozen: its kernel has no weight grad, and its "
             "backward gives the input's grad only. Train it unquantized, or train adapters beside it."
         )
-    return _DequantizedBackwardLinear.apply(x, linear.weight, linear.bias)
+    device = x.device.type
+    autocast = torch.is_autocast_enabled(device)
+    out_dtype = torch.get_autocast_dtype(device) if autocast else x.dtype
+    with torch.autocast(device, enabled=False):
+        out = _DequantizedBackwardLinear.apply(x.to(weight.dtype), weight, linear.bias)
+    return out.to(out_dtype)
 
 
 def is_wrapped(module: nn.Module) -> bool:

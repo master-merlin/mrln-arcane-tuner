@@ -45,6 +45,26 @@ def _nvfp4_quantizable(module: nn.Module, fqn: str) -> bool:
     return isinstance(module, nn.Linear) and all(d % _NVFP4_BLOCK == 0 for d in module.weight.shape)
 
 
+def _quantize_in_bf16(module: nn.Module, config: object) -> None:
+    """``quantize_`` for a layout that takes bf16 weights only, in a model of any dtype.
+
+    Each ``Linear`` of another dtype goes to bf16 first. One the config then leaves unquantized
+    (int4 skips a layer whose in_features its group size does not divide) goes back to its own
+    dtype, so only quantized layers change dtype; their forward casts at the boundary
+    (trainable_backward._forward).
+    """
+    cast: dict[str, torch.dtype] = {}
+    for name, layer in module.named_modules():
+        if isinstance(layer, nn.Linear) and layer.weight.dtype != torch.bfloat16:
+            cast[name] = layer.weight.dtype
+            layer.to(torch.bfloat16)
+    quantize_(module, config)
+    for name, dtype in cast.items():
+        layer = module.get_submodule(name)
+        if type(layer.weight) is nn.Parameter and type(layer.weight.data) is torch.Tensor:
+            layer.to(dtype)
+
+
 class TorchAOBackend(QuantizationBase):
     """
     Native PyTorch Quantization utilizing `torchao` (Architecture Optimization).
@@ -108,8 +128,8 @@ class TorchAOBackend(QuantizationBase):
         if scheme == "int4":
             # PyTorch's own tinygemm kernel. The default "plain" packing needs mslk, which has no
             # Windows build; tile-packed runs everywhere a card does. Its backward comes from
-            # trainable_backward, wired in by QuantizationFactory.
-            quantize_(module, Int4WeightOnlyConfig(int4_packing_format="tile_packed_to_4d"))
+            # trainable_backward, wired in by QuantizationFactory. It takes bf16 weights only.
+            _quantize_in_bf16(module, Int4WeightOnlyConfig(int4_packing_format="tile_packed_to_4d"))
         elif scheme == "int8":
             quantize_(module, Int8WeightOnlyConfig())
         elif scheme == "int8_dynamic":

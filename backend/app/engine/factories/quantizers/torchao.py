@@ -88,7 +88,10 @@ class TorchAOBackend(QuantizationBase):
         module = module.to(device)
 
         if scheme == "int4":
-            quantize_(module, Int4WeightOnlyConfig())
+            # PyTorch's own tinygemm kernel. The default "plain" packing needs mslk, which has no
+            # Windows build; tile-packed runs everywhere a card does. Its backward comes from
+            # trainable_backward, wired in by QuantizationFactory.
+            quantize_(module, Int4WeightOnlyConfig(int4_packing_format="tile_packed_to_4d"))
         elif scheme == "int8":
             quantize_(module, Int8WeightOnlyConfig())
         elif scheme == "int8_dynamic":

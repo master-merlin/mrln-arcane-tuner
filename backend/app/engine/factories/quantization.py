@@ -17,6 +17,7 @@ from .quantization_base import QuantizationBase
 from .quantizers.torchao import TorchAOBackend
 from .quantizers.quanto import QuantoBackend
 from .quantizers.bitsandbytes import BitsAndBytesBackend
+from .quantizers import trainable_backward
 
 logger = structlog.get_logger(__name__)
 
@@ -154,7 +155,11 @@ class QuantizationFactory:
         param_count = sum(p.numel() for p in module.parameters())
         logger.info("quantizing_model", backend=resolved_backend, scheme=resolved_scheme, params=param_count)
 
-        return backend.quantize(module, resolved_scheme, device=device)
+        quantized = backend.quantize(module, resolved_scheme, device=device)
+        wrapped = trainable_backward.make_quantized_linears_trainable(quantized)
+        if wrapped:
+            logger.info("quantized_layers_dequantized_backward", scheme=resolved_scheme, layers=wrapped)
+        return quantized
 
     @classmethod
     def get_supported_capabilities(cls) -> dict[str, list[str]]:
@@ -412,6 +417,7 @@ class QuantizationFactory:
                 )
 
             module.load_state_dict(state_dict, strict=False, assign=True)
+            trainable_backward.make_quantized_linears_trainable(module)  # the cached weights are the same subclasses
             logger.info("quantized_model_loaded", path=cache_path, scheme=scheme)
             return module
         except Exception as e:

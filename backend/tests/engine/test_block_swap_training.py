@@ -160,6 +160,12 @@ class Observer:
 
             manager._reload = reload
 
+    def close(self) -> None:
+        for handle in self._handles:
+            handle.remove()
+        for manager in self.managers:
+            manager.__dict__.pop("_reload", None)
+
     def filled(self) -> int:
         return sum(len(m.filled_blocks()) for m in self.managers)
 
@@ -204,6 +210,7 @@ def run(
         if between is not None:
             between(step)
     if observer is not None:
+        observer.close()
         check_i3_working(observer)
     return snapshots
 
@@ -299,6 +306,92 @@ def test_the_estimate_credits_what_a_swapped_block_frees():
     manager = swap(model, [0, 1, 2, 3])
     one_block = sum(p.numel() * p.element_size() for p in blocks_of(model)[0].parameters() if not p.requires_grad)
     assert manager.seated_bytes() == 4 * one_block
+
+
+# ── Task 2: gradient checkpointing, moves and remove ─────────────────────────────────────────────
+
+
+@pytest.mark.parametrize("ckpt", ["nonreentrant", "reentrant"])
+def test_a_checkpointed_swapped_run_equals_the_unswapped_run_bitwise(ckpt):
+    # A reentrant checkpoint only builds a graph when its input needs a grad.
+    x = batch(64, requires_grad=ckpt == "reentrant")
+    reference = run(build(ckpt=ckpt), 4, x=x)
+    model = build(ckpt=ckpt)
+    swapped = run(model, 4, [swap(model, [0, 1, 2])], x=x)
+    assert_bitwise_equal(reference, swapped)
+
+
+@pytest.mark.parametrize("ckpt", [None, "nonreentrant", "reentrant"])
+def test_backward_holds_at_most_two_swapped_blocks_and_ends_with_none(ckpt):
+    x = batch(64, requires_grad=ckpt == "reentrant")
+    model = build(n_blocks=6, ckpt=ckpt)
+    manager = swap(model, range(6))
+    observer = Observer([manager])
+    model(x).pow(2).mean().backward()
+    assert observer.in_backward, "nothing was observed inside backward"
+    assert max(observer.in_backward) <= 2, observer.in_backward
+    assert manager.filled_blocks() == []
+
+
+def test_a_model_moved_off_the_card_and_back_trains_bitwise_like_the_unswapped_one():
+    def round_trip(model: nn.Module) -> Callable[[int], None]:
+        def between(step: int) -> None:
+            if step == 0:
+                model.to("cpu")
+                model.to("cuda")
+        return between
+
+    plain = build()
+    reference = run(plain, 4, between=round_trip(plain))
+    model = build()
+    manager = swap(model, [0, 1, 2])
+    swapped = run(model, 4, [manager], between=round_trip(model))
+    assert_bitwise_equal(reference, swapped)
+
+
+def test_a_swapped_block_moved_off_the_card_is_whole_there_and_seated_again_on_return():
+    model = build()
+    original = {n: p.detach().cpu().clone() for n, p in model.named_parameters() if not p.requires_grad}
+    manager = swap(model, [0, 1])
+    seated = manager.seated_bytes()
+    model.to("cpu")
+    assert manager.seated_bytes() == 0
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            assert param.device.type == "cpu" and torch.equal(param.detach(), original[name]), name
+    model.to("cuda")
+    assert manager.seated_bytes() == seated
+    check_i3_idle([manager])
+
+
+def test_no_grad_forwards_between_steps_keep_the_run_bitwise_equal():
+    def sample(model: nn.Module) -> Callable[[int], None]:
+        def between(_step: int) -> None:
+            with torch.no_grad():
+                model(batch(64, seed=11))
+        return between
+
+    plain = build()
+    reference = run(plain, 4, between=sample(plain))
+    model = build()
+    manager = swap(model, [0, 1, 2])
+    swapped = run(model, 4, [manager], between=lambda step: (sample(model)(step), check_i3_idle([manager])))
+    assert_bitwise_equal(reference, swapped)
+
+
+def test_remove_gives_back_the_original_frozen_weights_and_the_model_still_trains():
+    model = build()
+    original = {n: p.detach().cpu().clone() for n, p in model.named_parameters() if not p.requires_grad}
+    manager = swap(model, [0, 1, 2])
+    run(model, 2, [manager])
+    manager.remove()
+    for name, param in model.named_parameters():
+        if not param.requires_grad:
+            assert param.untyped_storage().nbytes() > 0, name
+            assert torch.equal(param.detach().cpu(), original[name]), name
+    assert all("_apply" not in block.__dict__ for block in blocks_of(model))
+    assert all(not block._forward_pre_hooks and not block._forward_hooks for block in blocks_of(model))
+    run(model, 1)
 
 
 # ── The VRAM saving, measured: each twin in its own process ──────────────────────────────────────

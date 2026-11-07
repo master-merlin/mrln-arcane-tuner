@@ -46,6 +46,7 @@ class Draw:
     ckpt: str | None
     lora: tuple[int, ...]
     actions: tuple[str, ...]  # one per step: "none", "sample" or "move"
+    shared_ln: bool = False   # the last block runs the first block's LayerNorm too
 
 
 def draw(index: int) -> Draw:
@@ -60,17 +61,23 @@ def draw(index: int) -> Draw:
         # its recompute backpropagates into itself without end, swap or no swap.
         ckpt = "nonreentrant"
     actions = tuple(rng.choice(["none", "sample", "move"]) for _ in range(rng.randint(2, 4)))
-    return Draw(shape, n, swapped, ckpt, lora, actions)
+    shared_ln = rng.random() < 0.3
+    return Draw(shape, n, swapped, ckpt, lora, actions, shared_ln)
 
 
 def _model(d: Draw) -> tuple[nn.Module, Callable[[torch.Tensor], torch.Tensor]]:
     """The model and its loss for one input; a two-stream model gets its second input too."""
     if d.shape == "chain":
         model = build(n_blocks=d.n_blocks, width=WIDTH, ckpt=d.ckpt, lora_blocks=d.lora)
-        return model, lambda x: model(x).pow(2).mean()
-    model = build_two_stream(d.n_blocks, WIDTH, d.shape, ckpt=d.ckpt, lora_blocks=d.lora)
-    y = batch(WIDTH, seed=9, requires_grad=True)
-    return model, lambda x: model(x, y)
+        loss_of: Callable[[torch.Tensor], torch.Tensor] = lambda x: model(x).pow(2).mean()  # noqa: E731
+    else:
+        model = build_two_stream(d.n_blocks, WIDTH, d.shape, ckpt=d.ckpt, lora_blocks=d.lora)
+        y = batch(WIDTH, seed=9, requires_grad=True)
+        loss_of = lambda x: model(x, y)  # noqa: E731
+    if d.shared_ln:
+        blocks = model.base_model.model.blocks
+        blocks[-1].ln = blocks[0].ln
+    return model, loss_of
 
 
 @dataclass
@@ -164,6 +171,7 @@ def test_i3_swapped_weights_hold_card_memory_only_while_their_block_works_in_eve
 def test_the_draws_cover_every_kind():
     draws = [draw(i) for i in range(DRAWS)]
     assert {d.shape for d in draws} == {"chain", "passthrough", "branch", "leaf"}
+    assert any(d.shared_ln and {0, d.n_blocks - 1} <= set(d.swapped) for d in draws), "two swapped blocks share one"
     assert {d.ckpt for d in draws} == {None, "nonreentrant", "reentrant"}
     assert {a for d in draws for a in d.actions} == {"none", "sample", "move"}
     assert {d.n_blocks for d in draws} == {2, 3, 4, 5, 6}

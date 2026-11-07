@@ -113,7 +113,8 @@ def trainable(model: nn.Module) -> list[nn.Parameter]:
 
 def swap(model: nn.Module, which: Iterable[int], device: str | torch.device = "cuda") -> BlockSwappingManager:
     blocks = blocks_of(model)
-    manager = BlockSwappingManager([blocks[i] for i in which], device=torch.device(device))
+    # root=model, as the pipeline passes it: a child shared with an unswapped block stays whole.
+    manager = BlockSwappingManager([blocks[i] for i in which], device=torch.device(device), root=model)
     manager.apply()
     return manager
 
@@ -717,6 +718,34 @@ def test_a_forward_that_raises_leaves_no_swapped_block_filled():
         assert manager.filled_blocks() == [], f"grad={grad}: {len(manager.filled_blocks())} left filled"
     handle.remove()
     run(model, 2, [manager])
+
+
+def test_two_swapped_blocks_sharing_one_child_module_train_bitwise_like_unswapped():
+    def shared(model: nn.Module) -> nn.Module:
+        blocks = blocks_of(model)
+        blocks[1].ln = blocks[0].ln  # one LayerNorm, run by both blocks
+        return model
+
+    reference = run(shared(build()), 3)
+    model = shared(build())
+    swapped = run(model, 3, [swap(model, [0, 1, 2])])
+    assert_bitwise_equal(reference, swapped)
+    assert blocks_of(model)[0].ln.weight.untyped_storage().nbytes() > 0, "the shared child is never freed"
+
+
+def test_applying_the_swap_to_host_blocks_never_holds_more_than_one_extra_block_on_the_card():
+    # A model that fits only with the swap must not need every block on the card first.
+    model = build(n_blocks=6, width=1024, device="cpu")
+    one_block = sum(p.numel() * p.element_size() for p in blocks_of(model)[0].parameters() if not p.requires_grad)
+    torch.cuda.synchronize()
+    torch.cuda.reset_peak_memory_stats()
+    before = torch.cuda.memory_allocated()
+    manager = swap(model, range(6))
+    torch.cuda.synchronize()
+    peak = torch.cuda.max_memory_allocated() - before
+    trainable_bytes = sum(p.numel() * p.element_size() for p in trainable(model))
+    assert peak <= 1.5 * one_block + trainable_bytes, (peak, one_block)
+    assert manager.seated_bytes() == 6 * one_block
 
 
 def test_a_block_still_on_the_host_when_the_swap_is_applied_trains_on_the_card():

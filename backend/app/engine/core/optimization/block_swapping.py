@@ -121,12 +121,12 @@ class BlockSwappingManager:
     def apply(self) -> None:
         """Seat every block and register its hooks."""
         logger.info("block_swapping_apply", num_blocks=len(self.blocks))
-        if self._frees:
-            for block in self.blocks:  # one block at a time, so the card never holds two extra
-                if any(t.device != self.execution_device for t in [*block.parameters(), *block.buffers()]):
-                    block.to(self.execution_device)
         self._never_trained = {id(p) for block in self.blocks for p in block.parameters() if not p.requires_grad}
         for block in self.blocks:
+            # A block still on the host is moved and seated before the next one moves, so the card
+            # holds one extra block at most while the swap is applied.
+            if self._frees and any(t.device != self.execution_device for t in [*block.parameters(), *block.buffers()]):
+                block.to(self.execution_device)
             self._seat(block)
             self._wrap_apply(block)
             self._hooks.extend([
@@ -183,18 +183,41 @@ class BlockSwappingManager:
         Any storage a trainable param or a buffer reaches, anywhere; any another swapped block
         reaches; and any a param of ``root`` outside the swapped blocks reaches.
         """
-        inside = {id(m) for m in block.modules()}
+        # Who holds each param, by every path it is reached on: the swapped block the path runs
+        # through, or "outside" for a path of root through none. A child module shared by two
+        # blocks, or by a swapped and an unswapped one, is held on two paths.
+        outside = -1
+        holders: dict[int, set[int]] = {}
+        params: dict[int, nn.Parameter] = {}
         owned: set[int] = set()
-        for top in [*self.blocks, *([self.root] if self.root is not None else [])]:
-            for module in top.modules():
+
+        def walk(top: nn.Module, default: int) -> None:
+            swapped = {id(b) for b in self.blocks}
+            enclosing: dict[str, int] = {}  # path of a swapped block -> its id
+            for path, module in top.named_modules(remove_duplicate=False):
+                if id(module) in swapped:
+                    enclosing[path] = id(module)
+                holder = default
+                for prefix, block_id in enclosing.items():
+                    if path == prefix or path.startswith(prefix + ".") or prefix == "":
+                        holder = block_id
+                        break
+                for param in module._parameters.values():
+                    if param is not None:
+                        holders.setdefault(id(param), set()).add(holder)
+                        params[id(param)] = param
                 for buffer in module._buffers.values():
                     if buffer is not None:
                         owned.update(_keys(buffer))
-                for param in module._parameters.values():
-                    # Held by a module outside this block (the same Parameter object tied there
-                    # too), or trainable: someone reads it while this block is freed.
-                    if param is not None and (param.requires_grad or id(module) not in inside):
-                        owned.update(_keys(param.data))
+
+        for b in self.blocks:
+            walk(b, id(b))
+        if self.root is not None:
+            walk(self.root, outside)
+        for key, param in params.items():
+            # Held by anything but this block alone, or trainable: someone reads it while it is freed.
+            if param.requires_grad or holders[key] != {id(block)}:
+                owned.update(_keys(param.data))
         return owned
 
     def _block_signature(self, block: nn.Module) -> tuple:

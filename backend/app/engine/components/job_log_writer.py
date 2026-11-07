@@ -230,7 +230,7 @@ class JobLogWriter:
         for line in formatted.splitlines():
             self.log(line)
 
-    def exit(self, code: int, error: str | None = None) -> None:
+    def exit(self, code: int, error: str | None = None, *, stopped: bool = False) -> None:
         """Write a terminal exit message exactly once, then close the file.
 
         Idempotent: a second call is a no-op (with a stderr warning so the
@@ -239,6 +239,9 @@ class JobLogWriter:
         ``COMPLETED`` / ``FAILED`` and remove it from the active queue —
         writing it more than once, or writing it while real work is still
         in flight, makes the UI lose track of a live job.
+
+        ``stopped`` marks a clean exit after a soft stop: the run is
+        unfinished and resumable, and the backend ends it ``STOPPED``.
         """
         if self._exit_emitted:
             # The writer can't be trusted (double-exit corner); the log channel is
@@ -252,6 +255,8 @@ class JobLogWriter:
         payload: dict[str, Any] = {"code": code}
         if error:
             payload["error"] = error
+        if stopped:
+            payload["stopped"] = True
         def exit_and_close() -> None:
             # One step: the exit line is the last in the file, whichever thread writes
             # next. It waits its full bound even on a stuck log: it is what ends the job

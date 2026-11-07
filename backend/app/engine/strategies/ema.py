@@ -87,6 +87,10 @@ class EMAHandler:
         Update shadow weights based on current model weights.
         Should be called after optimizer.step().
 
+        Each shadow is on its param's device when it updates. A swap-mode
+        expert switch moves the experts' params, so a shadow follows its
+        param when the two differ.
+
         Iterates only the cached ``{name: param}`` mapping (shadow-sized,
         not the full param set) and updates in place via ``lerp_`` — no
         fresh tensor allocation per shadow param per step (the previous
@@ -98,7 +102,14 @@ class EMAHandler:
         ``test_ema.py``).
         """
         for name, param in self._shadow_params.items():
-            self.shadow[name].lerp_(param.data, 1.0 - self.decay)
+            shadow = self.shadow[name]
+            if shadow.device != param.device:
+                # The param moved since the shadow was made: a swap-mode expert
+                # switch, or the fresh start's move onto the router's expert.
+                # The shadow follows it once, so the transfer is per move, not
+                # per step.
+                shadow = self.shadow[name] = shadow.to(param.device)
+            shadow.lerp_(param.data, 1.0 - self.decay)
 
         self._step_count += 1
         if self._step_count % 100 == 0 and logger.isEnabledFor(logging.DEBUG):
@@ -153,6 +164,11 @@ class EMAHandler:
         logger.debug("ema_restored", direction="backup_to_model")
 
     def state_dict(self):
+        """The shadow: parameter name to its tensor, as ``ema_shadow.pt`` holds it.
+
+        The step count is left out on purpose: it paces a DEBUG log only, and every
+        reader of the file takes each key for a parameter name.
+        """
         return self.shadow
 
     def load_state_dict(self, state_dict):
@@ -197,6 +213,9 @@ class EMAHandler:
         live_names = set(param_dict)
         loaded_names = set(state_dict)
         overlap = live_names & loaded_names
+        # The shadow covers the trainable params only (``__init__``), so a frozen
+        # base weight the checkpoint has no shadow for is not missing from it.
+        trainable_names = {name for name in live_names if param_dict[name].requires_grad}
 
         if live_names and not overlap:
             logger.warning(
@@ -220,12 +239,12 @@ class EMAHandler:
         self.shadow = merged
         self._refresh_shadow_param_cache(param_dict)
 
-        missing_live = live_names - overlap
+        missing_live = trainable_names - overlap
         if missing_live:
             logger.warning(
                 "ema_shadow_key_mismatch",
                 reason="partial_overlap",
-                live_params=len(live_names),
+                live_params=len(trainable_names),
                 loaded_keys=len(loaded_names),
                 overlap=len(overlap),
                 sample_missing_live=sorted(missing_live)[:5],

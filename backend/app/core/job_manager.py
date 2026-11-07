@@ -1132,6 +1132,9 @@ class JobManager:
 
         code = data.get("code", 1) if isinstance(data, dict) else 1
         error = data.get("error") if isinstance(data, dict) else None
+        # A soft stop: the trainer saved a resumable checkpoint and exited 0 on
+        # purpose. The run is unfinished, so it ends STOPPED, as a hard stop does.
+        soft_stopped = code == 0 and isinstance(data, dict) and data.get("stopped") is True
 
         # An adaptive rebuild: the trainer checkpointed, announced where, and
         # exited 0 through its NORMAL path — indistinguishable from a finished
@@ -1173,15 +1176,20 @@ class JobManager:
             job.finished_at = time.time()
             job.pid = None
             self._processes.pop(job.id, None)
-            if code == 0:
+            if soft_stopped:
+                job.status = JobStatus.STOPPED
+            elif code == 0:
                 job.status = JobStatus.COMPLETED
             elif job.status != JobStatus.STOPPED:
                 job.status = JobStatus.FAILED
                 job.error = error or f"Process exited with code {code}"
 
-        final_status = "completed" if code == 0 else (
-            "stopped" if job.status == JobStatus.STOPPED else "failed"
-        )
+        if soft_stopped:
+            final_status = "stopped"
+        else:
+            final_status = "completed" if code == 0 else (
+                "stopped" if job.status == JobStatus.STOPPED else "failed"
+            )
         kwargs: dict[str, Any] = {"finished_at": job.finished_at}
         if job.error:
             kwargs["error"] = job.error

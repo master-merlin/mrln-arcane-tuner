@@ -363,11 +363,11 @@ def _writable_log():
     return None if _log_writer is None or _log_writer.stuck else _log_writer
 
 
-def _write_exit_line(code: int, error: str | None = None) -> None:
+def _write_exit_line(code: int, error: str | None = None, *, stopped: bool = False) -> None:
     """The job's last line. Even on a stuck job log, the writer gives it its full bound,
-    and on the way out a bound on the disk too."""
+    and on the way out a bound on the disk too. ``stopped``: a soft stop ended the run."""
     if _log_writer is not None:
-        _log_writer.exit(code, error=error)
+        _log_writer.exit(code, error=error, stopped=stopped)
 
 
 def main():
@@ -441,7 +441,7 @@ def main():
         _end_gpu_health()
         logger.info("training_completed_successfully")
         _finalize_before_exit(_writable_log())
-        _write_exit_line(0)
+        _write_exit_line(0, stopped=bool(getattr(trainer, "_soft_stop_exit", False)))
         sys.exit(0)
 
     except Exception as e:

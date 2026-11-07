@@ -13,7 +13,17 @@ from app.engine.models.families.bernini_r.driver import BerniniRDriver
 from app.engine.models.families.bernini_r.trainer import BerniniRTrainer
 from app.engine.models.families.wan22.expert_router import HIGH, LOW
 from tests.engine.families.wan22.test_wan22_router_resume import (
+    BAD_AND_ODD_SEEDS,
+    BLOCK_SWAP_REASON,
+    BLOCK_SWAP_STEPS_ON_TWO_DEVICES,
     Family,
+    check_adaptive_targeting_keeps_its_expert_across_a_resume,
+    check_ema_follows_the_experts_across_swaps,
+    check_block_swapped_expert_steps_after_resume,
+    check_fresh_run_starts_on_the_routers_expert,
+    check_pinned_job_restores_its_optimizer_exactly,
+    check_rebuild_resume_in_swap_mode,
+    check_router_reads_the_run_seed,
     check_decisions_continue,
     check_missing_file_warns_once,
     check_mismatch_leaves_the_built_router,
@@ -107,5 +117,42 @@ def test_the_resume_places_the_state_of_the_experts_swap_mode_moves(tmp_path, mo
     check_placement_is_asked_for(BERNINI, tmp_path, monkeypatch, swap=swap, managed=managed, expected=expected)
 
 
+@pytest.mark.parametrize("seed", BAD_AND_ODD_SEEDS, ids=repr)
+def test_the_router_reads_the_seed_the_run_reads(tmp_path, seed):
+    check_router_reads_the_run_seed(BERNINI, tmp_path, seed)
+
+
+@pytest.mark.parametrize("startup", [HIGH, LOW])
+def test_a_fresh_run_starts_on_the_routers_expert(tmp_path, startup):
+    check_fresh_run_starts_on_the_routers_expert(BERNINI, tmp_path, startup=startup)
+
+
+def test_adaptive_targeting_keeps_its_expert_across_a_resume(tmp_path):
+    check_adaptive_targeting_keeps_its_expert_across_a_resume(BERNINI, tmp_path)
+
+
+@pytest.mark.xdist_group("gpu")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="needs a card to swap an expert onto")
+def test_ema_follows_the_experts_across_swaps(tmp_path):
+    check_ema_follows_the_experts_across_swaps(BERNINI, tmp_path)
+
+
 def test_a_single_expert_job_places_nothing(tmp_path, monkeypatch):
     check_single_expert_places_nothing(BERNINI, tmp_path, monkeypatch)
+
+
+@pytest.mark.parametrize("expert", [HIGH, LOW])
+def test_a_pinned_job_restores_its_optimizer_exactly(tmp_path, expert):
+    check_pinned_job_restores_its_optimizer_exactly(BERNINI, tmp_path, expert=expert)
+
+
+@pytest.mark.parametrize("startup", [HIGH, LOW])
+def test_a_rebuild_resume_in_swap_mode_restores_the_kept_params_by_name(tmp_path, startup):
+    check_rebuild_resume_in_swap_mode(BERNINI, tmp_path, startup=startup)
+
+
+@pytest.mark.xdist_group("gpu")
+@pytest.mark.skipif(not torch.cuda.is_available(), reason="block swapping pins host memory and pages onto a card")
+@pytest.mark.xfail(BLOCK_SWAP_STEPS_ON_TWO_DEVICES, raises=RuntimeError, strict=True, reason=BLOCK_SWAP_REASON)
+def test_a_block_swapped_expert_steps_through_its_swapped_block_after_a_resume(tmp_path):
+    check_block_swapped_expert_steps_after_resume(BERNINI, tmp_path)

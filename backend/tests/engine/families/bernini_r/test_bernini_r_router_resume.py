@@ -14,8 +14,6 @@ from app.engine.models.families.bernini_r.trainer import BerniniRTrainer
 from app.engine.models.families.wan22.expert_router import HIGH, LOW
 from tests.engine.families.wan22.test_wan22_router_resume import (
     BAD_AND_ODD_SEEDS,
-    BLOCK_SWAP_REASON,
-    BLOCK_SWAP_STEPS_ON_TWO_DEVICES,
     Family,
     check_adaptive_targeting_keeps_its_expert_across_a_resume,
     check_ema_follows_the_experts_across_swaps,
@@ -153,6 +151,5 @@ def test_a_rebuild_resume_in_swap_mode_restores_the_kept_params_by_name(tmp_path
 
 @pytest.mark.xdist_group("gpu")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="block swapping pins host memory and pages onto a card")
-@pytest.mark.xfail(BLOCK_SWAP_STEPS_ON_TWO_DEVICES, raises=RuntimeError, strict=True, reason=BLOCK_SWAP_REASON)
 def test_a_block_swapped_expert_steps_through_its_swapped_block_after_a_resume(tmp_path):
     check_block_swapped_expert_steps_after_resume(BERNINI, tmp_path)

@@ -244,11 +244,6 @@ def check_adaptive_targeting_keeps_its_expert_across_a_resume(family: Family, tm
     assert controller_model(resumed) is resumed.driver.transformer_high
 
 
-# A swapped block's params go back to the CPU after its forward, while backward makes
-# their grads on the card: the first optimizer step mixes the two, on a fresh run too.
-BLOCK_SWAP_STEPS_ON_TWO_DEVICES = True
-BLOCK_SWAP_REASON = "a swapped block's LoRA steps on two devices (the first step, with or without a resume)"
-
 BAD_AND_ODD_SEEDS = ["abc", "12.5", [1], {"a": 1}, None, "", 12.7, "7", 7]
 
 
@@ -1199,6 +1194,5 @@ def test_a_rebuild_resume_in_swap_mode_restores_the_kept_params_by_name(tmp_path
 
 @pytest.mark.xdist_group("gpu")
 @pytest.mark.skipif(not torch.cuda.is_available(), reason="block swapping pins host memory and pages onto a card")
-@pytest.mark.xfail(BLOCK_SWAP_STEPS_ON_TWO_DEVICES, raises=RuntimeError, strict=True, reason=BLOCK_SWAP_REASON)
 def test_a_block_swapped_expert_steps_through_its_swapped_block_after_a_resume(tmp_path):
     check_block_swapped_expert_steps_after_resume(WAN22, tmp_path)

@@ -479,6 +479,87 @@ def test_every_optimizer_trains_a_swapped_run_bitwise_like_the_unswapped_one_acr
     assert_bitwise_equal(reference, swapped)
 
 
+# ── Task 4: quantized weights ───────────────────────────────────────────────────────────────────
+
+
+class QuantBlock(nn.Module):
+    def __init__(self, width: int) -> None:
+        super().__init__()
+        self.lin = nn.Linear(width, width, dtype=torch.bfloat16)
+        self.ln = nn.LayerNorm(width, dtype=torch.bfloat16)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.ln(self.lin(x)) + x
+
+
+class QuantNet(nn.Module):
+    def __init__(self, n_blocks: int = 4, width: int = 256) -> None:
+        super().__init__()
+        self.blocks = nn.ModuleList([QuantBlock(width) for _ in range(n_blocks)])
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        for block in self.blocks:
+            x = block(x)
+        return x
+
+
+def _schemes() -> list[tuple[str, str]]:
+    if not torch.cuda.is_available():
+        return []
+    from app.engine.factories.quantization import QuantizationFactory
+
+    return [(backend, scheme) for backend, schemes in QuantizationFactory.get_supported_capabilities().items()
+            for scheme in schemes]
+
+
+def _quantized_run(backend: str, scheme: str, swapped: bool) -> list[list[torch.Tensor]]:
+    """Setup's order: frozen, quantized on the host, onto the card, LoRA, then the swap."""
+    from peft import LoraConfig, get_peft_model
+
+    from app.engine.factories.quantization import QuantizationFactory
+
+    torch.manual_seed(0)
+    net = QuantNet()
+    for param in net.parameters():
+        param.requires_grad_(False)
+    net = QuantizationFactory.quantize(net, scheme, backend_name=backend).to("cuda")
+    model = get_peft_model(net, LoraConfig(r=4, lora_alpha=4, target_modules=["lin"]))
+    gen = torch.Generator().manual_seed(1)
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "lora_B" in name:
+                param.copy_(torch.randn(param.shape, generator=gen).to(param.dtype))
+    managers = [swap(model, [0, 1, 2])] if swapped else []
+    x = torch.randn(4, 256, device="cuda", dtype=torch.bfloat16, generator=torch.Generator("cuda").manual_seed(2))
+    optimizer = torch.optim.AdamW(trainable(model), lr=1e-3)
+    snapshots = []
+    for _ in range(3):
+        model(x).float().pow(2).mean().backward()
+        optimizer.step()
+        optimizer.zero_grad(set_to_none=True)
+        if managers:
+            check_i3_idle(managers)
+        snapshots.append([p.detach().float().cpu().clone() for p in trainable(model)])
+    return snapshots
+
+
+@pytest.mark.parametrize(("backend", "scheme"), _schemes(), ids=lambda v: str(v))
+def test_every_quantized_scheme_that_trains_unswapped_trains_swapped_within_its_own_run_to_run_bound(
+    backend, scheme
+):
+    try:
+        first = _quantized_run(backend, scheme, False)
+        second = _quantized_run(backend, scheme, False)
+    except Exception as error:  # noqa: BLE001 - the scheme's own failure, with no swap at all
+        pytest.skip(f"{backend}/{scheme} fails LoRA training with no swap (pre-existing): {str(error)[:160]}")
+    swapped = _quantized_run(backend, scheme, True)
+    for step, (a, b, got) in enumerate(zip(first, second, swapped, strict=True)):
+        for i, (x, y, z) in enumerate(zip(a, b, got, strict=True)):
+            bound = (x - y).abs().max().item()
+            seen = (x - z).abs().max().item()
+            assert seen <= bound, f"step {step}, param {i}: swapped differs by {seen}, unswapped runs by {bound}"
+
+
 # ── The VRAM saving, measured: each twin in its own process ──────────────────────────────────────
 
 VRAM_BLOCKS = 8

@@ -13,7 +13,9 @@ from app.engine.models.families.bernini_r.driver import BerniniRDriver
 from app.engine.models.families.bernini_r.trainer import BerniniRTrainer
 from app.engine.models.families.wan22.expert_router import HIGH, LOW
 from tests.engine.families.wan22.test_wan22_router_resume import (
+    BAD_AND_ODD_SEEDS,
     Family,
+    check_router_reads_the_run_seed,
     check_decisions_continue,
     check_missing_file_warns_once,
     check_mismatch_leaves_the_built_router,
@@ -105,6 +107,11 @@ def test_a_resumed_run_steps_across_switches_on_its_restored_moments(tmp_path, s
 )
 def test_the_resume_places_the_state_of_the_experts_swap_mode_moves(tmp_path, monkeypatch, swap, managed, expected):
     check_placement_is_asked_for(BERNINI, tmp_path, monkeypatch, swap=swap, managed=managed, expected=expected)
+
+
+@pytest.mark.parametrize("seed", BAD_AND_ODD_SEEDS, ids=repr)
+def test_the_router_reads_the_seed_the_run_reads(tmp_path, seed):
+    check_router_reads_the_run_seed(BERNINI, tmp_path, seed)
 
 
 def test_a_single_expert_job_places_nothing(tmp_path, monkeypatch):

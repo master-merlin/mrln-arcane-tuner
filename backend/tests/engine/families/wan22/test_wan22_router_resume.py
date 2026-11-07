@@ -187,6 +187,18 @@ def assert_router_equals(router: Any, built: tuple[torch.Tensor, dict]) -> None:
 # ── The checks both families run ──
 
 
+BAD_AND_ODD_SEEDS = ["abc", "12.5", [1], {"a": 1}, None, "", 12.7, "7", 7]
+
+
+def check_router_reads_the_run_seed(family: Family, tmp_path: Path, seed: Any) -> None:
+    """The router is built on the seed the run itself applies, and 0 when it applies none."""
+    from app.engine.components.checkpoints import _run_seed
+
+    t = make_trainer(family, {"seed": seed}, out=tmp_path / "run")
+
+    assert t.expert_router._seed == (_run_seed({"seed": seed}) or 0)
+
+
 def check_decisions_continue(
     family: Family, tmp_path: Path, *, mode: str, swap: str, interval: int, soft_stop: bool
 ) -> None:
@@ -660,6 +672,11 @@ def test_a_config_with_no_seed_key_is_unchanged(tmp_path):
     assert resumed.expert_router._block_decisions == first.expert_router._block_decisions
 
 
+@pytest.mark.parametrize("seed", BAD_AND_ODD_SEEDS, ids=repr)
+def test_the_router_reads_the_seed_the_run_reads(tmp_path, seed):
+    check_router_reads_the_run_seed(WAN22, tmp_path, seed)
+
+
 @pytest.mark.parametrize("value", [None, "", "not-a-seed"], ids=["none", "empty", "invalid"])
 def test_no_valid_seed_where_one_was_saved_is_changed(tmp_path, value):
     first = make_trainer(WAN22, {"seed": 42}, out=tmp_path / "run")
@@ -667,7 +684,7 @@ def test_no_valid_seed_where_one_was_saved_is_changed(tmp_path, value):
     folder = save(first, 5)
 
     resumed = make_trainer(WAN22, {"seed": 0}, out=tmp_path / "run")
-    resumed.config["seed"] = value  # _build_router refuses "not-a-seed"; the job's router is seed 0
+    resumed.config["seed"] = value  # the job's router is seed 0, as for any seed the run ignores
     resume(resumed, folder)
 
     warned = resumed.logger.named("router_state_mismatch_on_resume")

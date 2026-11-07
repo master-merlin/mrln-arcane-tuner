@@ -73,6 +73,7 @@ import math
 import structlog
 import torch
 
+from app.engine.components.checkpoints import _run_seed
 from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
 from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
@@ -163,7 +164,9 @@ class BerniniRTrainer(
         skips the Monte-Carlo estimate entirely.
         """
         switch_interval = int(self.config.get("expert_switch_interval", 1))
-        seed = int(self.config.get("seed", 0) or 0)
+        # The seed the run applies (``_apply_run_seed``), 0 when it applies none: a
+        # seed the run ignores with a warning must not crash the router's build.
+        seed = _run_seed(self.config) or 0
         mode = getattr(self, "expert_mode", "both")
         pinned = None if mode == "both" else mode
         # Only a progress-dependent mode (radc) needs the estimate refreshed per interval.

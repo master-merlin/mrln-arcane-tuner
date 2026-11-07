@@ -585,10 +585,14 @@ class VRAMEstimator:
         #                 budget never under-promises.
         # Image / single-transformer families never enter this branch (guarded
         # by ``dual_expert``), so their estimate is byte-identical.
+        #   A pinned run (``expert_mode`` high/low) loads one transformer only, so
+        #   it has no second expert whatever the swap mode says.
         caps = _resolve_caps(definition)
         is_dual_expert = bool(caps.get("dual_expert", False))
-        if is_dual_expert:
-            swap_mode = config.get("expert_swap_mode", "auto")
+        expert_mode = str(config.get("expert_mode") or "both").lower()
+        trains_both_experts = is_dual_expert and expert_mode == "both"
+        swap_mode = config.get("expert_swap_mode", "auto")
+        if trains_both_experts:
             if swap_mode == "swap":
                 # GPU holds one expert; the second is pinned in host RAM.
                 expert_weights_mb = 0.0
@@ -613,14 +617,21 @@ class VRAMEstimator:
         lora_ratio = min(lora_rank / 16 * 0.015, 0.10)  # cap at 10%
         lora_params = primary_params_b * 1e9 * lora_ratio
         lora_bpp = 2  # adapters always bf16/fp16
-        report.lora_adapters_mb = (lora_params * lora_bpp) / (1024 * 1024)
+        # A run that trains both experts wraps each in its own adapters, which
+        # ride with their expert: both on the card, unless swap mode moves one off.
+        adapter_sets = 2 if trains_both_experts and swap_mode != "swap" else 1
+        report.lora_adapters_mb = (adapter_sets * lora_params * lora_bpp) / (1024 * 1024)
 
         # ── 3. Optimizer states (AdamW: 2 fp32 moments per trainable param) ──
-        trainable_params = lora_params
+        # One optimizer holds both experts' LoRA, and its state stays on the card
+        # in every swap mode. Gradients are the active expert's only.
+        te_trainable = 0.0
         train_te = config.get("train_text_encoder", False)
         if train_te:
             te_params_b = _get_te_params(family)
-            trainable_params += te_params_b * 1e9
+            te_trainable = te_params_b * 1e9
+        trainable_params = (2 if trains_both_experts else 1) * lora_params + te_trainable
+        stepping_params = lora_params + te_trainable
 
         optimizer = optimizer_of(config)
         if optimizer in ("adamw", "adam", "adam8bit", "adamw8bit"):
@@ -638,7 +649,7 @@ class VRAMEstimator:
             report.optimizer_states_mb = (trainable_params * 4) / (1024 * 1024)
 
         # ── 4. Gradients ─────────────────────────────────────────────────
-        report.gradients_mb = (trainable_params * lora_bpp) / (1024 * 1024)
+        report.gradients_mb = (stepping_params * lora_bpp) / (1024 * 1024)
 
         # ── 5. Activations (highly dependent on resolution + batch) ──────
         # The scalar ``resolution``/``width`` keys (image-archetype defaults)

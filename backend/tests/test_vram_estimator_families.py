@@ -271,6 +271,36 @@ def test_bernini_r_14b_dual_expert_doubles_primary_weights():
     assert d_swap["model_weights_mb"] == pytest.approx(27275, rel=0.02)
 
 
+@pytest.mark.parametrize("def_id", ["wan2.2-t2v-a14b", "bernini-r-14b"])
+@pytest.mark.parametrize("swap", ["resident", "swap", "auto"])
+def test_a_both_experts_run_counts_both_experts_trainable_state(def_id, swap):
+    """One optimizer holds both experts' LoRA, and keeps its state on the card in
+    every swap mode. The adapters ride with their expert: both on the card unless
+    one is swapped out. Gradients are the active expert's only."""
+    defn = registry.get_definition(def_id)
+    cfg = {"quantization": "none", "expert_swap_mode": swap, "optimizer_type": "AdamW"}
+    both = VRAMEstimator.estimate(defn, {**cfg, "expert_mode": "both"}).to_dict()
+    one = VRAMEstimator.estimate(defn, {**cfg, "expert_mode": "high"}).to_dict()
+
+    # The report rounds to whole MB.
+    assert both["optimizer_states_mb"] == pytest.approx(2 * one["optimizer_states_mb"], abs=1)
+    adapters = 1 if swap == "swap" else 2
+    assert both["lora_adapters_mb"] == pytest.approx(adapters * one["lora_adapters_mb"], abs=1)
+    assert both["gradients_mb"] == pytest.approx(one["gradients_mb"], abs=1)
+
+
+@pytest.mark.parametrize("expert_mode", ["high", "low"])
+@pytest.mark.parametrize("swap", ["resident", "auto"])
+def test_a_one_expert_run_counts_one_experts_weights(expert_mode, swap):
+    """A pinned run loads one transformer only, whatever the swap mode says."""
+    defn = registry.get_definition("bernini-r-14b")
+    d = VRAMEstimator.estimate(
+        defn, {"quantization": "none", "expert_swap_mode": swap, "expert_mode": expert_mode}
+    ).to_dict()
+
+    assert d["model_weights_mb"] == pytest.approx(27275, rel=0.02)
+
+
 def test_prx_pixel_has_te_but_no_vae_contribution():
     """prx_pixel is pixel-space (NO VAE) but keeps an EXTERNAL ~1.7B TE —
     unlike hidream_o1 the caching peak must contain a real TE term while

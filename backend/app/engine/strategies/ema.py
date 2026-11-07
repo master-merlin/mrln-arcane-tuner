@@ -2,14 +2,10 @@ from __future__ import annotations
 
 import logging
 
-import torch
 import torch.nn as nn
 import structlog
 
 logger = structlog.get_logger(__name__)
-
-# The step count's key in ``state_dict()``: a parameter name never has spaces.
-STEP_COUNT_KEY = "ema step count"
 
 
 class EMAHandler:
@@ -157,8 +153,12 @@ class EMAHandler:
         logger.debug("ema_restored", direction="backup_to_model")
 
     def state_dict(self):
-        """The shadow, plus the step count under a key no parameter can have."""
-        return {**self.shadow, STEP_COUNT_KEY: torch.tensor(self._step_count)}
+        """The shadow: parameter name to its tensor, as ``ema_shadow.pt`` holds it.
+
+        The step count is left out on purpose: it paces a DEBUG log only, and every
+        reader of the file takes each key for a parameter name.
+        """
+        return self.shadow
 
     def load_state_dict(self, state_dict):
         """Adopt a saved shadow, tolerating a live parameter set whose names
@@ -198,12 +198,6 @@ class EMAHandler:
           parameter, log the same loud warning — a partial adopt must
           never be silent about which params it left uncovered.
         """
-        state_dict = dict(state_dict)
-        # A checkpoint from before the count was saved has none: it starts at 0.
-        step_count = state_dict.pop(STEP_COUNT_KEY, None)
-        if step_count is not None:
-            self._step_count = int(step_count)
-
         param_dict = dict(self._named_parameters())
         live_names = set(param_dict)
         loaded_names = set(state_dict)

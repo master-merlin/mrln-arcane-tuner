@@ -156,11 +156,19 @@ def test_the_ema_shadow_comes_back_exactly(tmp_path, kind):
 
 
 @pytest.mark.parametrize("kind", ["module", "named-params"])
-def test_the_ema_step_count_and_decay_come_back(tmp_path, kind):
+def test_the_ema_decay_comes_back(tmp_path, kind):
+    """The step count does not: it paces a DEBUG log only, and the file holds shadows alone."""
     ema, _saved, fresh, _state = _ema_round_trip(tmp_path, kind)
 
     assert fresh.decay == ema.decay
-    assert fresh._step_count == ema._step_count
+
+
+def test_the_saved_ema_state_names_only_parameters():
+    """Every reader of ``ema_shadow.pt`` takes each key for a parameter name."""
+    model = _tiny_lora()
+    ema = EMAHandler(model, decay=0.9)
+
+    assert ema.state_dict().keys() == {name for name, _ in _trainable(model)}
 
 
 @pytest.mark.parametrize("kind", ["module", "named-params"])

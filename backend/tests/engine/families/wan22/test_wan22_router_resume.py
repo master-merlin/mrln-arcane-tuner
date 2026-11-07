@@ -187,7 +187,64 @@ def assert_router_equals(router: Any, built: tuple[torch.Tensor, dict]) -> None:
 # ── The checks both families run ──
 
 
-BAD_AND_ODD_SEEDS = ["abc", "12.5", [1], {"a": 1}, None, "", 12.7, "7", 7]
+def through_assignment(t: Any) -> Any:
+    """Then the load's real ``assign_components``, which makes HIGH active whatever the router chose."""
+    high, low = t.driver.transformer_high, t.driver.transformer_low
+    t.driver.assign_components({"unet": high, "unet_low": low})
+    return t
+
+
+def controller_model(t: Any) -> Any:
+    """The model ``_configure_adaptive_targeting`` hands the controller, as it would at setup."""
+    from unittest.mock import MagicMock, patch
+
+    seen: dict[str, Any] = {}
+
+    class _Controller:
+        enabled = False
+
+        def __init__(self, model, **_kw):
+            seen["model"] = model
+
+    t.config["adaptive_targeting"] = True
+    t._log_writer = MagicMock()
+    with patch("app.engine.components.adaptive_targeting.AdaptiveTargetingController", _Controller):
+        t._configure_adaptive_targeting()
+    return seen["model"]
+
+
+def check_fresh_run_starts_on_the_routers_expert(family: Family, tmp_path: Path, *, startup: str) -> None:
+    config = {"seed": seed_starting_on(family, startup, tmp_path), "timestep_sampling": "uniform"}
+    uninterrupted = run_steps(make_trainer(family, config, out=tmp_path / "ref"), 0, MAX_STEPS)
+    assert uninterrupted[0] == startup
+
+    fresh = through_assignment(make_trainer(family, config, out=tmp_path / "run"))
+    fresh._resume_if_needed()  # no checkpoint: the fresh start
+
+    assert fresh.driver.active_expert == startup
+    assert fresh.driver.get_primary_model() is fresh.driver._expert_model(startup)
+    assert run_steps(fresh, 0, MAX_STEPS) == uninterrupted
+
+
+def check_adaptive_targeting_keeps_its_expert_across_a_resume(family: Family, tmp_path: Path) -> None:
+    """Fresh and resumed, the controller is on the expert the load made active (HIGH)."""
+    config = {"seed": seed_starting_on(family, LOW, tmp_path), "timestep_sampling": "uniform"}
+    fresh = through_assignment(make_trainer(family, config, out=tmp_path / "run"))
+    fresh._resume_if_needed()
+    assert controller_model(fresh) is fresh.driver.transformer_high
+
+    step = step_where_next_differs_from_first(run_steps(fresh, 0, MAX_STEPS))
+    first = through_assignment(make_trainer(family, config, out=tmp_path / "run"))
+    first._resume_if_needed()
+    run_steps(first, 0, step + 1)
+    folder = save(first, step)
+
+    resumed = through_assignment(make_trainer(family, config, out=tmp_path / "run"))
+    resume(resumed, folder)
+    assert controller_model(resumed) is resumed.driver.transformer_high
+
+
+BAD_AND_ODD_SEEDS =["abc", "12.5", [1], {"a": 1}, None, "", 12.7, "7", 7]
 
 
 def check_router_reads_the_run_seed(family: Family, tmp_path: Path, seed: Any) -> None:
@@ -675,6 +732,15 @@ def test_a_config_with_no_seed_key_is_unchanged(tmp_path):
 @pytest.mark.parametrize("seed", BAD_AND_ODD_SEEDS, ids=repr)
 def test_the_router_reads_the_seed_the_run_reads(tmp_path, seed):
     check_router_reads_the_run_seed(WAN22, tmp_path, seed)
+
+
+@pytest.mark.parametrize("startup", [HIGH, LOW])
+def test_a_fresh_run_starts_on_the_routers_expert(tmp_path, startup):
+    check_fresh_run_starts_on_the_routers_expert(WAN22, tmp_path, startup=startup)
+
+
+def test_adaptive_targeting_keeps_its_expert_across_a_resume(tmp_path):
+    check_adaptive_targeting_keeps_its_expert_across_a_resume(WAN22, tmp_path)
 
 
 @pytest.mark.parametrize("value", [None, "", "not-a-seed"], ids=["none", "empty", "invalid"])

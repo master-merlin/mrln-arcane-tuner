@@ -15,6 +15,8 @@ from app.engine.models.families.wan22.expert_router import HIGH, LOW
 from tests.engine.families.wan22.test_wan22_router_resume import (
     BAD_AND_ODD_SEEDS,
     Family,
+    check_adaptive_targeting_keeps_its_expert_across_a_resume,
+    check_fresh_run_starts_on_the_routers_expert,
     check_router_reads_the_run_seed,
     check_decisions_continue,
     check_missing_file_warns_once,
@@ -112,6 +114,15 @@ def test_the_resume_places_the_state_of_the_experts_swap_mode_moves(tmp_path, mo
 @pytest.mark.parametrize("seed", BAD_AND_ODD_SEEDS, ids=repr)
 def test_the_router_reads_the_seed_the_run_reads(tmp_path, seed):
     check_router_reads_the_run_seed(BERNINI, tmp_path, seed)
+
+
+@pytest.mark.parametrize("startup", [HIGH, LOW])
+def test_a_fresh_run_starts_on_the_routers_expert(tmp_path, startup):
+    check_fresh_run_starts_on_the_routers_expert(BERNINI, tmp_path, startup=startup)
+
+
+def test_adaptive_targeting_keeps_its_expert_across_a_resume(tmp_path):
+    check_adaptive_targeting_keeps_its_expert_across_a_resume(BERNINI, tmp_path)
 
 
 def test_a_single_expert_job_places_nothing(tmp_path, monkeypatch):

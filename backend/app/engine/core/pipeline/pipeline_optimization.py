@@ -748,6 +748,7 @@ class PipelineOptimizationMixin:
         """Resume from checkpoint if configured."""
         resume_path = self.config.get("resume_from_checkpoint")
         if not resume_path:
+            self._start_expert_router()
             return
 
         self.logger.info("resuming_from_checkpoint", path=resume_path)
@@ -870,6 +871,23 @@ class PipelineOptimizationMixin:
         except (FileNotFoundError, ValueError, OSError, RuntimeError) as e:
             self.logger.error("failed_to_resume_checkpoint", error=str(e))
             raise
+
+    def _start_expert_router(self) -> None:
+        """On a fresh start, activate the router's expert for step 0, as a resume does for its step.
+
+        The load's ``assign_components`` makes HIGH active whatever the router chose
+        for block 0, so a run whose router picked LOW trained step 0 on HIGH. The
+        driver's hook runs here for the step before step 0, at the point a resume
+        runs it, after placement. The controller of adaptive targeting is bound to
+        the expert the load made active, as it is on a resume, so a fresh run and
+        its resume bind it to the same expert.
+        """
+        if getattr(self, "expert_router", None) is None:
+            return
+        # A progress-dependent router reads this for a block it hasn't decided yet.
+        self.max_train_steps = int(self.config.get("max_train_steps", 1000))
+        self._primary_before_resume = self._get_primary_model()
+        self.driver.on_optimizer_step(-1)
 
     def _resume_expert_router(self, resume_path: str) -> None:
         """Continue the dual-expert router, and activate the expert of the next step.

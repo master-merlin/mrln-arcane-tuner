@@ -563,14 +563,10 @@ def _quantized_run(backend: str, scheme: str, swapped: bool) -> list[list[torch.
 
 
 @pytest.mark.parametrize(("backend", "scheme"), _schemes(), ids=lambda v: str(v))
-def test_every_quantized_scheme_that_trains_unswapped_trains_swapped_within_its_own_run_to_run_bound(
-    backend, scheme
-):
-    try:
-        first = _quantized_run(backend, scheme, False)
-        second = _quantized_run(backend, scheme, False)
-    except Exception as error:  # noqa: BLE001 - the scheme's own failure, with no swap at all
-        pytest.skip(f"{backend}/{scheme} fails LoRA training with no swap (pre-existing): {str(error)[:160]}")
+def test_every_offered_quantized_scheme_trains_swapped_within_its_own_run_to_run_bound(backend, scheme):
+    # No skip: every scheme the form offers trains a LoRA unswapped (test_quantized_lora_training.py).
+    first = _quantized_run(backend, scheme, False)
+    second = _quantized_run(backend, scheme, False)
     swapped = _quantized_run(backend, scheme, True)
     for step, (a, b, got) in enumerate(zip(first, second, swapped, strict=True)):
         for i, (x, y, z) in enumerate(zip(a, b, got, strict=True)):

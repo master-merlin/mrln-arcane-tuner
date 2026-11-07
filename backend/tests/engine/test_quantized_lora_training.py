@@ -196,6 +196,37 @@ def test_the_dense_weight_lives_only_inside_backward(backend, scheme):
     assert grew <= x.numel() * x.element_size(), f"backward left {grew} bytes behind (the input grad is {x.numel() * 2})"
 
 
+# ── Task 3: every offered scheme, fresh and from the cache, for training and for a text encoder ──
+
+
+@pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))
+def test_every_offered_scheme_trains_fresh_and_from_its_cache(backend, scheme, tmp_path):
+    source = frozen_net()
+    signature = QuantizationFactory.state_shape_signature(source)
+    count = sum(p.numel() for p in source.parameters())
+    fresh = QuantizationFactory.quantize(source, scheme, backend_name=backend)
+
+    with torch.no_grad():  # the text-encoder use: a forward, no grad anywhere
+        out = fresh(batch(requires_grad=False))
+    assert torch.isfinite(out).all() and not out.requires_grad
+
+    path = os.path.join(tmp_path, "cache")
+    QuantizationFactory.save_quantized(fresh, path, scheme, source_param_count=count, source_signature=signature)
+    written = os.path.exists(os.path.join(path, "metadata.json"))
+    # quanto and bitsandbytes change the state-dict layout: their save is skipped by design.
+    assert written == (backend == "torchao"), f"{backend}/{scheme}: cache written={written}"
+
+    wrapped_fresh = [trainable_backward.is_wrapped(m) for m in fresh.layers]  # before LoRA replaces them
+    changed, grad = train_steps(with_lora(fresh))
+    assert changed and grad is not None and torch.isfinite(grad).all()
+    if written:
+        loaded = QuantizationFactory.load_quantized(frozen_net(), path, scheme)
+        assert loaded is not None, f"{backend}/{scheme}: its own fresh cache did not hit"
+        assert [trainable_backward.is_wrapped(m) for m in loaded.layers] == wrapped_fresh
+        changed, grad = train_steps(with_lora(loaded))
+        assert changed and grad is not None and torch.isfinite(grad).all()
+
+
 # ── Task 2: nvfp4 is NVFP4, and a cached entry of another representation is never loaded ──
 
 

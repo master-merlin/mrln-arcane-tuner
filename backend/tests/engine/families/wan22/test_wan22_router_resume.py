@@ -195,17 +195,22 @@ def check_decisions_continue(
     step = step_where_next_differs_from_first(uninterrupted)
 
     first = make_trainer(family, config, out=tmp_path / "run")
-    if soft_stop:  # the signal check at the top of a step: the hook of this step hasn't run
+    if soft_stop:
+        # The signal check at the top of ``step``: that step hasn't run, so the stop
+        # records the last one that did, and the resume runs ``step`` itself.
         run_steps(first, 0, step)
         first.global_step = step
+        folder = save(first, step - 1)
+        expected_start = step
     else:
         run_steps(first, 0, step + 1)
-    folder = save(first, step)
+        folder = save(first, step)
+        expected_start = step + 1
 
     resumed = make_trainer(family, config, out=tmp_path / "run")
     start = resume(resumed, folder)
 
-    assert start == step + 1
+    assert start == expected_start
     assert resumed.driver.active_expert == uninterrupted[start], "the first step after the resume"
     active = resumed.driver.active_expert
     assert resumed.driver.get_primary_model() is resumed.driver._expert_model(active)

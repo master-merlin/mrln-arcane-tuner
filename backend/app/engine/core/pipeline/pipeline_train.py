@@ -594,11 +594,17 @@ class PipelineTrainMixin:
             # ── Signal check ──
             signal_action = self.signal_manager.handle_signals()
             if signal_action == "soft_stop":
-                self.logger.info("soft_stop_saving_checkpoint", step=step)
+                # ``step`` hasn't run: the checkpoint records the last step that did,
+                # as a periodic save after it would, so the resume runs ``step``.
+                # Nothing has run between that step's end and here. A saved 0 means
+                # "start at 0", so a stop with only step 0 done repeats it once.
+                completed = max(step - 1, 0)
+                self.global_step = completed
+                self.logger.info("soft_stop_saving_checkpoint", step=completed, next_step=step)
                 self._emit_status("Saving Checkpoint")
                 _ctl = getattr(self, "adaptive_controller", None)
                 self.checkpoint_manager.save_checkpoint(
-                    step=step,
+                    step=completed,
                     components=self._build_trainable_components(),
                     optimizer=self.optimizer,
                     scheduler=self.lr_scheduler,
@@ -613,7 +619,7 @@ class PipelineTrainMixin:
                     adaptive_state=_ctl.get_state() if _ctl is not None else None,
                     optimizer_param_names=getattr(self, "_optimizer_param_names", None),
                 )
-                self.logger.info("soft_stop_checkpoint_saved", step=step)
+                self.logger.info("soft_stop_checkpoint_saved", step=completed)
                 break
 
             # ── Gradient accumulation loop ──

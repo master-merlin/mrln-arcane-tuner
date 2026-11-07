@@ -7,7 +7,9 @@ LayerNorm's, a multiply's) was read from the host; and a ``Linear``'s saved ``we
 the card storage alive, so training saved almost nothing.
 
 - **Trainable params** are never touched, so a param's grad and optimizer state stay beside it.
-- **Frozen params on the execution device** are *seated*: each storage under them (tensor
+  A param that trains at any point, even one frozen again later (an adapter that targeted training
+  or adaptive targeting turns off), stays resident: the LoRA save and EMA read it.
+- **Params frozen when the swap is applied**, on the execution device, are *seated*: each storage under them (tensor
   subclasses are walked through ``__tensor_flatten__``) gets one pinned host copy of its bytes,
   and its card memory is then freed in place (``untyped_storage().resize_(0)``). The tensor, and
   every view autograd saved of it, keeps its device and shape; only the bytes come and go.
@@ -82,6 +84,8 @@ class BlockSwappingManager:
         self._seated: dict[nn.Module, list[tuple[torch.UntypedStorage, torch.Tensor]]] = {}
         self._signature: dict[nn.Module, tuple] = {}
         self._shared: set[int] = set()
+        # Params frozen when the swap was applied, and never trainable since: the only ones seated.
+        self._never_trained: set[int] = set()
         self._pending: list[nn.Module] = []
         self._end_queued_for: int | None = None
 
@@ -91,6 +95,7 @@ class BlockSwappingManager:
         """Seat every block and register its hooks."""
         logger.info("block_swapping_apply", num_blocks=len(self.blocks))
         self._shared = self._storages_in_more_than_one_block()
+        self._never_trained = {id(p) for block in self.blocks for p in block.parameters() if not p.requires_grad}
         for block in self.blocks:
             self._seat(block)
             self._wrap_apply(block)
@@ -135,8 +140,15 @@ class BlockSwappingManager:
         return self.execution_device.type != "cpu"
 
     def _frozen_on_device(self, block: nn.Module) -> Iterator[nn.Parameter]:
+        """The params to seat: frozen when the swap was applied and never trainable since.
+
+        An adapter that targeted training or adaptive targeting turns off later stays resident:
+        the LoRA save, EMA and the adaptive probe read it outside any forward.
+        """
         for param in block.parameters():
-            if not param.requires_grad and param.device == self.execution_device:
+            if param.requires_grad:
+                self._never_trained.discard(id(param))
+            elif id(param) in self._never_trained and param.device == self.execution_device:
                 yield param
 
     def _storages_in_more_than_one_block(self) -> set[int]:
@@ -153,6 +165,9 @@ class BlockSwappingManager:
 
     def _block_signature(self, block: nn.Module) -> tuple:
         """What seating depends on: which storages each param has, where, and whether it trains."""
+        for param in block.parameters():
+            if param.requires_grad:
+                self._never_trained.discard(id(param))
         return tuple(
             (id(p), p.requires_grad, p.device, tuple(leaf.untyped_storage()._cdata for leaf in _leaves(p.data)))
             for p in block.parameters()

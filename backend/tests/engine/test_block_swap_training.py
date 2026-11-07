@@ -181,6 +181,15 @@ def check_i3_working(observer: Observer) -> None:
     assert all(n <= 2 for n in observer.in_backward), observer.in_backward
 
 
+def optimizer_step(optimizer: torch.optim.Optimizer) -> None:
+    """One step; SophiaH takes the trainer's Hessian estimate, as the trainer hands it."""
+    kwargs: dict = {}
+    if getattr(optimizer, "hessian_period", None) is not None:
+        params = [p for group in optimizer.param_groups for p in group["params"]]
+        kwargs["hessian"] = [None if p.grad is None else p.grad.abs() for p in params]
+    optimizer.step(**kwargs)
+
+
 def run(
     model: nn.Module,
     steps: int,
@@ -188,12 +197,14 @@ def run(
     make_optimizer: Callable[[list[nn.Parameter]], torch.optim.Optimizer] | None = None,
     between: Callable[[int], None] | None = None,
     x: torch.Tensor | None = None,
+    optimizer: torch.optim.Optimizer | None = None,
 ) -> list[list[torch.Tensor]]:
     """Train ``steps`` steps; check I1 and I3 after each; return every trainable param after each."""
     managers = managers or []
     params = trainable(model)
     devices = {id(p): p.device for p in params}
-    optimizer = (make_optimizer or (lambda ps: torch.optim.AdamW(ps, lr=1e-2)))(params)
+    if optimizer is None:
+        optimizer = (make_optimizer or (lambda ps: torch.optim.AdamW(ps, lr=1e-2)))(params)
     width = blocks_of(model)[0].lin.in_features
     x = batch(width) if x is None else x
     observer = Observer(managers) if managers else None
@@ -201,7 +212,7 @@ def run(
     for step in range(steps):
         loss = model(x).pow(2).mean()
         loss.backward()
-        optimizer.step()
+        optimizer_step(optimizer)
         if managers:
             check_i1(model, optimizer, devices)
             check_i3_idle(managers)
@@ -288,7 +299,27 @@ def test_a_buffer_stays_resident():
     check_i3_idle([manager])
 
 
-def test_a_param_frozen_after_the_swap_is_seated_and_one_made_trainable_is_left_alone():
+def test_an_adapter_frozen_after_the_swap_keeps_its_values_readable():
+    # Targeted training and adaptive targeting turn adapters off after the swap is set up; the
+    # LoRA save, EMA and the adaptive probe then read them outside any forward.
+    model = build()
+    manager = swap(model, [0])
+    block = blocks_of(model)[0]
+    adapters = [p for name, p in block.named_parameters() if "lora_" in name]
+    for param in adapters:
+        param.requires_grad_(False)
+    expected = [p.detach().cpu().clone() for p in adapters]
+    for _ in range(2):
+        with torch.no_grad():
+            model(batch(64))
+        model(batch(64)).pow(2).mean().backward()
+    for param, value in zip(adapters, expected, strict=True):
+        assert param.untyped_storage().nbytes() == param.numel() * param.element_size()
+        assert torch.equal(param.detach().cpu(), value)
+    check_i3_idle([manager])
+
+
+def test_a_param_made_trainable_after_the_swap_is_left_alone():
     model = build()
     manager = swap(model, [0])
     block = blocks_of(model)[0]
@@ -392,6 +423,60 @@ def test_remove_gives_back_the_original_frozen_weights_and_the_model_still_train
     assert all("_apply" not in block.__dict__ for block in blocks_of(model))
     assert all(not block._forward_pre_hooks and not block._forward_hooks for block in blocks_of(model))
     run(model, 1)
+
+
+# ── Task 3: every optimizer, fresh and resumed ──────────────────────────────────────────────────
+
+
+def _every_optimizer() -> dict[str, Callable[[list[nn.Parameter]], torch.optim.Optimizer]]:
+    from app.engine.factories.optimizer import OptimizerFactory
+
+    made = {key: (lambda ps, key=key: OptimizerFactory.create(key, ps, lr=1e-3))
+            for key in OptimizerFactory.SUPPORTED_OPTIMIZERS}
+    made["AdamW-capturable"] = lambda ps: torch.optim.AdamW(ps, lr=1e-3, capturable=True)
+    made["AdamW-fused"] = lambda ps: torch.optim.AdamW(ps, lr=1e-3, fused=True)
+    made["SophiaG-capturable"] = lambda ps: OptimizerFactory.create(
+        "SophiaG", ps, lr=1e-3, config={"sophia_capturable": True}
+    )
+    return made
+
+
+EVERY_OPTIMIZER = _every_optimizer()
+FRESH_STEPS, RESUMED_STEPS = 8, 3
+
+
+def _fresh_then_resumed(make: Callable, swapped: list[int]) -> list[list[torch.Tensor]]:
+    """8 steps, a save through a file, a new model and optimizer loaded from it, 3 more steps."""
+    import io
+
+    model = build()
+    managers = [swap(model, swapped)] if swapped else []
+    optimizer = make(trainable(model))
+    snapshots = run(model, FRESH_STEPS, managers, optimizer=optimizer)
+    buffer = io.BytesIO()
+    torch.save({"optimizer": optimizer.state_dict(), "params": [p.detach().clone() for p in trainable(model)]}, buffer)
+    for manager in managers:
+        manager.remove()
+    del model, optimizer, managers
+
+    buffer.seek(0)
+    saved = torch.load(buffer, weights_only=False)
+    model = build()  # the base weights a resume loads again; the LoRA values come from the save
+    with torch.no_grad():
+        for param, value in zip(trainable(model), saved["params"], strict=True):
+            param.copy_(value)
+    managers = [swap(model, swapped)] if swapped else []
+    optimizer = make(trainable(model))
+    optimizer.load_state_dict(saved["optimizer"])
+    return snapshots + run(model, RESUMED_STEPS, managers, optimizer=optimizer)
+
+
+@pytest.mark.parametrize("key", list(EVERY_OPTIMIZER))
+def test_every_optimizer_trains_a_swapped_run_bitwise_like_the_unswapped_one_across_a_resume(key):
+    make = EVERY_OPTIMIZER[key]
+    reference = _fresh_then_resumed(make, [])
+    swapped = _fresh_then_resumed(make, [0, 1, 2])
+    assert_bitwise_equal(reference, swapped)
 
 
 # ── The VRAM saving, measured: each twin in its own process ──────────────────────────────────────

@@ -105,7 +105,7 @@ class PipelineOptimizationMixin:
         # 6. torch.compile (AFTER PEFT so compile sees full Float8Linear + LoRA graph)
         self._compile_if_quantized()
 
-        # 6b. Block swapping (CPU↔GPU migration for VRAM savings)
+        # 6b. Block swapping (swapped blocks' frozen weights freed between runs)
         self._configure_block_swapping()
 
         # 6c. Targeted layer training (freeze non-selected layers)
@@ -303,7 +303,7 @@ class PipelineOptimizationMixin:
     # ── Block Swapping ───────────────────────────────────────────────────
 
     def _configure_block_swapping(self) -> None:
-        """Apply CPU↔GPU block swapping if configured.
+        """Apply block swapping if configured: swapped blocks' frozen weights are freed between runs.
 
         Uses ``driver.get_block_topology()`` to resolve block groups,
         then applies ``BlockSwappingManager`` to the configured number

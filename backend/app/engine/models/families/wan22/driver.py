@@ -126,14 +126,11 @@ class Wan22Driver(WanDriverBase):
         was made. One cheap parameter-device check closes that gap.
 
         Skipped entirely when ``expert`` is under active block-swap
-        management (``self.block_swap_active_expert``): that model's blocks
-        are cycled between pinned CPU shadow buffers and GPU by
-        ``BlockSwappingManager``'s forward hooks, so a bulk ``model.to(device)``
-        here — even a "just this once" safety-net move — would force every
-        swapped block onto GPU at once, defeating the swap (same hazard
-        :func:`app.engine.core.sampling._ensure_transformer_on_device` guards
-        against). If a swapped expert becomes active mid-run, its blocks page
-        in on demand via the hooks; nothing here needs to force them.
+        management (``self.block_swap_active_expert``): that model is on the
+        device already, and ``BlockSwappingManager`` frees its swapped blocks'
+        frozen weights between the times each block runs. A bulk
+        ``model.to(device)`` here would only refill and re-seat them (as
+        :func:`app.engine.core.sampling._ensure_transformer_on_device` says).
         """
         self._active_expert = expert
         model = self._expert_model(expert)
@@ -258,14 +255,10 @@ class Wan22Driver(WanDriverBase):
 
         - ``resident``/``auto`` → both experts on ``self.device`` — EXCEPT an
           expert under active block-swap management
-          (``self.block_swap_active_expert``): its deep blocks are owned by
-          ``BlockSwappingManager``'s forward hooks, which cycle them between
-          pinned CPU shadow buffers and GPU on demand. A bulk
-          ``module.to(device)`` here would force every swapped block onto GPU
-          at once — defeating the swap and bloating peak VRAM by the full
-          expert size (the exact hazard
-          :func:`app.engine.core.sampling._ensure_transformer_on_device`
-          guards against for the single-transformer sampler). The OTHER
+          (``self.block_swap_active_expert``): it is on the device already,
+          and ``BlockSwappingManager`` frees its swapped blocks' frozen
+          weights between the times each block runs, so a bulk
+          ``module.to(device)`` here would only refill and re-seat them. The OTHER
           (non-swapped) expert is unaffected and still gets placed here, so
           the original bug this method fixes — the first router flip landing
           on a CPU-resident model — stays fixed for it.

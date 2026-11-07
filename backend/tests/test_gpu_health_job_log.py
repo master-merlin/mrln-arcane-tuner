@@ -294,6 +294,7 @@ class Trainer:
             manager = TrainingSignalManager(root)
             TrainingSignalManager.send_signal(root, "soft_stop")
             assert manager.handle_signals() == "soft_stop"
+            self._soft_stop_exit = True
 
 
 class Family:
@@ -421,6 +422,8 @@ def test_a_job_that_ends_normally(run_job, how: str) -> None:
     job = run_job(train=how, readings=[good()])
     assert_written_once_before_the_finaliser_and_the_exit_line(job, 0)
     assert "error" not in job.entries[-1]["data"]
+    # Only a soft stop's exit tells the backend the job stopped rather than finished.
+    assert job.entries[-1]["data"].get("stopped", False) is (how == "soft_stop")
 
 
 def test_the_rebuild_exit_still_says_so_before_the_summary(run_job) -> None:

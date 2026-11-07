@@ -1752,6 +1752,20 @@ class TestAutoQueue:
         assert job.status == JobStatus.FAILED
         ms.assert_called_once()
 
+    def test_exit_after_a_soft_stop_is_stopped_and_does_not_advance(self):
+        """A soft stop saved a checkpoint and exited 0 on purpose: the job is
+        unfinished and resumable, like a hard stop — not completed."""
+        mgr = JobManager()
+        job = mgr.create_job("flux/dev", _make_config())
+        job.status = JobStatus.RUNNING
+        with patch.object(mgr, "schedule_advance_queue") as ms, \
+                patch.object(mgr, "_persist_status") as persist, patch.object(mgr, "_stop_tailer"):
+            mgr._handle_exit_message(job.id, {"code": 0, "stopped": True})
+        assert job.status == JobStatus.STOPPED
+        assert job.error is None
+        assert persist.call_args.args[:2] == (job.id, "stopped")
+        ms.assert_not_called()
+
     def test_exit_user_stopped_does_not_advance(self):
         """A user hard-stop (status already STOPPED) is an intentional
         intervention — do NOT auto-start the next job."""

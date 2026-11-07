@@ -577,6 +577,9 @@ class PipelineTrainMixin:
         # by run_trainer, which must not write a final LoRA for a run the
         # backend is about to relaunch.
         self._rebuild_exit = False
+        # Set only by a soft stop: the run ends unfinished and resumable, and
+        # run_trainer tells the backend it stopped rather than finished.
+        self._soft_stop_exit = False
 
         # Snapshot the caching/load peak, then reset CUDA peak stats so the loop
         # below measures the training-phase peak (calibrates the VRAM wall).
@@ -620,6 +623,7 @@ class PipelineTrainMixin:
                     optimizer_param_names=getattr(self, "_optimizer_param_names", None),
                 )
                 self.logger.info("soft_stop_checkpoint_saved", step=completed)
+                self._soft_stop_exit = True
                 break
 
             # ── Gradient accumulation loop ──
@@ -1145,6 +1149,17 @@ class PipelineTrainMixin:
             if self._vram_measured:
                 self._write_vram_measured(self._vram_measured)
             self.logger.info("rebuild_exit_skipping_final_save", step=self.global_step)
+            return
+
+        # ── Soft stop: unfinished, resumable from the checkpoint it saved ──
+        # Like the rebuild exit: the steps that ran keep their loss history and
+        # VRAM breakdown, but no final LoRA, final checkpoint or completed job
+        # record claims a run that stopped early has finished.
+        if self._soft_stop_exit:
+            self.logger_component.save_loss_history(self.checkpoint_manager.output_dir)
+            if self._vram_measured:
+                self._write_vram_measured(self._vram_measured)
+            self.logger.info("soft_stop_exit_skipping_final_save", step=self.global_step)
             return
 
         # ── Training complete ──

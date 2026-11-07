@@ -169,19 +169,29 @@ def test_a_soft_stop_right_after_a_resume_loses_no_step(tmp_path):
     assert sorted(trained) == list(range(4, MAX_STEPS))
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="a soft stop still runs the end of a finished training (final save, completed job): "
-    "what it should do instead is the user's decision",
-)
 def test_a_soft_stop_writes_no_final_checkpoint(tmp_path):
     """A stopped run is unfinished: no ``final`` save, no completed job record."""
     trained: list[int] = []
     t = _Trainer(tmp_path, global_step=0, stop_at=5, trained=trained)
-    with patch.object(PipelineTrainMixin, "_complete_job_history", autospec=True) as complete:
+    with (
+        patch.object(PipelineTrainMixin, "_complete_job_history", autospec=True) as complete,
+        patch.object(PipelineTrainMixin, "_record_checkpoint", autospec=True) as record,
+    ):
         _train(t)
 
     finals = [c for c in t.checkpoint_manager.save_checkpoint.call_args_list if c.kwargs.get("is_final")]
     assert finals == []
     complete.assert_not_called()
+    assert [c for c in record.call_args_list if c.kwargs.get("is_final")] == []
+    assert t._soft_stop_exit is True
+    t.logger_component.save_loss_history.assert_called_once()
     assert sorted(trained) == [0, 1, 2, 3, 4]
+
+
+def test_a_run_that_trains_to_the_end_is_no_soft_stop(tmp_path):
+    t = _Trainer(tmp_path, global_step=0, stop_at=None, trained=[])
+    _train(t)
+
+    assert t._soft_stop_exit is False
+    finals = [c for c in t.checkpoint_manager.save_checkpoint.call_args_list if c.kwargs.get("is_final")]
+    assert len(finals) == 1

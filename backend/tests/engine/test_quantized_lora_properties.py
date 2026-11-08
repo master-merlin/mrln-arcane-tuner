@@ -68,7 +68,30 @@ LAYOUTS = {
     "transposed": (lambda s: (*s[:-2], s[-1], s[-2]), lambda t, s: t.transpose(-1, -2)),
     "expanded": (lambda s: (1, *s[1:]), lambda t, s: t.expand(s)),
     "sliced": (lambda s: (*s[:-1], 2 * s[-1]), lambda t, s: t[..., : s[-1]]),
+    # LANE-189: a batch-1 slice along dim 1 (FLUX.2's text tokens: a token split). is_contiguous() is
+    # True, as a size-1 dim's stride is ignored, but the strides are not canonical.
+    "batch1_split": (lambda s: (s[0], 2 * s[1], *s[2:]), lambda t, s: t.narrow(1, 0, s[1])),
 }
+LOOKS_CONTIGUOUS = {"contiguous", "batch1_split"}
+
+
+def batch(d: "Draw") -> int:
+    return 1 if d.layout == "batch1_split" else 4
+
+
+def canonical_strides(shape) -> tuple[int, ...]:
+    strides, step = [], 1
+    for size in reversed(shape):
+        strides.append(step)
+        step *= size
+    return tuple(reversed(strides))
+
+
+def canonical_copy(x: torch.Tensor) -> torch.Tensor:
+    """A copy with canonical strides: ``.contiguous()`` keeps a non-canonical size-1-dim stride."""
+    y = x.clone(memory_format=torch.contiguous_format)
+    assert y.stride() == canonical_strides(y.shape), f"not canonical: {y.stride()}"
+    return y
 
 
 # layer_manifest.resolve_precision: fp32 weights (SDXL) honour the configured autocast; bf16 weights
@@ -144,7 +167,7 @@ def quantized(d: Draw) -> nn.Module:
 
 def rand(d: Draw, width: int, salt: int, requires_grad: bool = False) -> torch.Tensor:
     gen = torch.Generator("cuda").manual_seed(d.seed * 1000 + salt)
-    shape = (4, width) if d.tokens is None else (4, d.tokens, width)
+    shape = (batch(d), width) if d.tokens is None else (batch(d), d.tokens, width)
     return torch.randn(shape, device="cuda", dtype=d.dtype, generator=gen).requires_grad_(requires_grad)
 
 
@@ -160,8 +183,9 @@ class Input:
         leaf = self.source.clone().requires_grad_(True)
         x = self.view(leaf)
         # The layout reaches the layer: nothing between here and the forward materialises it.
-        assert x.is_contiguous() == (self.layout == "contiguous"), f"{self.layout}: strides {x.stride()}"
+        assert x.is_contiguous() == (self.layout in LOOKS_CONTIGUOUS), f"{self.layout}: strides {x.stride()}"
         assert self.layout != "expanded" or x.stride()[0] == 0, f"expanded: strides {x.stride()}"
+        assert self.layout != "batch1_split" or x.stride() != canonical_strides(x.shape), f"batch1_split: {x.stride()}"
         return leaf, x
 
     def leaf_grad_of(self, view_grad: torch.Tensor) -> torch.Tensor:
@@ -172,7 +196,7 @@ class Input:
 
 
 def layer_input(d: Draw, width: int, salt: int) -> Input:
-    shape = (4, width) if d.tokens is None else (4, d.tokens, width)
+    shape = (batch(d), width) if d.tokens is None else (batch(d), d.tokens, width)
     source_shape, view = LAYOUTS[d.layout]
     gen = torch.Generator("cuda").manual_seed(d.seed * 1000 + salt)
     source = torch.randn(source_shape(shape), device="cuda", dtype=d.dtype, generator=gen)
@@ -271,8 +295,8 @@ def test_i2_a_wrapped_layer_backs_off_its_dense_weight_and_any_other_is_untouche
                 # cuBLAS, so the products agree to the bf16 rounding of that order, not bit for bit.
                 assert close_up_to_accumulation_order(out, expected), f"{d}: layer {i} forward is not linear(x, dense(W))"
         elif contiguous_only:
-            # NVFP4, quanto: what the bypassed layer computes on the contiguous copy of the same view.
-            copy = Input(inp.source, lambda t, v=inp.view: v(t).contiguous(), "contiguous")
+            # NVFP4, quanto: what the bypassed layer computes on the canonical copy of the same view.
+            copy = Input(inp.source, lambda t, v=inp.view: canonical_copy(v(t)), "contiguous")
             out_plain, grad_plain, _ = through(d, plain, copy, g)
             assert torch.equal(out, out_plain) and torch.equal(grad, grad_plain), f"{d}: layer {i} changed"
         else:

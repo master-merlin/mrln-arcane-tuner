@@ -434,20 +434,39 @@ LAYOUT_CASES = {
     "transposed": ((2, 128, 64), lambda t: t.transpose(1, 2), (8192, 1, 64)),
     "expanded": ((1, 64, 128), lambda t: t.expand(2, 64, 128), (0, 128, 1)),
     "sliced": ((2, 64, 256), lambda t: t[..., :128], (16384, 256, 1)),
+    # LANE-189: FLUX.2's text tokens, a batch-1 split along the token dim. is_contiguous() is True
+    # (a size-1 dim's stride is ignored), but the strides are not canonical: matmul's fold rejects them.
+    "batch1_split": ((1, 96, 128), lambda t: t.split_with_sizes([64, 32], dim=1)[0], (12288, 128, 1)),
 }
 
 
+def _canonical(shape) -> tuple[int, ...]:
+    strides, step = [], 1
+    for size in reversed(shape):
+        strides.append(step)
+        step *= size
+    return tuple(reversed(strides))
+
+
+def _canonical_copy(x: torch.Tensor) -> torch.Tensor:
+    """A copy with canonical strides: ``.contiguous()`` keeps a non-canonical size-1-dim stride."""
+    y = x.clone(memory_format=torch.contiguous_format)
+    assert y.stride() == _canonical(y.shape), f"not canonical: {y.stride()}"
+    return y
+
+
 def _layout_run(lin: nn.Module, layout: str, autocast, contiguous_copy: bool = False):
-    """Output and source grad of ``lin`` on the layout's view (or on its contiguous copy)."""
+    """Output and source grad of ``lin`` on the layout's view (or on its canonical contiguous copy)."""
     source_shape, view, strides = LAYOUT_CASES[layout]
     gen = torch.Generator("cuda").manual_seed(11)
     leaf = torch.randn(source_shape, device="cuda", dtype=torch.bfloat16, generator=gen).requires_grad_(True)
     x = view(leaf)
     if contiguous_copy:
-        x = x.contiguous()
+        x = _canonical_copy(x)
     else:
         assert x.stride() == strides, f"{layout}: the layer would see strides {x.stride()}"
-    g = torch.randn(2, 64, 256, device="cuda", dtype=torch.bfloat16, generator=gen)
+        assert layout != "batch1_split" or x.is_contiguous(), "batch1_split must look contiguous"
+    g = torch.randn(*x.shape[:-1], 256, device="cuda", dtype=torch.bfloat16, generator=gen)
     with amp(autocast):
         out = lin(x)
     out.backward(g.to(out.dtype))
@@ -460,23 +479,45 @@ def _close(got: torch.Tensor, ref: torch.Tensor) -> bool:
     return ((got - ref).norm() <= 0.01 * ref.norm()).item()
 
 
-def _linear_128(backend: str, scheme: str) -> nn.Module:
+def _linear_128(backend: str, scheme: str, bias: bool = True) -> nn.Module:
     torch.manual_seed(0)
-    net = nn.Sequential(nn.Linear(128, 256, dtype=torch.bfloat16)).to("cuda").requires_grad_(False)
+    net = nn.Sequential(nn.Linear(128, 256, bias=bias, dtype=torch.bfloat16)).to("cuda").requires_grad_(False)
     return QuantizationFactory.quantize(net, scheme, backend_name=backend)[0]
 
 
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no-bias"])
 @pytest.mark.parametrize("autocast", [None, torch.bfloat16], ids=["no-autocast", "bf16-autocast"])
 @pytest.mark.parametrize("layout", sorted(LAYOUT_CASES))
 @pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))
-def test_every_offered_scheme_trains_on_every_input_layout(backend, scheme, layout, autocast):
-    lin = _linear_128(backend, scheme)
+def test_every_offered_scheme_trains_on_every_input_layout(backend, scheme, layout, autocast, bias):
+    lin = _linear_128(backend, scheme, bias)
     got_out, got_grad = _layout_run(lin, layout, autocast)
     ref_out, ref_grad = _layout_run(lin, layout, autocast, contiguous_copy=True)
     if trainable_backward.makes_input_contiguous(lin):  # nvfp4, quanto: the very same computation
         assert torch.equal(got_out, ref_out) and torch.equal(got_grad, ref_grad)
     else:
         assert _close(got_out, ref_out) and _close(got_grad, ref_grad), f"{backend}/{scheme} {layout}"
+
+
+_CONTIGUOUS_INPUT_SCHEMES = [p for p in offered() if p[1] == "nvfp4" or p[0] == "optimum-quanto"]
+
+
+@pytest.mark.parametrize("shape", [(128,), (8, 128), (2, 8, 128), (2, 3, 4, 128)], ids=lambda s: f"rank{len(s)}")
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no-bias"])
+@pytest.mark.parametrize(("backend", "scheme"), _CONTIGUOUS_INPUT_SCHEMES, ids=lambda v: str(v))
+def test_a_contiguous_input_of_any_rank_computes_what_it_did_without_the_wrap(backend, scheme, bias, shape, monkeypatch):
+    def run(lin):
+        gen = torch.Generator("cuda").manual_seed(14)
+        x = torch.randn(shape, device="cuda", dtype=torch.bfloat16, generator=gen).requires_grad_(True)
+        out = lin(x)
+        out.float().pow(2).mean().backward()
+        return out.detach(), x.grad
+
+    with_wrap = run(_linear_128(backend, scheme, bias))
+    monkeypatch.setattr(trainable_backward, "make_quantized_linears_trainable", lambda module: 0)
+    without = run(_linear_128(backend, scheme, bias))
+    assert with_wrap[0].shape == (*shape[:-1], 256)
+    assert torch.equal(with_wrap[0], without[0]) and torch.equal(with_wrap[1], without[1])
 
 
 def test_nvfp4_from_the_cache_trains_on_a_non_contiguous_input(tmp_path):
@@ -505,8 +546,9 @@ def test_a_layer_fed_a_contiguous_input_computes_what_it_did_without_the_wrap(ba
 @pytest.mark.parametrize(
     ("backend", "scheme"), [p for p in offered() if p[1] == "nvfp4" or p[0] == "optimum-quanto"], ids=lambda v: str(v),
 )
-def test_a_wrapped_layer_takes_its_input_by_keyword_as_a_linear_does(backend, scheme):
-    lin = _linear_128(backend, scheme)
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no-bias"])
+def test_a_wrapped_layer_takes_its_input_by_keyword_as_a_linear_does(backend, scheme, bias):
+    lin = _linear_128(backend, scheme, bias)
     gen = torch.Generator("cuda").manual_seed(13)
     leaf = torch.randn(2, 128, 64, device="cuda", dtype=torch.bfloat16, generator=gen)
     x = leaf.transpose(1, 2)

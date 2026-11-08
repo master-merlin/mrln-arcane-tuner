@@ -126,8 +126,9 @@ def _forward(linear: nn.Linear, x: torch.Tensor) -> torch.Tensor:
 def needs_contiguous_input(layer: nn.Module) -> bool:
     """A quantized Linear whose kernel fails on a non-contiguous input.
 
-    - torchao's NVFP4: its forward on a transposed or batch-expanded 3D input falls back to ``bmm``,
-      which calls ``expand`` on the weight, and ``NVFP4Tensor`` has none.
+    - torchao's NVFP4: its forward on a transposed or batch-expanded 3D input, or (without a bias)
+      on a batch-1 token split, falls back to ``bmm``, which calls ``expand`` on the weight, and
+      ``NVFP4Tensor`` has none.
     - optimum-quanto's ``QLinear``: its backward takes ``input.view(-1, in_features)``, which a
       transposed or expanded input that needs its grad cannot give.
     Every other offered scheme runs any layout.
@@ -141,15 +142,27 @@ def makes_input_contiguous(layer: nn.Module) -> bool:
     return bool(getattr(layer, _CONTIGUOUS_FLAG, False))
 
 
-def _contiguous_input_forward(original):
+def _as_2d(x: torch.Tensor, in_features: int) -> torch.Tensor:
+    # ``contiguous()`` alone is not enough: it keeps a size-1 dim's stride, which ``is_contiguous()``
+    # ignores but matmul's fold does not (a batch-1 token split), so NVFP4 still reaches ``bmm``.
+    # The 2D view of a contiguous tensor always has canonical strides.
+    return x.contiguous().reshape(-1, in_features)
+
+
+def _contiguous_input_forward(original, in_features: int):
     def forward(*args, **kwargs) -> torch.Tensor:
         # The input as nn.Linear.forward takes it: first positional, or the keyword ``input``.
-        # A contiguous input is returned as it is: such a call computes exactly what it did.
+        # A canonical contiguous input is only re-viewed: such a call computes exactly what it did.
         if args:
-            args = (args[0].contiguous(), *args[1:])
+            x = args[0]
+            args = (_as_2d(x, in_features), *args[1:])
         elif "input" in kwargs:
-            kwargs["input"] = kwargs["input"].contiguous()
-        return original(*args, **kwargs)
+            x = kwargs["input"]
+            kwargs["input"] = _as_2d(x, in_features)
+        else:
+            return original(*args, **kwargs)
+        out = original(*args, **kwargs)
+        return out.reshape(*x.shape[:-1], out.shape[-1])
 
     return forward
 
@@ -169,7 +182,7 @@ def make_quantized_linears_trainable(module: nn.Module) -> int:
         if not isinstance(layer, nn.Linear):
             continue
         if needs_contiguous_input(layer) and not makes_input_contiguous(layer):
-            layer.forward = _contiguous_input_forward(layer.forward)  # its own forward, any layout
+            layer.forward = _contiguous_input_forward(layer.forward, layer.in_features)  # its own forward, any layout
             setattr(layer, _CONTIGUOUS_FLAG, True)
         if is_wrapped(layer):
             continue

@@ -14,6 +14,8 @@ in-process (no subprocess spawn needed there — it's pure function testing of
 """
 from __future__ import annotations
 
+import itertools
+import os
 import subprocess
 import sys
 import time
@@ -21,6 +23,108 @@ import time
 import pytest
 
 from app.engine.utils.hf_download_guard import download_with_stall_guard
+
+# A child that waits for the test gives up after this much wall time, so a frozen clock or a
+# guard that never detects a stall ends the test with a failure instead of a hang.
+CHILD_WALL_DEADLINE_S = 30
+WATCHDOG_EXIT = 3  # only a child's own give-up exits with it: the guard's kill never gives 3
+
+
+class StepClock:
+    """Virtual time for the guard: it moves only when the test's probe moves it.
+
+    A test that races a real child against a sub-second stall timeout on the wall clock flakes
+    whenever the scheduler delays the child (LANE-188). On this clock, whether the timer resets
+    depends only on the sequence of probe values.
+    """
+
+    def __init__(self) -> None:
+        self.t = 0.0
+        self.frozen = False
+
+    def __call__(self) -> float:
+        return self.t
+
+    def advance(self, dt: float) -> None:
+        if not self.frozen:
+            self.t += dt
+
+
+_END = object()
+
+
+def scripted_probe(clock: StepClock, steps, measure, done, dt: float):
+    """Each call runs the next step in-process (a filesystem change, or ``None`` to only
+    measure), advances ``clock`` by ``dt`` and returns ``measure()``.
+
+    The guard's first call takes its baseline, so a script starts with ``None``. After the last
+    step the clock is frozen and ``done`` is created: the waiting child then exits.
+    """
+    it = iter(steps)
+
+    def probe():
+        step = next(it, _END)
+        if step is _END:
+            clock.frozen = True
+            done.touch()
+        else:
+            if step is not None:
+                step()
+            clock.advance(dt)
+        return measure()
+
+    return probe
+
+
+def waiting_child(done, path: str, before: str = "") -> str:
+    """A child that runs ``before``, waits for ``done``, prints ``path`` and exits 0, or gives
+    up after ``CHILD_WALL_DEADLINE_S`` with exit ``WATCHDOG_EXIT``."""
+    return (
+        "import os, sys, time\n"
+        f"{before}"
+        f"deadline = time.monotonic() + {CHILD_WALL_DEADLINE_S}\n"
+        f"while not os.path.exists(r'{done}'):\n"
+        "    if time.monotonic() > deadline:\n"
+        f"        sys.stderr.write('WATCHDOG: no done after {CHILD_WALL_DEADLINE_S}s')\n"
+        f"        sys.exit({WATCHDOG_EXIT})\n"
+        "    time.sleep(0.01)\n"
+        # safety-net print: stub child's stdout-path protocol (fixture)
+        f"print('{path}')\n"
+    )
+
+
+class Children:
+    """The guard's ``spawn_fn``: attempt n runs ``code_for(n)``; keeps every child it started."""
+
+    def __init__(self, code_for) -> None:
+        self.code_for = code_for
+        self.procs: list[subprocess.Popen] = []
+
+    def __call__(self) -> subprocess.Popen:
+        proc = subprocess.Popen(
+            [sys.executable, "-c", self.code_for(len(self.procs) + 1)],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        self.procs.append(proc)
+        return proc
+
+    def kill_all(self) -> None:
+        for proc in self.procs:
+            if proc.poll() is None:
+                proc.kill()
+                proc.wait()
+
+
+def append_byte(path):
+    def step():
+        with open(path, "ab") as f:
+            f.write(b"x")
+
+    return step
+
+
+def size_of(path):
+    return lambda: path.stat().st_size if path.exists() else 0
 
 
 class TestDownloadWithStallGuard:
@@ -93,84 +197,78 @@ class TestDownloadWithStallGuard:
 
     def test_stall_then_success_recovers(self, tmp_path):
         """Attempt 1 stalls (killed); attempt 2 succeeds — the guard
-        recovers and returns the second attempt's path."""
-        blob = tmp_path / "blob.bin"
-        attempts = {"n": 0}
+        recovers and returns the second attempt's path.
 
-        def spawn():
-            attempts["n"] += 1
-            if attempts["n"] == 1:
-                code = "import time\ntime.sleep(999)\n"
-            else:
-                code = (
-                    "import pathlib\n"
-                    f"pathlib.Path(r'{blob}').write_bytes(b'x' * 10)\n"
-                    # safety-net print: stub child's stdout-path protocol
-                    "print('/resolved/after-retry')\n"
+        On virtual time: attempt 1's probes never change and each moves the
+        clock, so it is killed after a fixed number of polls; on attempt 2
+        the clock is frozen and its child exits once told to."""
+        done = tmp_path / "done"
+        clock = StepClock()
+
+        def code_for(attempt):
+            if attempt == 1:  # silent: the guard must kill it long before it gives up
+                return (
+                    "import sys, time\n"
+                    f"time.sleep({CHILD_WALL_DEADLINE_S})\n"
+                    "sys.stderr.write('WATCHDOG: attempt 1 was never killed')\n"
+                    f"sys.exit({WATCHDOG_EXIT})\n"
                 )
-            return subprocess.Popen(
-                [sys.executable, "-c", code],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            )
+            return waiting_child(done, "/resolved/after-retry")
+
+        children = Children(code_for)
 
         def probe():
-            return blob.stat().st_size if blob.exists() else 0
+            if len(children.procs) >= 2:
+                clock.frozen = True
+                done.touch()
+            else:
+                clock.advance(0.05)
+            return 0
 
-        result = download_with_stall_guard(
-            repo_id="org/flaky-repo",
-            stall_timeout_s=0.15,
-            max_attempts=3,
-            backoff_s=(0.01,),
-            poll_interval_s=0.03,
-            spawn_fn=spawn,
-            probe_bytes_fn=probe,
-        )
+        try:
+            result = download_with_stall_guard(
+                repo_id="org/flaky-repo",
+                stall_timeout_s=0.15,
+                max_attempts=3,
+                backoff_s=(0.01,),
+                poll_interval_s=0.01,
+                clock=clock,
+                spawn_fn=children,
+                probe_bytes_fn=probe,
+            )
+        finally:
+            children.kill_all()
 
         assert result == "/resolved/after-retry"
-        assert attempts["n"] == 2
+        assert len(children.procs) == 2
+        assert children.procs[0].returncode != WATCHDOG_EXIT, "attempt 1 must end as a stall kill"
 
     def test_slow_but_progressing_child_not_killed(self, tmp_path):
-        """A child that writes a byte every poll tick is NOT killed even
-        though the total run time exceeds stall_timeout_s — the stall timer
-        resets on every byte of growth. Write cadence (0.05s) is kept ~6x
-        tighter than the stall timeout (0.3s) so a slow CI scheduler can't
-        flake this into a spurious kill."""
-        blob = tmp_path / "blob.bin"
-        code = (
-            "import pathlib, time\n"
-            f"p = pathlib.Path(r'{blob}')\n"
-            "for _ in range(10):\n"
-            "    with open(p, 'ab') as f:\n"
-            "        f.write(b'x')\n"
-            "    time.sleep(0.05)\n"
-            # safety-net print: stub child's stdout-path protocol (fixture)
-            "print('/resolved/slow-path')\n"
-        )
-        calls = {"n": 0}
+        """A download that grows a byte every second poll is NOT killed even
+        though its total run time exceeds stall_timeout_s — the stall timer
+        resets on every byte of growth.
 
-        def spawn():
-            calls["n"] += 1
-            return subprocess.Popen(
-                [sys.executable, "-c", code],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        On virtual time: each poll is 0.1s, so the gaps (0.2s) stay below the
+        timeout (0.3s) and the total (2.1s) is far past it; no scheduling
+        delay can stretch a gap."""
+        blob, done, clock = tmp_path / "blob.bin", tmp_path / "done", StepClock()
+        steps = [None] + [append_byte(blob), None] * 10
+        children = Children(lambda attempt: waiting_child(done, "/resolved/slow-path"))
+        try:
+            result = download_with_stall_guard(
+                repo_id="org/slow-repo",
+                stall_timeout_s=0.3,
+                max_attempts=2,
+                poll_interval_s=0.01,
+                clock=clock,
+                spawn_fn=children,
+                probe_bytes_fn=scripted_probe(clock, steps, size_of(blob), done, dt=0.1),
             )
-
-        def probe():
-            return blob.stat().st_size if blob.exists() else 0
-
-        # Total child runtime ~= 10 * 0.05s = 0.5s, well past stall_timeout_s
-        # (0.3s) IF the timer didn't reset — proving growth-resets-the-timer.
-        result = download_with_stall_guard(
-            repo_id="org/slow-repo",
-            stall_timeout_s=0.3,
-            max_attempts=2,
-            poll_interval_s=0.02,
-            spawn_fn=spawn,
-            probe_bytes_fn=probe,
-        )
+        finally:
+            children.kill_all()
 
         assert result == "/resolved/slow-path"
-        assert calls["n"] == 1, "must not have been killed/retried"
+        assert len(children.procs) == 1, "must not have been killed/retried"
 
     def test_chatty_child_not_wedged_by_pipe_backpressure(self, tmp_path):
         """REGRESSION (review finding): a child that spews >1MB to stdout
@@ -182,44 +280,50 @@ class TestDownloadWithStallGuard:
         a chatty child is realistic (tqdm bars if the user env sets
         HF_HUB_DISABLE_PROGRESS_BARS=0, urllib3 retry warnings on exactly the
         flaky networks this guard targets). The resolved path must still
-        parse as the last meaningful stdout line after ~1MB of junk."""
-        blob = tmp_path / "blob.bin"
-        code = (
-            "import pathlib\n"
-            f"p = pathlib.Path(r'{blob}')\n"
+        parse as the last meaningful stdout line after ~1MB of junk.
+
+        The activity stays the child's own: the probe reports progress until
+        the child has got past its 1MB of output (``spewed``), or until
+        ``CHILD_WALL_DEADLINE_S`` of wall time, after which it reports none
+        and the virtual timeout kills the wedged child. A drained child gets
+        there in well under a second, so the margin is about 30x."""
+        spewed, done, clock = tmp_path / "spewed", tmp_path / "done", StepClock()
+        before = (
             "junk = 'x' * 1023\n"
             "for _ in range(1024):\n"  # ~1MB of stdout noise
             # safety-net print: stub child's stdout noise (fixture)
             "    print(junk)\n"
-            "    with open(p, 'ab') as f:\n"
-            "        f.write(b'y')\n"
-            # safety-net print: stub child's stdout-path protocol (fixture)
-            "print('/resolved/chatty-path')\n"
+            f"open(r'{spewed}', 'w').close()\n"
         )
-        calls = {"n": 0}
-
-        def spawn():
-            calls["n"] += 1
-            return subprocess.Popen(
-                [sys.executable, "-c", code],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
-            )
+        children = Children(lambda attempt: waiting_child(done, "/resolved/chatty-path", before))
+        progress = itertools.count()
+        deadline = time.monotonic() + CHILD_WALL_DEADLINE_S
 
         def probe():
-            return blob.stat().st_size if blob.exists() else 0
+            if spewed.exists():
+                clock.frozen = True
+                done.touch()
+                return "spewed"
+            clock.advance(0.1)
+            # A healthy download grows while it prints; a wedged one stops.
+            return next(progress) if time.monotonic() < deadline else "wedged"
 
-        result = download_with_stall_guard(
-            repo_id="org/chatty-repo",
-            stall_timeout_s=0.5,
-            max_attempts=2,
-            backoff_s=(0.01,),
-            poll_interval_s=0.02,
-            spawn_fn=spawn,
-            probe_bytes_fn=probe,
-        )
+        try:
+            result = download_with_stall_guard(
+                repo_id="org/chatty-repo",
+                stall_timeout_s=0.5,
+                max_attempts=2,
+                backoff_s=(0.01,),
+                poll_interval_s=0.01,
+                clock=clock,
+                spawn_fn=children,
+                probe_bytes_fn=probe,
+            )
+        finally:
+            children.kill_all()
 
         assert result == "/resolved/chatty-path"
-        assert calls["n"] == 1, "healthy chatty child must not be killed/retried"
+        assert len(children.procs) == 1, "healthy chatty child must not be killed/retried"
 
     def test_shrinking_cache_is_activity_not_stall(self, tmp_path):
         """REGRESSION (review finding): a SHRINK is activity, not a stall.
@@ -231,48 +335,31 @@ class TestDownloadWithStallGuard:
         the first timer reset — killed at stall_timeout despite full-speed
         progress, potentially eating every attempt. ANY change must reset
         the timer."""
-        blob = tmp_path / "blob.bin"
+        blob, done, clock = tmp_path / "blob.bin", tmp_path / "done", StepClock()
         blob.write_bytes(b"P" * 10240)  # pre-existing large partial
-        code = (
-            "import pathlib, time\n"
-            f"p = pathlib.Path(r'{blob}')\n"
-            "p.unlink()\n"  # etag change: partial discarded
-            "time.sleep(0.05)\n"
-            "for _ in range(8):\n"  # restarted transfer, slow but steady
-            "    with open(p, 'ab') as f:\n"
-            "        f.write(b'x')\n"
-            "    time.sleep(0.05)\n"
-            # safety-net print: stub child's stdout-path protocol (fixture)
-            "print('/resolved/restarted-path')\n"
-        )
-        calls = {"n": 0}
-
-        def spawn():
-            calls["n"] += 1
-            return subprocess.Popen(
-                [sys.executable, "-c", code],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        # The baseline measures the partial (10240); then the etag change
+        # discards it, and the restarted transfer grows slow but steady:
+        # bytes go 10240 -> 0 -> 1..8, never re-earning the old high-water
+        # mark. With change-is-activity semantics the timer resets on every
+        # change; with `cur > last` it would be killed at stall_timeout.
+        steps = [None, blob.unlink, None] + [append_byte(blob), None] * 8
+        children = Children(lambda attempt: waiting_child(done, "/resolved/restarted-path"))
+        try:
+            result = download_with_stall_guard(
+                repo_id="org/etag-restart-repo",
+                stall_timeout_s=0.3,
+                max_attempts=2,
+                backoff_s=(0.01,),
+                poll_interval_s=0.01,
+                clock=clock,
+                spawn_fn=children,
+                probe_bytes_fn=scripted_probe(clock, steps, size_of(blob), done, dt=0.1),
             )
-
-        def probe():
-            return blob.stat().st_size if blob.exists() else 0
-
-        # Child runs ~0.45s; bytes go 10240 -> 0 -> 1..8, never re-earning
-        # the old high-water mark. With change-is-activity semantics the
-        # timer resets on every sample; with `cur > last` it would be killed
-        # at stall_timeout (0.3s).
-        result = download_with_stall_guard(
-            repo_id="org/etag-restart-repo",
-            stall_timeout_s=0.3,
-            max_attempts=2,
-            backoff_s=(0.01,),
-            poll_interval_s=0.02,
-            spawn_fn=spawn,
-            probe_bytes_fn=probe,
-        )
+        finally:
+            children.kill_all()
 
         assert result == "/resolved/restarted-path"
-        assert calls["n"] == 1, "shrink-then-grow child must not be killed"
+        assert len(children.procs) == 1, "shrink-then-grow child must not be killed"
 
     def test_mtime_touch_resets_stall_timer(self, tmp_path):
         """REGRESSION (review finding, xet mitigation): a same-size mtime
@@ -288,37 +375,32 @@ class TestDownloadWithStallGuard:
         blobs.mkdir(parents=True)
         blob = blobs / "shard.incomplete"
         blob.write_bytes(b"\0" * 4096)  # preallocated, size never changes
-        code = (
-            "import os, time\n"
-            f"p = r'{blob}'\n"
-            "t = os.stat(p).st_mtime\n"
-            "for i in range(1, 9):\n"
-            "    os.utime(p, (t + i, t + i))\n"  # same size, newer mtime
-            "    time.sleep(0.05)\n"
-            # safety-net print: stub child's stdout-path protocol (fixture)
-            "print('/resolved/prealloc-path')\n"
-        )
-        calls = {"n": 0}
+        done, clock = tmp_path / "done", StepClock()
+        t = os.stat(blob).st_mtime
 
-        def spawn():
-            calls["n"] += 1
-            return subprocess.Popen(
-                [sys.executable, "-c", code],
-                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        def touch(i):
+            return lambda: os.utime(blob, (t + i, t + i))  # same size, newer mtime
+
+        steps = [None] + [step for i in range(1, 9) for step in (touch(i), None)]
+        children = Children(lambda attempt: waiting_child(done, "/resolved/prealloc-path"))
+        try:
+            result = download_with_stall_guard(
+                repo_id="org/prealloc-repo",
+                stall_timeout_s=0.3,
+                max_attempts=2,
+                backoff_s=(0.01,),
+                poll_interval_s=0.01,
+                clock=clock,
+                spawn_fn=children,
+                probe_bytes_fn=scripted_probe(
+                    clock, steps, lambda: _dir_signature(str(repo_dir)), done, dt=0.1,
+                ),
             )
-
-        result = download_with_stall_guard(
-            repo_id="org/prealloc-repo",
-            stall_timeout_s=0.3,
-            max_attempts=2,
-            backoff_s=(0.01,),
-            poll_interval_s=0.02,
-            spawn_fn=spawn,
-            probe_bytes_fn=lambda: _dir_signature(str(repo_dir)),
-        )
+        finally:
+            children.kill_all()
 
         assert result == "/resolved/prealloc-path"
-        assert calls["n"] == 1, "same-size mtime touches must reset the timer"
+        assert len(children.procs) == 1, "same-size mtime touches must reset the timer"
 
     def test_nonzero_exit_error_propagated_and_retried(self):
         """A child that exits nonzero with a stderr message is retried up to

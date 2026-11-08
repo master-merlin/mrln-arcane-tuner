@@ -142,9 +142,14 @@ def makes_input_contiguous(layer: nn.Module) -> bool:
 
 
 def _contiguous_input_forward(original):
-    def forward(x: torch.Tensor, *args, **kwargs) -> torch.Tensor:
+    def forward(*args, **kwargs) -> torch.Tensor:
+        # The input as nn.Linear.forward takes it: first positional, or the keyword ``input``.
         # A contiguous input is returned as it is: such a call computes exactly what it did.
-        return original(x.contiguous(), *args, **kwargs)
+        if args:
+            args = (args[0].contiguous(), *args[1:])
+        elif "input" in kwargs:
+            kwargs["input"] = kwargs["input"].contiguous()
+        return original(*args, **kwargs)
 
     return forward
 

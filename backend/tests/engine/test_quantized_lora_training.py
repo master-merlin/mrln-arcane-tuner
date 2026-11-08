@@ -502,6 +502,17 @@ def test_a_layer_fed_a_contiguous_input_computes_what_it_did_without_the_wrap(ba
     assert torch.equal(with_wrap[0], without[0]) and torch.equal(with_wrap[1], without[1])
 
 
+@pytest.mark.parametrize(
+    ("backend", "scheme"), [p for p in offered() if p[1] == "nvfp4" or p[0] == "optimum-quanto"], ids=lambda v: str(v),
+)
+def test_a_wrapped_layer_takes_its_input_by_keyword_as_a_linear_does(backend, scheme):
+    lin = _linear_128(backend, scheme)
+    gen = torch.Generator("cuda").manual_seed(13)
+    leaf = torch.randn(2, 128, 64, device="cuda", dtype=torch.bfloat16, generator=gen)
+    x = leaf.transpose(1, 2)
+    assert torch.equal(lin(input=x), lin(x))  # nn.Linear.forward(self, input)
+
+
 @pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))
 def test_only_nvfp4_and_quanto_layers_make_their_input_contiguous(backend, scheme):
     lin = _linear_128(backend, scheme)

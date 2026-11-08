@@ -34,11 +34,12 @@ except Exception:  # noqa: BLE001
     NVFP4Tensor = None
 
 try:  # guarded like quantizers/quanto.py
-    from optimum.quanto.nn import QLinear
+    from optimum.quanto.nn import QConv2d, QLinear
 except Exception:  # noqa: BLE001
-    QLinear = None
+    QConv2d = QLinear = None
 
 _CONTIGUOUS_FLAG = "_contiguous_input"
+_WEIGHT_DTYPE_FLAG = "_weight_dtype"
 
 _WRAPPED_FLAG = "_dequantized_backward"
 _EYE_BLOCK = 1 << 20  # elements of identity per block of the int4 rebuild: 2 MiB in bf16
@@ -167,27 +168,66 @@ def _contiguous_input_forward(original, in_features: int):
     return forward
 
 
+def runs_in_weight_dtype(layer: nn.Module) -> bool:
+    """An optimum-quanto layer, which cannot run under autocast with fp32 weights.
+
+    - ``QLinear``: quanto's ``QuantizedLinearFunction`` multiplies under autocast in its forward
+      (fp16 out, without a bias) but outside it in its backward, where an fp16 grad meets the fp32
+      weight: "expected mat1 and mat2 to have the same dtype".
+    - ``QConv2d``: autocast casts the conv's weight, and a quanto weight refuses ``.to(dtype)``:
+      "The dtype of a ... Tensor cannot be changed", already in the forward.
+    These are the only modules quanto's weight quantization creates.
+    """
+    return any(cls is not None and isinstance(layer, cls) for cls in (QLinear, QConv2d))
+
+
+def in_weight_dtype(layer: nn.Module) -> bool:
+    return bool(getattr(layer, _WEIGHT_DTYPE_FLAG, False))
+
+
+def _weight_dtype_forward(original, layer: nn.Module):
+    def forward(*args, **kwargs) -> torch.Tensor:
+        # The input as the layer's forward takes it: first positional, or the keyword ``input``.
+        x = args[0] if args else kwargs.get("input")
+        if not isinstance(x, torch.Tensor) or not torch.is_autocast_enabled(x.device.type):
+            return original(*args, **kwargs)  # no autocast: exactly the call it was
+        device = x.device.type
+        out_dtype = torch.get_autocast_dtype(device)
+        x = x.to(layer.weight.dtype)
+        if args:
+            args = (x, *args[1:])
+        else:
+            kwargs["input"] = x
+        # Forward and backward in the weight's dtype; the output as a plain layer gives it here.
+        with torch.autocast(device, enabled=False):
+            out = original(*args, **kwargs)
+        return out.to(out_dtype)
+
+    return forward
+
+
 def is_wrapped(module: nn.Module) -> bool:
     return bool(getattr(module, _WRAPPED_FLAG, False))
 
 
 def make_quantized_linears_trainable(module: nn.Module) -> int:
-    """Give every ``Linear`` under ``module`` whose weight needs it the dense-weight backward, and
-    every one whose kernel fails on a non-contiguous input a contiguous one.
+    """Give every ``Linear`` under ``module`` whose weight needs it the dense-weight backward, every
+    one whose kernel fails on a non-contiguous input a contiguous one, and every quanto layer its
+    weight's dtype under autocast.
 
     Idempotent. Returns how many layers got the dense-weight backward in this call.
     """
     wrapped = 0
     for layer in module.modules():
-        if not isinstance(layer, nn.Linear):
-            continue
-        if needs_contiguous_input(layer) and not makes_input_contiguous(layer):
-            layer.forward = _contiguous_input_forward(layer.forward, layer.in_features)  # its own forward, any layout
-            setattr(layer, _CONTIGUOUS_FLAG, True)
-        if is_wrapped(layer):
-            continue
-        if needs_dequantized_backward(layer.weight):
-            layer.forward = _forward.__get__(layer)  # bound to the layer, like its own forward
-            setattr(layer, _WRAPPED_FLAG, True)
-            wrapped += 1
+        if isinstance(layer, nn.Linear):
+            if needs_contiguous_input(layer) and not makes_input_contiguous(layer):
+                layer.forward = _contiguous_input_forward(layer.forward, layer.in_features)  # its own forward, any layout
+                setattr(layer, _CONTIGUOUS_FLAG, True)
+            if not is_wrapped(layer) and needs_dequantized_backward(layer.weight):
+                layer.forward = _forward.__get__(layer)  # bound to the layer, like its own forward
+                setattr(layer, _WRAPPED_FLAG, True)
+                wrapped += 1
+        if runs_in_weight_dtype(layer) and not in_weight_dtype(layer):
+            layer.forward = _weight_dtype_forward(layer.forward, layer)  # outermost: around the wraps above
+            setattr(layer, _WEIGHT_DTYPE_FLAG, True)
     return wrapped

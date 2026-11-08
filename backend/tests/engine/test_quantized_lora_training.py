@@ -425,6 +425,93 @@ def test_the_int4_backward_peak_is_bounded_by_the_dense_weight():
     assert grew <= 1.5 * dense, f"backward peaked {grew / 2**20:.1f} MiB over a {dense / 2**20:.1f} MiB dense weight"
 
 
+# ── LANE-187: any input layout ──
+
+# A bf16 Linear(128, 256)'s input as a view of a contiguous source (shape seen: (2, 64, 128)):
+# name -> (source shape, the view, the strides the layer must see).
+LAYOUT_CASES = {
+    "contiguous": ((2, 64, 128), lambda t: t, (8192, 128, 1)),
+    "transposed": ((2, 128, 64), lambda t: t.transpose(1, 2), (8192, 1, 64)),
+    "expanded": ((1, 64, 128), lambda t: t.expand(2, 64, 128), (0, 128, 1)),
+    "sliced": ((2, 64, 256), lambda t: t[..., :128], (16384, 256, 1)),
+}
+
+
+def _layout_run(lin: nn.Module, layout: str, autocast, contiguous_copy: bool = False):
+    """Output and source grad of ``lin`` on the layout's view (or on its contiguous copy)."""
+    source_shape, view, strides = LAYOUT_CASES[layout]
+    gen = torch.Generator("cuda").manual_seed(11)
+    leaf = torch.randn(source_shape, device="cuda", dtype=torch.bfloat16, generator=gen).requires_grad_(True)
+    x = view(leaf)
+    if contiguous_copy:
+        x = x.contiguous()
+    else:
+        assert x.stride() == strides, f"{layout}: the layer would see strides {x.stride()}"
+    g = torch.randn(2, 64, 256, device="cuda", dtype=torch.bfloat16, generator=gen)
+    with amp(autocast):
+        out = lin(x)
+    out.backward(g.to(out.dtype))
+    return out.detach().float(), leaf.grad.float()
+
+
+def _close(got: torch.Tensor, ref: torch.Tensor) -> bool:
+    if not ref.any():
+        return not got.any()
+    return ((got - ref).norm() <= 0.01 * ref.norm()).item()
+
+
+def _linear_128(backend: str, scheme: str) -> nn.Module:
+    torch.manual_seed(0)
+    net = nn.Sequential(nn.Linear(128, 256, dtype=torch.bfloat16)).to("cuda").requires_grad_(False)
+    return QuantizationFactory.quantize(net, scheme, backend_name=backend)[0]
+
+
+@pytest.mark.parametrize("autocast", [None, torch.bfloat16], ids=["no-autocast", "bf16-autocast"])
+@pytest.mark.parametrize("layout", sorted(LAYOUT_CASES))
+@pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))
+def test_every_offered_scheme_trains_on_every_input_layout(backend, scheme, layout, autocast):
+    lin = _linear_128(backend, scheme)
+    got_out, got_grad = _layout_run(lin, layout, autocast)
+    ref_out, ref_grad = _layout_run(lin, layout, autocast, contiguous_copy=True)
+    if trainable_backward.makes_input_contiguous(lin):  # nvfp4, quanto: the very same computation
+        assert torch.equal(got_out, ref_out) and torch.equal(got_grad, ref_grad)
+    else:
+        assert _close(got_out, ref_out) and _close(got_grad, ref_grad), f"{backend}/{scheme} {layout}"
+
+
+def test_nvfp4_from_the_cache_trains_on_a_non_contiguous_input(tmp_path):
+    if ("torchao", "nvfp4") not in offered():
+        pytest.skip("nvfp4 is not offered on this card")
+    path = os.path.join(tmp_path, "cache")
+    _cache_of("nvfp4", "nvfp4", path)
+    loaded = QuantizationFactory.load_quantized(frozen_net(), path, "nvfp4")
+    assert loaded is not None
+    gen = torch.Generator("cuda").manual_seed(12)
+    leaf = torch.randn(2, WIDTH, 16, device="cuda", dtype=torch.bfloat16, generator=gen).requires_grad_(True)
+    loaded(leaf.transpose(1, 2)).float().pow(2).mean().backward()
+    assert leaf.grad is not None and torch.isfinite(leaf.grad).all()
+
+
+@pytest.mark.parametrize(
+    ("backend", "scheme"), [p for p in offered() if p[1] == "nvfp4" or p[0] == "optimum-quanto"], ids=lambda v: str(v),
+)
+def test_a_layer_fed_a_contiguous_input_computes_what_it_did_without_the_wrap(backend, scheme, monkeypatch):
+    with_wrap = _layout_run(_linear_128(backend, scheme), "contiguous", None)
+    monkeypatch.setattr(trainable_backward, "make_quantized_linears_trainable", lambda module: 0)
+    without = _layout_run(_linear_128(backend, scheme), "contiguous", None)
+    assert torch.equal(with_wrap[0], without[0]) and torch.equal(with_wrap[1], without[1])
+
+
+@pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))
+def test_only_nvfp4_and_quanto_layers_make_their_input_contiguous(backend, scheme):
+    lin = _linear_128(backend, scheme)
+    expected = scheme == "nvfp4" or backend == "optimum-quanto"
+    assert trainable_backward.needs_contiguous_input(lin) == expected
+    assert trainable_backward.makes_input_contiguous(lin) == expected
+    if expected:
+        assert not trainable_backward.is_wrapped(lin)  # they keep their own backward
+
+
 # ── Task 4's draws: layers a scheme cannot quantize ──
 
 

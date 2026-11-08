@@ -51,12 +51,24 @@ class Draw:
     seed: int
     dtype: torch.dtype = torch.bfloat16  # the loading dtype
     autocast: torch.dtype | None = None
+    layout: str = "contiguous"  # how a base layer's input is laid out (LAYOUTS)
 
     def __str__(self) -> str:
         shape = "2D" if self.tokens is None else f"3D(T={self.tokens})"
         amp = "none" if self.autocast is None else str(self.autocast)[6:]
         return (f"seed={self.seed} {self.backend}/{self.scheme} widths={self.widths} bias={self.bias} "
-                f"{shape} lora_on={self.lora_on} dtype={str(self.dtype)[6:]} autocast={amp}")
+                f"{shape} lora_on={self.lora_on} dtype={str(self.dtype)[6:]} autocast={amp} layout={self.layout}")
+
+
+# A layer's input as a view of a contiguous source: (source shape from the input shape, the view).
+# Transposed and expanded views are non-contiguous ones a model really passes (FLUX.2's embedders
+# get one); sliced is a strided view that is not.
+LAYOUTS = {
+    "contiguous": (lambda s: s, lambda t, s: t),
+    "transposed": (lambda s: (*s[:-2], s[-1], s[-2]), lambda t, s: t.transpose(-1, -2)),
+    "expanded": (lambda s: (1, *s[1:]), lambda t, s: t.expand(s)),
+    "sliced": (lambda s: (*s[:-1], 2 * s[-1]), lambda t, s: t[..., : s[-1]]),
+}
 
 
 # layer_manifest.resolve_precision: fp32 weights (SDXL) honour the configured autocast; bf16 weights
@@ -74,7 +86,9 @@ def draw(seed: int) -> Draw:
     widths = [rng.choice(WIDTHS) for _ in range(layers + 1)]
     lora_on = sorted(rng.sample(range(layers), rng.randint(1, layers)))
     dtype, autocast = rng.choice(PRECISIONS)
-    return Draw(backend, scheme, widths, rng.random() < 0.5, rng.choice([None, 3]), lora_on, seed, dtype, autocast)
+    d = Draw(backend, scheme, widths, rng.random() < 0.5, rng.choice([None, 3]), lora_on, seed, dtype, autocast)
+    d.layout = rng.choice(sorted(LAYOUTS))  # drawn last: the draws before it stay as they were
+    return d
 
 
 def amp(d: Draw):
@@ -134,14 +148,45 @@ def rand(d: Draw, width: int, salt: int, requires_grad: bool = False) -> torch.T
     return torch.randn(shape, device="cuda", dtype=d.dtype, generator=gen).requires_grad_(requires_grad)
 
 
-def through(d: Draw, layer: nn.Module, x: torch.Tensor, g: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
-    """The layer's output under the draw's autocast, and its input's grad for the output grad ``g``."""
-    x = x.detach().clone().requires_grad_(True)
+@dataclass
+class Input:
+    """A base layer's input: the drawn layout's view of a contiguous source."""
+
+    source: torch.Tensor
+    view: object  # (tensor) -> the view of it the layer gets
+    layout: str
+
+    def leaf_and_view(self) -> tuple[torch.Tensor, torch.Tensor]:
+        leaf = self.source.clone().requires_grad_(True)
+        x = self.view(leaf)
+        # The layout reaches the layer: nothing between here and the forward materialises it.
+        assert x.is_contiguous() == (self.layout == "contiguous"), f"{self.layout}: strides {x.stride()}"
+        assert self.layout != "expanded" or x.stride()[0] == 0, f"expanded: strides {x.stride()}"
+        return leaf, x
+
+    def leaf_grad_of(self, view_grad: torch.Tensor) -> torch.Tensor:
+        """A grad of the view, carried to the source by the view's own ops."""
+        leaf, x = self.leaf_and_view()
+        x.backward(view_grad)
+        return leaf.grad
+
+
+def layer_input(d: Draw, width: int, salt: int) -> Input:
+    shape = (4, width) if d.tokens is None else (4, d.tokens, width)
+    source_shape, view = LAYOUTS[d.layout]
+    gen = torch.Generator("cuda").manual_seed(d.seed * 1000 + salt)
+    source = torch.randn(source_shape(shape), device="cuda", dtype=d.dtype, generator=gen)
+    return Input(source, lambda t: view(t, shape), d.layout)
+
+
+def through(d: Draw, layer: nn.Module, inp: Input, g: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+    """The layer's output under the draw's autocast, its source's grad for the output grad ``g``, and the view."""
+    leaf, x = inp.leaf_and_view()
     with amp(d):
         out = layer(x)
     assert out.requires_grad, "the base layer's output tracks no grad"
     out.backward(g.to(out.dtype))
-    return out.detach(), x.grad
+    return out.detach(), leaf.grad, x.detach()
 
 
 def trains(d: Draw, net: nn.Module) -> None:
@@ -175,9 +220,9 @@ def test_i1_every_draw_trains_its_lora_and_each_base_layer_passes_its_grad(seed,
         return assert_the_known_gap(d)
     reference, q = frozen(d), quantized(d)
     for i, (ref_layer, q_layer) in enumerate(zip(reference.layers, q.layers, strict=True)):
-        x, g = rand(d, d.widths[i], salt=i), rand(d, d.widths[i + 1], salt=100 + i)
-        want_out, want = through(d, ref_layer, x, g)
-        got_out, got = through(d, q_layer, x, g)
+        inp, g = layer_input(d, d.widths[i], salt=i), rand(d, d.widths[i + 1], salt=100 + i)
+        want_out, want, _ = through(d, ref_layer, inp, g)
+        got_out, got, _ = through(d, q_layer, inp, g)
         for what, a, b in (("output", got_out, want_out), ("input grad", got, want)):
             error = ((a.float() - b.float()).norm() / b.float().norm()).item()
             assert error <= 0.15, f"{d}: layer {i} {what} {error:.4f} relative to the unquantized layer's"
@@ -207,14 +252,17 @@ def test_i2_a_wrapped_layer_backs_off_its_dense_weight_and_any_other_is_untouche
     for i, (layer, plain) in enumerate(zip(q.layers, bypassed.layers, strict=True)):
         wrapped = trainable_backward.is_wrapped(layer)
         assert wrapped == trainable_backward.needs_dequantized_backward(layer.weight), f"{d}: layer {i}"
-        x, g = rand(d, d.widths[i], salt=i), rand(d, d.widths[i + 1], salt=100 + i)
-        out, grad = through(d, layer, x, g)
+        contiguous_only = trainable_backward.makes_input_contiguous(layer)
+        assert contiguous_only == trainable_backward.needs_contiguous_input(layer), f"{d}: layer {i}"
+        inp, g = layer_input(d, d.widths[i], salt=i), rand(d, d.widths[i + 1], salt=100 + i)
+        out, grad, x = through(d, layer, inp, g)
         if wrapped:
             # The kernel runs in the weight's dtype, outside autocast; the casts at its boundary are
-            # the only other ops between the output grad and the input grad.
+            # the only other ops between the output grad and the view's grad, and the view's own
+            # ops carry that to the source.
             compute = layer.weight.dtype
             dense = trainable_backward.dense_weight(layer.weight, compute)
-            expected_grad = (g.to(out.dtype).to(compute) @ dense).to(x.dtype)
+            expected_grad = inp.leaf_grad_of((g.to(out.dtype).to(compute) @ dense).to(x.dtype))
             assert torch.equal(grad, expected_grad), f"{d}: layer {i} input grad is not grad_out @ dense(W)"
             if d.scheme == "int4":
                 product = F.linear(x.to(compute), dense)
@@ -222,6 +270,11 @@ def test_i2_a_wrapped_layer_backs_off_its_dense_weight_and_any_other_is_untouche
                 # The dense weight is the kernel's own values; tinygemm sums in another order than
                 # cuBLAS, so the products agree to the bf16 rounding of that order, not bit for bit.
                 assert close_up_to_accumulation_order(out, expected), f"{d}: layer {i} forward is not linear(x, dense(W))"
+        elif contiguous_only:
+            # NVFP4, quanto: what the bypassed layer computes on the contiguous copy of the same view.
+            copy = Input(inp.source, lambda t, v=inp.view: v(t).contiguous(), "contiguous")
+            out_plain, grad_plain, _ = through(d, plain, copy, g)
+            assert torch.equal(out, out_plain) and torch.equal(grad, grad_plain), f"{d}: layer {i} changed"
         else:
-            out_plain, grad_plain = through(d, plain, x, g)
+            out_plain, grad_plain, _ = through(d, plain, inp, g)
             assert torch.equal(out, out_plain) and torch.equal(grad, grad_plain), f"{d}: layer {i} changed"

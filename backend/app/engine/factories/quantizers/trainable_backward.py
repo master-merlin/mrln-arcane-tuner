@@ -28,6 +28,18 @@ try:  # Guarded like the rest of torchao: absent or broken, nothing here wraps a
 except Exception:  # noqa: BLE001 - see quantizers/torchao.py
     Float8Tensor = Int4TilePackedTo4dTensor = LinearActivationQuantizedTensor = None
 
+try:  # a torchao prototype, guarded on its own (as in quantizers/torchao.py)
+    from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
+except Exception:  # noqa: BLE001
+    NVFP4Tensor = None
+
+try:  # guarded like quantizers/quanto.py
+    from optimum.quanto.nn import QLinear
+except Exception:  # noqa: BLE001
+    QLinear = None
+
+_CONTIGUOUS_FLAG = "_contiguous_input"
+
 _WRAPPED_FLAG = "_dequantized_backward"
 _EYE_BLOCK = 1 << 20  # elements of identity per block of the int4 rebuild: 2 MiB in bf16
 
@@ -111,18 +123,55 @@ def _forward(linear: nn.Linear, x: torch.Tensor) -> torch.Tensor:
     return out.to(out_dtype)
 
 
+def needs_contiguous_input(layer: nn.Module) -> bool:
+    """A quantized Linear whose kernel fails on a non-contiguous input.
+
+    - torchao's NVFP4: its forward on a transposed or batch-expanded 3D input falls back to ``bmm``,
+      which calls ``expand`` on the weight, and ``NVFP4Tensor`` has none.
+    - optimum-quanto's ``QLinear``: its backward takes ``input.view(-1, in_features)``, which a
+      transposed or expanded input that needs its grad cannot give.
+    Every other offered scheme runs any layout.
+    """
+    if NVFP4Tensor is not None and isinstance(getattr(layer, "weight", None), NVFP4Tensor):
+        return True
+    return QLinear is not None and isinstance(layer, QLinear)
+
+
+def makes_input_contiguous(layer: nn.Module) -> bool:
+    return bool(getattr(layer, _CONTIGUOUS_FLAG, False))
+
+
+def _contiguous_input_forward(original):
+    def forward(*args, **kwargs) -> torch.Tensor:
+        # The input as nn.Linear.forward takes it: first positional, or the keyword ``input``.
+        # A contiguous input is returned as it is: such a call computes exactly what it did.
+        if args:
+            args = (args[0].contiguous(), *args[1:])
+        elif "input" in kwargs:
+            kwargs["input"] = kwargs["input"].contiguous()
+        return original(*args, **kwargs)
+
+    return forward
+
+
 def is_wrapped(module: nn.Module) -> bool:
     return bool(getattr(module, _WRAPPED_FLAG, False))
 
 
 def make_quantized_linears_trainable(module: nn.Module) -> int:
-    """Give every ``Linear`` under ``module`` whose weight needs it the dense-weight backward.
+    """Give every ``Linear`` under ``module`` whose weight needs it the dense-weight backward, and
+    every one whose kernel fails on a non-contiguous input a contiguous one.
 
-    Idempotent. Returns how many layers were wrapped by this call.
+    Idempotent. Returns how many layers got the dense-weight backward in this call.
     """
     wrapped = 0
     for layer in module.modules():
-        if not isinstance(layer, nn.Linear) or is_wrapped(layer):
+        if not isinstance(layer, nn.Linear):
+            continue
+        if needs_contiguous_input(layer) and not makes_input_contiguous(layer):
+            layer.forward = _contiguous_input_forward(layer.forward)  # its own forward, any layout
+            setattr(layer, _CONTIGUOUS_FLAG, True)
+        if is_wrapped(layer):
             continue
         if needs_dequantized_backward(layer.weight):
             layer.forward = _forward.__get__(layer)  # bound to the layer, like its own forward

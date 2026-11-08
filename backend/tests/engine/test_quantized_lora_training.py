@@ -660,20 +660,16 @@ def test_every_quanto_layer_with_fp32_weights_trains_under_autocast(backend, sch
         assert _relative(a, b) <= 0.15, f"{scheme} {kind} {what} vs the unquantized layer"
 
 
-_CONV_LORA_NEEDS_TASK_2 = pytest.mark.xfail(
-    strict=True, reason="LANE-186 Task 2: peft builds a quanto conv's adapters as QConv2d with no weight",
-)
-
-
 @pytest.mark.parametrize("autocast", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
 @pytest.mark.parametrize("bias", [True, False], ids=["bias", "no-bias"])
-@pytest.mark.parametrize("kind", ["linear", pytest.param("conv", marks=_CONV_LORA_NEEDS_TASK_2)])
+@pytest.mark.parametrize("kind", sorted(QUANTO_KINDS))
 @pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
 def test_a_lora_on_every_quanto_layer_with_fp32_weights_trains_under_autocast(backend, scheme, kind, bias, autocast):
     from peft import LoraConfig, get_peft_model
 
     net = _quanto(scheme, kind, bias, torch.float32)
-    model = get_peft_model(net, LoraConfig(r=4, target_modules=["0"]))
+    model = get_peft_model(net, LoraConfig(r=4, target_modules=["0"]))  # as the product applies it
+    trainable_backward.plain_conv_adapters(model)
     with torch.no_grad():
         for name, param in model.named_parameters():
             if "lora_B" in name:
@@ -723,6 +719,129 @@ def test_only_quanto_layers_run_in_their_weight_dtype(backend, scheme):
         quanto = backend == "optimum-quanto"
         assert trainable_backward.runs_in_weight_dtype(layer) == quanto, f"{type(layer).__name__}"
         assert trainable_backward.in_weight_dtype(layer) == quanto, f"{type(layer).__name__}"
+
+
+class _ConvAndLinear(nn.Module):
+    """A conv then a Linear, under the names SDXL's LoRA targets use."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(8, 64, 3, padding=1)  # widths every quanto scheme quantizes (qint4 groups)
+        self.to_q = nn.Linear(64, 64, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.to_q(self.conv1(x).permute(0, 2, 3, 1))
+
+
+def _adapters(model: nn.Module):
+    """(name, module) of every LoRA adapter layer under ``model``."""
+    return [(n, m) for n, m in model.named_modules() if n.rsplit(".", 2)[-2:-1] in (["lora_A"], ["lora_B"])]
+
+
+def _snapshot_quanto_conv_adapters(model: nn.Module) -> dict:
+    from optimum.quanto.nn import QConv2d
+
+    return {
+        name: (m.weight.detach().clone(), None if m.bias is None else m.bias.detach().clone(), m.weight.data_ptr(),
+               m.weight.requires_grad)
+        for name, m in _adapters(model) if isinstance(m, QConv2d)
+    }
+
+
+def _assert_replaced_as_they_were(model: nn.Module, snaps: dict) -> None:
+    assert snaps, "no quanto conv adapter to replace: the fixture does not reach the defect"
+    for name, (weight, bias, ptr, requires_grad) in snaps.items():
+        new = model.get_submodule(name)
+        assert type(new) is nn.Conv2d, f"{name} is {type(new).__name__}"
+        assert torch.equal(new.weight, weight), f"{name}: not the values peft initialised"
+        assert new.weight.data_ptr() != ptr, f"{name}: shares the old adapter's storage"
+        assert (new.bias is None) == (bias is None) and (bias is None or torch.equal(new.bias, bias))
+        assert new.weight.requires_grad == requires_grad
+
+
+@pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
+def test_quanto_conv_adapters_become_plain_convs_holding_peft_s_values(backend, scheme):
+    from peft import LoraConfig, get_peft_model
+
+    torch.manual_seed(0)
+    source = _ConvAndLinear().to("cuda").requires_grad_(False)
+    net = QuantizationFactory.quantize(source, scheme, backend_name=backend)
+    model = get_peft_model(net, LoraConfig(r=4, target_modules=["conv1", "to_q"]))
+    snaps = _snapshot_quanto_conv_adapters(model)
+    before = {name: model.get_submodule(name) for name in snaps}
+    trainable_backward.plain_conv_adapters(model)
+    _assert_replaced_as_they_were(model, snaps)
+    for name, old in before.items():
+        new = model.get_submodule(name)
+        for attr in ("in_channels", "out_channels", "kernel_size", "stride", "padding", "dilation", "groups",
+                     "padding_mode"):
+            assert getattr(new, attr) == getattr(old, attr), f"{name}.{attr}"
+        assert new.weight.device == old.weight.device and new.weight.dtype == old.weight.dtype
+
+
+class _PeftHost(PipelineOptimizationMixin):
+    """What ``_apply_peft`` touches, with the real method."""
+
+    def __init__(self, model: nn.Module) -> None:
+        import structlog
+
+        self.logger = structlog.get_logger("test")
+        self.model = model
+        self.config = {"network_rank": 4, "network_alpha": 4}
+
+    def _get_primary_model(self) -> nn.Module:
+        return self.model
+
+    def _update_primary_model(self, model: nn.Module) -> None:
+        self.model = model
+
+    def get_lora_targets(self) -> list[str]:
+        return ["conv1", "to_q"]
+
+    def get_lora_exclude_modules(self):
+        return None
+
+
+@pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
+def test_the_product_s_lora_on_a_quanto_model_has_plain_adapters_and_trains(backend, scheme, monkeypatch):
+    from peft import get_peft_model_state_dict
+
+    real, calls = trainable_backward.plain_conv_adapters, []
+
+    def spy(model):
+        snaps = _snapshot_quanto_conv_adapters(model)
+        replaced = real(model)
+        _assert_replaced_as_they_were(model, snaps)
+        calls.append(len(snaps))
+        return replaced
+
+    monkeypatch.setattr(trainable_backward, "plain_conv_adapters", spy)
+    torch.manual_seed(0)
+    host = _PeftHost(QuantizationFactory.quantize(_ConvAndLinear().to("cuda").requires_grad_(False), scheme,
+                                                  backend_name=backend))
+    host._apply_peft()
+    assert calls and calls[0] > 0, "_apply_peft never replaced its quanto conv adapters"
+    model = host.model
+    adapters = _adapters(model)
+    assert adapters and all(type(m) in (nn.Conv2d, nn.Linear) for _, m in adapters), [type(m) for _, m in adapters]
+    keys = get_peft_model_state_dict(model).keys()
+    assert keys and all(("lora_A" in k or "lora_B" in k) and k.endswith(".weight") for k in keys), sorted(keys)
+
+    for autocast in (None, torch.float16):
+        params = [p for p in model.parameters() if p.requires_grad]
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if "lora_B" in name:
+                    p.normal_(0, 0.01)
+        before = [p.detach().clone() for p in params]
+        optimizer = torch.optim.AdamW(params, lr=1e-2)
+        for _ in range(2):
+            with amp(autocast):
+                loss = model(torch.randn(2, 8, 8, 8, device="cuda")).float().pow(2).mean()
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+        assert any(not torch.equal(a, b) for a, b in zip(before, params, strict=True)), f"autocast={autocast}"
 
 
 @pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))

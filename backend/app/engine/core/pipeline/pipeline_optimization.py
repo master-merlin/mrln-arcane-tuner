@@ -17,6 +17,7 @@ from app.engine.core.optimization.optimizer_remap import place_optimizer_state
 from app.engine.strategies.ema import EMAHandler
 from app.engine.components.latents import LatentManager
 from app.engine.factories.optimizer import OptimizerFactory, LRSchedulerFactory
+from app.engine.factories.quantizers import trainable_backward
 from app.engine.components.training_logger import TrainingLogger
 from peft import LoraConfig, get_peft_model
 
@@ -198,6 +199,7 @@ class PipelineOptimizationMixin:
             bias="none",
         )
         model = get_peft_model(model, lora_config)
+        trainable_backward.plain_conv_adapters(model)  # a quanto conv's adapters as plain convs
         self._update_primary_model(model)
 
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -219,6 +221,7 @@ class PipelineOptimizationMixin:
                         lora_dropout=0.0, bias="none",
                     )
                     wrapped_te = get_peft_model(te, te_lora)
+                    trainable_backward.plain_conv_adapters(wrapped_te)
                     self.components[name] = wrapped_te
                     setattr(self, name, wrapped_te)
                     self.logger.info("lora_te_applied", name=name, targets=len(te_targets))

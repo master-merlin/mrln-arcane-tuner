@@ -206,6 +206,46 @@ def _weight_dtype_forward(original, layer: nn.Module):
     return forward
 
 
+def plain_conv_adapters(model: nn.Module) -> int:
+    """Make every LoRA adapter peft built as a quanto ``QConv2d`` a plain ``nn.Conv2d``.
+
+    peft builds a conv LoRA's ``lora_A`` / ``lora_B`` with ``type(base_layer)``: on a quanto conv
+    they are ``QConv2d`` layers with no quantized weight, whose forward passes ``None`` as the
+    weight. Each one is replaced by an ``nn.Conv2d`` of the same configuration, on the same device
+    and in the same dtype, holding the very values peft initialised; so its state-dict keys are a
+    plain LoRA's, without quanto's scale buffers. Call it right after ``get_peft_model``.
+
+    Returns how many adapters it replaced.
+    """
+    if QConv2d is None:
+        return 0
+    replaced = 0
+    for module in model.modules():
+        for attr in ("lora_A", "lora_B"):
+            adapters = getattr(module, attr, None)
+            if not isinstance(adapters, nn.ModuleDict):
+                continue
+            for name, conv in list(adapters.items()):
+                if not isinstance(conv, QConv2d):
+                    continue
+                plain = nn.Conv2d(
+                    conv.in_channels, conv.out_channels, conv.kernel_size, stride=conv.stride,
+                    padding=conv.padding, dilation=conv.dilation, groups=conv.groups,
+                    bias=conv.bias is not None, padding_mode=conv.padding_mode,
+                    device=conv.weight.device, dtype=conv.weight.dtype,
+                )
+                with torch.no_grad():
+                    plain.weight.copy_(conv.weight)
+                    if conv.bias is not None:
+                        plain.bias.copy_(conv.bias)
+                plain.weight.requires_grad_(conv.weight.requires_grad)
+                if conv.bias is not None:
+                    plain.bias.requires_grad_(conv.bias.requires_grad)
+                adapters[name] = plain
+                replaced += 1
+    return replaced
+
+
 def is_wrapped(module: nn.Module) -> bool:
     return bool(getattr(module, _WRAPPED_FLAG, False))
 

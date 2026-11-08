@@ -17,7 +17,6 @@ from app.engine.core.optimization.optimizer_remap import place_optimizer_state
 from app.engine.strategies.ema import EMAHandler
 from app.engine.components.latents import LatentManager
 from app.engine.factories.optimizer import OptimizerFactory, LRSchedulerFactory
-from app.engine.factories.quantizers import trainable_backward
 from app.engine.components.training_logger import TrainingLogger
 from peft import LoraConfig, get_peft_model
 
@@ -181,6 +180,10 @@ class PipelineOptimizationMixin:
 
     def _apply_peft(self) -> None:
         """Apply PEFT/LoRA to primary model and optionally text encoders."""
+        # Lazily: it imports optimum-quanto, whose import loads diffusers' model modules, and the
+        # registry import must not (test_qwen_image2_vendor's registry-import guard).
+        from app.engine.factories.quantizers import trainable_backward
+
         self.logger.info("initializing_peft")
 
         model = self._get_primary_model()

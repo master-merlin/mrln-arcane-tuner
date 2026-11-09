@@ -318,7 +318,7 @@ class QuantizationFactory:
 
         metadata = {
             "scheme": scheme,
-            "torch_version": torch.__version__,
+            **QuantizationFactory._current_versions(),  # load_quantized checks both
             "timestamp": time.time(),
             "param_count": sum(p.numel() for p in module.parameters()),
             # The count of the UNQUANTIZED module, which is what load_quantized
@@ -356,6 +356,44 @@ class QuantizationFactory:
         )
 
     @staticmethod
+    def _current_versions() -> dict[str, str | None]:
+        """The torch and torchao versions a cache entry is written with, and must match to load.
+
+        torchao is read from its distribution metadata, never imported here (ARCHITECTURE D1);
+        not installed, it is None.
+        """
+        from importlib.metadata import PackageNotFoundError, version
+
+        try:
+            torchao_version = version("torchao")
+        except PackageNotFoundError:
+            torchao_version = None
+        return {"torch_version": torch.__version__, "torchao_version": torchao_version}
+
+    @staticmethod
+    def _version_miss(metadata: dict[str, Any]) -> str | None:
+        """Why an entry's recorded versions do not prove it was written by this torch and torchao,
+        else None. Read from metadata.json alone, before any tensor is deserialized.
+
+        A missing field is unverifiable, so a miss: entries written before 2026-11 carry
+        ``torch_version`` but no ``torchao_version``.
+        """
+        current = QuantizationFactory._current_versions()
+        torch_missing = not metadata.get("torch_version")
+        torchao_missing = "torchao_version" not in metadata
+        if torch_missing and torchao_missing:
+            return "versions_missing"
+        if torch_missing:
+            return "torch_version_missing"
+        if torchao_missing:
+            return "torchao_version_missing"
+        if metadata["torch_version"] != current["torch_version"]:
+            return "torch_version_changed"
+        if metadata["torchao_version"] != current["torchao_version"]:
+            return "torchao_version_changed"
+        return None
+
+    @staticmethod
     def _stale_representation(scheme: str, state_dict: dict[str, Any]) -> str | None:
         """Why a cached entry of ``scheme`` holds weights ``quantize`` no longer makes, else None.
 
@@ -391,6 +429,22 @@ class QuantizationFactory:
 
         if metadata.get("scheme") != scheme:
             logger.info("quantized_cache_scheme_mismatch", path=cache_path, cached=metadata.get("scheme"), requested=scheme)
+            return None
+
+        # Another torch or torchao may serialize the same scheme differently (ARCHITECTURE D10 #3).
+        # The caller re-quantizes on the miss, and its save overwrites the entry with both versions.
+        version_miss = QuantizationFactory._version_miss(metadata)
+        if version_miss is not None:
+            current = QuantizationFactory._current_versions()
+            logger.info(
+                "quantized_cache_invalidated",
+                path=cache_path,
+                scheme=scheme,
+                reason=version_miss,
+                cached_torch=metadata.get("torch_version"),
+                cached_torchao=metadata.get("torchao_version"),
+                **current,
+            )
             return None
 
         # ``module`` here is the freshly-loaded UNQUANTIZED component, so compare

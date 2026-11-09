@@ -216,6 +216,128 @@ def test_a_torchao_without_linear_activation_quantized_tensor_still_gives_every_
         assert ta.TorchAOBackend.weight_type(scheme) is tq.Int8Tensor, scheme
 
 
+# ── The quantized cache checks the torch and torchao versions ────────────
+
+import contextlib  # noqa: E402
+import copy  # noqa: E402
+import json  # noqa: E402
+import os  # noqa: E402
+import shutil  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from app.engine.factories import quantization as quantization_module  # noqa: E402
+
+# What save_quantized wrote before it recorded the torchao version, captured from a real save and
+# never regenerated: a save run today writes the new format.
+LEGACY_METADATA = Path(__file__).parent / "fixtures" / "quantized_cache" / "legacy-2026-11-metadata.json"
+A_TORCHAO_VERSION = "0.18.0"  # a real torchao release; the patch makes the test independent of the venv's
+
+
+def _legacy_metadata() -> dict:
+    return json.loads(LEGACY_METADATA.read_text())
+
+
+def test_the_legacy_fixture_is_the_old_format():
+    metadata = _legacy_metadata()
+    assert metadata.get("torch_version"), "the legacy fixture lost its torch_version"
+    assert "torchao_version" not in metadata, "the legacy fixture was regenerated in the new format"
+
+
+def _entry_module() -> nn.Module:
+    torch.manual_seed(0)
+    return nn.Sequential(nn.Linear(64, 64)).requires_grad_(False)  # 4160 params: the fixture's count
+
+
+def _write_entry(path: str, metadata: dict | None) -> None:
+    """A cache entry: ``metadata`` as its metadata.json, next to a matching state dict."""
+    os.makedirs(path)
+    if metadata is None:
+        shutil.copyfile(LEGACY_METADATA, os.path.join(path, "metadata.json"))  # the fixture, unchanged
+    else:
+        with open(os.path.join(path, "metadata.json"), "w") as f:
+            json.dump(metadata, f)
+    torch.save(_entry_module().state_dict(), os.path.join(path, "model.pt"))
+
+
+@contextlib.contextmanager
+def _captured_logs():
+    """Every structlog event of the quantization module; its proxy's cached bind is dropped so it
+    binds to the capture's processor list (see test_definition_stats_calibration_fit.py)."""
+    from structlog.testing import capture_logs
+
+    quantization_module.logger.__dict__.pop("bind", None)
+    try:
+        with capture_logs() as logs:
+            yield logs
+    finally:
+        quantization_module.logger.__dict__.pop("bind", None)
+
+
+def _metadata_case(case: str) -> dict | None:
+    legacy = _legacy_metadata()
+    if case == "legacy":
+        return None  # the fixture file itself
+    synthetic = copy.deepcopy(legacy)
+    if case == "versions_missing":
+        synthetic.pop("torch_version")
+    elif case == "torch_changed":
+        synthetic.update(torch_version="2.0.0+cpu", torchao_version=A_TORCHAO_VERSION)
+    elif case == "torchao_changed":
+        synthetic.update(torchao_version="0.10.0")
+    return synthetic
+
+
+@pytest.mark.parametrize(
+    ("case", "reason"),
+    [
+        ("legacy", "torchao_version_missing"),
+        ("versions_missing", "versions_missing"),
+        ("torch_changed", "torch_version_changed"),
+        ("torchao_changed", "torchao_version_changed"),
+    ],
+)
+def test_an_entry_of_unverified_versions_is_a_miss_before_any_tensor_is_read(case, reason, tmp_path, monkeypatch):
+    import safetensors.torch
+
+    path = str(tmp_path / "entry")
+    _write_entry(path, _metadata_case(case))
+    # The versions this process runs: the fixture's own torch and a real torchao, so in each case
+    # only the field the case changes can cause the miss.
+    fixture_torch = _legacy_metadata()["torch_version"]
+    monkeypatch.setattr(
+        QuantizationFactory, "_current_versions",
+        staticmethod(lambda: {"torch_version": fixture_torch, "torchao_version": A_TORCHAO_VERSION}),
+        raising=False,
+    )
+    reads: list[str] = []
+    real_torch_load, real_load_file = torch.load, safetensors.torch.load_file
+    monkeypatch.setattr(torch, "load", lambda *a, **k: reads.append("torch.load") or real_torch_load(*a, **k))
+    monkeypatch.setattr(
+        safetensors.torch, "load_file", lambda *a, **k: reads.append("load_file") or real_load_file(*a, **k),
+    )
+
+    with _captured_logs() as logs:
+        loaded = QuantizationFactory.load_quantized(_entry_module(), path, "int8")
+    assert loaded is None, f"{case}: the entry was loaded"
+    misses = [e for e in logs if e["event"] == "quantized_cache_invalidated"]
+    assert [e.get("reason") for e in misses] == [reason], logs
+    assert reads == [], f"{case}: a tensor was deserialized before the miss: {reads}"
+
+    # The caller re-quantizes on a miss and saves: the entry then carries both versions and hits.
+    monkeypatch.undo()
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        installed_torchao = version("torchao")
+    except PackageNotFoundError:
+        installed_torchao = None
+    QuantizationFactory.save_quantized(_entry_module(), path, "int8", source_param_count=4160)
+    written = json.loads(Path(path, "metadata.json").read_text())
+    assert written["torch_version"] == torch.__version__
+    assert "torchao_version" in written and written["torchao_version"] == installed_torchao
+    assert QuantizationFactory.load_quantized(_entry_module(), path, "int8") is not None
+
+
 # ── Config Schema ────────────────────────────────────────────────────────
 
 

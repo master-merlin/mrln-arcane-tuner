@@ -1,0 +1,8 @@
+{
+  "scheme": "int8",
+  "torch_version": "2.12.1+cu130",
+  "timestamp": 1794231411.5383906,
+  "param_count": 4160,
+  "source_param_count": 4160,
+  "format": "torch"
+}

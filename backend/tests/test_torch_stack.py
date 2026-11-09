@@ -247,6 +247,71 @@ class TestVerify:
             "torchao: installed 0.18.0+cu132, the cu132 set needs 0.18.0"]
 
 
+INSTALLERS = ("install.ps1", "install.bat", "install.sh")
+
+
+def _code(name: str) -> str:
+    """The installer without its comment lines."""
+    lines = (BACKEND / name).read_text(encoding="utf-8").splitlines()
+    return "\n".join(ln for ln in lines if not ln.lstrip().upper().startswith(("#", "REM ", "::")))
+
+
+class TestTheInstallers:
+    @pytest.mark.parametrize("name", INSTALLERS)
+    def test_the_stack_comes_from_the_selector_and_is_verified_at_the_end(self, name):
+        code = _code(name)
+        if name == "install.ps1":  # arguments as a PowerShell array
+            install, bulk = code.find('"install", "--python"'), code.find('"pip", "install", "-r"')
+        else:
+            install, bulk = code.find("install --python"), code.find("pip install -r")
+        verify = code.rfind("verify")
+        assert -1 not in (install, bulk, verify), f"{name}: install / bulk / verify step missing"
+        assert install < bulk < verify, f"{name}: the stack must be installed first and verified last"
+
+    @pytest.mark.parametrize("name", INSTALLERS)
+    def test_the_bulk_install_filters_through_the_selector(self, name):
+        code = _code(name)
+        assert "filter" in code and "--also" in code, f"{name}: the bulk requirements step is not filtered by torch_stack.py"
+        assert "grep -iv" not in code and "findstr /V" not in code and "-notmatch" not in code, (
+            f"{name}: a hand-written requirements filter is back; the selector owns the stack's names"
+        )
+
+    @pytest.mark.parametrize("name", INSTALLERS)
+    def test_no_installer_names_a_torch_version(self, name):
+        code = _code(name)
+        assert not re.search(r"\b(torch|torchvision|torchaudio|torchao|triton(-windows)?)==", code), (
+            f"{name} pins a torch-stack version itself; torch-stack.cfg is the only place"
+        )
+        assert "download.pytorch.org" not in code, f"{name} names a torch index itself"
+
+    @pytest.mark.parametrize("name, activation", [
+        ("install.ps1", "Activate.ps1"), ("install.bat", "activate.bat"), ("install.sh", "bin/activate"),
+    ])
+    def test_no_installer_activates_a_venv(self, name, activation):
+        """An activated venv is how an install lands in the wrong one: they run the target's interpreter."""
+        assert activation not in _code(name), f"{name} activates a venv instead of using its interpreter by path"
+
+    @pytest.mark.parametrize("name, anchor", [
+        ("install.ps1", "$PSScriptRoot"), ("install.bat", "%~dp0"), ("install.sh", 'dirname "$0"'),
+    ])
+    def test_paths_are_anchored_on_the_script(self, name, anchor):
+        code = _code(name)
+        assert anchor in code, f"{name} does not anchor its paths on its own directory"
+        # requirements.txt and torch_stack.py are named once each, joined to that directory.
+        for file in ("requirements.txt", "torch_stack.py"):
+            uses = [ln for ln in code.splitlines() if file in ln]
+            assert len(uses) == 1, f"{name} names {file} {len(uses)} times; expected one anchored definition"
+            assert any(a in uses[0] for a in ("$Here", "%HERE%", "$HERE")), f"{name}: {file} is not joined to its directory"
+
+    @pytest.mark.parametrize("name, flag", [
+        ("install.ps1", "-Yes"), ("install.bat", "--yes"), ("install.sh", "--yes"),
+    ])
+    def test_each_takes_a_venv_target_and_a_no_prompt_switch(self, name, flag):
+        text = (BACKEND / name).read_text(encoding="utf-8")
+        assert flag.lstrip("-").lower() in text.lower()
+        assert ("VenvDir" in text) if name == "install.ps1" else ("--venv-dir" in text)
+
+
 def _env() -> dict:
     import os
 

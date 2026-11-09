@@ -2,105 +2,132 @@
 REM --------------------------------------------------------------------------
 REM MRLN Arcane Tuner - Windows install script (CMD)
 REM
-REM Optionally creates a virtual environment, installs PyTorch with CUDA 13.0
-REM from the official PyTorch wheel index, then installs all remaining
-REM dependencies. PEP 508 markers in requirements.txt automatically handle
-REM platform-specific packages.
+REM Optionally creates a virtual environment, installs the torch stack this
+REM machine can run (torch_stack.py reads the driver and every GPU and picks a
+REM set from torch-stack.cfg), then installs all remaining dependencies. PEP 508
+REM markers in requirements.txt automatically handle platform-specific packages.
+REM
+REM   install.bat [--venv-dir <dir>] [--yes]
+REM
+REM --venv-dir  the venv to create or reuse (default: venv next to this script).
+REM --yes       no questions: reuse or create the venv.
+REM MRLN_TORCH_INDEX=<set> chooses the torch set (cu132, cu126, cpu); it is
+REM still refused where that set cannot run.
 REM --------------------------------------------------------------------------
+setlocal
 
-set VENV_DIR=venv
+REM Anchored on this script, never on the current directory.
+set "HERE=%~dp0"
+set "REQ=%HERE%requirements.txt"
+set "STACK=%HERE%torch_stack.py"
+set "VENV_DIR=%HERE%venv"
+set "YES=0"
+
+:args
+if "%~1"=="" goto args_done
+if /i "%~1"=="--venv-dir" (
+    set "VENV_DIR=%~2"
+    shift
+    shift
+    goto args
+)
+if /i "%~1"=="--yes" (
+    set "YES=1"
+    shift
+    goto args
+)
+echo unknown argument: %~1
+exit /b 64
+:args_done
 
 REM -- Virtual environment ------------------------------------------------
+REM Every install below runs this venv's own interpreter by path. Nothing is
+REM activated, so an already-active venv cannot redirect the install.
+REM Each prompt is read OUTSIDE a parenthesised block: inside one, %ANSWER%
+REM would be expanded when the block is parsed, before set /p ran.
 
-if exist "%VENV_DIR%\Scripts\activate.bat" (
-    echo [OK] Virtual environment '%VENV_DIR%' already exists.
-    set /p ANSWER="   Activate it and continue? [Y/n] "
-    if /i "%ANSWER%"=="" set ANSWER=Y
-    if /i "%ANSWER%"=="n" (
-        echo Aborted.
-        exit /b 0
-    )
-    call "%VENV_DIR%\Scripts\activate.bat"
-) else (
-    set /p ANSWER="Create a virtual environment in '.\%VENV_DIR%'? [Y/n] "
-    if /i "%ANSWER%"=="" set ANSWER=Y
-    if /i "%ANSWER%"=="n" (
-        echo [WARN] Skipping venv - installing into current Python environment.
-    ) else (
-        echo Creating virtual environment ...
-        python -m venv %VENV_DIR%
-        call "%VENV_DIR%\Scripts\activate.bat"
-        pip install --upgrade pip
-        echo [OK] Virtual environment created and activated.
-    )
-)
+set "PY=%VENV_DIR%\Scripts\python.exe"
+if not exist "%PY%" goto no_venv
+echo [OK] Virtual environment '%VENV_DIR%' already exists.
+if "%YES%"=="1" goto stack
+set "ANSWER=Y"
+set /p ANSWER="   Install into it? [Y/n] "
+if /i "%ANSWER%"=="n" goto aborted
+goto stack
 
-REM -- PyTorch (CUDA 13.0, split stack) -----------------------------------
+:no_venv
+if "%YES%"=="1" goto create_venv
+set "ANSWER=Y"
+set /p ANSWER="Create a virtual environment in '%VENV_DIR%'? [Y/n] "
+if /i not "%ANSWER%"=="n" goto create_venv
+echo [WARN] Skipping venv - installing into the current Python environment.
+set "PY=python"
+goto stack
 
+:create_venv
+echo Creating virtual environment ...
+python -m venv "%VENV_DIR%" || goto failed
+"%PY%" -m pip install --upgrade pip || goto failed
+echo [OK] Virtual environment created.
+
+REM -- The torch stack ------------------------------------------------------
+REM torch_stack.py chooses the set, refuses (exit 2, with the table) before
+REM installing anything where no set fits, and installs torch, torchvision,
+REM torchaudio, torchao and triton from it.
+
+:stack
 echo.
-echo Installing PyTorch 2.12.1 + torchvision 0.27.1 (CUDA 13.0) ...
-pip install torch==2.12.1 torchvision==0.27.1 --index-url https://download.pytorch.org/whl/cu130
-
-REM torchaudio has no 2.12-series wheel yet (maintenance mode) and its own
-REM metadata pins torch==2.11.0, so it MUST be installed --no-deps or pip
-REM would downgrade torch back to 2.11.0.
-echo Installing torchaudio 2.11.0 (--no-deps; declares torch==2.11.0) ...
-pip install torchaudio==2.11.0 --no-deps --index-url https://download.pytorch.org/whl/cu130
+"%PY%" "%STACK%" install --python "%PY%" || goto failed
 
 REM -- Remaining dependencies ---------------------------------------------
-REM torch/torchvision/torchaudio (installed above) and scenedetect/sam3 (need
-REM --no-deps below) are excluded from this bulk install - see
-REM install-deps.sh for the full rationale (this mirrors its filter minus
-REM triton/triton-windows - local venvs need those from requirements; only
-REM the container filters them to protect its baked 2.11-matched copy).
+REM The bulk install never sees the torch stack (torch_stack.py owns it) nor
+REM scenedetect/sam3/hpsv2 (installed --no-deps below; see install-deps.sh for
+REM why each needs it).
 
 echo.
 echo Installing remaining dependencies ...
-findstr /V /R /I "^scenedetect== ^sam3== ^hpsv2== ^torch== ^torchvision== ^torchaudio==" requirements.txt > "%TEMP%\mrln_requirements_filtered.txt"
-pip install -r "%TEMP%\mrln_requirements_filtered.txt"
-del "%TEMP%\mrln_requirements_filtered.txt"
+set "TMP_REQ=%TEMP%\mrln_requirements_filtered.txt"
+"%PY%" "%STACK%" filter "%REQ%" "%TMP_REQ%" --also scenedetect sam3 hpsv2 || goto failed
+"%PY%" -m pip install -r "%TMP_REQ%"
+set "RC=%ERRORLEVEL%"
+del "%TMP_REQ%"
+if not "%RC%"=="0" goto failed
 
 REM scenedetect's declared dependency is the GUI build `opencv-python`, which
 REM collides with the pinned `opencv-python-headless` (both ship the `cv2`
 REM module) - install it separately, without its deps.
-set "SD="
-for /f "usebackq tokens=1 delims= #" %%A in (`findstr /R /I "^scenedetect==" requirements.txt`) do (
-    if not defined SD set "SD=%%A"
-)
-if defined SD (
-    echo Installing %SD% ^(--no-deps^) ...
-    pip install --no-deps %SD%
-)
+REM sam3's declared ceilings would block the resolve against our pins; its
+REM import works (test_sam3_imports_cleanly_despite_declared_hub_pin).
+REM hpsv2 declares its dev deps (`pytest ==7.2.0`, `pytest-split ==0.8.0`) as
+REM install requirements; it never imports them
+REM (test_hpsv2_works_under_a_runner_its_metadata_forbids).
+for %%N in (scenedetect sam3 hpsv2) do call :no_deps %%N || goto failed
 
-REM sam3 declares `huggingface-hub<1.0,>=0.30.0`, but this repo pins
-REM huggingface-hub==1.27.0 (transformers 5.x requires it). The import works
-REM fine under hub 1.x - its declared ceiling is just stale (see
-REM test_sam3_imports_cleanly_despite_declared_hub_pin) - so install it
-REM separately, without its deps, rather than letting it block the resolve.
-set "S3="
-for /f "usebackq tokens=1 delims= #" %%A in (`findstr /R /I "^sam3==" requirements.txt`) do (
-    if not defined S3 set "S3=%%A"
-)
-if defined S3 (
-    echo Installing %S3% ^(--no-deps^) ...
-    pip install --no-deps %S3%
-)
+REM -- The stack is still the one chosen ----------------------------------
 
-REM hpsv2 declares `pytest ==7.2.0` and `pytest-split ==0.8.0` as INSTALL
-REM requirements - its dev deps leaked into its metadata. It never imports
-REM either and registers no pytest11 hook, so the pins are inert (see
-REM test_hpsv2_works_under_a_runner_its_metadata_forbids), but left in the bulk
-REM resolve they abort it against our own pytest pin. All 18 of its real deps
-REM are already in requirements.txt, so nothing is lost by skipping its metadata.
-set "HP="
-for /f "usebackq tokens=1 delims= #" %%A in (`findstr /R /I "^hpsv2==" requirements.txt`) do (
-    if not defined HP set "HP=%%A"
-)
-if defined HP (
-    echo Installing %HP% ^(--no-deps^) ...
-    pip install --no-deps %HP%
-)
+echo.
+"%PY%" "%STACK%" verify --python "%PY%" || goto failed
 
 echo.
 echo [OK] Done - all dependencies installed.
-pause
+if not "%YES%"=="1" pause
+exit /b 0
+
+:no_deps
+set "PIN="
+for /f "usebackq tokens=1 delims= #" %%A in (`findstr /R /I /C:"^%1==" "%REQ%"`) do (
+    if not defined PIN set "PIN=%%A"
+)
+if not defined PIN exit /b 0
+echo Installing %PIN% (--no-deps) ...
+"%PY%" -m pip install --no-deps %PIN%
+exit /b %ERRORLEVEL%
+
+:aborted
+echo Aborted.
+exit /b 0
+
+:failed
+echo [FAILED] the install stopped; see the message above.
+if not "%YES%"=="1" pause
+exit /b 1

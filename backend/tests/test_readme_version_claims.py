@@ -18,11 +18,12 @@ match the source of truth.
 THE TRAP THIS FILE MUST NOT BECOME. There are **two** correct PyTorch versions
 here and they are deliberately different:
 
-* the LOCAL dev venv runs ``backend/requirements.txt``'s pin (2.12.1+cu130);
-* the CONTAINER bakes the ``Dockerfile``'s pin (2.11.0), because there is no
-  cu130 Linux wheel parity yet — see ``Dockerfile``'s split-stack comment. The
-  install path filters the torch lines out of ``requirements.txt`` precisely so
-  the local pin never clobbers the image's.
+* the LOCAL dev venv runs ``backend/requirements.txt``'s pin, which is
+  ``backend/torch-stack.cfg``'s default set (2.15.0+cu132; older machines get
+  the cu126 set's 2.14.1, which the README names as plain ``torch 2.14.1``);
+* the CONTAINER bakes the ``Dockerfile``'s pin (2.11.0) — see ``Dockerfile``'s
+  split-stack comment. The install path filters the torch lines out of
+  ``requirements.txt`` precisely so the local pin never clobbers the image's.
 
 **Do not "fix" the container's 2.11.0 to match ``requirements.txt``** — that
 breaks the Docker build. The README has to state both and say which is which,
@@ -149,20 +150,22 @@ class TestPyTorch:
             "this module's docstring before changing either."
         )
 
-    def test_every_install_instruction_matches_the_local_pin(self):
-        """`pip install torch==X` in the README must be requirements.txt's X.
+    def test_no_install_instruction_names_its_own_torch(self):
+        """The README installs torch only through torch_stack.py.
 
-        This is the half that caught the original defect from the other side:
-        line 5 said 2.10 while the install block said 2.12.1, so the file
-        disagreed with itself before it disagreed with anything else.
+        This half once caught the original defect from the other side: line 5
+        said 2.10 while the install block said 2.12.1, so the file disagreed
+        with itself before it disagreed with anything else. Since the selector
+        (LANE-138) the install block names no version at all, so it cannot
+        disagree; a `pip install torch==` reappearing is the drift to catch.
         """
-        local = _local_torch_pin(_read(REQUIREMENTS))
-        pins = readme_torch_install_pins(_read(README))
-        assert pins, "README.md no longer shows a `torch==` install line"
-        assert pins == {local}, (
-            f"README.md tells the reader to install torch=={sorted(pins)} but "
-            f"backend/requirements.txt pins {local}"
+        readme = _read(README)
+        pins = readme_torch_install_pins(readme)
+        assert pins == set(), (
+            f"README.md tells the reader to install torch=={sorted(pins)} by hand; "
+            "the torch stack comes from `python torch_stack.py install` (torch-stack.cfg)"
         )
+        assert "torch_stack.py install" in readme, "README.md no longer shows how torch is installed"
 
     def test_the_two_pins_are_read_from_different_files(self):
         """Anti-vacuity: the local and container pins are separate sources.

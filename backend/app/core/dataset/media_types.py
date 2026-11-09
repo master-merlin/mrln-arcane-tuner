@@ -13,8 +13,8 @@ The four sets are intentionally distinct (NOT ``IMAGE | VIDEO | AUDIO``):
 * ``AUDIO_EXTENSIONS``      — audio formats the scanner probes for duration/sample
                               rate/channels via ``soundfile`` (the primary decoder —
                               preferred over torchaudio because the docker image's
-                              torchaudio 2.11 trio is installed ``--no-deps`` and may
-                              carry different backends than the local 2.12.1 install).
+                              torchaudio and the local install's are built against
+                              different torch releases and may carry different backends).
                               All five contract extensions (``.wav .mp3 .flac .ogg
                               .opus``) were verified to round-trip write+read via
                               ``soundfile`` + libsndfile 1.2.2 on this stack — no

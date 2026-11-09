@@ -266,9 +266,9 @@ class SelfUpdateService:
             else:
                 # install-deps.sh is missing (unexpected repo state) — fall
                 # back to pip directly, but still filter out the torch-stack
-                # lines: requirements.txt documents the LOCAL 2.12.1 trio, and
+                # lines: requirements.txt documents the LOCAL default stack, and
                 # a plain `-r requirements.txt` here would clobber the 2.11.0
-                # trio baked into this image's cached Dockerfile layer.
+                # stack baked into this image's cached Dockerfile layer.
                 req_path = os.path.join(backend, "requirements.txt")
                 with open(req_path, encoding="utf-8") as f:
                     kept = [ln for ln in f if not _TORCH_STACK_RE.match(ln)]

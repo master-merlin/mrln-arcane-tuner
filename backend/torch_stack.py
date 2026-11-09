@@ -178,9 +178,13 @@ def table(sets: dict[str, StackSet], gpus: list[Gpu]) -> str:
             continue
         archs = " ".join(f"{a}.{b}" for a, b in s.archs)
         rows.append(f"{s.name:<7} {s.torch:<8} R{s.driver_min}+   {archs}")
-    found = ", ".join(f"cc {g.cc[0]}.{g.cc[1]} (driver {g.driver})" for g in gpus)
-    rows.append(f"this machine: {found}")
+    rows.append(machine(gpus))
     return "\n".join(rows)
+
+
+def machine(gpus: list[Gpu]) -> str:
+    """What was detected, the way the installer prints it and the refusal table ends."""
+    return "this machine: " + ", ".join(f"cc {g.cc[0]}.{g.cc[1]} (driver {g.driver})" for g in gpus)
 
 
 def choose(sets: dict[str, StackSet], gpus: list[Gpu] | None, override: str | None) -> tuple[StackSet, str]:
@@ -319,7 +323,10 @@ def main(argv: list[str] | None = None) -> int:
 
     _, sets = read_stack()
     try:
-        stack, how = choose(sets, detect_gpus(), os.environ.get("MRLN_TORCH_INDEX") or None)
+        gpus = detect_gpus()
+        if gpus:
+            print(f"[torch] {machine(gpus)}", file=sys.stderr)
+        stack, how = choose(sets, gpus, os.environ.get("MRLN_TORCH_INDEX") or None)
     except Refused as refused:
         print(f"[torch] REFUSED: {refused}", file=sys.stderr)
         return REFUSED

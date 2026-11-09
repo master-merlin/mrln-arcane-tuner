@@ -172,6 +172,7 @@ class TestInstall:
             capture_output=True, text=True, env={**_env(), "MRLN_TORCH_NVIDIA_SMI": str(canned)},
         )
         assert done.returncode == 0, done.stderr
+        assert "this machine: cc 8.6 (driver 575.64)" in done.stderr, "the install must name what it detected"
         assert "cu126: torch 2.14.1" in done.stderr
         assert "torch==2.14.1" in done.stderr
 
@@ -310,6 +311,80 @@ class TestTheInstallers:
         text = (BACKEND / name).read_text(encoding="utf-8")
         assert flag.lstrip("-").lower() in text.lower()
         assert ("VenvDir" in text) if name == "install.ps1" else ("--venv-dir" in text)
+
+
+REPO = BACKEND.parent
+_STACK_PIN = re.compile(r"\b(torch|torchvision|torchaudio|torchao|triton(-windows)?)==")
+
+
+def _requirement_pins() -> dict[str, str]:
+    """The stack distributions requirements.txt pins, by canonical name."""
+    stack = {torch_stack._canonical(n) for n in torch_stack.STACK_DISTRIBUTIONS}
+    pins = {}
+    for line in (BACKEND / "requirements.txt").read_text(encoding="utf-8").splitlines():
+        match = re.match(r"^\s*([A-Za-z0-9_.\-]+)==([^\s;#]+)", line)
+        if match and torch_stack._canonical(match.group(1)) in stack:
+            pins[torch_stack._canonical(match.group(1))] = match.group(2)
+    return pins
+
+
+def _without_comments(text: str) -> str:
+    return "\n".join(ln for ln in text.splitlines() if not ln.lstrip().startswith("#"))
+
+
+def _readme_manual_install() -> str:
+    text = (REPO / "README.md").read_text(encoding="utf-8")
+    start = text.index("### Manual Install")
+    end = text.index("\n### ", start + 1)
+    return text[start:end]
+
+
+class TestTorchStackCfgIsTheOnePlace:
+    def test_requirements_pins_are_the_default_set(self):
+        """requirements.txt documents the stack a default install gets; it never decides it."""
+        default = SETS[DEFAULT]
+        want = {torch_stack._canonical(k): v for k, v in {**default.pins("linux"), **default.pins("win32")}.items()}
+        assert _requirement_pins() == want
+
+    def test_ci_names_no_torch_stack_version(self):
+        code = _without_comments((REPO / ".github" / "workflows" / "gate.yml").read_text(encoding="utf-8"))
+        assert not _STACK_PIN.search(code), "gate.yml pins a torch-stack version itself; torch-stack.cfg is the only place"
+        assert "download.pytorch.org" not in code, "gate.yml names a torch index itself"
+        assert "torch_stack.py install" in code and "torch_stack.py verify" in code
+
+    def test_the_readme_install_block_names_no_torch_stack_version(self):
+        block = _readme_manual_install()
+        assert not _STACK_PIN.search(block), "the README's manual install pins a torch-stack version itself"
+        assert "download.pytorch.org" not in block, "the README's manual install names a torch index itself"
+        assert "torch_stack.py install" in block and "torch_stack.py verify" in block
+
+
+class TestTheTorchaudioClaimIsItsMetadata:
+    """requirements.txt says what torchaudio declares; the installed metadata decides.
+
+    The old line said torchaudio 2.11.0 "declares torch==2.11.0". Its metadata
+    declares no dependency at all, and the claim stood for months because nothing
+    read it.
+    """
+
+    def test_the_comment_names_exactly_what_the_installed_torchaudio_declares(self):
+        import importlib.metadata as metadata
+
+        try:
+            declared = metadata.requires("torchaudio") or []
+            installed = metadata.version("torchaudio").split("+")[0]
+        except metadata.PackageNotFoundError:
+            pytest.skip("no torchaudio in this environment")
+        line = next(ln for ln in (BACKEND / "requirements.txt").read_text(encoding="utf-8").splitlines()
+                    if ln.startswith("torchaudio=="))
+        if installed != line.split("==")[1].split()[0]:
+            pytest.skip(f"this environment has torchaudio {installed}, not the pinned one")
+        torch_specs = [re.sub(r"[\s()]", "", r.split(";")[0]) for r in declared
+                       if re.match(r"torch(?![\w-])", r.strip())]
+        claimed = re.findall(r"declares (torch[<>=!~][^\s,;)]+)", line)
+        assert claimed == torch_specs, (
+            f"requirements.txt says torchaudio declares {claimed or 'nothing'}; its metadata declares {torch_specs}"
+        )
 
 
 def _env() -> dict:

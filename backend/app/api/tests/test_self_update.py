@@ -228,20 +228,21 @@ async def test_install_backend_deps_uses_script_when_present(svc, monkeypatch, t
 @pytest.mark.asyncio
 async def test_install_backend_deps_fallback_filters_torch_stack(svc, monkeypatch, tmp_path):
     # install-deps.sh absent → the fallback must still exclude the
-    # torch-stack lines (torch/torchvision/torchaudio/triton/triton-windows),
-    # matching install-deps.sh's own exclusion — otherwise a plain
-    # `pip install -r requirements.txt` would clobber the trio baked into the
-    # image's cached Dockerfile layer.
+    # torch-stack lines (torch/torchvision/torchaudio/torchao/triton/
+    # triton-windows), matching install-deps.sh's own exclusion — otherwise a
+    # plain `pip install -r requirements.txt` would clobber the stack baked into
+    # the image's cached Dockerfile layer.
     backend = tmp_path / "backend"
     backend.mkdir()
     await asyncio.to_thread(
         (backend / "requirements.txt").write_text,
         "fastapi==1.0\n"
-        "torch==2.12.1\n"
-        "torchvision==0.27.1\n"
-        "torchaudio==2.11.0  # installed --no-deps (declares torch==2.11.0)\n"
-        "triton-windows==3.7.1.post27; sys_platform == 'win32'\n"
-        "triton==3.7.1; sys_platform == 'linux'\n"
+        "torch==2.15.0\n"
+        "torchao==0.18.0\n"
+        "torchaudio==2.11.1  # the stack's: declares torch>=2.11\n"
+        "torchvision==0.29.2\n"
+        "triton-windows==3.9.0.post30; sys_platform == 'win32'\n"
+        "triton==3.9.0; sys_platform == 'linux'\n"
         "pydantic==2.0\n",
     )
     svc.app_dir = str(tmp_path)
@@ -265,7 +266,7 @@ async def test_install_backend_deps_fallback_filters_torch_stack(svc, monkeypatc
     filtered = captured["filtered"]
     assert "fastapi==1.0" in filtered
     assert "pydantic==2.0" in filtered
-    for pkg_line in ("torch==", "torchvision==", "torchaudio==", "triton-windows==", "triton=="):
+    for pkg_line in ("torch==", "torchao==", "torchvision==", "torchaudio==", "triton-windows==", "triton=="):
         assert pkg_line not in filtered
     # the filtered temp file must not survive the call
     assert not os.path.exists(captured["cmd"][-1])

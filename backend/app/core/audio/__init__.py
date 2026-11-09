@@ -3,9 +3,10 @@
 Pure, side-effect-free helpers for probing audio files (duration, sample
 rate, channels) used by the scanner to populate per-file metadata.
 ``soundfile``-backed (bundled libsndfile) — chosen over torchaudio as the
-primary decoder because the docker image's torchaudio 2.11 trio is
-installed ``--no-deps`` and may carry different backends than the local
-2.12.1 install; soundfile is a single, consistent dependency across both.
+primary decoder because the docker image's torchaudio 2.11.0 and the local
+install's (2.11.1, or 2.11.0 on the cu126 set) are built against different
+torch releases and may carry different backends; soundfile is a single,
+consistent dependency across all of them.
 """
 
 from __future__ import annotations

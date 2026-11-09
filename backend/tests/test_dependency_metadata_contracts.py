@@ -205,11 +205,11 @@ TORCH_STACK = frozenset("torch torchvision torchaudio torchao triton triton-wind
 #: name -> the file's filter, and how to read the package list out of it.
 INSTALL_PATHS = {
     "backend/install-deps.sh": r"\(([a-z0-9|_-]+)\)",
-    "README.md": r"\(([a-z0-9|_-]+)\)",
 }
-#: The local installers filter through `torch_stack.py filter ... --also <names>`:
-#: the selector drops the whole torch stack, and `--also` names the rest.
-SELECTOR_INSTALLERS = ("backend/install.sh", "backend/install.ps1", "backend/install.bat")
+#: The local installers and the README's manual install filter through
+#: `torch_stack.py filter ... --also <names>`: the selector drops the whole torch
+#: stack, and `--also` names the rest.
+SELECTOR_INSTALLERS = ("backend/install.sh", "backend/install.ps1", "backend/install.bat", "README.md")
 
 
 def _alternation(path: str) -> set[str]:

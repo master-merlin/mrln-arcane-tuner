@@ -418,9 +418,10 @@ class TestTheVenvStillSatisfiesRequirements:
         them only need the handful of libraries their own imports reach.
 
         Versions are checked for the boot closure above but not here, because
-        the container legitimately runs a different torch trio than
-        requirements.txt pins (the image bakes 2.11, the local venv runs 2.12.1;
-        install-deps.sh filters those lines out of both installs). Asserting
+        the container legitimately runs a different torch stack than
+        requirements.txt pins (the image bakes 2.11, the local venv runs the set
+        torch_stack.py chose: 2.15.0, or 2.14.1 on the cu126 fallback; no bulk
+        install touches those lines). Asserting
         versions across the whole file would make this test wrong inside the
         image it is shipped in.
         """

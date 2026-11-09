@@ -76,11 +76,12 @@ TRUFFLEHOG_SHA = "31ce31ee1abbcc7dc8eee5764c17121c3044c8b2"  # LANE-172: v3.99.7
 HELD_KEEP = {
     "fsspec": "2026.6.0",  # datasets 5.0.1 declares fsspec[http]<=2026.6.0 (pip report, LANE-142)
     "anyio": "4.14.2",  # 4.15.1 needs typing_extensions>=4.16.0, which the sam3 0.1.4 ceiling (<4.16) forbids
-    "setuptools": "81.0.0",
-    "torch": "2.12.1",
-    "torchvision": "0.27.1",
-    "torchaudio": "2.11.0",
-    "torchao": "0.18.0",  # the local stack's; the images bake their own (install-deps.sh excludes it)
+    "setuptools": "81.0.0",  # the images' torch 2.11.0 declares setuptools<82 (LANE-140 lifts it)
+    # The torch stack: torch-stack.cfg's default set (test_torch_stack holds requirements.txt to it).
+    "torch": "2.15.0",
+    "torchvision": "0.29.2",
+    "torchaudio": "2.11.1",
+    "torchao": "0.18.0",
     "diffusers": "0.41.0",  # LANE-149
     "transformers": "5.14.1",
     "peft": "0.20.0",

@@ -101,7 +101,7 @@ class _DequantizedBackwardLinear(torch.autograd.Function):
         return grad_x, None, grad_bias
 
 
-def _forward(linear: nn.Linear, x: torch.Tensor) -> torch.Tensor:
+def _forward(linear: nn.Linear, input: torch.Tensor) -> torch.Tensor:  # noqa: A002 - nn.Linear.forward's name
     """The kernel in its weight's own dtype, outside autocast; the output as autocast would give it.
 
     These kernels are not autocast-safe: under fp16 autocast, int8_dynamic's output was thousands of
@@ -109,7 +109,10 @@ def _forward(linear: nn.Linear, x: torch.Tensor) -> torch.Tensor:
     quantizers/torchao.py). So the input is cast to the weight's dtype, autocast is off around the
     kernel, and the output is cast to what a plain Linear returns here: the autocast dtype under
     autocast, else the input's dtype. In bf16 with no autocast every cast is a no-op.
+
+    Its input is named ``input``, as ``nn.Linear.forward``'s is, so ``layer(input=x)`` still works.
     """
+    x = input
     weight = linear.weight
     if weight.requires_grad:
         raise RuntimeError(

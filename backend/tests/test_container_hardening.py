@@ -598,86 +598,48 @@ class TestBuildContract:
             "about the shipped image"
         )
 
-    def test_torchao_is_not_excluded_from_the_shared_dependency_install(self):
-        """The trap in the tidy version of the fix.
+    def test_torchao_is_excluded_from_the_shared_dependency_install(self):
+        """requirements.txt's torchao pin is the LOCAL stack's; it never reaches an image.
 
-        `install-deps.sh`'s exclusion regex is shared by the Docker build, the
-        local venv and the runtime self-update. Adding torchao to it would keep
-        the image correct and silently drop torchao from a fresh Windows
-        install. Measured instead: pip reports the bare `torchao==0.17.0` pin
-        satisfied by `0.17.0+cu128`, so the bulk resolve leaves the wheel alone
-        and no exclusion is needed.
+        torchao ships compiled CUDA extensions, so the image bakes it in its torch
+        layer from the CUDA index of its base (the test above). The bulk resolve in
+        install-deps.sh runs at image build AND inside a live container's
+        self-update, where no build-time check can see it: a bare `torchao==` pin
+        resolved there would take PyPI's wheel, built for another CUDA. Until the
+        local and image stacks parted, that held only because the two pins happened
+        to match (PEP 440 counted `0.17.0+cu128` as satisfying `torchao==0.17.0`).
+        Excluding torchao makes it hold by construction. The old fear, that the
+        exclusion would drop torchao from a fresh local venv, does not apply: the
+        local installers never run install-deps.sh, and they install torchao
+        themselves with the rest of the stack.
         """
-        script = (REPO_ROOT / "backend" / "install-deps.sh")
+        script = REPO_ROOT / "backend" / "install-deps.sh"
         if not script.exists():
             pytest.skip("install-deps.sh not present in this checkout")
-        text = script.read_text(encoding="utf-8")
-        excl = [ln for ln in text.splitlines() if "grep -ivE" in ln]
-        assert excl, "the exclusion filter has moved; this guard is looking in the wrong place"
-        assert not any("torchao" in ln for ln in excl), (
-            "torchao was added to the shared exclusion regex — that fixes the "
-            "image and silently removes torchao from the local venv and the "
-            "runtime self-update"
+        excl = [ln for ln in script.read_text(encoding="utf-8").splitlines() if "grep -ivE" in ln]
+        assert len(excl) == 1, "the exclusion filter has moved; this guard is looking in the wrong place"
+        names = set(re.search(r"\(([^()]*)\)\(", excl[0]).group(1).lower().split("|"))
+        assert {"torch", "torchvision", "torchaudio", "torchao", "triton", "triton-windows"} <= names, (
+            f"install-deps.sh must exclude the whole torch stack; it excludes {sorted(names)}"
         )
 
-    def test_the_torchao_pin_is_the_same_in_requirements_and_the_dockerfile(self):
-        """The two pins must move together, because ONE of them is load-bearing
-        in a place no build-time guard can see.
+    def test_the_self_update_fallback_excludes_torchao_too(self):
+        """The self-update's own filter, used when install-deps.sh is missing, matches it."""
+        from app.core.self_update import _TORCH_STACK_RE
 
-        The CUDA fix holds on a coincidence of PEP 440: the bare
-        `torchao==0.17.0` in requirements.txt is *already satisfied* by the
-        `0.17.0+cu128` the Dockerfile installed, so the bulk resolve leaves the
-        CUDA-matched wheel alone. Bump requirements.txt alone and that stops
-        being true — pip goes to PyPI and takes the CUDA-13 wheel again. The
-        runtime self-update re-runs install-deps.sh INSIDE A LIVE CONTAINER
-        with no image rebuild, so the Dockerfile's dlopen assertion is not in
-        that path at all. torchao is now the only CUDA-ABI-bound package left
-        in the bulk resolve; torch and triton are excluded for exactly this
-        reason.
+        for name in ("torch", "torchvision", "torchaudio", "torchao", "triton", "triton-windows"):
+            assert _TORCH_STACK_RE.match(f"{name}==1.0"), f"the fallback would install {name} from requirements.txt"
+        assert not _TORCH_STACK_RE.match("torchmetrics==1.0")
 
-        WHAT THIS GUARD DOES AND DOES NOT PROMISE, stated because a guard whose
-        limits are folklore is a trap. It cannot make a bump safe: raise BOTH
-        pins in step and the self-update still fetches PyPI's wheel for the new
-        version, since nothing excludes torchao from the resolve. What it does
-        is make a bump impossible to land in requirements.txt alone, which
-        forces whoever bumps it into the Dockerfile's torch layer and past the
-        comment explaining why the index matters. That is a routing guarantee,
-        not a correctness one.
-
-        The structural fix — exclude torchao from install-deps.sh AND add an
-        explicit CUDA-matched install to install.ps1 beside the torch trio,
-        which is the shape torch already has — is deliberately NOT done here.
-        Excluding it without the install.ps1 half is precisely the silent
-        deletion that `test_torchao_is_not_excluded_from_the_shared_dependency_install`
-        exists to prevent, so the two halves must land together or not at all.
-        """
-        df = _dockerfile()
-        requirements = REPO_ROOT / "backend" / "requirements.txt"
-        if not requirements.exists():
-            pytest.skip("requirements.txt not present in this checkout")
-
-        # Comments stripped: the Dockerfile's justification names the pin too,
-        # and matching that would compare the prose to itself.
-        in_dockerfile = re.findall(r"torchao==([0-9][^\s\\#]*)", _code_only(df))
-        assert in_dockerfile, "no torchao pin found in the Dockerfile's install layer"
-        assert len(set(in_dockerfile)) == 1, (
-            f"the Dockerfile pins torchao at more than one version: {sorted(set(in_dockerfile))}"
-        )
-
-        in_requirements = re.findall(
-            r"^torchao==([0-9][^\s#]*)",
-            requirements.read_text(encoding="utf-8"),
-            re.MULTILINE,
-        )
-        assert in_requirements, "no torchao pin found in requirements.txt"
-
-        assert in_dockerfile[0] == in_requirements[0], (
-            f"torchao is pinned at {in_requirements[0]} in requirements.txt but "
-            f"{in_dockerfile[0]} in the Dockerfile. Whichever you meant to bump, bump "
-            "both — a requirements-only bump sends the bulk resolve back to PyPI's "
-            "CUDA-13 wheel, and the runtime self-update runs that resolve inside a "
-            "live container where no build-time check can catch it."
-        )
+    def test_no_local_installer_runs_the_shared_dependency_install(self):
+        """The premise of the exclusion above: only the image, its self-update and CI run it."""
+        for name in ("install.ps1", "install.bat", "install.sh"):
+            path = REPO_ROOT / "backend" / name
+            code = "\n".join(
+                ln for ln in path.read_text(encoding="utf-8").splitlines()
+                if not ln.lstrip().startswith(("#", "REM", "::"))
+            )
+            assert "install-deps.sh" not in code, f"{name} runs install-deps.sh, which excludes torchao"
 
     def test_image_does_not_set_user_root(self):
         df = _dockerfile()

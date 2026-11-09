@@ -97,6 +97,11 @@ jobs:
       # GPU NMS path imports it, and the boogu vendor probes it — five tests
       # went red on run 7 (2026-09-03) with no triton on the runner. The PyPI
       # wheel imports fine without a GPU; only its kernels need one.
+      #
+      # torchao is part of that stack too (install-deps.sh excludes it: PyPI's
+      # Linux wheel carries CUDA extensions, and the images bake their own from
+      # their torch index). The CPU index has no torchao, so it comes from PyPI;
+      # it imports without a GPU and declares no dependencies.
       - name: Install torch (CPU wheels)
         run: |
           python -m pip install --index-url https://download.pytorch.org/whl/cpu \
@@ -104,6 +109,7 @@ jobs:
           python -m pip install --no-deps --index-url https://download.pytorch.org/whl/cpu \
             torchaudio==2.11.0
           python -m pip install triton==3.7.1
+          python -m pip install --no-deps torchao==0.18.0
 
       # Reuse the canonical installer rather than inventing a third install
       # path. It is already shared by the Docker build and the runtime

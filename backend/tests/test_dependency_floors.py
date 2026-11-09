@@ -80,7 +80,7 @@ HELD_KEEP = {
     "torch": "2.12.1",
     "torchvision": "0.27.1",
     "torchaudio": "2.11.0",
-    "torchao": "0.17.0",
+    "torchao": "0.18.0",  # the local stack's; the images bake their own (install-deps.sh excludes it)
     "diffusers": "0.41.0",  # LANE-149
     "transformers": "5.14.1",
     "peft": "0.20.0",

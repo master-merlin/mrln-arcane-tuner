@@ -196,10 +196,11 @@ def test_pytest_split_stays_uninstalled():
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
-#: Excluded from the bulk resolve for a DIFFERENT reason — the split stack
-#: (see requirements.txt) installs these by hand per environment, so they are
-#: not re-added with --no-deps and must not be checked as if they were.
-TORCH_STACK = frozenset("torch torchvision torchaudio triton triton-windows".split())
+#: Excluded from the bulk resolve for a DIFFERENT reason: the torch stack is
+#: installed per environment (the image's torch layer, the local installers via
+#: torch_stack.py, CI's own step), so these are not re-added with --no-deps and
+#: must not be checked as if they were.
+TORCH_STACK = frozenset("torch torchvision torchaudio torchao triton triton-windows".split())
 
 #: name -> the file's filter, and how to read the package list out of it.
 INSTALL_PATHS = {

@@ -185,6 +185,37 @@ class TestQuantizeAPI:
         _cuda.assert_not_called()
 
 
+# ── torchao names, each guarded on its own ───────────────────────────────
+
+
+def _fresh_copy(module):
+    """A new, unregistered copy of ``module``, executed now: what its guarded imports find today."""
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location(f"{module.__name__}_fresh_copy", module.__file__)
+    copy = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(copy)
+    return copy
+
+
+def test_a_torchao_without_linear_activation_quantized_tensor_still_gives_every_other_name(monkeypatch):
+    """torchao 0.18 dropped ``LinearActivationQuantizedTensor``. It shared one guarded import with
+    ``Float8Tensor`` and ``Int4TilePackedTo4dTensor``, so all three went None, and with them the
+    dense-weight backward of tile-packed int4 and dynamic fp8, without a word."""
+    tq = pytest.importorskip("torchao.quantization")
+    from app.engine.factories.quantizers import torchao as torchao_quantizer
+    from app.engine.factories.quantizers import trainable_backward
+
+    monkeypatch.delattr(tq, "LinearActivationQuantizedTensor", raising=False)  # as on 0.18
+    tb = _fresh_copy(trainable_backward)
+    for name in ("Float8Tensor", "Int4TilePackedTo4dTensor", "Int8Tensor"):
+        assert getattr(tb, name, None) is getattr(tq, name), f"trainable_backward lost {name}"
+    ta = _fresh_copy(torchao_quantizer)
+    assert ta.torchao is not None, "the torchao quantizer went unavailable"
+    for scheme in ("int8", "int8_dynamic"):
+        assert ta.TorchAOBackend.weight_type(scheme) is tq.Int8Tensor, scheme
+
+
 # ── Config Schema ────────────────────────────────────────────────────────
 
 

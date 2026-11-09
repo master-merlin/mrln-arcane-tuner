@@ -543,16 +543,26 @@ def test_a_layer_fed_a_contiguous_input_computes_what_it_did_without_the_wrap(ba
     assert torch.equal(with_wrap[0], without[0]) and torch.equal(with_wrap[1], without[1])
 
 
-@pytest.mark.parametrize(
-    ("backend", "scheme"), [p for p in offered() if p[1] == "nvfp4" or p[0] == "optimum-quanto"], ids=lambda v: str(v),
-)
+@pytest.mark.parametrize("autocast", [None, torch.bfloat16], ids=["no-autocast", "bf16-autocast"])
+@pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))  # every wrap, every scheme
 @pytest.mark.parametrize("bias", [True, False], ids=["bias", "no-bias"])
-def test_a_wrapped_layer_takes_its_input_by_keyword_as_a_linear_does(backend, scheme, bias):
+def test_a_wrapped_layer_takes_its_input_by_keyword_as_a_linear_does(backend, scheme, bias, autocast):
     lin = _linear_128(backend, scheme, bias)
-    gen = torch.Generator("cuda").manual_seed(13)
-    leaf = torch.randn(2, 128, 64, device="cuda", dtype=torch.bfloat16, generator=gen)
-    x = leaf.transpose(1, 2)
-    assert torch.equal(lin(input=x), lin(x))  # nn.Linear.forward(self, input)
+    tb = trainable_backward
+    if not (tb.is_wrapped(lin) or tb.makes_input_contiguous(lin) or tb.in_weight_dtype(lin)):
+        pytest.skip(f"no wrap of ours on {type(lin).__name__}: its forward is the library's own")
+
+    def run(by_keyword: bool):
+        gen = torch.Generator("cuda").manual_seed(13)
+        leaf = torch.randn(2, 128, 64, device="cuda", dtype=torch.bfloat16, generator=gen).requires_grad_(True)
+        x = leaf.transpose(1, 2)
+        with amp(autocast):
+            out = lin(input=x) if by_keyword else lin(x)  # nn.Linear.forward(self, input)
+        out.float().pow(2).mean().backward()
+        return out.detach(), leaf.grad
+
+    by_keyword, positional = run(True), run(False)
+    assert torch.equal(by_keyword[0], positional[0]) and torch.equal(by_keyword[1], positional[1])
 
 
 @pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))
@@ -595,3 +605,264 @@ def test_a_cached_int4_entry_with_no_layer_int4_could_quantize_still_hits(tmp_pa
     assert all(p.device.type == "cuda" for p in loaded.parameters())
     changed, _ = train_steps_at(with_lora(loaded), ODD)
     assert changed
+
+
+# ── LANE-186: quanto layers under autocast ──
+
+QUANTO = [p for p in offered() if p[0] == "optimum-quanto"]
+# kind -> (the layer, its input shape)
+QUANTO_KINDS = {
+    "linear": (lambda bias, dtype: nn.Linear(64, 64, bias=bias, dtype=dtype), (2, 16, 64)),
+    "conv": (lambda bias, dtype: nn.Conv2d(8, 8, 3, padding=1, bias=bias, dtype=dtype), (2, 8, 16, 16)),
+}
+
+
+def _plain(kind: str, bias: bool, dtype: torch.dtype) -> nn.Module:
+    torch.manual_seed(0)
+    return nn.Sequential(QUANTO_KINDS[kind][0](bias, dtype)).to("cuda").requires_grad_(False)
+
+
+def _quanto(scheme: str, kind: str, bias: bool, dtype: torch.dtype) -> nn.Module:
+    return QuantizationFactory.quantize(_plain(kind, bias, dtype), scheme, backend_name="optimum-quanto")
+
+
+def _through(net: nn.Module, kind: str, dtype: torch.dtype, autocast, *, outside_autocast: bool = False):
+    """Output and input grad of ``net``; with ``outside_autocast``, the recipe the wrap must follow:
+    autocast off, the input in the weight's dtype, the output cast to the autocast dtype.
+
+    cuDNN runs deterministic algorithms here: an fp32 conv otherwise differs between two runs of
+    the very same layer, and the tests compare runs with ``torch.equal``."""
+    gen = torch.Generator("cuda").manual_seed(21)
+    x = torch.randn(QUANTO_KINDS[kind][1], device="cuda", dtype=dtype, generator=gen).requires_grad_(True)
+    with torch.backends.cudnn.flags(enabled=True, benchmark=False, deterministic=True):
+        if outside_autocast:
+            with torch.autocast("cuda", enabled=False):
+                out = net(x.to(net[0].weight.dtype)).to(autocast)
+        else:
+            with amp(autocast):
+                out = net(x)
+        g = torch.randn(out.shape, device="cuda", dtype=out.dtype, generator=gen)
+        out.backward(g)
+    return out.detach(), x.grad
+
+
+def _bypassed(scheme, kind, bias, dtype, monkeypatch):
+    with monkeypatch.context() as m:
+        m.setattr(trainable_backward, "make_quantized_linears_trainable", lambda module: 0)
+        return _quanto(scheme, kind, bias, dtype)
+
+
+def _relative(a: torch.Tensor, b: torch.Tensor) -> float:
+    return ((a.float() - b.float()).norm() / b.float().norm()).item()
+
+
+@pytest.mark.parametrize("autocast", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no-bias"])
+@pytest.mark.parametrize("kind", sorted(QUANTO_KINDS))
+@pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
+def test_every_quanto_layer_with_fp32_weights_trains_under_autocast(backend, scheme, kind, bias, autocast):
+    net = _quanto(scheme, kind, bias, torch.float32)
+    got_out, got_grad = _through(net, kind, torch.float32, autocast)
+    want_out, want_grad = _through(_plain(kind, bias, torch.float32), kind, torch.float32, autocast)
+    assert got_out.dtype == want_out.dtype == autocast, "the output dtype a plain layer gives under autocast"
+    assert got_grad is not None and torch.isfinite(got_grad).all()
+    for what, a, b in (("output", got_out, want_out), ("input grad", got_grad, want_grad)):
+        assert _relative(a, b) <= 0.15, f"{scheme} {kind} {what} vs the unquantized layer"
+
+
+@pytest.mark.parametrize("autocast", [torch.float16, torch.bfloat16], ids=["fp16", "bf16"])
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no-bias"])
+@pytest.mark.parametrize("kind", sorted(QUANTO_KINDS))
+@pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
+def test_a_lora_on_every_quanto_layer_with_fp32_weights_trains_under_autocast(backend, scheme, kind, bias, autocast):
+    from peft import LoraConfig, get_peft_model
+
+    net = _quanto(scheme, kind, bias, torch.float32)
+    model = get_peft_model(net, LoraConfig(r=4, target_modules=["0"]))  # as the product applies it
+    trainable_backward.plain_conv_adapters(model)
+    with torch.no_grad():
+        for name, param in model.named_parameters():
+            if "lora_B" in name:
+                param.normal_(0, 0.01)
+    params = [p for p in model.parameters() if p.requires_grad]
+    before = [p.detach().clone() for p in params]
+    optimizer = torch.optim.AdamW(params, lr=1e-2)
+    x = torch.randn(QUANTO_KINDS[kind][1], device="cuda")
+    with amp(autocast):
+        loss = model(x).float().pow(2).mean()
+    loss.backward()
+    optimizer.step()
+    assert any(not torch.equal(a, b) for a, b in zip(before, params, strict=True)), "the LoRA never changed"
+
+
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no-bias"])
+@pytest.mark.parametrize("kind", sorted(QUANTO_KINDS))
+@pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
+def test_an_fp32_quanto_layer_under_autocast_runs_outside_it_in_its_weight_dtype(backend, scheme, kind, bias, monkeypatch):
+    for autocast in (torch.float16, torch.bfloat16):
+        got = _through(_quanto(scheme, kind, bias, torch.float32), kind, torch.float32, autocast)
+        want = _through(_bypassed(scheme, kind, bias, torch.float32, monkeypatch), kind, torch.float32, autocast,
+                        outside_autocast=True)
+        assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1]), f"{scheme} {kind} {autocast}"
+
+
+# (weight dtype, autocast): every production case the wrap must leave as it was
+UNCHANGED_PRECISIONS = [(torch.float32, None), (torch.bfloat16, None), (torch.bfloat16, torch.bfloat16)]
+
+
+@pytest.mark.parametrize(("dtype", "autocast"), UNCHANGED_PRECISIONS, ids=["fp32", "bf16", "bf16-under-bf16"])
+@pytest.mark.parametrize("bias", [True, False], ids=["bias", "no-bias"])
+@pytest.mark.parametrize("kind", sorted(QUANTO_KINDS))
+@pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
+def test_a_quanto_layer_otherwise_computes_what_it_did(backend, scheme, kind, bias, dtype, autocast, monkeypatch):
+    got = _through(_quanto(scheme, kind, bias, dtype), kind, dtype, autocast)
+    want = _through(_bypassed(scheme, kind, bias, dtype, monkeypatch), kind, dtype, autocast)
+    assert torch.equal(got[0], want[0]) and torch.equal(got[1], want[1])
+
+
+@pytest.mark.parametrize(("backend", "scheme"), offered(), ids=lambda v: str(v))
+def test_only_quanto_layers_run_in_their_weight_dtype(backend, scheme):
+    torch.manual_seed(0)
+    net = nn.Sequential(nn.Linear(64, 64, dtype=torch.bfloat16), nn.Conv2d(8, 8, 3, dtype=torch.bfloat16))
+    net = QuantizationFactory.quantize(net.to("cuda").requires_grad_(False), scheme, backend_name=backend)
+    for layer in net:
+        quanto = backend == "optimum-quanto"
+        assert trainable_backward.runs_in_weight_dtype(layer) == quanto, f"{type(layer).__name__}"
+        assert trainable_backward.in_weight_dtype(layer) == quanto, f"{type(layer).__name__}"
+
+
+class _ConvAndLinear(nn.Module):
+    """A conv then a Linear, under the names SDXL's LoRA targets use."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.conv1 = nn.Conv2d(8, 64, 3, padding=1)  # widths every quanto scheme quantizes (qint4 groups)
+        self.to_q = nn.Linear(64, 64, bias=False)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        return self.to_q(self.conv1(x).permute(0, 2, 3, 1))
+
+
+def _adapters(model: nn.Module):
+    """(name, module) of every LoRA adapter layer under ``model``."""
+    return [(n, m) for n, m in model.named_modules() if n.rsplit(".", 2)[-2:-1] in (["lora_A"], ["lora_B"])]
+
+
+def _snapshot_quanto_conv_adapters(model: nn.Module) -> dict:
+    from optimum.quanto.nn import QConv2d
+
+    return {
+        name: (m.weight.detach().clone(), None if m.bias is None else m.bias.detach().clone(), m.weight.data_ptr(),
+               m.weight.requires_grad)
+        for name, m in _adapters(model) if isinstance(m, QConv2d)
+    }
+
+
+def _assert_replaced_as_they_were(model: nn.Module, snaps: dict) -> None:
+    assert snaps, "no quanto conv adapter to replace: the fixture does not reach the defect"
+    for name, (weight, bias, ptr, requires_grad) in snaps.items():
+        new = model.get_submodule(name)
+        assert type(new) is nn.Conv2d, f"{name} is {type(new).__name__}"
+        assert torch.equal(new.weight, weight), f"{name}: not the values peft initialised"
+        assert new.weight.data_ptr() != ptr, f"{name}: shares the old adapter's storage"
+        assert (new.bias is None) == (bias is None) and (bias is None or torch.equal(new.bias, bias))
+        assert new.weight.requires_grad == requires_grad
+
+
+@pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
+def test_quanto_conv_adapters_become_plain_convs_holding_peft_s_values(backend, scheme):
+    from peft import LoraConfig, get_peft_model
+
+    torch.manual_seed(0)
+    source = _ConvAndLinear().to("cuda").requires_grad_(False)
+    net = QuantizationFactory.quantize(source, scheme, backend_name=backend)
+    model = get_peft_model(net, LoraConfig(r=4, target_modules=["conv1", "to_q"]))
+    snaps = _snapshot_quanto_conv_adapters(model)
+    before = {name: model.get_submodule(name) for name in snaps}
+    trainable_backward.plain_conv_adapters(model)
+    _assert_replaced_as_they_were(model, snaps)
+    for name, old in before.items():
+        new = model.get_submodule(name)
+        for attr in ("in_channels", "out_channels", "kernel_size", "stride", "padding", "dilation", "groups",
+                     "padding_mode"):
+            assert getattr(new, attr) == getattr(old, attr), f"{name}.{attr}"
+        assert new.weight.device == old.weight.device and new.weight.dtype == old.weight.dtype
+
+
+class _PeftHost(PipelineOptimizationMixin):
+    """What ``_apply_peft`` touches, with the real method."""
+
+    def __init__(self, model: nn.Module) -> None:
+        import structlog
+
+        self.logger = structlog.get_logger("test")
+        self.model = model
+        self.config = {"network_rank": 4, "network_alpha": 4}
+
+    def _get_primary_model(self) -> nn.Module:
+        return self.model
+
+    def _update_primary_model(self, model: nn.Module) -> None:
+        self.model = model
+
+    def get_lora_targets(self) -> list[str]:
+        return ["conv1", "to_q"]
+
+    def get_lora_exclude_modules(self):
+        return None
+
+
+@pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
+def test_the_product_s_lora_on_a_quanto_model_has_plain_adapters_and_trains(backend, scheme, monkeypatch):
+    from peft import get_peft_model_state_dict
+
+    real, calls = trainable_backward.plain_conv_adapters, []
+
+    def spy(model):
+        snaps = _snapshot_quanto_conv_adapters(model)
+        replaced = real(model)
+        _assert_replaced_as_they_were(model, snaps)
+        calls.append(len(snaps))
+        return replaced
+
+    monkeypatch.setattr(trainable_backward, "plain_conv_adapters", spy)
+    torch.manual_seed(0)
+    host = _PeftHost(QuantizationFactory.quantize(_ConvAndLinear().to("cuda").requires_grad_(False), scheme,
+                                                  backend_name=backend))
+    host._apply_peft()
+    assert calls and calls[0] > 0, "_apply_peft never replaced its quanto conv adapters"
+    model = host.model
+    adapters = _adapters(model)
+    assert adapters and all(type(m) in (nn.Conv2d, nn.Linear) for _, m in adapters), [type(m) for _, m in adapters]
+    keys = get_peft_model_state_dict(model).keys()
+    assert keys and all(("lora_A" in k or "lora_B" in k) and k.endswith(".weight") for k in keys), sorted(keys)
+
+    for autocast in (None, torch.float16):
+        params = [p for p in model.parameters() if p.requires_grad]
+        with torch.no_grad():
+            for name, p in model.named_parameters():
+                if "lora_B" in name:
+                    p.normal_(0, 0.01)
+        before = [p.detach().clone() for p in params]
+        optimizer = torch.optim.AdamW(params, lr=1e-2)
+        for _ in range(2):
+            with amp(autocast):
+                loss = model(torch.randn(2, 8, 8, 8, device="cuda")).float().pow(2).mean()
+            loss.backward()
+            optimizer.step()
+            optimizer.zero_grad(set_to_none=True)
+        assert any(not torch.equal(a, b) for a, b in zip(before, params, strict=True)), f"autocast={autocast}"
+
+
+@pytest.mark.parametrize(("backend", "scheme"), QUANTO, ids=lambda v: str(v))
+def test_quanto_still_writes_no_cache_entry(backend, scheme, tmp_path):
+    """The wrap is applied after quantize only: quanto models are never loaded from the cache.
+    If quanto caching is added, this turns red, and the wrap must then be applied on load too."""
+    torch.manual_seed(0)
+    source = nn.Sequential(nn.Linear(64, 64), nn.Conv2d(8, 8, 3)).to("cuda").requires_grad_(False)
+    signature = QuantizationFactory.state_shape_signature(source)
+    count = sum(p.numel() for p in source.parameters())
+    q = QuantizationFactory.quantize(source, scheme, backend_name=backend)
+    path = os.path.join(tmp_path, "cache")
+    QuantizationFactory.save_quantized(q, path, scheme, source_param_count=count, source_signature=signature)
+    assert not os.path.exists(os.path.join(path, "metadata.json"))

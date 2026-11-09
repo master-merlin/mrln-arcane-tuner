@@ -180,6 +180,10 @@ class PipelineOptimizationMixin:
 
     def _apply_peft(self) -> None:
         """Apply PEFT/LoRA to primary model and optionally text encoders."""
+        # Lazily: it imports optimum-quanto, whose import loads diffusers' model modules, and the
+        # registry import must not (test_qwen_image2_vendor's registry-import guard).
+        from app.engine.factories.quantizers import trainable_backward
+
         self.logger.info("initializing_peft")
 
         model = self._get_primary_model()
@@ -198,6 +202,7 @@ class PipelineOptimizationMixin:
             bias="none",
         )
         model = get_peft_model(model, lora_config)
+        trainable_backward.plain_conv_adapters(model)  # a quanto conv's adapters as plain convs
         self._update_primary_model(model)
 
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -219,6 +224,7 @@ class PipelineOptimizationMixin:
                         lora_dropout=0.0, bias="none",
                     )
                     wrapped_te = get_peft_model(te, te_lora)
+                    trainable_backward.plain_conv_adapters(wrapped_te)
                     self.components[name] = wrapped_te
                     setattr(self, name, wrapped_te)
                     self.logger.info("lora_te_applied", name=name, targets=len(te_targets))

@@ -120,24 +120,6 @@ def amp(d: Draw):
     return torch.autocast("cuda", dtype=d.autocast) if d.autocast is not None else contextlib.nullcontext()
 
 
-def known_quanto_autocast_gap(d: Draw) -> bool:
-    """LANE-186, pre-existing: quanto fails on a bias-less fp32 Linear under autocast.
-
-    Such a draw asserts the failure instead, so it turns red the day LANE-186 fixes it, and its
-    exclusion is removed then.
-    """
-    return d.backend == "optimum-quanto" and d.dtype == torch.float32 and d.autocast is not None and not d.bias
-
-
-def assert_the_known_gap(d: Draw) -> None:
-    net = quantized(d)
-    x = rand(d, d.widths[0], salt=0, requires_grad=True)
-    with pytest.raises(RuntimeError, match="same dtype"):  # in backward: the forward runs
-        with amp(d):
-            out = net(x)
-        out.float().sum().backward()
-
-
 def close_up_to_accumulation_order(a: torch.Tensor, b: torch.Tensor) -> bool:
     """Equal but for the order a kernel sums in: within 2 bf16 ulps of the larger magnitude."""
     return (a.float() - b.float()).abs().max().item() <= 2.0**-6 * b.float().abs().max().item()
@@ -213,6 +195,16 @@ def through(d: Draw, layer: nn.Module, inp: Input, g: torch.Tensor) -> tuple[tor
     return out.detach(), leaf.grad, x.detach()
 
 
+def through_outside_autocast(d: Draw, layer: nn.Module, inp: Input, g: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
+    """``through`` by LANE-186's recipe: autocast off, the input in the layer's weight dtype, the
+    output cast to the draw's autocast dtype."""
+    leaf, x = inp.leaf_and_view()
+    with torch.autocast("cuda", enabled=False):
+        out = layer(x.to(layer.weight.dtype)).to(d.autocast)
+    out.backward(g.to(out.dtype))
+    return out.detach(), leaf.grad
+
+
 def trains(d: Draw, net: nn.Module) -> None:
     from peft import LoraConfig, get_peft_model
 
@@ -240,8 +232,6 @@ def trains(d: Draw, net: nn.Module) -> None:
 @pytest.mark.parametrize("seed", range(DRAWS))
 def test_i1_every_draw_trains_its_lora_and_each_base_layer_passes_its_grad(seed, tmp_path):
     d = draw(seed)
-    if known_quanto_autocast_gap(d):
-        return assert_the_known_gap(d)
     reference, q = frozen(d), quantized(d)
     for i, (ref_layer, q_layer) in enumerate(zip(reference.layers, q.layers, strict=True)):
         inp, g = layer_input(d, d.widths[i], salt=i), rand(d, d.widths[i + 1], salt=100 + i)
@@ -267,8 +257,6 @@ def test_i1_every_draw_trains_its_lora_and_each_base_layer_passes_its_grad(seed,
 @pytest.mark.parametrize("seed", range(DRAWS))
 def test_i2_a_wrapped_layer_backs_off_its_dense_weight_and_any_other_is_untouched(seed, monkeypatch):
     d = draw(seed)
-    if known_quanto_autocast_gap(d):
-        return assert_the_known_gap(d)
     q = quantized(d)
     with monkeypatch.context() as m:
         m.setattr(trainable_backward, "make_quantized_linears_trainable", lambda module: 0)
@@ -296,8 +284,12 @@ def test_i2_a_wrapped_layer_backs_off_its_dense_weight_and_any_other_is_untouche
                 assert close_up_to_accumulation_order(out, expected), f"{d}: layer {i} forward is not linear(x, dense(W))"
         elif contiguous_only:
             # NVFP4, quanto: what the bypassed layer computes on the canonical copy of the same view.
+            # A quanto layer under autocast runs outside it, in its weight's dtype (LANE-186).
             copy = Input(inp.source, lambda t, v=inp.view: canonical_copy(v(t)), "contiguous")
-            out_plain, grad_plain, _ = through(d, plain, copy, g)
+            if trainable_backward.in_weight_dtype(layer) and d.autocast is not None:
+                out_plain, grad_plain = through_outside_autocast(d, plain, copy, g)
+            else:
+                out_plain, grad_plain, _ = through(d, plain, copy, g)
             assert torch.equal(out, out_plain) and torch.equal(grad, grad_plain), f"{d}: layer {i} changed"
         else:
             out_plain, grad_plain, _ = through(d, plain, inp, g)

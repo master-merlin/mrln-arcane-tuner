@@ -438,6 +438,9 @@ class BerniniRTrainer(
             bias="none",
         )
         wrapped = get_peft_model(other_model, lora_config)
+        from app.engine.factories.quantizers import trainable_backward
+
+        trainable_backward.plain_conv_adapters(wrapped)  # as the base _apply_peft does
         if active == HIGH:
             driver.transformer_low = wrapped
         else:

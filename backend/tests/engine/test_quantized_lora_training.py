@@ -488,16 +488,52 @@ def test_the_int4_backward_peak_is_bounded_by_the_dense_weight():
     torch.manual_seed(0)
     net = nn.Sequential(nn.Linear(fin, fout, bias=False, dtype=torch.bfloat16)).to("cuda").requires_grad_(False)
     lin = QuantizationFactory.quantize(net, "int4", backend_name="torchao")[0]
+    dense = fin * fout * 2
+    # The rebuild alone is ours, with no library matmul workspace in it: the strict bound.
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    rebuilt = trainable_backward.dense_weight(lin.weight, torch.bfloat16)
+    torch.cuda.synchronize()
+    rebuild_peak = torch.cuda.max_memory_allocated() - base
+    del rebuilt
+    assert rebuild_peak <= 1.5 * dense, (
+        f"the int4 rebuild peaked {rebuild_peak / 2**20:.1f} MiB for a {dense / 2**20:.1f} MiB dense weight"
+    )
+
     x = torch.randn(2, fin, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     out = lin(x)
+    workspace = _matmul_overhead(2, fout, fin)
     torch.cuda.synchronize()
     base = torch.cuda.memory_allocated()
     torch.cuda.reset_peak_memory_stats()
     out.float().pow(2).mean().backward()
     torch.cuda.synchronize()
-    dense = fin * fout * 2
     grew = torch.cuda.max_memory_allocated() - base
-    assert grew <= 1.5 * dense, f"backward peaked {grew / 2**20:.1f} MiB over a {dense / 2**20:.1f} MiB dense weight"
+    assert grew <= 1.5 * dense + workspace, (
+        f"backward peaked {grew / 2**20:.1f} MiB over a {dense / 2**20:.1f} MiB dense weight "
+        f"(the library's own matmul workspace: {workspace / 2**20:.1f} MiB)"
+    )
+
+
+def _matmul_overhead(m: int, k: int, n: int) -> int:
+    """What one plain bf16 ``(m, k) @ (k, n)`` matmul allocates beyond its output, on this torch.
+
+    cuBLAS's workspace: torch 2.15 takes it from the caching allocator on EVERY matmul and frees
+    it after (32 MiB on this card); 2.12.1 kept it after the first call. It is a fixed cost of the
+    library, the same with or without our rebuild, so the bound above adds it instead of charging
+    it to the dense weight (LANE-138, measured: evidence probe_matmul_workspace).
+    """
+    a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn(k, n, device="cuda", dtype=torch.bfloat16)
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    c = a @ b
+    torch.cuda.synchronize()
+    overhead = torch.cuda.max_memory_allocated() - base - c.numel() * c.element_size()
+    del a, b, c
+    return overhead
 
 
 # ── LANE-187: any input layout ──

@@ -1,11 +1,10 @@
 """Tests for the trainer-subprocess environment injection in
 ``StandardPlugin.start_training``.
 
-The trainer subprocess must launch with an anti-fragmentation CUDA allocator
-config (``PYTORCH_CUDA_ALLOC_CONF``) so the in-training sampler's transient
-VRAM spikes don't fragment the caching-allocator pool into a Windows/WDDM
-shared-memory spill (the "freeze" failure mode). A user-provided value must be
-respected, not overwritten.
+The trainer subprocess gets its CUDA allocator config (``PYTORCH_CUDA_ALLOC_CONF``)
+from run_trainer.py alone: expandable segments where the platform's torch can map
+them (Linux), none on Windows. A user-provided value must be respected, not
+overwritten.
 """
 
 from __future__ import annotations
@@ -22,15 +21,17 @@ _BACKEND_ROOT = Path(__file__).resolve().parents[1]
 _RUN_TRAINER = _BACKEND_ROOT / "run_trainer.py"
 
 
-def _exec_run_trainer_prefix(preset_value: str | None) -> str:
+def _exec_run_trainer_prefix(preset_value: str | None, os_name: str | None = None) -> str:
     """Exec the leading env-setup of run_trainer.py (everything before
     ``import sys``) in a clean subprocess and return the resulting
     PYTORCH_CUDA_ALLOC_CONF. Isolated so it can't mutate the test process.
+    ``os_name`` stands in for ``os.name``, so each platform's choice is tested on any.
     """
     code = (
         "import os\n"
         "os.environ.pop('PYTORCH_CUDA_ALLOC_CONF', None)\n"
         + (f"os.environ['PYTORCH_CUDA_ALLOC_CONF'] = {preset_value!r}\n" if preset_value else "")
+        + (f"os.name = {os_name!r}\n" if os_name else "")
         + "src = open(r'" + str(_RUN_TRAINER) + "', encoding='utf-8').read().split('import sys', 1)[0]\n"
         "exec(compile(src, 'run_trainer_prefix', 'exec'))\n"
         "print(os.environ.get('PYTORCH_CUDA_ALLOC_CONF', ''))\n"
@@ -45,14 +46,20 @@ def _exec_run_trainer_prefix(preset_value: str | None) -> str:
     return out.stdout.strip()
 
 
-def test_run_trainer_sets_alloc_conf_when_absent():
-    val = _exec_run_trainer_prefix(preset_value=None)
-    assert val == "expandable_segments:True"
+def test_run_trainer_sets_expandable_segments_off_windows():
+    assert _exec_run_trainer_prefix(preset_value=None, os_name="posix") == "expandable_segments:True"
+
+
+def test_run_trainer_sets_no_expandable_segments_on_windows():
+    """Windows torch up to 2.12 IGNORED the option (no segment was ever expandable), and 2.15
+    honours it with a virtual-memory mapping WDDM refuses: the first pool growth fails with
+    ``CUDA driver error: unknown error`` (cuMemSetAccess), so no training starts (LANE-138)."""
+    assert _exec_run_trainer_prefix(preset_value=None, os_name="nt") == ""
 
 
 def test_run_trainer_respects_preset_alloc_conf():
-    val = _exec_run_trainer_prefix(preset_value="max_split_size_mb:64")
-    assert val == "max_split_size_mb:64"
+    for os_name in ("nt", "posix"):
+        assert _exec_run_trainer_prefix(preset_value="max_split_size_mb:64", os_name=os_name) == "max_split_size_mb:64"
 
 
 def _run_start_training(monkeypatch, tmp_path, parent_env):
@@ -77,10 +84,10 @@ def _run_start_training(monkeypatch, tmp_path, parent_env):
     return captured
 
 
-def test_injects_alloc_conf_when_absent(monkeypatch, tmp_path):
+def test_the_launcher_leaves_the_allocator_choice_to_run_trainer(monkeypatch, tmp_path):
+    """One place decides: run_trainer.py, which every training runs through, before torch."""
     env = _run_start_training(monkeypatch, tmp_path, {"PATH": "/x"})
-    child_env = env["env"]
-    assert child_env["PYTORCH_CUDA_ALLOC_CONF"] == "expandable_segments:True"
+    assert "PYTORCH_CUDA_ALLOC_CONF" not in env["env"]
 
 
 def test_respects_user_provided_alloc_conf(monkeypatch, tmp_path):

@@ -27,7 +27,14 @@ os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS", "1")
 # blocks every step. That churn caused the run-to-run plateau variance (78↔95 GB
 # on the same checkpoint) and fought expandable_segments' stable single segment.
 # setdefault → an explicit user/parent value is respected.
-os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
+# NOT ON WINDOWS (LANE-138, measured with the allocator's own snapshot): Windows torch up to
+# 2.12.1 IGNORED expandable_segments, so no segment there was ever expandable, and torch 2.15
+# honours it with a CUDA virtual-memory mapping that WDDM refuses: the first pool growth fails
+# with "CUDA driver error: unknown error" (cuMemSetAccess) and no training starts. Leaving it
+# unset on Windows is what every Windows training has always run with. This is the ONE place
+# the choice is made; the launcher (training_plugin.py) leaves it to this file.
+if os.name != "nt":
+    os.environ.setdefault("PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True")
 
 import sys
 import traceback

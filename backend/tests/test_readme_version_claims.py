@@ -202,6 +202,103 @@ class TestPyTorch:
         assert _set_torch(cfg, other) != _set_torch(cfg, named)
 
 
+BUILD_SCRIPT = REPO_ROOT / "docker-build.ps1"
+IMAGE = "mastermerlin/mrln-arcane-tuner"
+#: The frozen cu128 image's driver floor: never rebuilt, so it is not in the cfg.
+FROZEN_CU128_DRIVER_MIN = "570"
+
+
+def _build_script_tags(script: str, variant: str) -> set[str]:
+    """The release tags docker-build.ps1 applies for ``variant``, as ``V``/``latest`` names."""
+    code = "\n".join(ln for ln in script.splitlines() if not ln.lstrip().startswith("#"))
+    base = re.search(r"^\$tags = @\((.+?)\)$", code, re.M)
+    branch = re.search(r"if \(\$Variant -eq '(\w+)'\) \{\s*\$tags \+= @\((.+?)\)\s*\}", code, re.S)
+    assert base and branch, "docker-build.ps1's tag list moved; re-anchor this guard"
+    exprs = re.findall(r'"([^"]+)"', base.group(1))
+    if variant == branch.group(1):
+        exprs += re.findall(r'"([^"]+)"', branch.group(2))
+    return {e.replace("${Repository}:", "").replace("$Version", "V").replace("$Variant", variant) for e in exprs}
+
+
+def _readme_tag_table(readme: str, version: str) -> dict[str, set[str]]:
+    """The README's "Tags applied on success" table: variant -> its tags, version as ``V``."""
+    table: dict[str, set[str]] = {}
+    for line in readme.splitlines():
+        row = re.match(r"\|\s*`(cu\d+)`[^|]*\|(.*)\|\s*$", line)
+        if row:
+            tags = re.findall(rf"{re.escape(IMAGE)}:([\w.+-]+)", row.group(2))
+            table[row.group(1)] = {t.replace(version, "V") for t in tags}
+    return table
+
+
+def _app_version() -> str:
+    text = _read(REPO_ROOT / "backend" / "app" / "__init__.py")
+    return re.search(r"""^__version__\s*=\s*["']([^"']+)["']""", text, re.M).group(1)
+
+
+def _troubleshooting(readme: str) -> str:
+    start = readme.find("unsatisfied condition: cuda>=")
+    return readme[max(0, start - 200): start + 1500] if start != -1 else ""
+
+
+class TestTheContainerClaims:
+    """The README's image claims hold against torch-stack.cfg, the Dockerfile and docker-build.ps1."""
+
+    def test_the_tag_table_is_what_the_build_script_applies(self):
+        table = _readme_tag_table(_read(README), _app_version())
+        script = _read(BUILD_SCRIPT)
+        assert set(table) == {"cu132", "cu126"}, f"the README's tag table lists the variants {sorted(table)}"
+        for variant, tags in table.items():
+            assert tags == _build_script_tags(script, variant), (
+                f"README's {variant} row lists {sorted(tags)}; docker-build.ps1 applies "
+                f"{sorted(_build_script_tags(script, variant))}"
+            )
+
+    def test_every_driver_floor_named_is_a_real_one(self):
+        """R580 (cu132) and R560 (cu126) from the cfg; R570 only for the frozen cu128 image."""
+        cfg = _cfg_values(_read(TORCH_STACK_CFG))
+        floors = {cfg[f"{s.upper()}_DRIVER_MIN"] for s in cfg["SETS"].split()}
+        named = set(re.findall(r"\bR(\d{3})\+", _read(README)))
+        assert floors <= named, f"README.md does not name the floors R{sorted(floors)}+"
+        assert named <= floors | {FROZEN_CU128_DRIVER_MIN}, (
+            f"README.md names driver floors {sorted(named)}; the real ones are "
+            f"{sorted(floors)} and the frozen cu128 image's {FROZEN_CU128_DRIVER_MIN}"
+        )
+
+    def test_the_deploy_filter_is_the_bases_cuda(self):
+        """The base's NVIDIA_REQUIRE_CUDA gate is its CUDA major.minor; a host filter below it
+        offers hosts the runtime then rejects."""
+        base = re.search(r"^ARG CUDA_BASE=(\d+\.\d+)", _read(DOCKERFILE), re.M).group(1)
+        assert f"CUDA ≥ {base}" in _read(README), f"README.md does not give the deploy filter `CUDA ≥ {base}`"
+
+    def test_the_frozen_cu128_image_is_the_blackwell_escape_below_r580(self):
+        readme = _read(README)
+        assert f"{IMAGE}:latest-cu128" in readme or "`:latest-cu128`" in readme
+        assert "R570–R579" in readme and "frozen" in readme, (
+            "README.md must name the frozen :latest-cu128 image for Blackwell on R570–R579"
+        )
+
+    def test_the_runtimes_own_rejection_is_explained(self):
+        base = re.search(r"^ARG CUDA_BASE=(\d+\.\d+)", _read(DOCKERFILE), re.M).group(1)
+        section = _troubleshooting(_read(README))
+        assert f"unsatisfied condition: cuda>={base}" in section, (
+            f"README.md does not quote the NVIDIA runtime's `unsatisfied condition: cuda>={base}`"
+        )
+        assert ":latest-cu126" in section and ":latest-cu128" in section, (
+            "the troubleshooting entry must name the images to use instead"
+        )
+
+    def test_the_readme_builds_only_variants_the_script_builds(self):
+        variants = set(re.findall(r"docker-build\.ps1[^\n]*-Variant\s+(\w+)", _read(README)))
+        assert variants, "README.md shows no docker-build.ps1 -Variant command"
+        assert variants <= {"cu132", "cu126"}, f"README.md builds {sorted(variants)}; cu128 is frozen"
+
+    def test_the_tag_parsers_see_a_drifted_row(self):
+        readme = f"| `cu126` (fallback) | `{IMAGE}:1.0-cu126` |\n"
+        assert _readme_tag_table(readme, "1.0") == {"cu126": {"V-cu126"}}
+        assert _readme_tag_table(readme, "1.0")["cu126"] != _build_script_tags(_read(BUILD_SCRIPT), "cu126")
+
+
 class TestAngular:
     def test_every_angular_major_named_agrees_with_package_json(self):
         """One assertion covering both directions.

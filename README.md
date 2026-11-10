@@ -46,7 +46,7 @@ This project wouldn't exist without the incredible open-source community that pi
 | Requirement   | Version              | Notes                     |
 | ------------- | -------------------- | ------------------------- |
 | Python        | 3.12+                | With `venv` support       |
-| NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 13.2 (driver R580+), or the cu126 fallback (R560+, no Blackwell); the installer picks the one that fits. See the container note below for cloud hosts |
+| NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 13.2 (driver R580+), or the cu126 fallback (R560+, no Blackwell); the installer picks the one that fits. The container images carry the same two sets (`:latest` R580+, `:latest-cu126` R560+); see the container section below for cloud hosts |
 | Node.js       | 24+ (LTS)            | Required by Angular 22 / TS 6 |
 | npm           | 10+                  | Comes with Node.js        |
 
@@ -88,9 +88,9 @@ python -m venv venv
 #    cu126 fallback (torch 2.14.1, an R560+ driver, GPUs from Maxwell to
 #    Hopper). It refuses, with the table, where neither fits, and without
 #    nvidia-smi it installs the CPU build. MRLN_TORCH_INDEX=<set> chooses a set
-#    but never skips its checks. The published container ships CUDA 12.8
-#    (cu128, Blackwell-capable) with a cu126 fallback for older host drivers —
-#    see "Run as a container" below.
+#    but never skips its checks. The published container images carry the
+#    same two sets (cu132 by default, cu126 as a fallback tag) — see "Run as a
+#    container" below.
 python torch_stack.py install --python python
 
 # 3. Install remaining Python dependencies. The torch stack (installed above)
@@ -197,8 +197,13 @@ variables, so deploying is choosing a GPU and changing one value.
 
 | Template | Use it when | Deploy |
 |---|---|---|
-| `mastermerlin-mrln-arcane-tuner` (cu128) | **Default.** Any Ampere-or-newer GPU **including Blackwell**; host driver R570+ | [Deploy on RunPod](https://console.runpod.io/deploy?template=2lyo58uiku) |
-| `mastermerlin-mrln-arcane-tuner-cu126` | Only a legacy host on driver R560–R565. **No Blackwell support** | [Deploy on RunPod](https://console.runpod.io/deploy?template=2va2yuv6b5) |
+| `mastermerlin-mrln-arcane-tuner` (cu132) | **Default.** Any Ampere-or-newer GPU **including Blackwell**; host driver R580+. In RunPod's GPU filter, choose **CUDA ≥ 13.0** | [Deploy on RunPod](https://console.runpod.io/deploy?template=2lyo58uiku) |
+| `mastermerlin-mrln-arcane-tuner-cu126` | A host on driver R560–R579. **No Blackwell support** | [Deploy on RunPod](https://console.runpod.io/deploy?template=2va2yuv6b5) |
+
+A **Blackwell** GPU on a host with driver **R570–R579** fits neither: cu132
+needs R580+, and cu126 has no Blackwell kernels. Use the frozen
+`mastermerlin/mrln-arcane-tuner:latest-cu128` image there (torch 2.11.0, R570+),
+set up as in Option 2. It is never rebuilt, so it gets no further updates.
 
 Two things to change before you use the pod for anything real:
 
@@ -246,18 +251,19 @@ The published image is on Docker Hub — you can use it directly, no build
 required:
 
 ```
-mastermerlin/mrln-arcane-tuner:latest              # rolling latest (CUDA 12.8 / cu128)
-mastermerlin/mrln-arcane-tuner:latest-cu126        # rolling latest, legacy R560–R565 drivers
-mastermerlin/mrln-arcane-tuner:0.8.0-beta.4        # pinned version (CUDA 12.8 / cu128)
-mastermerlin/mrln-arcane-tuner:0.8.0-beta.4-cu126  # pinned version, legacy R560–R565 drivers
+mastermerlin/mrln-arcane-tuner:latest              # rolling latest (cu132, CUDA 13.2, R580+)
+mastermerlin/mrln-arcane-tuner:latest-cu126        # rolling latest, cu126: R560–R579, no Blackwell
+mastermerlin/mrln-arcane-tuner:0.8.0-beta.4        # pinned version (cu132)
+mastermerlin/mrln-arcane-tuner:0.8.0-beta.4-cu126  # pinned version (cu126)
+mastermerlin/mrln-arcane-tuner:latest-cu128        # FROZEN cu128: only for Blackwell on R570–R579
 ```
 
 Every variant has both a **rolling** name and a **pinned** one. Follow a
 `:latest*` tag to get each release automatically; pin a version tag when you
-want a pod to behave the same next month. `:latest` and `:latest-cu128` are the
-same image — the unsuffixed names belong to cu128 because it is the default
-variant. The rolling cu126 tags are new; before them a version tag was the only
-cu126 name, so a cu126 host had to be repointed by hand at every release.
+want a pod to behave the same next month. `:latest` and `:latest-cu132` are the
+same image — the unsuffixed names belong to cu132 because it is the default
+variant. They used to name the cu128 image, which keeps `:latest-cu128` and its
+own version tags but is frozen: never rebuilt, its tags never moved.
 
 The default image bundles the **cu132 set (CUDA 13.2) · PyTorch 2.15.0 · Python
 3.12** on the **CUDA 13.0** base (runtime) and a **Node 24 / Angular 22**
@@ -274,8 +280,10 @@ the one image for **Blackwell on R570–R579**.
 > (cu132) on R580+, or the frozen `:latest-cu128` on R570–R579. The image checks
 > this itself at start and refuses with the same advice.
 
-**Building your own** (only needed if you've modified the code). The CUDA target
-is parameterized via build args (default cu128):
+**Building your own** (only needed if you've modified the code). The image's
+torch stack is a named set of `backend/torch-stack.cfg`, chosen by build args
+(default cu132 on the CUDA 13.0 base; cu126 on the 12.6.3 base). The Dockerfile
+names no torch version of its own.
 
 `GIT_SHA` is **required** — the image is built from a specific commit rather
 than from whatever the branch points at, so two builds of the same tag contain
@@ -296,23 +304,28 @@ release tags only if it matches. A mismatch leaves the previous image holding
 ```powershell
 $SHA = git rev-parse HEAD   # the full 40-char commit; a short sha is refused
 
-# Primary (cu128 — Blackwell + modern fleet). Takes the version tag and latest.
-.\docker-build.ps1 -GitSha $SHA -Variant cu128 -Version 0.8.0-beta.4 `
+# Primary (cu132 — R580+, Turing to Blackwell). Takes the version tag and latest.
+.\docker-build.ps1 -GitSha $SHA -Variant cu132 -Version 0.8.0-beta.4 `
     -TokenPath <path-to-a-file-holding-a-github-token>
 
-# Fallback (cu126 — legacy R560–R565 drivers).
+# Fallback (cu126 — R560–R579 drivers, no Blackwell).
 .\docker-build.ps1 -GitSha $SHA -Variant cu126 -Version 0.8.0-beta.4 `
     -TokenPath <path-to-a-file-holding-a-github-token>
 ```
 
-Each variant claims its own tags, and the wrapper applies them **only after the
-image has proven its commit** — so a failed verification leaves the previous
-image holding them:
+Without `-ReleaseTags` a build is a validation build: it prints
+`DONE (validation)`, leaves the image under `mrln-build-scratch:<variant>-<sha12>`
+and names no release. The cu128 variant is refused at once: that image is frozen,
+never rebuilt, and its tags are never moved.
+
+With `-ReleaseTags`, each variant claims its own tags, and the wrapper applies
+them **only after the image has proven its commit** — so a failed verification
+leaves the previous image holding them:
 
 | Variant | Tags applied on success |
 | ------- | ----------------------- |
-| `cu128` (default) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.4` and `mastermerlin/mrln-arcane-tuner:latest` |
-| `cu126` (fallback) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.4-cu126` |
+| `cu132` (default) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.4`, `mastermerlin/mrln-arcane-tuner:latest`, `mastermerlin/mrln-arcane-tuner:0.8.0-beta.4-cu132` and `mastermerlin/mrln-arcane-tuner:latest-cu132` |
+| `cu126` (fallback) | `mastermerlin/mrln-arcane-tuner:0.8.0-beta.4-cu126` and `mastermerlin/mrln-arcane-tuner:latest-cu126` |
 
 Add `-NoCache` for a build you intend to publish: the clone layer is the one
 that went wrong, and rebuilding it unconditionally removes the ambiguity at the
@@ -321,7 +334,10 @@ cost of a long build. Pushing stays a separate, deliberate step:
 ```bash
 docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.4
 docker push mastermerlin/mrln-arcane-tuner:latest
+docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.4-cu132
+docker push mastermerlin/mrln-arcane-tuner:latest-cu132
 docker push mastermerlin/mrln-arcane-tuner:0.8.0-beta.4-cu126
+docker push mastermerlin/mrln-arcane-tuner:latest-cu126
 ```
 
 The commit must already be **pushed to the remote** — the build clones it, so a
@@ -339,7 +355,7 @@ is refused):
 # The published asset is a zstd tarball; the .tgz form no longer exists upstream.
 # Authoritative digests are in each release's sha256sum.txt.
 curl -fsSL https://github.com/ollama/ollama/releases/download/<tag>/ollama-linux-amd64.tar.zst | sha256sum
-.\docker-build.ps1 -GitSha $SHA -Variant cu128 -Version 0.8.0-beta.4 `
+.\docker-build.ps1 -GitSha $SHA -Variant cu132 -Version 0.8.0-beta.4 `
     -TokenPath <token-file> -OllamaVersion <tag> -OllamaSha256 <digest>
 ```
 
@@ -354,12 +370,12 @@ an earlier root-run container may need `chown -R 10001:10001` once.
 #### 2. Create the pod on RunPod
 
 - **GPU:** any NVIDIA Ampere+ GPU, **including Blackwell** (RTX 50xx / RTX PRO
-  6000 Blackwell). The default image is built for **CUDA 12.8** (cu128) and
-  needs an **R570+** host driver — standard on current cloud hosts and mandatory
-  for Blackwell anyway. On a legacy host stuck on **R560–R565**, use the
-  `:0.8.0-beta.4-cu126` tag instead (no Blackwell support). Avoid CUDA 13 in the
-  container: it needs R580+ and its forward-compat layer breaks cuBLAS on older
-  drivers.
+  6000 Blackwell). The default image carries the **cu132** set (CUDA 13.2) on
+  the CUDA 13.0 base and needs an **R580+** host driver: set RunPod's GPU filter
+  to **CUDA ≥ 13.0**, which is the base image's own start condition. On a host
+  with driver **R560–R579** and no Blackwell GPU, use the
+  `:0.8.0-beta.4-cu126` tag (or `:latest-cu126`) instead. For Blackwell on
+  **R570–R579**, the frozen `:latest-cu128` image is the one that runs.
 - **Container image:** `mastermerlin/mrln-arcane-tuner:latest`
 - **Volume (strongly recommended):** attach a **network volume mounted at
   `/workspace`**. The SQLite DB, `datasets/`, `models/`, `outputs/`, **and the
@@ -433,6 +449,27 @@ you signed in.
 - **Other providers:** any platform that exposes a container HTTP port over
   HTTPS works — point its ingress at port `8000` and (optionally) set
   `MRLN_AUTH_TOKEN`.
+
+### When the container does not start
+
+- **`nvidia-container-cli: requirement error: unsatisfied condition: cuda>=13.0, please update your driver to a newer version`**
+  is the NVIDIA container runtime refusing the cu132 image: the host's driver
+  is below R580, and the base image's start condition is CUDA 13.0. It is
+  raised before anything in the image runs, so the image cannot add advice of
+  its own. Use instead:
+  - `mastermerlin/mrln-arcane-tuner:latest-cu126` on a driver from R560 to R579
+    without a Blackwell GPU;
+  - the frozen `mastermerlin/mrln-arcane-tuner:latest-cu128` for Blackwell on a
+    driver from R570 to R579;
+  - or a host with R580+ (on RunPod, the **CUDA ≥ 13.0** filter).
+- **`[entrypoint] refusing to start: this image's torch set (…) cannot run on this host`**
+  is the image's own start check, after the runtime let it in. Above that line
+  it prints the reason (no kernels for the GPU's compute capability, as with
+  the cu126 image on Blackwell, or a driver below the set's floor), the images
+  that fit this host, and the table of sets.
+- **`[entrypoint] WARNING: no GPU information`** means the container sees no
+  GPU (no `--gpus all`, or no NVIDIA runtime). It starts anyway, without
+  training.
 
 ---
 

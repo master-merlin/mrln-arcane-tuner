@@ -282,6 +282,186 @@ class TestVerify:
             "torchao: installed 0.18.0+cu132, the cu132 set needs 0.18.0"]
 
 
+def _never_asks_the_machine(monkeypatch):
+    def asked():
+        raise AssertionError("a named set must never ask this machine's nvidia-smi")
+
+    monkeypatch.setattr(torch_stack, "detect_gpus", asked)
+    monkeypatch.delenv("MRLN_TORCH_INDEX", raising=False)
+
+
+@pytest.fixture(scope="module")
+def bare_python(tmp_path_factory) -> str:
+    """An interpreter that sees no installed distribution but the stub stack put on its PYTHONPATH."""
+    venv = tmp_path_factory.mktemp("bare") / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    return str(venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python"))
+
+
+def _stub_stack(root: Path, versions: dict[str, str]) -> dict:
+    """A directory of bare dist-info metadata, put on PYTHONPATH: what the stub interpreter reports."""
+    for name, version in versions.items():
+        info = root / f"{name.replace('-', '_')}-{version}.dist-info"
+        info.mkdir(parents=True)
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8")
+    return {**_env(), "PYTHONPATH": str(root)}
+
+
+CU126_ON_LINUX = {"torch": "2.14.1+cu126", "torchvision": "0.29.1+cu126", "torchaudio": "2.11.0+cu126",
+                  "torchao": "0.18.0+cu126", "triton": "3.8.0"}
+
+
+class TestInstallANamedSet:
+    """The image build installs the set it names, whatever GPU the build machine has (or none)."""
+
+    def test_it_installs_the_named_set_for_linux_without_asking_the_machine(self, monkeypatch, capsys):
+        _never_asks_the_machine(monkeypatch)
+        code = torch_stack.main(["install", "--set", "cu126", "--platform", "linux", "--python", "py", "--dry-run"])
+        assert code == 0
+        err = capsys.readouterr().err
+        for pin in ("torch==2.14.1+cu126", "torchvision==0.29.1+cu126", "torchaudio==2.11.0+cu126",
+                    "torchao==0.18.0+cu126", "triton==3.8.0"):
+            assert pin in err
+        assert "triton-windows" not in err
+        assert "--index-url https://download.pytorch.org/whl/cu126" in err
+
+    def test_an_unknown_set_is_refused_with_the_names(self, monkeypatch, capsys):
+        _never_asks_the_machine(monkeypatch)
+        assert torch_stack.main(["install", "--set", "cu999", "--python", "py", "--dry-run"]) == torch_stack.REFUSED
+        err = capsys.readouterr().err
+        assert "cu132" in err and "cu126" in err
+        assert "pip install" not in err
+
+    def test_the_platform_is_only_for_a_named_set(self, monkeypatch):
+        _never_asks_the_machine(monkeypatch)
+        with pytest.raises(SystemExit):
+            torch_stack.main(["install", "--platform", "linux", "--python", "py", "--dry-run"])
+
+
+class TestCheckANamedSet:
+    """The container's start: does the set baked into the image run on this host?"""
+
+    def _check(self, tmp_path, name, smi_text):
+        canned = tmp_path / "smi.txt"
+        canned.write_text(smi_text, encoding="utf-8")
+        env = {**_env(), "MRLN_TORCH_NVIDIA_SMI": str(canned)}
+        return subprocess.run([sys.executable, str(BACKEND / "torch_stack.py"), "check", "--set", name],
+                              capture_output=True, text=True, env=env)
+
+    def test_a_set_that_fits_passes(self, tmp_path):
+        done = self._check(tmp_path, "cu132", "616.92, 12.0\n")
+        assert done.returncode == 0, done.stderr
+        assert "cu132" in done.stderr and "cc 12.0" in done.stderr
+
+    def test_a_driver_below_the_floor_is_refused_naming_the_images_that_fit(self, tmp_path):
+        done = self._check(tmp_path, "cu132", "575.64, 8.6\n")
+        assert done.returncode == torch_stack.CHECK_REFUSED == 3
+        assert "below R580" in done.stderr
+        assert ":latest-cu126" in done.stderr
+        assert "set     torch    driver" in done.stderr, "the refusal shows the table"
+
+    def test_cu126_on_blackwell_is_refused_naming_latest(self, tmp_path):
+        done = self._check(tmp_path, "cu126", "616.92, 12.0\n")
+        assert done.returncode == 3
+        assert "no kernels for compute capability 12.0" in done.stderr
+        assert "mastermerlin/mrln-arcane-tuner:latest " in done.stderr
+        assert ":latest-cu128" not in done.stderr, "a current image fits; the frozen one is not offered"
+
+    def test_blackwell_below_r580_is_sent_to_the_frozen_cu128_image(self, tmp_path):
+        done = self._check(tmp_path, "cu132", "575.64, 12.0\n")
+        assert done.returncode == 3
+        assert ":latest-cu128" in done.stderr and "frozen" in done.stderr
+        assert ":latest-cu126" not in done.stderr
+
+    def test_nothing_fits_says_so(self, tmp_path):
+        done = self._check(tmp_path, "cu132", "559.99, 8.6\n")
+        assert done.returncode == 3
+        assert "no image fits this machine" in done.stderr
+
+    def test_no_nvidia_smi_is_its_own_code(self, monkeypatch, capsys):
+        # In process: Windows finds System32's nvidia-smi whatever PATH a subprocess gets.
+        def no_such_program(*args, **kwargs):
+            raise FileNotFoundError("nvidia-smi")
+
+        monkeypatch.delenv("MRLN_TORCH_NVIDIA_SMI", raising=False)
+        monkeypatch.setattr(torch_stack.subprocess, "run", no_such_program)
+        assert torch_stack.main(["check", "--set", "cu132"]) == torch_stack.CHECK_NO_GPU_INFO == 4
+        assert "no nvidia-smi" in capsys.readouterr().err
+
+    def test_an_nvidia_smi_listing_no_gpu_is_no_gpu_info(self, tmp_path):
+        assert self._check(tmp_path, "cu132", "").returncode == 4
+
+    def test_a_failing_nvidia_smi_is_no_gpu_info_with_its_error(self, monkeypatch, capsys):
+        def broken_driver():
+            raise torch_stack.Refused("nvidia-smi failed (exit 9): driver/library version mismatch")
+
+        monkeypatch.setattr(torch_stack, "detect_gpus", broken_driver)
+        assert torch_stack.main(["check", "--set", "cu132"]) == 4
+        assert "driver/library version mismatch" in capsys.readouterr().err
+
+    def test_the_override_does_not_change_what_is_checked(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MRLN_TORCH_INDEX", "cpu")
+        canned = tmp_path / "smi.txt"
+        canned.write_text("616.92, 12.0\n", encoding="utf-8")
+        monkeypatch.setenv("MRLN_TORCH_NVIDIA_SMI", str(canned))
+        assert torch_stack.main(["check", "--set", "cu126"]) == 3
+
+    def test_an_unknown_set_is_refused(self, monkeypatch):
+        _never_asks_the_machine(monkeypatch)
+        assert torch_stack.main(["check", "--set", "cu999"]) == torch_stack.REFUSED
+
+
+class TestConstraints:
+    def test_the_installed_stack_is_written_with_its_local_versions(self, tmp_path, bare_python):
+        env = _stub_stack(tmp_path / "site", {"torch": "2.15.0+cu132", "torchvision": "0.29.2+cu132",
+                                              "torchaudio": "2.11.1+cu132", "torchao": "0.18.0+cu132",
+                                              "triton": "3.9.0"})
+        out = tmp_path / "constraints.txt"
+        done = subprocess.run([sys.executable, str(BACKEND / "torch_stack.py"), "constraints",
+                               "--python", bare_python, str(out)], capture_output=True, text=True, env=env)
+        assert done.returncode == 0, done.stderr
+        pins = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln and not ln.startswith("#")]
+        assert pins == ["torch==2.15.0+cu132", "torchvision==0.29.2+cu132", "torchaudio==2.11.1+cu132",
+                        "torchao==0.18.0+cu132", "triton==3.9.0"]
+
+    def test_it_writes_what_is_installed_not_what_a_set_says(self, monkeypatch, tmp_path):
+        _never_asks_the_machine(monkeypatch)
+        monkeypatch.setattr(torch_stack, "installed_versions", lambda python: {
+            "torch": "2.14.1+cu126", "torchvision": "0.29.1+cu126", "torchaudio": "2.11.0+cu126",
+            "torchao": "0.18.0+cu126", "triton": "3.8.0", "triton-windows": None})
+        out = tmp_path / "c.txt"
+        assert torch_stack.main(["constraints", "--python", "py", str(out)]) == 0
+        text = out.read_text(encoding="utf-8")
+        assert "torch==2.14.1+cu126" in text and "triton==3.8.0" in text
+        assert "triton-windows" not in text
+
+    def test_no_torch_installed_writes_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(torch_stack, "installed_versions", lambda python: dict.fromkeys(torch_stack.STACK_DISTRIBUTIONS))
+        out = tmp_path / "c.txt"
+        assert torch_stack.main(["constraints", "--python", "py", str(out)]) == 1
+        assert not out.exists()
+
+
+class TestVerifyANamedSet:
+    def test_a_cu126_stack_passes_with_no_nvidia_smi(self, tmp_path, bare_python):
+        """The image's stack is verified by name: on this PC (cc 12.0) today's verify would refuse cu126."""
+        env = _stub_stack(tmp_path / "site", CU126_ON_LINUX)
+        # Asking the machine would read this missing file and crash: verify --set must never ask.
+        env["MRLN_TORCH_NVIDIA_SMI"] = str(tmp_path / "no-nvidia-smi-here.txt")
+        done = subprocess.run([sys.executable, str(BACKEND / "torch_stack.py"), "verify", "--set", "cu126",
+                               "--platform", "linux", "--python", bare_python],
+                              capture_output=True, text=True, env=env)
+        assert done.returncode == 0, done.stderr
+        assert "the cu126 set is installed" in done.stderr
+
+    def test_another_stack_is_caught(self, monkeypatch, capsys):
+        _never_asks_the_machine(monkeypatch)
+        monkeypatch.setattr(torch_stack, "installed_versions", lambda python: {**CU126_ON_LINUX, "torch": "2.15.0+cu132"})
+        code = torch_stack.main(["verify", "--set", "cu126", "--platform", "linux", "--python", "py"])
+        assert code == 1
+        assert "torch: installed 2.15.0+cu132, the cu126 set needs 2.14.1" in capsys.readouterr().err
+
+
 INSTALLERS = ("install.ps1", "install.bat", "install.sh")
 
 

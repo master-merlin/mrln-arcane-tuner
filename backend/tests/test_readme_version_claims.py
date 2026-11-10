@@ -15,20 +15,17 @@ way later. So the checks here are two-sided: every claim about a thing must
 agree with every other claim about that thing, **and** the agreed value must
 match the source of truth.
 
-THE TRAP THIS FILE MUST NOT BECOME. There are **two** correct PyTorch versions
-here and they are deliberately different:
+WHERE THE VERSIONS COME FROM. ``backend/torch-stack.cfg`` is the one place:
 
-* the LOCAL dev venv runs ``backend/requirements.txt``'s pin, which is
-  ``backend/torch-stack.cfg``'s default set (2.15.0+cu132; older machines get
-  the cu126 set's 2.14.1, which the README names as plain ``torch 2.14.1``);
-* the CONTAINER bakes the ``Dockerfile``'s pin (2.11.0) — see ``Dockerfile``'s
-  split-stack comment. The install path filters the torch lines out of
-  ``requirements.txt`` precisely so the local pin never clobbers the image's.
+* the LOCAL dev venv runs ``backend/requirements.txt``'s pin, which a test holds
+  equal to the cfg's default set (older machines get the cu126 set, which the
+  README names as plain ``torch <version>``, never as ``PyTorch <version>``);
+* the CONTAINER installs the set its ``Dockerfile`` names in ``ARG TORCH_CUDA``,
+  by name, from the same cfg. The Dockerfile names no version of its own.
 
-**Do not "fix" the container's 2.11.0 to match ``requirements.txt``** — that
-breaks the Docker build. The README has to state both and say which is which,
-which is why the check below asserts the set of claimed versions equals
-``{local pin, container pin}`` rather than asserting a single value.
+So the default image and the local venv run the same torch, and the README's
+``PyTorch <version>`` claims are exactly that one version; the cu126 image's
+torch is named once, as ``torch <version>``.
 
 KNOWN LIMIT, stated so it is inherited rather than rediscovered. These checks
 read PROSE, and prose can legitimately name an old version — a changelog line
@@ -86,10 +83,31 @@ def _local_torch_pin(requirements: str) -> str:
     return match.group(1)
 
 
-def _container_torch_pin(dockerfile: str) -> str:
-    match = _TORCH_PIN.search(dockerfile)
-    assert match, "the Dockerfile no longer installs a pinned torch=="
-    return match.group(1)
+TORCH_STACK_CFG = REPO_ROOT / "backend" / "torch-stack.cfg"
+
+
+def _cfg_values(cfg: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw in cfg.splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip()
+    return values
+
+
+def _set_torch(cfg: str, set_name: str) -> str:
+    values = _cfg_values(cfg)
+    key = f"{set_name.upper()}_TORCH"
+    assert key in values, f"backend/torch-stack.cfg has no {key}"
+    return values[key]
+
+
+def _container_torch_pin(dockerfile: str, cfg: str) -> str:
+    """The default image's torch: the cfg set the Dockerfile's ``ARG TORCH_CUDA`` names."""
+    match = re.search(r"^ARG TORCH_CUDA=(\S+)", dockerfile, re.M)
+    assert match, "the Dockerfile no longer names its torch set in ARG TORCH_CUDA"
+    return _set_torch(cfg, match.group(1))
 
 
 def _angular_major(package_json: str) -> str:
@@ -133,21 +151,26 @@ def readme_angular_claims(readme: str) -> set[str]:
 
 
 class TestPyTorch:
-    def test_the_readme_announces_exactly_the_two_pins_that_exist(self):
-        """Both versions named, neither invented, and each traceable.
+    def test_the_readme_announces_exactly_the_pins_that_exist(self):
+        """Every ``PyTorch <version>`` is the local pin or the default image's,
+        and both are named.
 
-        Set equality rather than "every claim is one of the two", because the
-        weaker form passes a README that has quietly dropped the container
-        version entirely — which is how a reader ends up installing the local
-        pin into an image that cannot take it.
+        Set equality rather than "every claim is one of them", because the
+        weaker form passes a README that has quietly dropped one entirely.
         """
         local = _local_torch_pin(_read(REQUIREMENTS))
-        container = _container_torch_pin(_read(DOCKERFILE))
+        container = _container_torch_pin(_read(DOCKERFILE), _read(TORCH_STACK_CFG))
         assert readme_torch_claims(_read(README)) == {local, container}, (
-            "README.md's PyTorch versions no longer match the two pins that "
-            f"exist: local {local} (backend/requirements.txt), container "
-            f"{container} (Dockerfile). These are DIFFERENT on purpose — read "
-            "this module's docstring before changing either."
+            "README.md's PyTorch versions no longer match the pins that exist: "
+            f"local {local} (backend/requirements.txt), default image {container} "
+            "(the torch-stack.cfg set the Dockerfile's ARG TORCH_CUDA names)."
+        )
+
+    def test_the_readme_names_the_cu126_images_torch(self):
+        """The fallback image carries the cu126 set, whose torch the README states."""
+        cu126 = _set_torch(_read(TORCH_STACK_CFG), "cu126")
+        assert f"torch {cu126}" in _read(README), (
+            f"README.md does not name the cu126 set's torch ({cu126}) as `torch {cu126}`"
         )
 
     def test_no_install_instruction_names_its_own_torch(self):
@@ -167,20 +190,16 @@ class TestPyTorch:
         )
         assert "torch_stack.py install" in readme, "README.md no longer shows how torch is installed"
 
-    def test_the_two_pins_are_read_from_different_files(self):
-        """Anti-vacuity: the local and container pins are separate sources.
-
-        If someone collapses them to one file the set-equality assertion above
-        keeps passing while checking half of what its name promises.
-        """
-        assert REQUIREMENTS != DOCKERFILE
-        assert _local_torch_pin(_read(REQUIREMENTS)) != _container_torch_pin(
-            _read(DOCKERFILE)
-        ), (
-            "the local and container torch pins are now identical — if that is "
-            "deliberate, this file's docstring and the set assertion above both "
-            "need rewriting, because the distinction they exist for is gone"
-        )
+    def test_the_container_pin_follows_the_dockerfiles_set(self):
+        """Anti-vacuity: the image's torch is read through ARG TORCH_CUDA, so a
+        Dockerfile naming the other set yields the other set's torch."""
+        cfg = _read(TORCH_STACK_CFG)
+        dockerfile = _read(DOCKERFILE)
+        named = re.search(r"^ARG TORCH_CUDA=(\S+)", dockerfile, re.M).group(1)
+        other = next(s for s in _cfg_values(cfg)["SETS"].split() if s != named)
+        swapped = dockerfile.replace(f"ARG TORCH_CUDA={named}", f"ARG TORCH_CUDA={other}", 1)
+        assert _container_torch_pin(swapped, cfg) == _set_torch(cfg, other)
+        assert _set_torch(cfg, other) != _set_torch(cfg, named)
 
 
 class TestAngular:

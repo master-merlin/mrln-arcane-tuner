@@ -580,13 +580,12 @@ class TestBuildContract:
         """
         df = _dockerfile()
         code = _code_only(df)
-        assert "torchao==0.17.0" in code, "torchao is not pinned in the Dockerfile layer"
-        # In the SAME install as the torch trio, i.e. the CUDA-matched index.
-        torch_install = code[code.index("torch==2.11.0"):]
-        torch_install = torch_install[: torch_install.index("RUN", 1)] if "RUN" in torch_install[1:] else torch_install
-        assert "torchao==0.17.0" in torch_install, (
-            "torchao must be installed from download.pytorch.org/whl/${TORCH_CUDA}, "
-            "in the same layer as torch — PyPI's wheel is built for another CUDA"
+        # torchao comes with the rest of the set: torch_stack.py installs it from
+        # the set's own index on linux (asserted in test_torch_stack.py), so the
+        # Dockerfile's half is that the stack layer installs the set FOR linux.
+        assert _STACK_INSTALL in code, (
+            "the torch layer must install the set through "
+            f"`{_STACK_INSTALL}`; without --platform linux torchao would come from PyPI"
         )
         # And the load check must exist and run AFTER the bulk resolve, which is
         # the step that could put PyPI's wheel back.
@@ -660,6 +659,59 @@ class TestBuildContract:
         df = _dockerfile()
         for item in ("digest pinning", "SBOM", "signing"):
             assert item in df, f"{item!r} deferral is no longer recorded"
+
+
+#: The torch layer's install, as the Dockerfile writes it.
+_STACK_INSTALL = (
+    "python /opt/torch-stack/torch_stack.py install --set ${TORCH_CUDA} --platform linux --python python"
+)
+_STACK_COPY = "COPY backend/torch-stack.cfg backend/torch_stack.py /opt/torch-stack/"
+
+
+def _stack_layer_problems(code: str) -> list[str]:
+    """What is wrong with the image's torch layer, read from the Dockerfile's code lines."""
+    problems = []
+    if _STACK_COPY not in code:
+        problems.append(f"the stack files are not copied with `{_STACK_COPY}`")
+    if _STACK_INSTALL not in code:
+        problems.append(f"the torch layer does not run `{_STACK_INSTALL}`")
+    if problems:
+        return problems
+    copy, install = code.index(_STACK_COPY), code.index(_STACK_INSTALL)
+    clone = code.index("git clone")
+    # Before the install (it reads them) and before the clone: the layer depends on
+    # these two files only, so a code change elsewhere keeps it cached.
+    if not copy < install < clone:
+        problems.append("the copy, the stack install and the clone are not in that order")
+    arg = re.search(r"^ARG TORCH_CUDA=\S+$", code, re.M)
+    if not arg or not arg.start() < install:
+        problems.append("ARG TORCH_CUDA is not declared before the stack install")
+    if not re.search(r"^ENV MRLN_TORCH_SET=\$\{TORCH_CUDA\}$", code, re.M):
+        problems.append("the image does not record its set as ENV MRLN_TORCH_SET=${TORCH_CUDA}")
+    env = re.search(r"PIP_BREAK_SYSTEM_PACKAGES=1", code)
+    if not env or not env.start() < install:
+        problems.append("PIP_BREAK_SYSTEM_PACKAGES=1 is not set before the stack install")
+    return problems
+
+
+class TestTheImageInstallsItsSetFromTheCfg:
+    """The image's stack is a named set of backend/torch-stack.cfg, never versions in the Dockerfile."""
+
+    def test_the_torch_layer_installs_the_named_set_from_the_baked_copy(self):
+        assert _stack_layer_problems(_code_only(_dockerfile())) == []
+
+    def test_the_layer_matcher_notices_each_removal(self):
+        code = _code_only(_dockerfile())
+        for mutated in (
+            code.replace(_STACK_COPY, "COPY backend/ /opt/torch-stack/"),
+            code.replace("--platform linux", ""),
+            code.replace("ENV MRLN_TORCH_SET=${TORCH_CUDA}", "ENV MRLN_TORCH_SET=cu132"),
+            code.replace("PIP_BREAK_SYSTEM_PACKAGES=1", "PIP_NO_INPUT=1"),
+            # the copy moved below the clone, so every code change rebuilds the torch layer
+            code.replace(_STACK_COPY, "").replace("WORKDIR /app/backend", _STACK_COPY + "\nWORKDIR /app/backend"),
+        ):
+            assert mutated != code, "the mutation did not apply"
+            assert _stack_layer_problems(mutated), "the matcher passed a broken torch layer"
 
 
 class TestTheseMatchersActuallyFail:

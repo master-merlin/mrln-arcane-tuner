@@ -4,7 +4,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.8.0-beta.4` · PyTorch 2.15.0 local / 2.11.0 container · CUDA 13.2 local (+cu126 fallback, torch 2.14.1) / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
+`v0.8.0-beta.4` · PyTorch 2.15.0 local and container · CUDA 13.2 (+cu126 fallback, torch 2.14.1), the container on the CUDA 13.0 base · Angular 22 · Node 24 · FastAPI
 
 **Author:** [master-merlin](https://github.com/master-merlin) · **Repository:** [github.com/master-merlin/mrln-arcane-tuner](https://github.com/master-merlin/mrln-arcane-tuner)
 
@@ -259,16 +259,20 @@ same image — the unsuffixed names belong to cu128 because it is the default
 variant. The rolling cu126 tags are new; before them a version tag was the only
 cu126 name, so a cu126 host had to be repointed by hand at every release.
 
-The default image bundles **CUDA 12.8 (cu128) · PyTorch 2.11.0 · Python 3.12**
-(runtime) and a **Node 24 / Angular 22** production build of the UI. cu128 ships
-**Blackwell (sm_120/sm_100)** kernels plus Hopper/Ada/Ampere, and needs an
-**R570+** host driver — which Blackwell cards require anyway, so it covers the
-whole modern fleet. The `-cu126` tag is for older hosts pinned to **R560–R565**
-drivers (no Blackwell support).
+The default image bundles the **cu132 set (CUDA 13.2) · PyTorch 2.15.0 · Python
+3.12** on the **CUDA 13.0** base (runtime) and a **Node 24 / Angular 22**
+production build of the UI. cu132 ships kernels from Turing to **Blackwell
+(sm_120/sm_100)** and needs an **R580+** host driver: the 13.0 base admits R580,
+and the bundled CUDA 13.2 libraries run there by minor-version compatibility.
+The `-cu126` tags carry the cu126 set (torch 2.14.1, CUDA 12.6, the 12.6.3 base)
+for hosts on **R560–R579** without Blackwell. The cu128 image (`:latest-cu128`,
+torch 2.11.0, R570+) is **frozen**: never rebuilt, its tags never moved. It stays
+the one image for **Blackwell on R570–R579**.
 
 > **"no kernel image is available for execution on the device"** on a Blackwell
-> card (e.g. RTX PRO 6000) means you're on an older cu126 image — pull `latest`
-> (cu128).
+> card (e.g. RTX PRO 6000) means you're on a cu126 image — pull `latest`
+> (cu132) on R580+, or the frozen `:latest-cu128` on R570–R579. The image checks
+> this itself at start and refuses with the same advice.
 
 **Building your own** (only needed if you've modified the code). The CUDA target
 is parameterized via build args (default cu128):

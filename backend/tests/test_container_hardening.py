@@ -20,6 +20,7 @@ that CAN run every time, and the docstring says plainly what it does not cover
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -2106,6 +2107,10 @@ class TestTheAccessTokenIsNeverThePublishedPlaceholder:
 # trusting either one alone.
 
 
+#: The variant that takes the unsuffixed `:latest` / `:<version>`: the cfg's default set.
+DEFAULT_VARIANT = "cu132"
+
+
 def _release_tag_set(code: str, variant: str) -> set[str]:
     """The tags docker-build.ps1 applies for *variant*, by substitution.
 
@@ -2115,15 +2120,15 @@ def _release_tag_set(code: str, variant: str) -> set[str]:
     base = re.search(r"^\$tags = @\((.+?)\)$", code, re.M)
     assert base, "could not find the base $tags assignment"
     branch = re.search(
-        r"if \(\$Variant -eq 'cu128'\) \{\s*\$tags \+= @\((.+?)\)\s*\}", code, re.S
+        rf"if \(\$Variant -eq '{DEFAULT_VARIANT}'\) \{{\s*\$tags \+= @\((.+?)\)\s*\}}", code, re.S
     )
     assert branch, (
-        "the cu128 branch must ADD to $tags with `+=`. A plain `=` there drops "
+        f"the {DEFAULT_VARIANT} branch must ADD to $tags with `+=`. A plain `=` there drops "
         "the variant-suffixed names the -ReleaseTags help text promises."
     )
 
     exprs = list(re.findall(r'"([^"]+)"', base.group(1)))
-    if variant == "cu128":
+    if variant == DEFAULT_VARIANT:
         exprs += re.findall(r'"([^"]+)"', branch.group(1))
     return {
         e.replace("${Repository}", "R")
@@ -2142,15 +2147,16 @@ class TestEveryVariantHasBothAPinnedNameAndAMovingPointer:
             "current cu126 image' without knowing the version string"
         )
 
-    def test_cu128_keeps_the_unsuffixed_names_it_already_published(self):
-        tags = _release_tag_set(_code_only(_build_script()), "cu128")
-        # Tags are a public surface: this set may grow, never shrink. Both of
-        # these are already on the hub and pinned from our own README.
-        assert "R:V" in tags
-        assert "R:latest" in tags
-        # And the explicit ones, so cu128 is nameable as a variant too.
-        assert "R:V-cu128" in tags
-        assert "R:latest-cu128" in tags
+    def test_the_default_variant_takes_the_unsuffixed_names(self):
+        """cu132 is the default image now, so `:latest` and `:<version>` are its.
+        They move off the frozen cu128 image, which keeps `:latest-cu128` and its
+        version tags and never gets another one."""
+        tags = _release_tag_set(_code_only(_build_script()), DEFAULT_VARIANT)
+        assert tags == {"R:V", "R:latest", "R:V-cu132", "R:latest-cu132"}, tags
+
+    def test_the_fallback_variant_takes_only_its_own_names(self):
+        tags = _release_tag_set(_code_only(_build_script()), "cu126")
+        assert tags == {"R:V-cu126", "R:latest-cu126"}, tags
 
     def test_the_ReleaseTags_help_text_and_the_code_name_the_same_tags(self):
         """The help text is documentation ABOUT the code, so compare them.
@@ -2175,10 +2181,121 @@ class TestEveryVariantHasBothAPinnedNameAndAMovingPointer:
         }
         produced = {
             tag.split(":", 1)[1]
-            for v in ("cu128", "cu126")
+            for v in (DEFAULT_VARIANT, "cu126")
             for tag in _release_tag_set(code, v)
         }
         documented = {d.lstrip(":") for d in documented}
         assert documented == produced, (
             f"help text says {sorted(documented)}, code produces {sorted(produced)}"
         )
+
+
+# -- docker-build.ps1, run for real against a stand-in docker -----------------
+#
+# The script is executed with a `docker` on PATH that records its argv and
+# answers like a successful build: `build` exits 0, the verifier's `run ... git`
+# prints the requested sha, the version check's `run ... python` prints the
+# version. Nothing is built. Without -ReleaseTags the script ends at
+# "DONE (validation)", so no `git ls-remote` and no `docker tag` is reached.
+
+_DOCKER_SHIM_PY = r'''
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["DOCKER_SHIM_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(args) + "\n")
+if args[:1] == ["build"]:
+    sys.exit(int(os.environ.get("DOCKER_SHIM_BUILD_EXIT", "0")))
+if args[:1] == ["run"]:
+    print(os.environ["DOCKER_SHIM_SHA"] if "git" in args else os.environ["DOCKER_SHIM_VERSION"])
+sys.exit(0)
+'''
+
+_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+class _BuildRun:
+    def __init__(self, tmp: Path) -> None:
+        shell = _powershell()
+        if shell is None:
+            pytest.skip("no PowerShell on PATH")
+        if os.name != "nt":
+            pytest.skip("the stand-in docker is a .cmd file")
+        self.shell = shell
+        self.tmp = tmp
+        shim = tmp / "shim"
+        shim.mkdir()
+        (shim / "docker_shim.py").write_text(_DOCKER_SHIM_PY, encoding="utf-8")
+        (shim / "docker.cmd").write_text(
+            f'@"{sys.executable}" "%~dp0docker_shim.py" %*\r\n', encoding="utf-8"
+        )
+        self.docker_log = tmp / "docker_calls.jsonl"
+        self.log_dir = tmp / "logs"
+        self.token = tmp / "token"
+        self.token.write_text("not-a-real-token\n", encoding="utf-8")
+        self.env = dict(os.environ)
+        self.env["PATH"] = os.pathsep.join([str(shim), self.env.get("PATH", "")])
+        self.env["DOCKER_SHIM_LOG"] = str(self.docker_log)
+        self.env["DOCKER_SHIM_SHA"] = _SHA
+        self.env["DOCKER_SHIM_VERSION"] = "0.0.0-beta.1"
+
+    def run(self, variant: str, *, token: Path | None = None) -> tuple[int, str]:
+        proc = subprocess.run(
+            [self.shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(BUILD_SCRIPT), "-GitSha", _SHA, "-Variant", variant,
+             "-Version", "0.0.0-beta.1", "-TokenPath", str(token or self.token),
+             "-Context", str(REPO_ROOT), "-LogDir", str(self.log_dir)],
+            capture_output=True, text=True, env=self.env, timeout=300, cwd=str(REPO_ROOT),
+        )
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def docker_calls(self) -> list[list[str]]:
+        if not self.docker_log.exists():
+            return []
+        return [json.loads(ln) for ln in self.docker_log.read_text(encoding="utf-8").splitlines()]
+
+    def argv_records(self) -> list[str]:
+        if not self.log_dir.exists():
+            return []
+        return [p.read_text(encoding="utf-8-sig") for p in sorted(self.log_dir.glob("*.argv.txt"))]
+
+
+def _dockerfile_cuda_base() -> str:
+    return re.search(r"^ARG CUDA_BASE=(\S+)", _dockerfile(), re.M).group(1)
+
+
+class TestTheBuildWrapperBuildsEachVariantOnItsOwnBase:
+    @pytest.mark.parametrize("variant, base", [("cu132", None), ("cu126", "12.6.3")])
+    def test_a_validation_build_names_its_set_its_base_and_its_scratch_tag(self, tmp_path, variant, base):
+        base = base or _dockerfile_cuda_base()  # cu132's base is the Dockerfile's default
+        run = _BuildRun(tmp_path)
+        code, out = run.run(variant)
+        assert code == 0, out
+        assert "DONE (validation)" in out, out
+        records = run.argv_records()
+        assert len(records) == 1, (records, out)
+        scratch = f"mrln-build-scratch:{variant}-{_SHA[:12]}"
+        assert f"--build-arg CUDA_BASE={base} --build-arg TORCH_CUDA={variant}" in records[0], records[0]
+        assert f"-t {scratch}" in records[0], records[0]
+        builds = [c for c in run.docker_calls() if c[:1] == ["build"]]
+        assert len(builds) == 1, run.docker_calls()
+        assert f"CUDA_BASE={base}" in builds[0] and f"TORCH_CUDA={variant}" in builds[0], builds[0]
+        # A validation build names no release: nothing tagged, nothing pushed.
+        assert not [c for c in run.docker_calls() if c[:1] in (["tag"], ["push"])], run.docker_calls()
+
+    def test_the_cu128_variant_is_refused_at_once_as_frozen(self, tmp_path):
+        run = _BuildRun(tmp_path)
+        # A token path that does not exist: the refusal must come before every other check.
+        code, out = run.run("cu128", token=tmp_path / "missing-token")
+        assert code != 0, out
+        assert "frozen" in out and "cu128" in out, out
+        assert "Git token file not found" not in out, out
+        assert run.docker_calls() == [], "docker was called for the frozen variant"
+        assert run.argv_records() == [], "an argv record was written for the frozen variant"
+
+    def test_the_default_base_agrees_with_the_dockerfile(self):
+        """docker-build.ps1 passes cu132's base explicitly; it must be the Dockerfile's default,
+        or a hand build and a wrapper build of the same commit sit on different bases."""
+        code = _code_only(_build_script())
+        found = re.search(r"cu132\s*=\s*'([^']+)'", code)
+        assert found, "docker-build.ps1 names no base for cu132"
+        assert found.group(1) == _dockerfile_cuda_base()

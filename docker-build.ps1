@@ -22,9 +22,14 @@
     The root cause of that build is still unnamed and this guard deliberately
     does not depend on it: it verifies the outcome, not the mechanism.
 
+    Two variants, each a named set of backend/torch-stack.cfg on its own CUDA
+    base: cu132 (the default image) and cu126 (the fallback). The cu128 image is
+    frozen: it is never rebuilt and its tags are never moved, so -Variant cu128
+    is refused before anything else happens.
+
 .EXAMPLE
     .\docker-build.ps1 -GitSha b987410c93b50e0e2cd678da981646a8edfc242d `
-        -Variant cu128 -Version 0.8.0-beta.1 -TokenPath D:\docker\tmp\gh_token
+        -Variant cu132 -Version 0.8.0-beta.1 -TokenPath D:\docker\tmp\gh_token
 
 .NOTES
     Never pushes. Publishing to the registry stays a separate, deliberate act.
@@ -37,8 +42,10 @@ param(
     [ValidatePattern('^[0-9a-fA-F]{40}$')]
     [string]$GitSha,
 
+    # cu128 is accepted here only so it can be refused by name below, saying
+    # why, instead of by a generic "not in the set" error.
     [Parameter(Mandatory = $true)]
-    [ValidateSet('cu128', 'cu126')]
+    [ValidateSet('cu132', 'cu126', 'cu128')]
     [string]$Variant,
 
     [Parameter(Mandatory = $true)]
@@ -66,8 +73,8 @@ param(
     # guard's own tests can run without depositing artifacts in the repo.
     [string]$LogDir = '',
 
-    # Claim the release tags. cu128: :<version>, :latest, :<version>-cu128,
-    # :latest-cu128. cu126: :<version>-cu126, :latest-cu126. OFF by default:
+    # Claim the release tags. cu132: :<version>, :latest, :<version>-cu132,
+    # :latest-cu132. cu126: :<version>-cu126, :latest-cu126. OFF by default:
     # a validation build must not name a release. See the tagging section
     # below for what this cost when it defaulted the other way.
     [switch]$ReleaseTags
@@ -76,12 +83,27 @@ param(
 $ErrorActionPreference = 'Stop'
 Set-StrictMode -Version Latest
 
+# First, before any other check: the frozen image is never rebuilt. It stays
+# the one image for Blackwell on R570-R579 drivers exactly as published, and a
+# rebuild would put a different torch stack under its tags.
+if ($Variant -eq 'cu128') {
+    throw ('The cu128 image is frozen: it is never rebuilt and its tags are never ' +
+           'moved. Build cu132 (the default image) or cu126 (the fallback).')
+}
+
 if (-not (Test-Path -LiteralPath $TokenPath)) {
     throw "Git token file not found: $TokenPath"
 }
 
-$cudaBase = '12.8.1'
-if ($Variant -eq 'cu126') { $cudaBase = '12.6.3' }
+# Each variant's CUDA base. The base's NVIDIA_REQUIRE_CUDA gate decides which
+# host drivers may start the container, so it matches the set's driver floor:
+# 13.0 admits R580+ (cu132's floor), 12.6 admits R560+ (cu126's). cu132's base
+# is also the Dockerfile's ARG CUDA_BASE default, so a hand build agrees.
+$cudaBases = @{
+    cu132 = '13.0.3'
+    cu126 = '12.6.3'
+}
+$cudaBase = $cudaBases[$Variant]
 
 # Deliberately NOT a release tag. Nothing that :latest or the version tag
 # points at may be touched until the artifact has proven its commit, so the
@@ -305,17 +327,20 @@ if ($tagCommit -ne '') {
 # Every variant gets BOTH a pinned name and a moving pointer. Before
 # 2026-09-06 cu126 got only `:<version>-cu126` -- pinnable, but nothing to
 # follow: someone tracking the cu126 line had to read the release notes to
-# learn each new version string, while cu128 users just followed `:latest`.
-# `:latest-<variant>` closes that. cu128 additionally keeps the UNSUFFIXED
-# names because it is the default variant and they are already published;
-# it now also gets its own `:<version>-cu128`, which the -ReleaseTags help
-# text has always promised and the code never produced (the cu128 branch
-# REPLACED the list instead of adding to it).
+# learn each new version string, while the default image's users just
+# followed `:latest`. `:latest-<variant>` closes that. The default variant
+# additionally takes the UNSUFFIXED names; it must ADD them to the list, not
+# replace it (an earlier version of this branch did, and the default image
+# never got the variant names the -ReleaseTags help text promised).
+#
+# The default variant is cu132: `:latest` and the unsuffixed version names
+# move to it from the frozen cu128 image, which keeps `:latest-cu128` and the
+# version tags it already has.
 #
 # Tags are a public surface: this list may grow, never shrink. Dropping a
 # name breaks every `docker pull` and every digest pin taken from our README.
 $tags = @("${Repository}:$Version-$Variant", "${Repository}:latest-$Variant")
-if ($Variant -eq 'cu128') {
+if ($Variant -eq 'cu132') {
     $tags += @("${Repository}:$Version", "${Repository}:latest")
 }
 foreach ($t in $tags) {

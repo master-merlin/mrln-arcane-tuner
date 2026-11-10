@@ -272,6 +272,76 @@ async def test_install_backend_deps_fallback_filters_torch_stack(svc, monkeypatc
     assert not os.path.exists(captured["cmd"][-1])
 
 
+def _git(cwd, *args):
+    done = subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+        cwd=cwd, capture_output=True, text=True, timeout=60, check=True,
+    )
+    return done.stdout.strip()
+
+
+def _commit_requirements(repo, text, message):
+    req = repo / "backend" / "requirements.txt"
+    req.parent.mkdir(exist_ok=True)
+    req.write_text(text, encoding="utf-8")
+    _git(repo, "add", "backend/requirements.txt")
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.mark.asyncio
+async def test_failed_dep_install_resets_the_checkout_to_the_old_head(monkeypatch, tmp_path):
+    """New code on old dependencies is what a failed install would leave; the update undoes the pull."""
+
+    def setup():
+        upstream = tmp_path / "upstream"
+        upstream.mkdir()
+        _git(upstream, "init", "-q", "-b", "main")
+        old = _commit_requirements(upstream, "fastapi==1.0\n", "old")
+        _git(tmp_path, "clone", "-q", str(upstream), "app")
+        new = _commit_requirements(upstream, "fastapi==1.0\nstackneedy==1.0\n", "new")
+        return old, new
+
+    old, new = await asyncio.to_thread(setup)
+    app = tmp_path / "app"
+    svc = SelfUpdateService(app_dir=str(app), branch="main", remote=str(tmp_path / "upstream"))
+
+    async def failing_install():
+        raise RuntimeError("backend dep install failed: ResolutionImpossible")
+
+    async def must_not_run():
+        raise AssertionError("ran after a failed dependency install")
+
+    monkeypatch.setattr(svc, "_install_backend_deps", failing_install)
+    monkeypatch.setattr(svc, "_build_frontend", must_not_run)
+    monkeypatch.setattr(svc, "_do_restart", must_not_run)
+
+    await svc._apply_impl()
+
+    head = await asyncio.to_thread(_git, app, "rev-parse", "HEAD")
+    assert head == old != new
+    assert svc.state == UpdateState.ERROR
+    assert "ResolutionImpossible" in svc.error, "the original error is masked"
+    assert old[:12] in svc.error, f"the error does not say the checkout was reset: {svc.error}"
+
+
+@pytest.mark.asyncio
+async def test_install_backend_deps_reports_the_tail_of_stderr(svc, monkeypatch, tmp_path):
+    """The script's verdict (the image to pull) comes last, after pip's own output."""
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    await asyncio.to_thread((backend / "install-deps.sh").write_text, "#!/usr/bin/env bash\n")
+    svc.app_dir = str(tmp_path)
+    stderr = "pip noise\n" * 200 + "pull mastermerlin/mrln-arcane-tuner:latest"
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="mastermerlin/mrln-arcane-tuner:latest"):
+        await svc._install_backend_deps()
+
+
 @pytest.mark.asyncio
 async def test_install_backend_deps_raises_on_failure(svc, monkeypatch, tmp_path):
     backend = tmp_path / "backend"

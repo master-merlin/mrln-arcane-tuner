@@ -191,6 +191,7 @@ class SelfUpdateService:
         try:
             self._set_state(UpdateState.PULLING)
             req_before = self._req_blob()
+            head_before = self._head()
             if not await asyncio.to_thread(self._pull):
                 self._set_state(
                     UpdateState.ERROR, error="git pull failed — see server log."
@@ -203,7 +204,16 @@ class SelfUpdateService:
             # scenedetect / imageio-ffmpeg for video training) would pull the
             # code that imports it but never install it, crashing on restart.
             if self._req_blob() != req_before:
-                await self._install_backend_deps()
+                try:
+                    await self._install_backend_deps()
+                except Exception as e:  # noqa: BLE001 — reported below, never masked
+                    # New code on the old dependencies would crash on the next
+                    # restart, so the pull is undone: the checkout goes back to
+                    # the commit the running process was started from.
+                    note = await asyncio.to_thread(self._roll_back, head_before)
+                    logger.error("self_update_failed", error=str(e), rollback=note)
+                    self._set_state(UpdateState.ERROR, error=f"{e} ({note})")
+                    return
             await self._build_frontend()
 
             self._set_state(UpdateState.PENDING_RESTART)
@@ -242,6 +252,23 @@ class SelfUpdateService:
             logger.error("self_update_reset_failed", error=er.strip()[:300])
             return False
         return True
+
+    def _head(self) -> str:
+        """The full SHA of HEAD, or empty if git cannot say."""
+        rc, out, _ = self._run_git(["rev-parse", "HEAD"])
+        return out.strip() if rc == 0 else ""
+
+    def _roll_back(self, head: str) -> str:
+        """Reset the checkout to *head* after a failed dependency install; say what happened."""
+        if not head:
+            logger.error("self_update_rollback_impossible", reason="the HEAD before the pull is unknown")
+            return "the checkout could not be reset: its previous commit is unknown"
+        rc, _o, err = self._run_git(["reset", "--hard", head])
+        if rc != 0:
+            logger.error("self_update_rollback_failed", head=head, error=err.strip()[:300])
+            return f"the checkout could not be reset to {head[:12]}; it is at the new commit"
+        logger.warning("self_update_rolled_back", head=head)
+        return f"the checkout was reset to {head[:12]}"
 
     def _req_blob(self) -> str:
         """Git blob hash of backend/requirements.txt at HEAD (empty if unknown).
@@ -288,8 +315,11 @@ class SelfUpdateService:
                 if tmp_path is not None:
                     os.remove(tmp_path)
             if proc.returncode != 0:
+                # The tail: install-deps.sh prints pip's output first and its
+                # own verdict (the image to pull) last.
+                logger.error("self_update_deps_install_failed", stderr=proc.stderr.strip()[-4000:])
                 raise RuntimeError(
-                    f"backend dep install failed: {proc.stderr.strip()[:300]}"
+                    f"backend dep install failed: {proc.stderr.strip()[-500:]}"
                 )
 
         logger.info("self_update_installing_backend_deps")

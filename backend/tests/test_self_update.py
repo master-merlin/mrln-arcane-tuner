@@ -4,16 +4,28 @@ Before this, the PENDING_RESTART drain polled active_task_count() with no
 timeout: one worker permanently stuck RUNNING (e.g. a GPU stall) kept the
 service draining forever, rejecting new GPU tasks with no operator escape
 hatch.
+
+Also here: the frontend rename-swap, and install-deps.sh keeping the installed
+torch stack (the last section).
 """
 
 from __future__ import annotations
 
+import importlib.util
+import json
 import os
+import re
+import shutil
+import subprocess
+import sys
 import types
+import zipfile
+from pathlib import Path
 
 import pytest
 
 from app.core.self_update import SelfUpdateService
+from tests.support.bash_probe import bash_skip_reason, find_bash
 
 
 def _make_service() -> SelfUpdateService:
@@ -267,3 +279,179 @@ async def test_build_frontend_keeps_serving_the_old_build_when_the_fallback_copy
     served = fe / "browser"
     assert served.is_dir()
     assert (served / "index.html").read_text() == "OLD BUILD"
+
+
+# -- install-deps.sh keeps the installed torch stack (offline, a throwaway venv) --
+#
+# A self-update runs install-deps.sh inside a running container, whose torch
+# stack was baked into the image. The script filters the stack's own pins out of
+# requirements.txt, but a NON-stack package can still require another torch in
+# its metadata, and pip would then replace the baked stack to satisfy it. So the
+# script installs under constraints written from the installed stack: such a
+# package fails pip's resolution, which installs nothing, and the script names
+# the image to pull.
+#
+# Everything here is offline: tiny wheels written by hand into a tmp dir, served
+# with PIP_NO_INDEX=1 and PIP_FIND_LINKS. The fixture package requires
+# torch==9.9.0 and a stub torch 9.9.0 is offered too, so the only thing that can
+# stop pip is the constraint. The control run, the same script without a
+# constraint, proves the fixture really reaches for the other torch.
+
+BACKEND = Path(__file__).resolve().parents[1]
+INSTALL_DEPS = BACKEND / "install-deps.sh"
+IMAGE = "mastermerlin/mrln-arcane-tuner"
+FIXTURE = "stackneedy"
+STACK = ("torch", "torchvision", "torchaudio", "torchao")
+_TIMEOUT_S = 600
+
+# One worker holds the sandbox, so the control (which replaces its torch) runs after the rest.
+in_sandbox = pytest.mark.xdist_group("install_deps_sandbox")
+
+requires_bash = pytest.mark.skipif(
+    bash_skip_reason(INSTALL_DEPS) is not None,
+    reason=bash_skip_reason(INSTALL_DEPS) or "",
+)
+
+
+def _cu132() -> dict[str, str]:
+    """The default set's stack, each with its local version, read from torch-stack.cfg."""
+    spec = importlib.util.spec_from_file_location("torch_stack_for_tests", BACKEND / "torch_stack.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module  # its dataclasses look their module up there
+    spec.loader.exec_module(module)
+    _default, sets = module.read_stack()
+    s = sets["cu132"]
+    return {name: f"{getattr(s, name)}+cu132" for name in STACK}
+
+
+def _wheel(out: Path, name: str, version: str, requires: tuple[str, ...] = ()) -> Path:
+    """A minimal pure wheel: METADATA, WHEEL and RECORD, nothing else."""
+    dist = f"{name}-{version}.dist-info"
+    path = out / f"{name}-{version}-py3-none-any.whl"
+    metadata = f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n" + "".join(
+        f"Requires-Dist: {r}\n" for r in requires
+    )
+    wheel = "Wheel-Version: 1.0\nGenerator: test\nRoot-Is-Purelib: true\nTag: py3-none-any\n"
+    record = f"{dist}/METADATA,,\n{dist}/WHEEL,,\n{dist}/RECORD,,\n"
+    with zipfile.ZipFile(path, "w") as z:
+        z.writestr(f"{dist}/METADATA", metadata)
+        z.writestr(f"{dist}/WHEEL", wheel)
+        z.writestr(f"{dist}/RECORD", record)
+    return path
+
+
+def _venv_python(venv: Path) -> Path:
+    return venv / ("Scripts" if os.name == "nt" else "bin") / ("python.exe" if os.name == "nt" else "python")
+
+
+def _bash_tool_dirs(bash: str) -> list[str]:
+    """The coreutils next to this bash: a non-login Git Bash does not put them on PATH."""
+    here = Path(bash).resolve().parent
+    return [str(d) for d in (here, here.parent / "usr" / "bin") if (d / "grep.exe").is_file() or (d / "grep").is_file()]
+
+
+def _installed(python: Path) -> dict[str, str]:
+    done = subprocess.run(
+        [str(python), "-m", "pip", "list", "--format=json", "--disable-pip-version-check"],
+        capture_output=True, text=True, timeout=_TIMEOUT_S, check=True,
+    )
+    return {row["name"].lower(): row["version"] for row in json.loads(done.stdout)}
+
+
+@pytest.fixture(scope="module")
+def sandbox(tmp_path_factory):
+    """A venv holding the stub cu132 stack, and a find-links dir of every wheel."""
+    root = tmp_path_factory.mktemp("install_deps")
+    wheels = root / "wheels"
+    wheels.mkdir()
+    stack = _cu132()
+    for name, version in stack.items():
+        _wheel(wheels, name, version)
+    _wheel(wheels, "torch", "9.9.0")
+    _wheel(wheels, FIXTURE, "1.0", requires=("torch==9.9.0",))
+
+    venv = root / "venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=_TIMEOUT_S)
+    python = _venv_python(venv)
+    subprocess.run(
+        [str(python), "-m", "pip", "install", "--no-index", "--find-links", str(wheels),
+         "--disable-pip-version-check", *(f"{n}=={v}" for n, v in stack.items())],
+        check=True, capture_output=True, text=True, timeout=_TIMEOUT_S,
+    )
+    # requirements.txt as the product writes it: the stack's own pins (filtered by the
+    # script) and one non-stack package that needs another torch.
+    req = root / "requirements.txt"
+    req.write_text(
+        f"torch=={stack['torch'].split('+')[0]}\n"
+        f"torchvision=={stack['torchvision'].split('+')[0]}\n"
+        f"{FIXTURE}==1.0\n",
+        encoding="utf-8",
+    )
+    return {"root": root, "wheels": wheels, "venv": venv, "python": python, "req": req, "stack": stack}
+
+
+def _run(sandbox, script: Path, *, torch_set: str | None = None) -> subprocess.CompletedProcess:
+    bash = find_bash(script)
+    assert bash, bash_skip_reason(script)
+    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "MRLN_TORCH_SET")}
+    scripts = str(sandbox["python"].parent)
+    env["PATH"] = os.pathsep.join([scripts, *_bash_tool_dirs(bash), env.get("PATH", "")])
+    env["VIRTUAL_ENV"] = str(sandbox["venv"])
+    env["PIP_NO_INDEX"] = "1"
+    env["PIP_FIND_LINKS"] = str(sandbox["wheels"])
+    env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
+    tmp = sandbox["root"] / "tmp"
+    tmp.mkdir(exist_ok=True)
+    env["TMPDIR"] = str(tmp)
+    if torch_set:
+        env["MRLN_TORCH_SET"] = torch_set
+    return subprocess.run(
+        [bash, str(script), str(sandbox["req"])],
+        cwd=sandbox["root"], env=env, capture_output=True, text=True, timeout=_TIMEOUT_S,
+    )
+
+
+@in_sandbox
+@requires_bash
+def test_install_deps_a_package_needing_another_torch_fails_and_leaves_the_stack(sandbox):
+    before = _installed(sandbox["python"])
+    proc = _run(sandbox, INSTALL_DEPS)
+    after = _installed(sandbox["python"])
+
+    assert proc.returncode != 0, f"install-deps.sh succeeded:\n{proc.stdout}\n{proc.stderr}"
+    assert re.search(rf"{re.escape(IMAGE)}:latest(?![-\w])", proc.stderr), (
+        f"the failure does not name the image to pull:\n{proc.stderr}"
+    )
+    for name, version in sandbox["stack"].items():
+        assert after.get(name) == version == before.get(name), f"{name}: {before.get(name)} -> {after.get(name)}"
+    assert FIXTURE not in after, f"the fixture was installed: {after}"
+
+
+@in_sandbox
+@requires_bash
+def test_install_deps_a_non_default_set_names_its_own_image(sandbox):
+    proc = _run(sandbox, INSTALL_DEPS, torch_set="cu126")
+    assert proc.returncode != 0
+    assert f"{IMAGE}:latest-cu126" in proc.stderr, proc.stderr
+    assert _installed(sandbox["python"])["torch"] == sandbox["stack"]["torch"]
+
+
+@in_sandbox
+@requires_bash
+def test_install_deps_control_without_the_constraint_the_fixture_replaces_torch(sandbox, tmp_path):
+    """The same script, where no torch is reported (constraints exit 1): today's behaviour.
+
+    Runs last in this module: it is the run that breaks the sandbox's stack.
+    """
+    ctl = tmp_path / "ctl"
+    ctl.mkdir()
+    shutil.copy(INSTALL_DEPS, ctl / "install-deps.sh")
+    (ctl / "torch_stack.py").write_text(
+        "import sys\nprint('[torch] no torch is installed: no constraints written', file=sys.stderr)\nsys.exit(1)\n",
+        encoding="utf-8",
+    )
+    proc = _run(sandbox, ctl / "install-deps.sh")
+    after = _installed(sandbox["python"])
+    assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
+    assert after.get("torch") == "9.9.0", after
+    assert after.get(FIXTURE) == "1.0", after

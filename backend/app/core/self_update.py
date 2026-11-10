@@ -28,12 +28,13 @@ _GIT_TIMEOUT_S = 120.0
 _BUILD_TIMEOUT_S = 1800.0
 _CHECK_INTERVAL_S = 1800.0  # periodic availability check (30 min)
 
-# Same package set install-deps.sh excludes from its requirements install
-# (split-stack: torch/torchvision/torchaudio/triton/triton-windows are baked
-# into the image or installed manually in the local venv — never from
-# requirements.txt). Used only by the install-deps.sh-missing fallback below.
+# Same package set install-deps.sh excludes from its requirements install: the
+# torch stack (torch/torchvision/torchaudio/torchao/triton/triton-windows) is
+# baked into the image from its CUDA index, never resolved from requirements.txt,
+# whose pins are the local stack. Used only by the install-deps.sh-missing
+# fallback below.
 _TORCH_STACK_RE = re.compile(
-    r"^\s*(torch|torchvision|torchaudio|triton|triton-windows)(?=[\s=<>!~#]|$)",
+    r"^\s*(torch|torchvision|torchaudio|torchao|triton|triton-windows)(?=[\s=<>!~#]|$)",
     re.IGNORECASE,
 )
 
@@ -265,9 +266,9 @@ class SelfUpdateService:
             else:
                 # install-deps.sh is missing (unexpected repo state) — fall
                 # back to pip directly, but still filter out the torch-stack
-                # lines: requirements.txt documents the LOCAL 2.12.1 trio, and
+                # lines: requirements.txt documents the LOCAL default stack, and
                 # a plain `-r requirements.txt` here would clobber the 2.11.0
-                # trio baked into this image's cached Dockerfile layer.
+                # stack baked into this image's cached Dockerfile layer.
                 req_path = os.path.join(backend, "requirements.txt")
                 with open(req_path, encoding="utf-8") as f:
                     kept = [ln for ln in f if not _TORCH_STACK_RE.match(ln)]

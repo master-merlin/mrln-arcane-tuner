@@ -4,7 +4,7 @@
 
 > **Dataset-first LoRA training studio** — because a great LoRA starts with a great dataset.
 
-`v0.8.0-beta.4` · PyTorch 2.12.1 local / 2.11.0 container · CUDA 13.0 local / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
+`v0.8.0-beta.4` · PyTorch 2.15.0 local / 2.11.0 container · CUDA 13.2 local (+cu126 fallback, torch 2.14.1) / 12.8 container (+cu126 fallback) · Angular 22 · Node 24 · FastAPI
 
 **Author:** [master-merlin](https://github.com/master-merlin) · **Repository:** [github.com/master-merlin/mrln-arcane-tuner](https://github.com/master-merlin/mrln-arcane-tuner)
 
@@ -46,7 +46,7 @@ This project wouldn't exist without the incredible open-source community that pi
 | Requirement   | Version              | Notes                     |
 | ------------- | -------------------- | ------------------------- |
 | Python        | 3.12+                | With `venv` support       |
-| NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 13.0 (driver R580+); see container note below for cloud hosts |
+| NVIDIA GPU    | Ampere+ (RTX 30xx)   | CUDA 13.2 (driver R580+), or the cu126 fallback (R560+, no Blackwell); the installer picks the one that fits. See the container note below for cloud hosts |
 | Node.js       | 24+ (LTS)            | Required by Angular 22 / TS 6 |
 | npm           | 10+                  | Comes with Node.js        |
 
@@ -82,36 +82,35 @@ python -m venv venv
 # Windows: venv\Scripts\activate
 # Linux:   source venv/bin/activate
 
-# 2. Install PyTorch with CUDA 13.0 (local dev; needs an R580+ driver).
-#    The published container ships CUDA 12.8 (cu128, Blackwell-capable) with a
-#    cu126 fallback for older host drivers — see "Run as a container" below.
-pip install torch==2.12.1 torchvision==0.27.1 \
-    --index-url https://download.pytorch.org/whl/cu130
+# 2. Install the PyTorch stack this machine can run. torch_stack.py reads the
+#    driver and every GPU (nvidia-smi) and picks a set from torch-stack.cfg:
+#    cu132 (CUDA 13.2, an R580+ driver, GPUs from Turing to Blackwell) or the
+#    cu126 fallback (torch 2.14.1, an R560+ driver, GPUs from Maxwell to
+#    Hopper). It refuses, with the table, where neither fits, and without
+#    nvidia-smi it installs the CPU build. MRLN_TORCH_INDEX=<set> chooses a set
+#    but never skips its checks. The published container ships CUDA 12.8
+#    (cu128, Blackwell-capable) with a cu126 fallback for older host drivers —
+#    see "Run as a container" below.
+python torch_stack.py install --python python
 
-# torchaudio has no 2.12-series wheel yet (maintenance mode) and its own
-# metadata pins torch==2.11.0, so it must be installed --no-deps or pip would
-# downgrade torch back to 2.11.0.
-pip install torchaudio==2.11.0 --no-deps \
-    --index-url https://download.pytorch.org/whl/cu130
-
-# 3. Install remaining Python dependencies. torch/torchvision/torchaudio
-#    (installed above) and three packages whose declared metadata is wrong must
-#    be excluded from this bulk install and added back with --no-deps:
-#    scenedetect (its GUI opencv-python dep would clobber the pinned
-#    opencv-python-headless), sam3 (a stale huggingface-hub<1.0 ceiling), and
-#    hpsv2 (its pytest dev deps leaked into its install requirements and would
-#    abort the resolve against our own pytest pin). grep -v filters them out
-#    the same way install.sh does.
-#    Windows users: skip this bash step and run backend\install.ps1 or
-#    backend\install.bat instead, which do the equivalent filtering natively.
-grep -ivE '^[[:space:]]*(scenedetect|sam3|hpsv2|torch|torchvision|torchaudio)([[:space:]=<>!~#]|$)' \
-    requirements.txt > /tmp/requirements.filtered.txt
-pip install -r /tmp/requirements.filtered.txt
+# 3. Install remaining Python dependencies. The torch stack (installed above)
+#    and three packages whose declared metadata is wrong must be excluded from
+#    this bulk install, and the three added back with --no-deps: scenedetect
+#    (its GUI opencv-python dep would clobber the pinned opencv-python-headless),
+#    sam3 (a stale huggingface-hub<1.0 ceiling), and hpsv2 (its pytest dev deps
+#    leaked into its install requirements and would abort the resolve against
+#    our own pytest pin). torch_stack.py filter drops them the same way the
+#    install scripts do.
+python torch_stack.py filter requirements.txt requirements.filtered.txt --also scenedetect sam3 hpsv2
+pip install -r requirements.filtered.txt
 for pkg in scenedetect sam3 hpsv2; do
     pip install --no-deps "$(grep -iE "^[[:space:]]*${pkg}[[:space:]]*==" requirements.txt | sed -E 's/#.*$//' | tr -d '[:space:]')"
 done
 
-# 4. Install frontend dependencies
+# 4. Check that the bulk install left the torch stack as it was.
+python torch_stack.py verify --python python
+
+# 5. Install frontend dependencies
 cd ../frontend
 npm install
 ```

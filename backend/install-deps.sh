@@ -26,17 +26,21 @@
 # resolve, the `==` pins on both packages make pip's resolver abort instead
 # of backtracking. sam3's other deps are all pinned in requirements.txt.
 #
-# torch/torchvision/torchaudio/triton/triton-windows are EXCLUDED from this
-# script entirely (split-stack, see backend/requirements.txt): the Docker
-# image bakes its own torch 2.11 trio in the Dockerfile layer, and the local
-# dev venv installs its own torch 2.12.1 trio (+ torchaudio 2.11.0 --no-deps)
-# manually. requirements.txt's pins on those lines are LOCAL documentation
-# only — this script must never install or reinstall them, or it would
-# clobber whichever torch is already baked into the image (build time) or
-# fight the venv's manually-installed trio (runtime self-update).
+# The torch stack -- torch/torchvision/torchaudio/torchao/triton/triton-windows --
+# is EXCLUDED from this script entirely: the Docker image bakes its own stack in
+# the Dockerfile's torch layer, from the CUDA index that matches its base. The
+# local venv never runs this script; its installers install the stack through
+# torch_stack.py. requirements.txt's pins on those lines are the LOCAL stack,
+# so this script must never install or reinstall them: at build time it would
+# clobber the image's baked stack, and in a running container's self-update it
+# would pull the local stack's versions into an image built for another torch.
+# torchao is in the stack because its wheel ships compiled CUDA extensions: a
+# bare `torchao==` pin resolved here would take PyPI's build, made for another
+# CUDA than the image's.
 #
-# Used by BOTH the Docker build and the runtime self-update so the two installs
-# never diverge. Run from backend/ (or pass the requirements path as $1).
+# Used by the Docker build, the container's runtime self-update and CI, so the
+# three never diverge (CI installs its own stack first, from the CPU index).
+# Run from backend/ (or pass the requirements path as $1).
 set -eu
 
 REQ="${1:-requirements.txt}"
@@ -47,7 +51,7 @@ TMP_REQ="$(mktemp)"
 #    resolved normally (torch itself — already installed from the CUDA wheel
 #    index in the image, or manually in the local venv — is seen as
 #    satisfied and skipped by anything that merely depends on it).
-grep -ivE '^[[:space:]]*(scenedetect|sam3|hpsv2|torch|torchvision|torchaudio|triton|triton-windows)([[:space:]=<>!~#]|$)' "$REQ" > "$TMP_REQ"
+grep -ivE '^[[:space:]]*(scenedetect|sam3|hpsv2|torch|torchvision|torchaudio|torchao|triton|triton-windows)([[:space:]=<>!~#]|$)' "$REQ" > "$TMP_REQ"
 $PIP -r "$TMP_REQ"
 rm -f "$TMP_REQ"
 

@@ -273,10 +273,85 @@ def test_a_cached_entry_of_another_representation_is_never_loaded(made, labeled,
     assert changed
 
 
-def test_a_current_cached_entry_still_hits(tmp_path):
+@pytest.mark.parametrize("scheme", ["int8", "int8_dynamic", "int4", "nvfp4"])
+def test_a_current_cached_entry_still_hits(scheme, tmp_path):
+    if ("torchao", scheme) not in offered():
+        pytest.skip(f"{scheme} is not offered on this card")
     path = os.path.join(tmp_path, "cache")
-    _cache_of("int8", "int8", path)
-    assert QuantizationFactory.load_quantized(frozen_net(), path, "int8") is not None
+    _cache_of(scheme, scheme, path)
+    assert QuantizationFactory.load_quantized(frozen_net(), path, scheme) is not None
+
+
+# ── torchao 0.18: int8 and int8_dynamic are Int8Tensor ──
+
+INT8 = [p for p in offered() if p in (("torchao", "int8"), ("torchao", "int8_dynamic"))]
+
+
+@pytest.mark.parametrize(("backend", "scheme"), INT8, ids=lambda v: str(v))
+def test_int8_schemes_quantize_to_int8_tensor(backend, scheme):
+    # torchao 0.18 makes Int8Tensor by default; 0.17 only when asked (config version 2), so the
+    # local venv and the images quantize the same way. Only int8_dynamic quantizes its input.
+    from torchao.quantization import Int8Tensor
+
+    weight = quantized(backend, scheme, layers=1).layers[0].weight
+    assert type(weight) is Int8Tensor, type(weight).__name__
+    assert (weight.act_quant_kwargs is not None) == (scheme == "int8_dynamic")
+
+
+@pytest.mark.parametrize("scheme", ["int8_dynamic", "fp8_dynamic"])
+def test_a_dynamic_scheme_s_lora_input_grad_matches_the_dense_reference(scheme):
+    if ("torchao", scheme) not in offered():
+        pytest.skip(f"{scheme} is not offered on this card")
+    g = torch.randn(8, WIDTH, device="cuda", dtype=torch.bfloat16, generator=torch.Generator("cuda").manual_seed(5))
+
+    def input_grad(net: nn.Module) -> torch.Tensor:
+        model = with_lora(net)  # the same adapters on both: with_lora seeds them
+        x = batch()
+        out = model(x)
+        assert out.requires_grad, f"{scheme}: the LoRA model's output tracks no grad"
+        out.backward(g)
+        assert x.grad is not None, f"{scheme}: the input got no grad"
+        return x.grad.float()
+
+    want = input_grad(frozen_net(layers=1))
+    got = input_grad(quantized("torchao", scheme, layers=1))
+    error = ((got - want).norm() / want.norm()).item()
+    assert error <= 0.15, f"{scheme}: LoRA input grad {error:.4f} relative to the dense model's"
+
+
+def _legacy_int8_entry(scheme: str, path: str) -> None:
+    """A cache entry as builds before 2026-11 wrote it: torchao's version-1 int8 tensors."""
+    from torchao.quantization import Int8DynamicActivationInt8WeightConfig, Int8WeightOnlyConfig, quantize_
+
+    config = {"int8": Int8WeightOnlyConfig, "int8_dynamic": Int8DynamicActivationInt8WeightConfig}[scheme]
+    try:
+        config = config(version=1)
+    except Exception as e:  # noqa: BLE001 - a torchao that no longer builds them
+        pytest.skip(f"this torchao makes no version-1 {scheme}: {e}")
+    source = frozen_net()
+    signature = QuantizationFactory.state_shape_signature(source)
+    count = sum(p.numel() for p in source.parameters())
+    quantize_(source, config)
+    QuantizationFactory.save_quantized(source, path, scheme, source_param_count=count, source_signature=signature)
+    assert os.path.exists(os.path.join(path, "metadata.json"))
+
+
+@pytest.mark.parametrize("origin", ["legacy", "fp8"])
+@pytest.mark.parametrize("scheme", ["int8", "int8_dynamic"])
+def test_a_cached_int8_entry_of_another_tensor_type_is_a_stale_miss(scheme, origin, tmp_path, caplog):
+    if ("torchao", scheme) not in offered() or (origin == "fp8" and ("torchao", "fp8") not in offered()):
+        pytest.skip(f"{scheme} or fp8 is not offered on this card")
+    path = os.path.join(tmp_path, "cache")
+    if origin == "legacy":
+        _legacy_int8_entry(scheme, path)
+    else:
+        _cache_of("fp8", scheme, path)  # a deserializable subclass that is not Int8Tensor
+    fresh = frozen_net()
+    assert QuantizationFactory.load_quantized(fresh, path, scheme) is None
+    assert "quantized_cache_stale_representation" in caplog.text
+    assert "quantized_cache_load_error" not in caplog.text
+    changed, _ = train_steps(with_lora(QuantizationFactory.quantize(fresh, scheme, backend_name="torchao")))
+    assert changed
 
 
 # ── Review round 1: the precisions, pipeline order and memory production uses ──
@@ -413,16 +488,52 @@ def test_the_int4_backward_peak_is_bounded_by_the_dense_weight():
     torch.manual_seed(0)
     net = nn.Sequential(nn.Linear(fin, fout, bias=False, dtype=torch.bfloat16)).to("cuda").requires_grad_(False)
     lin = QuantizationFactory.quantize(net, "int4", backend_name="torchao")[0]
+    dense = fin * fout * 2
+    # The rebuild alone is ours, with no library matmul workspace in it: the strict bound.
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    rebuilt = trainable_backward.dense_weight(lin.weight, torch.bfloat16)
+    torch.cuda.synchronize()
+    rebuild_peak = torch.cuda.max_memory_allocated() - base
+    del rebuilt
+    assert rebuild_peak <= 1.5 * dense, (
+        f"the int4 rebuild peaked {rebuild_peak / 2**20:.1f} MiB for a {dense / 2**20:.1f} MiB dense weight"
+    )
+
     x = torch.randn(2, fin, device="cuda", dtype=torch.bfloat16, requires_grad=True)
     out = lin(x)
+    workspace = _matmul_overhead(2, fout, fin)
     torch.cuda.synchronize()
     base = torch.cuda.memory_allocated()
     torch.cuda.reset_peak_memory_stats()
     out.float().pow(2).mean().backward()
     torch.cuda.synchronize()
-    dense = fin * fout * 2
     grew = torch.cuda.max_memory_allocated() - base
-    assert grew <= 1.5 * dense, f"backward peaked {grew / 2**20:.1f} MiB over a {dense / 2**20:.1f} MiB dense weight"
+    assert grew <= 1.5 * dense + workspace, (
+        f"backward peaked {grew / 2**20:.1f} MiB over a {dense / 2**20:.1f} MiB dense weight "
+        f"(the library's own matmul workspace: {workspace / 2**20:.1f} MiB)"
+    )
+
+
+def _matmul_overhead(m: int, k: int, n: int) -> int:
+    """What one plain bf16 ``(m, k) @ (k, n)`` matmul allocates beyond its output, on this torch.
+
+    cuBLAS's workspace: torch 2.15 takes it from the caching allocator on EVERY matmul and frees
+    it after (32 MiB on this card); 2.12.1 kept it after the first call. It is a fixed cost of the
+    library, the same with or without our rebuild, so the bound above adds it instead of charging
+    it to the dense weight (LANE-138, measured: evidence probe_matmul_workspace).
+    """
+    a = torch.randn(m, k, device="cuda", dtype=torch.bfloat16)
+    b = torch.randn(k, n, device="cuda", dtype=torch.bfloat16)
+    torch.cuda.synchronize()
+    base = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    c = a @ b
+    torch.cuda.synchronize()
+    overhead = torch.cuda.max_memory_allocated() - base - c.numel() * c.element_size()
+    del a, b, c
+    return overhead
 
 
 # ── LANE-187: any input layout ──

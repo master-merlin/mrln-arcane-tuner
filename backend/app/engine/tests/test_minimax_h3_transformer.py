@@ -216,7 +216,9 @@ def packed_inputs(seed: int = 0) -> dict[str, torch.Tensor]:
 # mis-scaled rope or mis-routed modality moves these outputs by O(0.1-1). A
 # 1e-3 perturbation of a single element of either output was run against this
 # predicate on that same linux/+cpu shape and failed it, each output
-# separately (LANE-111 mutants a and b).
+# separately (LANE-111 mutants a and b). Re-measured on torch 2.15.0+cu132
+# (windows, python 3.12.10, 2026-11-09, LANE-138) against the same unchanged
+# fixture: max |Δ| = 0 for both outputs, as on 2.12.1+cu130.
 _PARITY_TOL = 1e-5
 
 

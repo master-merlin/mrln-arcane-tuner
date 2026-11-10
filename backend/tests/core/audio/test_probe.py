@@ -4,8 +4,8 @@ Tiny synthetic clips are generated with ``soundfile`` (no fixture binaries
 committed) so the suite runs identically on Windows and Docker. Covers all
 five contract extensions (``.wav .mp3 .flac .ogg .opus``) — the decoder
 recon that picked ``soundfile`` as the primary decoder (docker's torchaudio
-2.11 trio is installed ``--no-deps`` and may carry different backends than
-the local 2.12.1 install) verified every one round-trips via libsndfile.
+and the local install's are built against different torch releases and may
+carry different backends) verified every one round-trips via libsndfile.
 """
 
 from __future__ import annotations

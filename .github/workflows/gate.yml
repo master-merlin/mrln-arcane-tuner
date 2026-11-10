@@ -75,35 +75,31 @@ jobs:
       - name: ruff check
         run: python -m ruff check .
 
-      # The torch trio is a SPLIT STACK (backend/requirements.txt): the Docker
-      # image bakes its own build, the maintainer's venv installs another, and
+      # The torch stack (torch, torchvision, torchaudio, torchao, triton) is
+      # installed per environment: the Docker image bakes its own build, the
+      # local installers take theirs from backend/torch_stack.py, and
       # `install-deps.sh` refuses to touch either. CI is a third environment and
-      # must therefore supply its own -- the CPU wheels, because no runner has a
-      # GPU. The CPU index also keeps the download to a few hundred MB instead
-      # of the multi-GB CUDA-bundled wheels on PyPI, which matters on a runner's
-      # disk budget.
+      # takes the selector's CPU set (the default set's versions from the CPU
+      # index), because no runner has a GPU. The CPU index also keeps the
+      # download to a few hundred MB instead of the multi-GB CUDA wheels, which
+      # matters on a runner's disk budget. No version is named here:
+      # backend/torch-stack.cfg is the only place.
       #
-      # torchaudio is pinned at 2.11.0 and declares torch==2.11.0; it is in
-      # maintenance mode with no 2.12 wheel, so it installs --no-deps exactly as
-      # the local install does, or pip would downgrade torch underneath it.
-      # It must come from the SAME CPU index as torch: PyPI's torchaudio wheel
-      # is the CUDA build, and its native library cannot load beside a CPU
-      # torch ("Could not load this library: _torchaudio.abi3.so" — CI's
-      # first-ever pytest run, 138 collection errors, 2026-09-03).
+      # torchaudio must come from the SAME index as torch: PyPI's torchaudio
+      # wheel is the CUDA build, and its native library cannot load beside a
+      # CPU torch ("Could not load this library: _torchaudio.abi3.so" — CI's
+      # first-ever pytest run, 138 collection errors, 2026-09-03). The selector
+      # installs it --no-deps from torch's index.
       #
-      # triton is part of the stack install-deps.sh refuses to touch, so it
-      # must be installed HERE too: requirements.txt pins it for linux, the
+      # triton is part of the stack too: requirements.txt pins it for linux, the
       # boot-contract test asserts every applicable pin is installed, sam3's
       # GPU NMS path imports it, and the boogu vendor probes it — five tests
       # went red on run 7 (2026-09-03) with no triton on the runner. The PyPI
       # wheel imports fine without a GPU; only its kernels need one.
-      - name: Install torch (CPU wheels)
-        run: |
-          python -m pip install --index-url https://download.pytorch.org/whl/cpu \
-            torch==2.12.1 torchvision==0.27.1
-          python -m pip install --no-deps --index-url https://download.pytorch.org/whl/cpu \
-            torchaudio==2.11.0
-          python -m pip install triton==3.7.1
+      - name: Install torch (the CPU set)
+        env:
+          MRLN_TORCH_INDEX: cpu
+        run: python backend/torch_stack.py install --python python
 
       # Reuse the canonical installer rather than inventing a third install
       # path. It is already shared by the Docker build and the runtime
@@ -117,6 +113,12 @@ jobs:
       - name: Install backend dependencies
         working-directory: backend
         run: bash install-deps.sh
+
+      # The shared install must have left the stack as the selector put it.
+      - name: Verify the torch stack
+        env:
+          MRLN_TORCH_INDEX: cpu
+        run: python backend/torch_stack.py verify --python python
 
       # The whole suite, not a subset. The GPU-dependent tests guard themselves
       # with `@pytest.mark.skipif(not torch.cuda.is_available())` and the rest
@@ -310,8 +312,8 @@ jobs:
 
       # BOTH Python dependency graphs, because they are genuinely different and
       # a vulnerability in one says nothing about the other:
-      #   - requirements.txt        -> the local/dev graph (torch 2.12.1 trio)
-      #   - the container graph     -> the same file MINUS the torch/triton
+      #   - requirements.txt        -> the local/dev graph (the default torch set)
+      #   - the container graph     -> the same file MINUS the torch stack's
       #                                lines, which the image bakes itself
       # Auditing only the first would silently exempt what actually ships.
       - name: Audit local dependency graph
@@ -319,8 +321,7 @@ jobs:
 
       - name: Audit container dependency graph
         run: |
-          grep -ivE '^[[:space:]]*(torch|torchvision|torchaudio|triton|triton-windows)([[:space:]=<>!~#]|$)' \
-            backend/requirements.txt > /tmp/container-requirements.txt
+          python backend/torch_stack.py filter backend/requirements.txt /tmp/container-requirements.txt
           pip-audit -r /tmp/container-requirements.txt --progress-spinner off || true
 
       - name: Install frontend dependencies

@@ -1,107 +1,114 @@
 # --------------------------------------------------------------------------
 # MRLN Arcane Tuner - Windows install script
 #
-# Optionally creates a virtual environment, installs PyTorch with CUDA 13.0
-# from the official PyTorch wheel index, then installs all remaining
-# dependencies. PEP 508 markers in requirements.txt automatically handle
-# platform-specific packages.
+# Optionally creates a virtual environment, installs the torch stack this
+# machine can run (torch_stack.py reads the driver and every GPU and picks a
+# set from torch-stack.cfg), then installs all remaining dependencies. PEP 508
+# markers in requirements.txt automatically handle platform-specific packages.
+#
+#   install.ps1 [-VenvDir <dir>] [-Yes]
+#
+# -VenvDir  the venv to create or reuse (default: venv next to this script).
+# -Yes      no questions: reuse or create the venv.
+# MRLN_TORCH_INDEX=<set> chooses the torch set (cu132, cu126, cpu); it is
+# still refused where that set cannot run.
 # --------------------------------------------------------------------------
+param(
+    [string]$VenvDir = "",
+    [switch]$Yes
+)
+$ErrorActionPreference = "Stop"
 
-$VenvDir = "venv"
+# Anchored on this script, never on the current directory.
+$Here = $PSScriptRoot
+$Req = Join-Path $Here "requirements.txt"
+$Stack = Join-Path $Here "torch_stack.py"
+if (-not $VenvDir) { $VenvDir = Join-Path $Here "venv" }
+
+function Invoke-Checked([string]$Exe, [string[]]$Arguments) {
+    & $Exe @Arguments
+    if ($LASTEXITCODE -ne 0) { throw "failed (exit $LASTEXITCODE): $Exe $($Arguments -join ' ')" }
+}
+
+function Confirm-Step([string]$Question) {
+    if ($Yes) { return $true }
+    $answer = Read-Host "$Question [Y/n]"
+    return -not ($answer -match '^[Nn]$')
+}
 
 # -- Virtual environment --------------------------------------------------
+# Every install below runs this venv's own interpreter by path. Nothing is
+# activated, so an already-active venv cannot redirect the install.
 
-if (Test-Path $VenvDir) {
+$VenvPython = Join-Path $VenvDir "Scripts\python.exe"
+if (Test-Path $VenvPython) {
     Write-Host "[OK] Virtual environment '$VenvDir' already exists." -ForegroundColor Green
-    $answer = Read-Host "   Activate it and continue? [Y/n]"
-    if ($answer -eq '' ) { $answer = 'Y' }
-    if ($answer -match '^[Nn]$') {
+    if (-not (Confirm-Step "   Install into it?")) {
         Write-Host "Aborted."
         exit 0
     }
-    & "$VenvDir\Scripts\Activate.ps1"
+    $Py = $VenvPython
+} elseif (Confirm-Step "Create a virtual environment in '$VenvDir'?") {
+    Write-Host "[*] Creating virtual environment ..." -ForegroundColor Cyan
+    Invoke-Checked "python" @("-m", "venv", $VenvDir)
+    $Py = $VenvPython
+    Invoke-Checked $Py @("-m", "pip", "install", "--upgrade", "pip")
+    Write-Host "[OK] Virtual environment created." -ForegroundColor Green
 } else {
-    $answer = Read-Host "Create a virtual environment in '.\$VenvDir'? [Y/n]"
-    if ($answer -eq '' ) { $answer = 'Y' }
-    if ($answer -match '^[Nn]$') {
-        Write-Host "[!] Skipping venv - installing into current Python environment." -ForegroundColor Yellow
-    } else {
-        Write-Host "[*] Creating virtual environment ..." -ForegroundColor Cyan
-        python -m venv $VenvDir
-        & "$VenvDir\Scripts\Activate.ps1"
-        pip install --upgrade pip
-        Write-Host "[OK] Virtual environment created and activated." -ForegroundColor Green
-    }
+    Write-Host "[!] Skipping venv - installing into the current Python environment." -ForegroundColor Yellow
+    $Py = (Get-Command python).Source
 }
 
-# -- PyTorch (CUDA 13.0, split stack) -------------------------------------
+# -- The torch stack --------------------------------------------------------
+# torch_stack.py chooses the set, refuses (exit 2, with the table) before
+# installing anything where no set fits, and installs torch, torchvision,
+# torchaudio, torchao and triton from it.
 
 Write-Host ""
-Write-Host "[*] Installing PyTorch 2.12.1 + torchvision 0.27.1 (CUDA 13.0) ..." -ForegroundColor Cyan
-pip install torch==2.12.1 torchvision==0.27.1 --index-url https://download.pytorch.org/whl/cu130
-
-# torchaudio has no 2.12-series wheel yet (maintenance mode) and its own
-# metadata pins torch==2.11.0, so it MUST be installed --no-deps or pip would
-# downgrade torch back to 2.11.0.
-Write-Host "[*] Installing torchaudio 2.11.0 (--no-deps; declares torch==2.11.0) ..." -ForegroundColor Cyan
-pip install torchaudio==2.11.0 --no-deps --index-url https://download.pytorch.org/whl/cu130
+Invoke-Checked $Py @($Stack, "install", "--python", $Py)
 
 # -- Remaining dependencies -----------------------------------------------
-# torch/torchvision/torchaudio (installed above) and scenedetect/sam3 (need
-# --no-deps below) are excluded from this bulk install - see install-deps.sh
-# for the full rationale (this mirrors its filter minus triton/triton-windows
-# - local venvs need those from requirements; only the container filters them
-# to protect its baked 2.11-matched copy).
+# The bulk install never sees the torch stack (torch_stack.py owns it) nor
+# scenedetect/sam3/hpsv2 (installed --no-deps below; see install-deps.sh for
+# why each needs it).
 
 Write-Host ""
 Write-Host "[+] Installing remaining dependencies ..." -ForegroundColor Cyan
 $TmpReq = [System.IO.Path]::GetTempFileName()
-Get-Content requirements.txt |
-    Where-Object { $_ -notmatch '^\s*(scenedetect|sam3|hpsv2|torch|torchvision|torchaudio)([\s=<>!~#]|$)' } |
-    Set-Content $TmpReq
-pip install -r $TmpReq
-Remove-Item $TmpReq -Force
+try {
+    Invoke-Checked $Py @($Stack, "filter", $Req, $TmpReq, "--also", "scenedetect", "sam3", "hpsv2")
+    Invoke-Checked $Py @("-m", "pip", "install", "-r", $TmpReq)
+} finally {
+    Remove-Item $TmpReq -Force -ErrorAction SilentlyContinue
+}
+
+function Get-Pin([string]$Name) {
+    Get-Content $Req |
+        Where-Object { $_ -match "^\s*$Name\s*==" } |
+        ForEach-Object { ($_ -replace '#.*$', '') -replace '\s', '' } |
+        Select-Object -First 1
+}
 
 # scenedetect's declared dependency is the GUI build `opencv-python`, which
 # collides with the pinned `opencv-python-headless` (both ship the `cv2`
 # module) - install it separately, without its deps.
-$SD = Get-Content requirements.txt |
-    Where-Object { $_ -match '^\s*scenedetect\s*==' } |
-    ForEach-Object { ($_ -replace '#.*$', '') -replace '\s', '' } |
-    Select-Object -First 1
-if ($SD) {
-    Write-Host "[+] Installing $SD (--no-deps) ..." -ForegroundColor Cyan
-    pip install --no-deps $SD
+# sam3's declared ceilings would block the resolve against our pins; its
+# import works (test_sam3_imports_cleanly_despite_declared_hub_pin).
+# hpsv2 declares its dev deps (`pytest ==7.2.0`, `pytest-split ==0.8.0`) as
+# install requirements; it never imports them
+# (test_hpsv2_works_under_a_runner_its_metadata_forbids).
+foreach ($name in @("scenedetect", "sam3", "hpsv2")) {
+    $pin = Get-Pin $name
+    if ($pin) {
+        Write-Host "[+] Installing $pin (--no-deps) ..." -ForegroundColor Cyan
+        Invoke-Checked $Py @("-m", "pip", "install", "--no-deps", $pin)
+    }
 }
 
-# sam3 declares `huggingface-hub<1.0,>=0.30.0`, but this repo pins
-# huggingface-hub==1.27.0 (transformers 5.x requires it). The import works
-# fine under hub 1.x - its declared ceiling is just stale (see
-# test_sam3_imports_cleanly_despite_declared_hub_pin) - so install it
-# separately, without its deps, rather than letting it block the resolve.
-$S3 = Get-Content requirements.txt |
-    Where-Object { $_ -match '^\s*sam3\s*==' } |
-    ForEach-Object { ($_ -replace '#.*$', '') -replace '\s', '' } |
-    Select-Object -First 1
-if ($S3) {
-    Write-Host "[+] Installing $S3 (--no-deps) ..." -ForegroundColor Cyan
-    pip install --no-deps $S3
-}
+# -- The stack is still the one chosen --------------------------------------
 
-# hpsv2 declares `pytest ==7.2.0` and `pytest-split ==0.8.0` as INSTALL
-# requirements - its dev deps leaked into its metadata. It never imports either
-# and registers no pytest11 hook, so the pins are inert (see
-# test_hpsv2_works_under_a_runner_its_metadata_forbids), but left in the bulk
-# resolve they abort it against our own pytest pin. All 18 of its real deps are
-# already in requirements.txt, so nothing is lost by skipping its metadata.
-$HP = Get-Content requirements.txt |
-    Where-Object { $_ -match '^\s*hpsv2\s*==' } |
-    ForEach-Object { ($_ -replace '#.*$', '') -replace '\s', '' } |
-    Select-Object -First 1
-if ($HP) {
-    Write-Host "[+] Installing $HP (--no-deps) ..." -ForegroundColor Cyan
-    pip install --no-deps $HP
-}
+Write-Host ""
+Invoke-Checked $Py @($Stack, "verify", "--python", $Py)
 
 Write-Host ""
 Write-Host "[OK] Done - all dependencies installed." -ForegroundColor Green

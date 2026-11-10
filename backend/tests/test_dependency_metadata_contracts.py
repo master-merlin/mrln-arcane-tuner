@@ -196,22 +196,26 @@ def test_pytest_split_stays_uninstalled():
 
 REPO = pathlib.Path(__file__).resolve().parents[2]
 
-#: Excluded from the bulk resolve for a DIFFERENT reason — the split stack
-#: (see requirements.txt) installs these by hand per environment, so they are
-#: not re-added with --no-deps and must not be checked as if they were.
-TORCH_STACK = frozenset("torch torchvision torchaudio triton triton-windows".split())
+#: Excluded from the bulk resolve for a DIFFERENT reason: the torch stack is
+#: installed per environment (the image's torch layer, the local installers via
+#: torch_stack.py, CI's own step), so these are not re-added with --no-deps and
+#: must not be checked as if they were.
+TORCH_STACK = frozenset("torch torchvision torchaudio torchao triton triton-windows".split())
 
 #: name -> the file's filter, and how to read the package list out of it.
 INSTALL_PATHS = {
     "backend/install-deps.sh": r"\(([a-z0-9|_-]+)\)",
-    "backend/install.sh": r"\(([a-z0-9|_-]+)\)",
-    "backend/install.ps1": r"\(([a-z0-9|_-]+)\)",
-    "README.md": r"\(([a-z0-9|_-]+)\)",
 }
+#: The local installers and the README's manual install filter through
+#: `torch_stack.py filter ... --also <names>`: the selector drops the whole torch
+#: stack, and `--also` names the rest.
+SELECTOR_INSTALLERS = ("backend/install.sh", "backend/install.ps1", "backend/install.bat", "README.md")
 
 
 def _alternation(path: str) -> set[str]:
     """Package names from the first grep/regex alternation in *path*."""
+    if path in SELECTOR_INSTALLERS:
+        return _selector_filter(path)
     text = (REPO / path).read_text(encoding="utf-8")
     for match in re.finditer(INSTALL_PATHS[path], text):
         names = set(match.group(1).split("|"))
@@ -220,11 +224,27 @@ def _alternation(path: str) -> set[str]:
     return set()
 
 
+def _selector_filter(path: str) -> set[str]:
+    """What *path*'s bulk install excludes: the selector's stack plus its `--also` names."""
+    text = (REPO / path).read_text(encoding="utf-8")
+    calls = [ln for ln in text.splitlines() if '"filter"' in ln or " filter " in ln]
+    calls = [ln for ln in calls if "--also" in ln and not ln.lstrip().startswith(("#", "REM"))]
+    assert len(calls) == 1, f"{path}: expected one `torch_stack.py filter ... --also` call, found {len(calls)}"
+    also = re.findall(r"[a-z0-9_-]+", calls[0].split("--also", 1)[1].split("||")[0].split(")")[0], re.I)
+    return set(also) | _selector_stack()
+
+
+def _selector_stack() -> set[str]:
+    import importlib.util
+
+    spec = importlib.util.spec_from_file_location("torch_stack", REPO / "backend" / "torch_stack.py")
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return set(module.STACK_DISTRIBUTIONS)
+
+
 def _bat_names() -> set[str]:
-    """install.bat uses findstr, not a regex alternation: `^name== ^name==`."""
-    text = (REPO / "backend" / "install.bat").read_text(encoding="utf-8")
-    line = next(ln for ln in text.splitlines() if "findstr /V" in ln)
-    return set(re.findall(r"\^([a-z0-9_-]+)==", line, re.I))
+    return _selector_filter("backend/install.bat")
 
 
 def _no_deps_packages() -> set[str]:
@@ -244,7 +264,7 @@ def test_every_install_path_excludes_the_same_packages():
     expected = _no_deps_packages() | (
         _alternation("backend/install-deps.sh") & TORCH_STACK
     )
-    for path in INSTALL_PATHS:
+    for path in (*INSTALL_PATHS, *SELECTOR_INSTALLERS):
         got = _alternation(path)
         missing = (expected & got) ^ expected
         # triton is excluded only by install-deps.sh (the container path);

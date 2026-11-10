@@ -211,8 +211,8 @@ Nucleus-Image specifics mirrored here:
    (task brief decision #2, recon caveat 3): ``SwiGLUExperts.forward``
    dispatches on ``self.use_grouped_mm`` — ``_run_experts_grouped_mm``
    (``torch.nn.functional.grouped_mm``, added in PyTorch 2.11, present in
-   this repo's local venv — ``torch 2.12.1+cu130`` →
-   ``hasattr(F, 'grouped_mm') is True``) when the checkpoint's shipped
+   this repo's local venv — ``torch 2.15.0+cu132`` →
+   ``hasattr(F, 'grouped_mm') is True``, re-checked 2026-11-09) when the checkpoint's shipped
    ``use_grouped_mm: true`` is honored, else the pure-Python
    ``_run_experts_for_loop`` (fully differentiable, correctness-safe,
    `.tolist()`-synced but no crash). This driver does NOT monkeypatch

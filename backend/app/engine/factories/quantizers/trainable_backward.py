@@ -7,8 +7,11 @@ its input, ``grad_out @ W``. Three torchao weights cannot give it:
   ``aten::_weight_int4pack_mm``, so backward raises;
 - Float8 with dynamic activation quantization (``Float8Tensor`` with ``act_quant_kwargs``): no
   derivative for ``aten::_scaled_mm``, so backward raises;
-- int8 with dynamic activation quantization (``LinearActivationQuantizedTensor``): the output
-  tracks no grad at all, so the input silently gets none through the layer.
+- int8 with dynamic activation quantization (``Int8Tensor`` with ``act_quant_kwargs``): the
+  output tracks no grad at all, so the input silently gets none through the layer.
+
+Weight-only int8 (``Int8Tensor`` without ``act_quant_kwargs``) and weight-only Float8 dequantize in
+their matmul, so their own backward already gives the input's grad.
 
 For a ``Linear`` holding one of these, the forward still runs the layer's own quantized kernel,
 bit for bit. The backward multiplies the output grad by the dense weight, rebuilt just for it and
@@ -23,10 +26,22 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-try:  # Guarded like the rest of torchao: absent or broken, nothing here wraps anything.
-    from torchao.quantization import Float8Tensor, Int4TilePackedTo4dTensor, LinearActivationQuantizedTensor
+# Guarded like the rest of torchao, and each name on its own: a torchao that drops one (0.18 dropped
+# LinearActivationQuantizedTensor) disables only the branch that names it, never the others.
+try:
+    from torchao.quantization import Float8Tensor
 except Exception:  # noqa: BLE001 - see quantizers/torchao.py
-    Float8Tensor = Int4TilePackedTo4dTensor = LinearActivationQuantizedTensor = None
+    Float8Tensor = None
+
+try:
+    from torchao.quantization import Int4TilePackedTo4dTensor
+except Exception:  # noqa: BLE001
+    Int4TilePackedTo4dTensor = None
+
+try:
+    from torchao.quantization import Int8Tensor
+except Exception:  # noqa: BLE001
+    Int8Tensor = None
 
 try:  # a torchao prototype, guarded on its own (as in quantizers/torchao.py)
     from torchao.prototype.mx_formats.nvfp4_tensor import NVFP4Tensor
@@ -49,10 +64,9 @@ def needs_dequantized_backward(weight: torch.Tensor) -> bool:
     """A weight whose quantized kernel raises in backward, or drops the input's grad."""
     if Int4TilePackedTo4dTensor is not None and isinstance(weight, Int4TilePackedTo4dTensor):
         return True
-    if Float8Tensor is not None and isinstance(weight, Float8Tensor):
-        return weight.act_quant_kwargs is not None
-    if LinearActivationQuantizedTensor is not None and isinstance(weight, LinearActivationQuantizedTensor):
-        return True
+    for dynamic in (Float8Tensor, Int8Tensor):  # dynamic activation quantization only
+        if dynamic is not None and isinstance(weight, dynamic):
+            return weight.act_quant_kwargs is not None
     return False
 
 
@@ -76,8 +90,6 @@ def dense_weight(weight: torch.Tensor, dtype: torch.dtype) -> torch.Tensor:
             dense_t[start:stop] = F.linear(eye, weight)
             del eye
         return dense_t.t()
-    if LinearActivationQuantizedTensor is not None and isinstance(weight, LinearActivationQuantizedTensor):
-        weight = weight.original_weight_tensor  # the activation quantization wraps the int8 weight
     return weight.dequantize().to(dtype)
 
 

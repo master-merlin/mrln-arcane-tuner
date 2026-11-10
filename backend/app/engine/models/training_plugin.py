@@ -124,22 +124,11 @@ class StandardPlugin(TrainingPlugin):
         except Exception:
             boot_log_file = subprocess.DEVNULL
 
-        # Anti-fragmentation allocator config for the trainer subprocess.
-        # Bucketed training (many distinct latent shapes) produces variably-sized
-        # allocations; without this the caching allocator's reserved pool
-        # fragments per new shape until, on Windows/WDDM, it spills into shared
-        # system memory (a slowdown that reads as a "freeze").
-        #   - expandable_segments:True → reuse a growable segment across shapes
-        #     instead of reserving a fresh fixed segment per shape.
-        # garbage_collection_threshold was removed — it fired below the reserved
-        # plateau and re-fragmented the pool each step (see run_trainer.py).
-        # run_trainer.py also sets this (applies even without a backend restart);
-        # kept here too for the subprocess-env path. Read at CUDA init in the
-        # child. setdefault → a user-provided value is respected.
+        # The trainer's CUDA allocator config (PYTORCH_CUDA_ALLOC_CONF) is chosen by
+        # run_trainer.py alone, before torch starts in the child: expandable segments
+        # on Linux, none on Windows, where torch 2.15's mapping fails under WDDM
+        # (see run_trainer.py). A value in this environment passes through unchanged.
         child_env = os.environ.copy()
-        child_env.setdefault(
-            "PYTORCH_CUDA_ALLOC_CONF", "expandable_segments:True"
-        )
 
         process = subprocess.Popen(
             cmd,

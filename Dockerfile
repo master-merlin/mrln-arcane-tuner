@@ -96,12 +96,10 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
 # NOT a version change: `download.pytorch.org/whl/${TORCH_CUDA}` publishes the
 # same pinned 0.17.0 as `0.17.0+${TORCH_CUDA}`, so this is the pin we already
 # had, fetched from the index that matches the base image.
-# install-deps.sh does NOT need to exclude it, verified rather than assumed: its
-# bare `torchao==0.17.0` in requirements.txt is satisfied by the local version
-# (`Requirement already satisfied: torchao==0.17.0 ... (0.17.0+cu128)`), so the
-# bulk resolve leaves this wheel alone. Keeping it OUT of that exclusion regex
-# matters, because the regex is shared with the local venv and the runtime
-# self-update, where excluding it would silently drop torchao entirely.
+# install-deps.sh excludes torchao with the rest of the torch stack, so neither
+# this build's bulk resolve nor a running container's self-update can replace
+# this wheel with PyPI's. requirements.txt's torchao pin is the LOCAL stack's
+# and may differ from this one; the local installers never run install-deps.sh.
 ARG TORCH_CUDA=cu128
 RUN python -m pip install --break-system-packages \
         torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \

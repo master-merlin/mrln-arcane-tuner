@@ -33,6 +33,11 @@ try:
 except Exception:  # noqa: BLE001 — see the note above
     Int4TilePackedTo4dTensor = None
 
+try:
+    from torchao.quantization import Int8Tensor
+except Exception:  # noqa: BLE001 — see the note above
+    Int8Tensor = None
+
 from ..quantization_base import QuantizationBase
 from app.core.logger import get_logger
 
@@ -131,9 +136,11 @@ class TorchAOBackend(QuantizationBase):
             # trainable_backward, wired in by QuantizationFactory. It takes bf16 weights only.
             _quantize_in_bf16(module, Int4WeightOnlyConfig(int4_packing_format="tile_packed_to_4d"))
         elif scheme == "int8":
-            quantize_(module, Int8WeightOnlyConfig())
+            # Version 2 is Int8Tensor: torchao 0.18's default, asked for so 0.17 makes the same.
+            quantize_(module, Int8WeightOnlyConfig(version=2))
         elif scheme == "int8_dynamic":
-            quantize_(module, Int8DynamicActivationInt8WeightConfig())
+            # Int8Tensor with act_quant_kwargs; its backward comes from trainable_backward.
+            quantize_(module, Int8DynamicActivationInt8WeightConfig(version=2))
         elif scheme == "fp8":
             quantize_(module, Float8WeightOnlyConfig())
         elif scheme == "fp8_dynamic":
@@ -154,6 +161,10 @@ class TorchAOBackend(QuantizationBase):
 
         A cached entry for these schemes is loaded only if its quantized weights are of this type:
         until 2026-11 ``int4`` (and ``nvfp4``, through a fallback) quantized to torchao's plain int4,
-        which has no Windows kernel and no backward.
+        which has no Windows kernel and no backward. Until 2026-11 ``int8`` and ``int8_dynamic`` made
+        torchao's version-1 tensors (``AffineQuantizedTensor``, ``LinearActivationQuantizedTensor``,
+        which torchao 0.18 no longer has); they make ``Int8Tensor`` now.
         """
-        return {"int4": Int4TilePackedTo4dTensor, "nvfp4": NVFP4Tensor}.get(scheme)
+        return {
+            "int4": Int4TilePackedTo4dTensor, "nvfp4": NVFP4Tensor, "int8": Int8Tensor, "int8_dynamic": Int8Tensor,
+        }.get(scheme)

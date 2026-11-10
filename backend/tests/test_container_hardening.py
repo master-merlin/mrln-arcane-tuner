@@ -24,6 +24,7 @@ import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -756,6 +757,14 @@ class TestTheseMatchersActuallyFail:
 # next code in STUB_CODES ("wait" = block until TERM, then record it, exit 0).
 _STUB_PYTHON = r'''#!/bin/sh
 case "$1" in
+  */torch_stack.py)
+    echo "$*" >> "$STUB_CHECK_LOG"
+    if [ -n "${STUB_REAL_PYTHON:-}" ]; then
+      exec "$STUB_REAL_PYTHON" "$@"
+    fi
+    echo "${STUB_CHECK_SAYS:-}" >&2
+    exit "${STUB_CHECK_CODE:-0}"
+    ;;
   */port_resolver.py)
     echo asked >> "$STUB_RESOLVER_LOG"
     echo "${PORT:-8765}"
@@ -814,8 +823,12 @@ class _Supervised:
         assert self.bash is not None  # requires_bash guards every caller
         env = dict(os.environ)
         for stale in ("MRLN_RESTART", "MRLN_SUPERVISED", "PORT", "MRLN_BIND_HOST",
-                      "MRLN_SETTINGS_PATH", "MRLN_AUTH_TOKEN", "NUMBA_CACHE_DIR"):
+                      "MRLN_SETTINGS_PATH", "MRLN_AUTH_TOKEN", "NUMBA_CACHE_DIR",
+                      "MRLN_TORCH_SET", "MRLN_TORCH_STACK_DIR", "MRLN_TORCH_NVIDIA_SMI",
+                      "MRLN_TORCH_INDEX"):
             env.pop(stale, None)
+        self.check_log = tmp / "check_calls.txt"
+        env["STUB_CHECK_LOG"] = self.check_log.as_posix()
         env["PATH"] = os.pathsep.join([str(shim), *_bash_tool_dirs(self.bash)])
         env["MRLN_DATA_DIR"] = str(tmp / "data")
         env["MRLN_APP_DIR"] = (tmp / "app").as_posix()
@@ -848,6 +861,16 @@ class _Supervised:
     def resolver_calls(self) -> int:
         return len(self.resolver_log.read_text(encoding="utf-8").split()) \
             if self.resolver_log.exists() else 0
+
+    def check_calls(self) -> list[str]:
+        if not self.check_log.exists():
+            return []
+        return self.check_log.read_text(encoding="utf-8").splitlines()
+
+    def with_torch_set(self, set_name: str, stack_dir: Path) -> None:
+        """Give the run an image's set and its baked torch_stack.py, as the Dockerfile does."""
+        self.env["MRLN_TORCH_SET"] = set_name
+        self.env["MRLN_TORCH_STACK_DIR"] = _sh_path(stack_dir)
 
 
 class TestEntrypointRelaunchesOnTheSentinel:
@@ -906,6 +929,110 @@ class TestEntrypointRelaunchesOnTheSentinel:
         assert sup.term_mark.exists(), ("the server never received TERM", out)
         assert proc.returncode == 0, (proc.returncode, out)
         assert len(sup.runs()) == 1, "a forwarded TERM must not look like a restart"
+
+
+def _baked_stack(tmp: Path, *, real: bool) -> Path:
+    """/opt/torch-stack as the Dockerfile bakes it: torch_stack.py and its cfg."""
+    stack = tmp / "torch-stack"
+    stack.mkdir()
+    for name in ("torch_stack.py", "torch-stack.cfg"):
+        if real:
+            shutil.copyfile(REPO_ROOT / "backend" / name, stack / name)
+        else:
+            (stack / name).write_text("# stand-in; the stub python answers for it\n", encoding="utf-8")
+    return stack
+
+
+class TestTheEntrypointChecksTheImagesSetAgainstTheHost:
+    """The entrypoint runs ``torch_stack.py check --set $MRLN_TORCH_SET`` against the baked
+    copy before anything that needs the GPU: 0 starts, 3 refuses (the check's own text names
+    the images that fit), 4 (no GPU information) warns and starts.
+
+    The first three tests prove the entrypoint's handling of each exit code, with the
+    check stubbed. The last ones run the REAL checker under the entrypoint, with canned
+    nvidia-smi output (MRLN_TORCH_NVIDIA_SMI): the cu126 image on a cc 12.0 GPU and the
+    cu132 image on driver 575. Neither proves the NVIDIA runtime's own gate, which only a
+    real container run sees.
+    """
+
+    @requires_bash
+    def test_a_fitting_set_starts_the_server_after_the_check(self, tmp_path):
+        sup = _Supervised(tmp_path)
+        sup.with_torch_set("cu132", _baked_stack(tmp_path, real=False))
+        code, out = sup.run("0")
+        calls = sup.check_calls()
+        assert len(calls) == 1 and calls[0].endswith("torch_stack.py check --set cu132"), (calls, out)
+        assert calls[0].startswith(sup.env["MRLN_TORCH_STACK_DIR"]), (calls, out)
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+
+    @requires_bash
+    def test_a_refused_set_never_starts_the_server(self, tmp_path):
+        sup = _Supervised(tmp_path)
+        sup.with_torch_set("cu126", _baked_stack(tmp_path, real=False))
+        sup.env["STUB_CHECK_CODE"] = "3"
+        sup.env["STUB_CHECK_SAYS"] = "[torch] REFUSED: stand-in reason"
+        code, out = sup.run("0")
+        assert sup.runs() == [], ("the server started on a refused set", out)
+        assert code != 0, (code, out)
+        assert "[torch] REFUSED: stand-in reason" in out, out
+        assert "refusing to start" in out, out
+
+    @requires_bash
+    def test_no_gpu_information_warns_and_starts(self, tmp_path):
+        sup = _Supervised(tmp_path)
+        sup.with_torch_set("cu132", _baked_stack(tmp_path, real=False))
+        sup.env["STUB_CHECK_CODE"] = "4"
+        code, out = sup.run("0")
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+        assert "WARNING" in out and "no GPU" in out, out
+
+    def _real(self, tmp_path: Path, set_name: str, smi: str) -> _Supervised:
+        sup = _Supervised(tmp_path)
+        sup.with_torch_set(set_name, _baked_stack(tmp_path, real=True))
+        canned = tmp_path / "nvidia-smi.csv"
+        canned.write_text(smi, encoding="utf-8")
+        sup.env["MRLN_TORCH_NVIDIA_SMI"] = canned.as_posix()
+        sup.env["STUB_REAL_PYTHON"] = _sh_path(Path(sys.executable))
+        return sup
+
+    @requires_bash
+    def test_the_cu126_image_refuses_a_blackwell_gpu_and_names_latest(self, tmp_path):
+        sup = self._real(tmp_path, "cu126", "616.92, 12.0\n")
+        code, out = sup.run("0")
+        assert sup.runs() == [] and code != 0, (sup.runs(), code, out)
+        assert "no kernels for compute capability 12.0" in out, out
+        assert "mastermerlin/mrln-arcane-tuner:latest " in out, out
+        assert "set     torch    driver" in out, "the refusal does not print the table\n" + out
+
+    @requires_bash
+    def test_the_cu132_image_refuses_a_driver_below_its_floor(self, tmp_path):
+        sup = self._real(tmp_path, "cu132", "575.64, 8.9\n")
+        code, out = sup.run("0")
+        assert sup.runs() == [] and code != 0, (sup.runs(), code, out)
+        assert "driver 575 is below R580" in out, out
+        assert "mastermerlin/mrln-arcane-tuner:latest-cu126" in out, out
+
+    @requires_bash
+    def test_the_cu132_image_starts_on_a_fitting_host(self, tmp_path):
+        sup = self._real(tmp_path, "cu132", "616.92, 12.0\n")
+        code, out = sup.run("0")
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+        assert "fits this machine" in out, out
+
+    @requires_bash
+    def test_a_host_without_gpus_starts_with_a_warning(self, tmp_path):
+        sup = self._real(tmp_path, "cu132", "")
+        code, out = sup.run("0")
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+        assert "WARNING" in out, out
+
+    def test_the_check_comes_before_the_sidecar_and_the_server(self):
+        code = _code_only(_entrypoint())
+        check = code.find('torch_stack.py" check --set "$MRLN_TORCH_SET"')
+        assert check != -1, "the entrypoint does not run the set check"
+        assert check < code.index("ollama serve") < code.index("python -m uvicorn"), (
+            "the set check must run before anything that needs the GPU"
+        )
 
 
 class TestNumbaHasAWritableCacheLocation:

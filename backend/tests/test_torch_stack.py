@@ -141,7 +141,7 @@ class TestInstall:
         commands = torch_stack.install_commands(SETS["cu132"], "py", platform="win32")
         index = [c[c.index("--index-url") + 1] for c in commands if "--index-url" in c]
         assert index == ["https://download.pytorch.org/whl/cu132"] * 2
-        assert any("torchaudio==2.11.1" in c and "--no-deps" in c for c in commands)
+        assert any("torchaudio==2.11.1+cu132" in c and "--no-deps" in c for c in commands)
 
     @pytest.mark.parametrize("name", ["cu132", "cu126", "cpu"])
     def test_on_linux_torchao_comes_from_the_sets_own_index(self, name):
@@ -150,6 +150,22 @@ class TestInstall:
         (torchao,) = [c for c in commands if any(a.startswith("torchao==") for a in c)]
         assert torchao[torchao.index("--index-url") + 1] == f"https://download.pytorch.org/whl/{name}"
         assert "--no-deps" in torchao
+
+    @pytest.mark.parametrize("name, platform, torchao", [
+        ("cu132", "win32", "torchao==0.18.0"),
+        ("cu126", "linux", "torchao==0.18.0+cu126"),
+        ("cpu", "linux", "torchao==0.18.0+cpu"),
+        ("cpu", "win32", "torchao==0.18.0"),
+    ])
+    def test_every_build_from_a_sets_index_is_pinned_with_its_local_version(self, name, platform, torchao):
+        """A bare ``torch==2.15.0`` is satisfied by 2.15.0 from ANY index (+cpu, +cu134), so pip would
+        keep another build in a reused venv; the local version makes the set's own build the only fit."""
+        stack = SETS[name]
+        requirements = [a for c in torch_stack.install_commands(stack, "py", platform) for a in c if "==" in a]
+        for dist, version in (("torch", stack.torch), ("torchvision", stack.torchvision),
+                              ("torchaudio", stack.torchaudio)):
+            assert f"{dist}=={version}+{name}" in requirements
+        assert torchao in requirements
 
     def test_on_windows_torchao_comes_from_pypi(self):
         # The CUDA indexes publish torchao for Linux only; PyPI's Windows wheel is pure python.
@@ -175,6 +191,24 @@ class TestInstall:
         assert "this machine: cc 8.6 (driver 575.64)" in done.stderr, "the install must name what it detected"
         assert "cu126: torch 2.14.1" in done.stderr
         assert "torch==2.14.1" in done.stderr
+
+    def test_the_cpu_override_never_probes_nvidia(self, monkeypatch, capsys):
+        """The refusal tells a broken driver to set MRLN_TORCH_INDEX=cpu: that must then work."""
+        def broken_driver():
+            raise torch_stack.Refused("nvidia-smi failed (exit 9): driver/library version mismatch")
+
+        monkeypatch.setattr(torch_stack, "detect_gpus", broken_driver)
+        monkeypatch.setenv("MRLN_TORCH_INDEX", "cpu")
+        assert torch_stack.main(["select"]) == 0
+        assert capsys.readouterr().out.strip() == "cpu"
+
+    def test_without_an_override_a_broken_driver_is_still_refused(self, monkeypatch):
+        def broken_driver():
+            raise torch_stack.Refused("nvidia-smi failed (exit 9)")
+
+        monkeypatch.setattr(torch_stack, "detect_gpus", broken_driver)
+        monkeypatch.delenv("MRLN_TORCH_INDEX", raising=False)
+        assert torch_stack.main(["select"]) == torch_stack.REFUSED
 
     def test_a_refusal_exits_non_zero_before_any_install(self, tmp_path):
         canned = tmp_path / "smi.txt"

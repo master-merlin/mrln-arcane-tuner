@@ -220,11 +220,16 @@ def install_commands(stack: StackSet, python: str, platform: str = sys.platform)
     """The pip commands that install ``stack`` into ``python``."""
     index = INDEX_URL.format(name=stack.name)
     pip = [python, "-m", "pip", "install"]
+    # Each build from the set's index is pinned WITH its local version (torch==2.15.0+cu132): a bare
+    # ==2.15.0 is satisfied by 2.15.0 from any index (+cpu, +cu134), so pip would keep another build
+    # already in a reused venv, and only verify would notice.
+    local = f"+{stack.name}"
+    torchao = f"torchao=={stack.torchao}" + (local if _torchao_from_index(platform) else "")
     commands = [
-        pip + [f"torch=={stack.torch}", f"torchvision=={stack.torchvision}", "--index-url", index],
+        pip + [f"torch=={stack.torch}{local}", f"torchvision=={stack.torchvision}{local}", "--index-url", index],
         # --no-deps: torch is already in place; it keeps a torchaudio pin from ever moving torch.
-        pip + ["--no-deps", f"torchaudio=={stack.torchaudio}", "--index-url", index],
-        pip + ["--no-deps", f"torchao=={stack.torchao}"] + _torchao_index(stack, platform),
+        pip + ["--no-deps", f"torchaudio=={stack.torchaudio}{local}", "--index-url", index],
+        pip + ["--no-deps", torchao] + _torchao_index(stack, platform),
     ]
     pins = stack.pins(platform)
     for name in ("triton-windows", "triton"):
@@ -322,11 +327,15 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     _, sets = read_stack()
+    override = os.environ.get("MRLN_TORCH_INDEX") or None
     try:
-        gpus = detect_gpus()
+        # The CPU set needs no GPU, so an override naming it never asks nvidia-smi: a broken
+        # driver is exactly when the refusal tells the user to set MRLN_TORCH_INDEX=cpu.
+        cpu_override = override in sets and sets[override].driver_min is None
+        gpus = None if cpu_override else detect_gpus()
         if gpus:
             print(f"[torch] {machine(gpus)}", file=sys.stderr)
-        stack, how = choose(sets, gpus, os.environ.get("MRLN_TORCH_INDEX") or None)
+        stack, how = choose(sets, gpus, override)
     except Refused as refused:
         print(f"[torch] REFUSED: {refused}", file=sys.stderr)
         return REFUSED

@@ -53,6 +53,8 @@ import torch.nn as nn
 
 from app.engine.core.definitions import ModelDefinition
 from app.engine.core.interfaces import IModelDriver
+from app.engine.models.families.minimax_h3_shared import flow as h3_flow
+from app.engine.models.families.minimax_h3_shared import text as h3_text
 
 from .packing import H3PackedLayout
 from .settings import H3EffectiveSettings
@@ -183,22 +185,13 @@ class MiniMaxH3Driver(IModelDriver):
 
     # --- Phase 2: Text Encoding (plan row 2.1) ---
     #
-    # Evidence for the tap: MiniMax-H3 README "The H3-Encoder uses the full
-    # pretrained weights of Qwen3-VL-32B and provides the hidden states from
-    # its 50th layer" (research §4); ai-toolkit `text_encoder.py` "the
-    # **unnormalized** hidden_states[50] … hidden_states[0] is the embedding
-    # output". transformers 5.14.1 (installed; probed on a tiny Qwen3-VL,
-    # `.agent/workdir/minimax-pr1/hs_probe.py`): `hidden_states` has
-    # `num_hidden_layers + 1` entries, `[0]` == the input embeddings, only
-    # `[-1]` carries the final RMSNorm — so `[50]` on the 64-layer stack is
-    # decoder layer 49's raw output, exactly the conditioning H3 was trained on.
-    # Presentation: raw tokens, no chat template, no special tokens
-    # (ai-toolkit, same file); the caption is capped at `te.max_length`.
+    # The Qwen3-VL layer tap (raw tokens, no special tokens, the caption
+    # capped at `te.max_length`) and the cache key are shared with the image
+    # model (`minimax_h3_shared.text`, which carries the evidence); this
+    # family reads the tap index and the cap from its definition and keys its
+    # cache under the prefix `TE_CACHE_PREFIX`, which existing caches carry.
 
-    def _tokenizer_only(self) -> Any:
-        """The tokenizer under the ``AutoProcessor`` (or a bare tokenizer)."""
-        tok = self.tokenizer
-        return getattr(tok, "tokenizer", tok)
+    TE_CACHE_PREFIX = "minimax_h3|"
 
     def _tap_index(self) -> int:
         return int((self.definition.architecture_params or {})["te.hidden_state_tap_index"])
@@ -213,54 +206,20 @@ class MiniMaxH3Driver(IModelDriver):
         cached = getattr(self, "_tokenizer_fp", None)
         if cached is not None:
             return cached
-        tok = self._tokenizer_only()
-        vocab = tok.get_vocab()
-        digest = hashlib.sha256()
-        digest.update(type(tok).__name__.encode("utf-8"))
-        for token, idx in sorted(vocab.items(), key=lambda kv: (kv[1], kv[0])):
-            digest.update(f"{idx}:{token}\n".encode("utf-8"))
-        self._tokenizer_fp = digest.hexdigest()
+        self._tokenizer_fp = h3_text.tokenizer_fingerprint(self.tokenizer)
         return self._tokenizer_fp
 
     def te_cache_scope(self) -> str:
         """Path segment the disk cache lives under: tap index + tokenizer."""
-        return f"tap{self._tap_index()}-{self.tokenizer_fingerprint()[:16]}"
+        return h3_text.te_cache_scope(self._tap_index(), self.tokenizer_fingerprint())
 
     def te_cache_key(self, prompt: str) -> str:
         """The string a cached embedding is keyed on — every input the
         embedding is a function of: definition, tap index, tokenizer, prompt.
         Human-readable; ``TextEmbeddingCache`` hashes it for the filename."""
-        return (
-            f"minimax_h3|{self.definition.id}|tap={self._tap_index()}"
-            f"|tok={self.tokenizer_fingerprint()[:16]}|{prompt}"
+        return h3_text.te_cache_key(
+            self.TE_CACHE_PREFIX, self.definition.id, self._tap_index(), self.tokenizer_fingerprint(), prompt
         )
-
-    def _encode_one(self, caption: str) -> torch.Tensor:
-        """``[L, D]`` layer-tap hidden states for ONE caption, no padding."""
-        tok = self._tokenizer_only()
-        ids = list(tok(caption, add_special_tokens=False)["input_ids"])[: self._prompt_max_tokens()]
-        if not ids:
-            # Empty (dropout / unconditional) prompt: one pad token keeps the
-            # sequence non-degenerate (ai-toolkit's fallback).
-            ids = [getattr(tok, "pad_token_id", None) or 0]
-        input_ids = torch.tensor([ids], dtype=torch.long, device=self.device)
-        te = self.text_encoder
-        inner = getattr(te, "model", te)  # skip the LM head — dead weight here
-        tap = self._tap_index()
-        with torch.no_grad():
-            out = inner(
-                input_ids=input_ids,
-                attention_mask=torch.ones_like(input_ids),
-                output_hidden_states=True,
-                use_cache=False,
-            )
-        hidden_states = out.hidden_states
-        if tap >= len(hidden_states):
-            raise ValueError(
-                f"te.hidden_state_tap_index={tap} but the encoder returned "
-                f"{len(hidden_states)} hidden states (num_hidden_layers + 1)"
-            )
-        return hidden_states[tap][0]
 
     def encode_text(self, captions: list[str], dtype: torch.dtype) -> Any:
         """Qwen3-VL layer-tap conditioning, batched by right-padding.
@@ -270,29 +229,25 @@ class MiniMaxH3Driver(IModelDriver):
         batch is assembled by zero-padding to the longest — ``attention_mask``
         marks the real rows.
         """
-        from app.engine.core.text_encoding import TextEncoderOutput
-
         if self.text_encoder is None or self.tokenizer is None:
             raise RuntimeError(
                 "minimax_h3 encode_text: text_encoder/tokenizer not assigned — "
                 "the encoder was released or assign_components() never ran"
             )
-        rows = [self._encode_one(cap) for cap in captions]
-        max_len = max(r.shape[0] for r in rows)
-        emb = rows[0].new_zeros((len(rows), max_len, rows[0].shape[-1]))
-        mask = torch.zeros((len(rows), max_len), dtype=torch.long, device=rows[0].device)
-        for i, r in enumerate(rows):
-            emb[i, : r.shape[0]] = r
-            mask[i, : r.shape[0]] = 1
-        return TextEncoderOutput(embeddings=emb.to(dtype=dtype), attention_mask=mask)
+        return h3_text.encode_captions(
+            self.tokenizer,
+            self.text_encoder,
+            captions,
+            dtype,
+            tap=self._tap_index(),
+            max_tokens=self._prompt_max_tokens(),
+            device=self.device,
+        )
 
     # --- Text-encoder lifecycle: released BEFORE the DiT loads ---
 
     def text_encoder_weight_bytes(self) -> int:
-        te = self.text_encoder
-        if te is None or not hasattr(te, "parameters"):
-            return 0
-        return sum(p.numel() * p.element_size() for p in te.parameters())
+        return h3_text.module_weight_bytes(self.text_encoder)
 
     def release_text_encoders(self) -> None:
         """Drop EVERY reference the driver holds: the attribute
@@ -460,15 +415,9 @@ class MiniMaxH3Driver(IModelDriver):
         timesteps: torch.Tensor,
     ) -> torch.Tensor:
         """``x_t = t·x₀ + σ·noise`` with ``σ = 1 − t`` — H3's clock (``t = 1``
-        clean), identical to ``MiniMaxH3Scheduler.scale_noise``. Written with
-        the noise weight from ``schedule.t_to_sigma`` so the family keeps ONE
-        conversion site and both endpoints are exact."""
-        from .schedule import t_to_sigma
-
-        t = timesteps.to(device=latents.device, dtype=latents.dtype)
-        while t.ndim < latents.ndim:
-            t = t.unsqueeze(-1)
-        return t * latents + t_to_sigma(t) * noise
+        clean), identical to ``MiniMaxH3Scheduler.scale_noise``. The shared
+        convention (``minimax_h3_shared.flow``); both endpoints are exact."""
+        return h3_flow.add_noise(latents, noise, timesteps)
 
     def compute_target(
         self,
@@ -479,7 +428,7 @@ class MiniMaxH3Driver(IModelDriver):
         """The data-ward velocity ``v = x₀ − noise`` — the unique target the
         reference scheduler's ``step`` inverts. The house default
         (``noise − latents``) is the OPPOSITE sign on this family."""
-        return latents - noise
+        return h3_flow.velocity_target(latents, noise)
 
     def max_distinct_timesteps(self) -> int:
         """How many DISTINCT timestep values one forward may carry: ``t_v``,

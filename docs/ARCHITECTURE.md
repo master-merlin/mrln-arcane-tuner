@@ -192,7 +192,7 @@ engine/
 ├── factories/             # Optimizer + quantization (bitsandbytes/quanto/torchao) factories + base/impl subdirs
 ├── models/
 │   ├── registry.py        # Model family registry (plugin-driven) + count()
-│   └── families/          # 32 families + 2 support packages (see below)
+│   └── families/          # 32 families + 3 support packages (see below)
 ├── strategies/            # EMA, timestep sampling, noise interpolation, sigma schedule/tracker
 └── utils/                 # LoRA tools + conversion, safe save, introspection, VRAM/cost estimators, override manager
 ```
@@ -200,7 +200,7 @@ engine/
 
 #### Model families
 
-**32 shipped families across 58 definitions**, plus two support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share) and `prx_shared` (the same role for `prx` and `prx_pixel`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (29), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
+**32 shipped families across 58 definitions**, plus three support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share), `prx_shared` (the same role for `prx` and `prx_pixel`) and `minimax_h3_shared` (the MiniMax-H3 text tap and text-cache key, the text-encoder release, the pixel adapter, the inverted flow-match convention and the native LoRA artifact core, used by `minimax_h3`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (29), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
 
 Counts here are pinned by `backend/tests/test_architecture_family_counts.py` — the table below is generated from the tree, and a family added without a row in it fails the gate. That guard exists because this section said "13 families" for fifteen families' worth of releases.
 
@@ -251,7 +251,7 @@ make un-gating safe later; a gate that empties those tables has been built one l
 never built, and before the gate a user could pick it, price it, queue it and start it, learning
 otherwise 90 seconds into a run.
 
-Each family implements `Loader` (`IModelLoader`), `Saver` (`IModelSaver`), `Driver` (`IModelDriver`, phased forward pass), `Trainer` (`GenericTrainingPipeline` hooks), and `Sampler` (inference preview, with true cond+uncond CFG on image and video families). The `wan_shared` package holds the code wan21/wan22/wan22_ti2v_5b share so they stay byte-identical by construction; `prx_shared` does the same for `prx` and `prx_pixel`.
+Each family implements `Loader` (`IModelLoader`), `Saver` (`IModelSaver`), `Driver` (`IModelDriver`, phased forward pass), `Trainer` (`GenericTrainingPipeline` hooks), and `Sampler` (inference preview, with true cond+uncond CFG on image and video families). The `wan_shared` package holds the code wan21/wan22/wan22_ti2v_5b share so they stay byte-identical by construction; `prx_shared` does the same for `prx` and `prx_pixel`, and `minimax_h3_shared` for the MiniMax-H3 models.
 
 **Training IPC:** jobs run as subprocesses (1 process = 1 job) launched from `run_trainer.py`, which sets `PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True` on Linux to bound reserved-pool fragmentation, and leaves it unset on Windows: Windows torch up to 2.12 ignored the option, and 2.15's virtual-memory mapping fails under WDDM. The trainer warms batches largest-bucket-first (worst-case allocation up front), writes JSON-Lines to `{output_dir}/job_log.jsonl` (read by `JobManager`'s log tailer), and polls `{output_dir}/signal.json` each step for pause/resume/soft-stop. `JobManager` runs a PID watchdog and, on a transient GPU fault (TDR/GpuRcReset), performs a bounded auto-resume when the toggle is enabled. Jobs persist in SQLite and are re-attached or recovered after a backend restart.
 

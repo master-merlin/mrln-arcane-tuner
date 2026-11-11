@@ -17,7 +17,8 @@ The image build and the container's start name their set instead, and never choo
                                                   # 0 fits, 3 refused (with the images that fit),
                                                   # 4 no GPU information (no or a failing nvidia-smi)
     python torch_stack.py constraints --python <py> <out>
-                                                  # the installed stack as pip constraints
+                                                  # the installed stack as pip constraints;
+                                                  # 0 written, 5 confirmed no torch, else a fault
     python torch_stack.py verify --set <name> [--platform linux] --python <py>
                                                   # the installed stack equals that set
 
@@ -55,6 +56,9 @@ STACK_DISTRIBUTIONS = ("torch", "torchvision", "torchaudio", "torchao", "triton"
 REFUSED = 2
 CHECK_REFUSED = 3
 CHECK_NO_GPU_INFO = 4
+#: ``constraints``: confirmed that no torch is installed. Never 1, which any unhandled exception
+#: exits with, nor 2 (argparse's): a probe that crashed must never read as "nothing to keep".
+CONSTRAINTS_NO_TORCH = 5
 
 #: The published container images. The default set's image takes the unsuffixed ``:latest``.
 IMAGE = "mastermerlin/mrln-arcane-tuner"
@@ -411,7 +415,7 @@ def main(argv: list[str] | None = None) -> int:
         pins = constraint_lines(installed_versions(args.python))
         if not any(p.startswith("torch==") for p in pins):
             print(f"[torch] no torch is installed in {args.python}: no constraints written", file=sys.stderr)
-            return 1
+            return CONSTRAINTS_NO_TORCH
         Path(args.out).write_text("# The installed torch stack: torch_stack.py constraints\n"
                                   + "\n".join(pins) + "\n", encoding="utf-8")
         print(f"[torch] constraints: {' '.join(pins)}", file=sys.stderr)

@@ -64,19 +64,32 @@ STACK_PY=/opt/torch-stack/torch_stack.py
 [ -f "$STACK_PY" ] || STACK_PY="$HERE/torch_stack.py"
 STACK_CFG="$(dirname "$STACK_PY")/torch-stack.cfg"
 
-# 0. The installed stack as constraints. Exit 1 means no torch is installed
-#    (nothing to keep), so the install runs unconstrained, as it always did.
+# 0. The installed stack as constraints. Fail closed: only exit 0 with a torch pin
+#    written constrains the install, and only exit 5 -- torch_stack.py's own
+#    "confirmed: no torch is installed" -- lets it run unconstrained, as it always
+#    did, and never in an image (MRLN_TORCH_SET, or the baked copy), which always
+#    has its stack. Anything else -- a crash exits 1, argparse 2 -- is a probe that
+#    could not say what is installed, and pip never runs after it.
+NO_TORCH=5
 PY_EXE="$(python -c 'import sys; print(sys.executable)')"
 WITH_C=()
 set +e
 python "$STACK_PY" constraints --python "$PY_EXE" "$CONSTRAINTS"
 RC=$?
 set -e
-if [ "$RC" -eq 0 ]; then
+if [ "$RC" -eq 0 ] && grep -qE '^torch==' "$CONSTRAINTS"; then
   WITH_C=(-c "$CONSTRAINTS")
-elif [ "$RC" -ne 1 ]; then
-  echo "install-deps.sh: could not read the installed torch stack (torch_stack.py constraints exited $RC)" >&2
-  exit "$RC"
+elif [ "$RC" -eq "$NO_TORCH" ] && [ -z "${MRLN_TORCH_SET:-}" ] && [ ! -f /opt/torch-stack/torch_stack.py ]; then
+  echo "install-deps.sh: no torch stack is installed, so none is kept; installing unconstrained" >&2
+else
+  if [ "$RC" -eq "$NO_TORCH" ]; then
+    echo "install-deps.sh: this is an image (MRLN_TORCH_SET='${MRLN_TORCH_SET:-}'), yet no installed torch stack was found" >&2
+  else
+    echo "install-deps.sh: could not read the installed torch stack (torch_stack.py constraints exited $RC; constraints written: $(grep -cE '^torch==' "$CONSTRAINTS" || true) torch pin)" >&2
+  fi
+  echo "install-deps.sh: nothing was installed." >&2
+  [ "$RC" -ne 0 ] && exit "$RC"
+  exit 1
 fi
 
 # The image that carries a newer stack: :latest for the default set, else :latest-<set>.

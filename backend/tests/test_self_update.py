@@ -390,10 +390,12 @@ def sandbox(tmp_path_factory):
     return {"root": root, "wheels": wheels, "venv": venv, "python": python, "req": req, "stack": stack}
 
 
-def _run(sandbox, script: Path, *, torch_set: str | None = None) -> subprocess.CompletedProcess:
+def _run(sandbox, script: Path, *, torch_set: str | None = None,
+         extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess:
     bash = find_bash(script)
     assert bash, bash_skip_reason(script)
-    env = {k: v for k, v in os.environ.items() if k not in ("PYTHONPATH", "PYTHONHOME", "MRLN_TORCH_SET")}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("PYTHONPATH", "PYTHONHOME", "MRLN_TORCH_SET", "PIP_LOG")}
     scripts = str(sandbox["python"].parent)
     env["PATH"] = os.pathsep.join([scripts, *_bash_tool_dirs(bash), env.get("PATH", "")])
     env["VIRTUAL_ENV"] = str(sandbox["venv"])
@@ -405,6 +407,7 @@ def _run(sandbox, script: Path, *, torch_set: str | None = None) -> subprocess.C
     env["TMPDIR"] = str(tmp)
     if torch_set:
         env["MRLN_TORCH_SET"] = torch_set
+    env.update(extra_env or {})
     return subprocess.run(
         [bash, str(script), str(sandbox["req"])],
         cwd=sandbox["root"], env=env, capture_output=True, text=True, timeout=_TIMEOUT_S,
@@ -436,10 +439,72 @@ def test_install_deps_a_non_default_set_names_its_own_image(sandbox):
     assert _installed(sandbox["python"])["torch"] == sandbox["stack"]["torch"]
 
 
+def _with_probe(tmp_path: Path, probe: str) -> Path:
+    """install-deps.sh beside a stand-in torch_stack.py whose `constraints` runs ``probe``."""
+    d = tmp_path / "probe"
+    d.mkdir()
+    shutil.copy(INSTALL_DEPS, d / "install-deps.sh")
+    (d / "torch_stack.py").write_text(probe, encoding="utf-8")
+    return d / "install-deps.sh"
+
+
+def _no_torch_code() -> int:
+    spec = importlib.util.spec_from_file_location("torch_stack_codes", BACKEND / "torch_stack.py")
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module.CONSTRAINTS_NO_TORCH
+
+
+# Each a probe that did NOT confirm the installed stack. Exit 1 is what any unhandled exception
+# gives, so it can never mean "no torch": that has a code of its own.
+_PROBE_FAILURES = {
+    "raises": "raise RuntimeError('importlib.metadata blew up')\n",
+    "exit 1": "import sys\nsys.exit(1)\n",
+    "exit 2": "import sys\nsys.exit(2)\n",
+    "says 0 but writes nothing": "import sys\nsys.exit(0)\n",
+    "writes no torch pin": "import sys\nopen(sys.argv[-1], 'w').write('# nothing\\n')\nsys.exit(0)\n",
+}
+
+
+@in_sandbox
+@requires_bash
+@pytest.mark.parametrize("failure", list(_PROBE_FAILURES))
+def test_install_deps_never_runs_pip_after_a_failed_stack_probe(sandbox, tmp_path, failure):
+    """A probe that cannot say what is installed must stop the script: unconstrained, the
+    fixture would replace the stack (the control below proves it would)."""
+    script = _with_probe(tmp_path, _PROBE_FAILURES[failure])
+    pip_log = tmp_path / "pip.log"
+    before = _installed(sandbox["python"])
+    proc = _run(sandbox, script, extra_env={"PIP_LOG": str(pip_log)})
+    after = _installed(sandbox["python"])
+
+    assert proc.returncode != 0, f"install-deps.sh went on after the probe failed:\n{proc.stderr}"
+    assert not pip_log.exists(), f"pip ran after the probe failed:\n{proc.stderr}"
+    assert after == before
+    assert "torch stack" in proc.stderr, proc.stderr
+
+
+@in_sandbox
+@requires_bash
+def test_install_deps_in_an_image_requires_the_constraints(sandbox, tmp_path):
+    """An image always has its baked stack, so "no torch" there is a fault, never a licence."""
+    code = _no_torch_code()
+    script = _with_probe(tmp_path, f"import sys\nsys.exit({code})\n")
+    pip_log = tmp_path / "pip.log"
+    before = _installed(sandbox["python"])
+    proc = _run(sandbox, script, torch_set="cu132", extra_env={"PIP_LOG": str(pip_log)})
+
+    assert proc.returncode != 0, proc.stderr
+    assert not pip_log.exists(), f"pip ran in an image without its constraints:\n{proc.stderr}"
+    assert _installed(sandbox["python"]) == before
+
+
 @in_sandbox
 @requires_bash
 def test_install_deps_control_without_the_constraint_the_fixture_replaces_torch(sandbox, tmp_path):
-    """The same script, where no torch is reported (constraints exit 1): today's behaviour.
+    """The same script, where no torch is confirmed (constraints' own no-torch code), outside an
+    image: the unconstrained install, as it always was.
 
     Runs last in this module: it is the run that breaks the sandbox's stack.
     """
@@ -447,7 +512,8 @@ def test_install_deps_control_without_the_constraint_the_fixture_replaces_torch(
     ctl.mkdir()
     shutil.copy(INSTALL_DEPS, ctl / "install-deps.sh")
     (ctl / "torch_stack.py").write_text(
-        "import sys\nprint('[torch] no torch is installed: no constraints written', file=sys.stderr)\nsys.exit(1)\n",
+        "import sys\nprint('[torch] no torch is installed: no constraints written', file=sys.stderr)\n"
+        f"sys.exit({_no_torch_code()})\n",
         encoding="utf-8",
     )
     proc = _run(sandbox, ctl / "install-deps.sh")

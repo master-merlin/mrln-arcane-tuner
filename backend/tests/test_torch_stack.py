@@ -438,8 +438,21 @@ class TestConstraints:
     def test_no_torch_installed_writes_nothing(self, monkeypatch, tmp_path):
         monkeypatch.setattr(torch_stack, "installed_versions", lambda python: dict.fromkeys(torch_stack.STACK_DISTRIBUTIONS))
         out = tmp_path / "c.txt"
-        assert torch_stack.main(["constraints", "--python", "py", str(out)]) == 1
+        code = torch_stack.main(["constraints", "--python", "py", str(out)])
+        assert code == torch_stack.CONSTRAINTS_NO_TORCH
         assert not out.exists()
+
+    def test_confirmed_absence_has_a_code_no_crash_can_give(self):
+        """An unhandled exception exits 1 and argparse exits 2: neither may read as "no torch"."""
+        assert torch_stack.CONSTRAINTS_NO_TORCH not in (0, 1, 2)
+
+    def test_a_failing_probe_is_not_absence(self, monkeypatch, tmp_path):
+        def broken(python):
+            raise subprocess.CalledProcessError(1, [python, "-c", "..."])
+
+        monkeypatch.setattr(torch_stack, "installed_versions", broken)
+        with pytest.raises(subprocess.CalledProcessError):
+            torch_stack.main(["constraints", "--python", "py", str(tmp_path / "c.txt")])
 
 
 class TestVerifyANamedSet:

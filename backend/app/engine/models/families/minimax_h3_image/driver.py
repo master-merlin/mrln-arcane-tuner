@@ -137,10 +137,10 @@ class MiniMaxH3ImageDriver(IModelDriver):
         return torch.bfloat16
 
     def get_saver(self) -> Any:
-        raise NotImplementedError(
-            "minimax_h3_image: the native-layout LoRA saver is not wired yet; "
-            "it lands with the family's LoRA key map"
-        )
+        """The native-layout LoRA saver (``saver.py``, keys from ``lora_keys.py``)."""
+        from .saver import MiniMaxH3ImageSaver
+
+        return MiniMaxH3ImageSaver()
 
     # --- Text encoding ---
 

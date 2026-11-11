@@ -114,6 +114,14 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
                     "masked training is not supported for this family. Turn masking off for this dataset"
                 )
 
+    def _create_sampler(self):
+        """The 6-step preview sampler when sampling is on (``sample_every_n_steps > 0``)."""
+        if int(self.config.get("sample_every_n_steps", 0) or 0) > 0:
+            from .sampler import MiniMaxH3ImageSampler
+
+            return MiniMaxH3ImageSampler(self)
+        return None
+
     # ── CLOBBER hooks, delegated explicitly ───────────────────────────────
 
     def sample_timesteps(self, batch_size: int, latents: torch.Tensor | None = None) -> torch.Tensor:

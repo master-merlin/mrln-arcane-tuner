@@ -12,9 +12,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
-import re
 import subprocess
-import tempfile
 import time
 from enum import Enum
 
@@ -35,15 +33,8 @@ _CHECK_INTERVAL_S = 1800.0  # periodic availability check (30 min)
 _PYTHON = "python"
 _BASH = "bash"
 
-# Same package set install-deps.sh excludes from its requirements install: the
-# torch stack (torch/torchvision/torchaudio/torchao/triton/triton-windows) is
-# baked into the image from its CUDA index, never resolved from requirements.txt,
-# whose pins are the local stack. Used only by the install-deps.sh-missing
-# fallback below.
-_TORCH_STACK_RE = re.compile(
-    r"^\s*(torch|torchvision|torchaudio|torchao|triton|triton-windows)(?=[\s=<>!~#]|$)",
-    re.IGNORECASE,
-)
+_NO_INSTALLER = ("backend/install-deps.sh is missing from the pulled checkout, and only it "
+                 "keeps the installed torch stack")
 
 
 class UpdateState(str, Enum):
@@ -211,6 +202,19 @@ class SelfUpdateService:
             # scenedetect / imageio-ffmpeg for video training) would pull the
             # code that imports it but never install it, crashing on restart.
             if self._req_blob() != req_before:
+                # install-deps.sh is the only installer that keeps the image's
+                # torch stack: it writes pip's constraints from the installed
+                # stack. Without it nothing may run pip, since a package that
+                # needs another torch would replace the stack and the install
+                # would SUCCEED, so no rollback would ever see it. Refused here,
+                # before anything is listed or installed; the pull is undone.
+                if not os.path.isfile(self._install_script()):
+                    note = await asyncio.to_thread(self._roll_back, head_before)
+                    error = (f"{_NO_INSTALLER}, so the update's dependencies were not "
+                             f"installed ({note})")
+                    logger.error("self_update_failed", error=error)
+                    self._set_state(UpdateState.ERROR, error=error)
+                    return
                 # A failed update must leave ONE revision: its code and its
                 # packages. install-deps.sh is several pip runs, so a later one
                 # can fail after the bulk install already moved packages, and
@@ -364,44 +368,26 @@ class SelfUpdateService:
         rc, out, _ = self._run_git(["rev-parse", "HEAD:backend/requirements.txt"])
         return out.strip() if rc == 0 else ""
 
+    def _install_script(self) -> str:
+        return os.path.join(self.app_dir, "backend", "install-deps.sh")
+
     async def _install_backend_deps(self) -> None:
         """Reinstall backend Python deps after a pull that touched
-        requirements.txt. Mirrors the Docker build via install-deps.sh (which
-        handles the scenedetect --no-deps trap); falls back to a plain install
-        if the script is absent. Container-only, so --break-system-packages
-        matches the image build. Raises on failure → caller flags ERROR and
-        skips the restart, leaving the still-running old process intact."""
+        requirements.txt, through install-deps.sh, as the Docker build does: it
+        keeps the installed torch stack and handles the --no-deps packages.
+        There is no other installer: without the script this raises before any
+        pip runs. Raises on failure → caller flags ERROR and skips the restart,
+        leaving the still-running old process intact."""
         backend = os.path.join(self.app_dir, "backend")
-        script = os.path.join(backend, "install-deps.sh")
+        script = self._install_script()
 
         def _run():
-            tmp_path: str | None = None
-            if os.path.exists(script):
-                cmd = [_BASH, script]
-            else:
-                # install-deps.sh is missing (unexpected repo state) — fall
-                # back to pip directly, but still filter out the torch-stack
-                # lines: requirements.txt documents the LOCAL default stack, and
-                # a plain `-r requirements.txt` here would clobber the 2.11.0
-                # stack baked into this image's cached Dockerfile layer.
-                req_path = os.path.join(backend, "requirements.txt")
-                with open(req_path, encoding="utf-8") as f:
-                    kept = [ln for ln in f if not _TORCH_STACK_RE.match(ln)]
-                fd, tmp_path = tempfile.mkstemp(suffix=".txt", dir=backend)
-                with os.fdopen(fd, "w", encoding="utf-8") as f:
-                    f.writelines(kept)
-                cmd = [
-                    _PYTHON, "-m", "pip", "install",
-                    "--break-system-packages", "-r", tmp_path,
-                ]
-            try:
-                proc = subprocess.run(
-                    cmd, cwd=backend, capture_output=True, text=True,
-                    timeout=_BUILD_TIMEOUT_S,
-                )
-            finally:
-                if tmp_path is not None:
-                    os.remove(tmp_path)
+            if not os.path.isfile(script):
+                raise RuntimeError(f"{_NO_INSTALLER}; nothing was installed")
+            proc = subprocess.run(
+                [_BASH, script], cwd=backend, capture_output=True, text=True,
+                timeout=_BUILD_TIMEOUT_S,
+            )
             if proc.returncode != 0:
                 # The tail: install-deps.sh prints pip's output first and its
                 # own verdict (the image to pull) last.

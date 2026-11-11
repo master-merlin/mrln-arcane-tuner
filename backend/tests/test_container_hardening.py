@@ -624,14 +624,6 @@ class TestBuildContract:
             f"install-deps.sh must exclude the whole torch stack; it excludes {sorted(names)}"
         )
 
-    def test_the_self_update_fallback_excludes_torchao_too(self):
-        """The self-update's own filter, used when install-deps.sh is missing, matches it."""
-        from app.core.self_update import _TORCH_STACK_RE
-
-        for name in ("torch", "torchvision", "torchaudio", "torchao", "triton", "triton-windows"):
-            assert _TORCH_STACK_RE.match(f"{name}==1.0"), f"the fallback would install {name} from requirements.txt"
-        assert not _TORCH_STACK_RE.match("torchmetrics==1.0")
-
     def test_no_local_installer_runs_the_shared_dependency_install(self):
         """The premise of the exclusion above: only the image, its self-update and CI run it."""
         for name in ("install.ps1", "install.bat", "install.sh"):

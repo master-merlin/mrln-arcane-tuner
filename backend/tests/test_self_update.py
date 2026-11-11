@@ -352,9 +352,12 @@ def _bash_tool_dirs(bash: str) -> list[str]:
 
 
 def _installed(python: Path) -> dict[str, str]:
+    # Never through PIP_LOG: a test that sets it process-wide reads that log as "pip ran",
+    # and this listing is the test's own, not the code under test's.
+    env = {k: v for k, v in os.environ.items() if k != "PIP_LOG"}
     done = subprocess.run(
         [str(python), "-m", "pip", "list", "--format=json", "--disable-pip-version-check"],
-        capture_output=True, text=True, timeout=_TIMEOUT_S, check=True,
+        capture_output=True, text=True, timeout=_TIMEOUT_S, check=True, env=env,
     )
     return {row["name"].lower(): row["version"] for row in json.loads(done.stdout)}
 
@@ -503,6 +506,54 @@ def test_install_deps_in_an_image_requires_the_constraints(sandbox, tmp_path):
 
 @in_sandbox
 @requires_bash
+@pytest.mark.asyncio
+async def test_an_update_without_install_deps_is_refused_and_leaves_the_stack(sandbox, tmp_path, monkeypatch):
+    """A pulled checkout without install-deps.sh has nothing that writes the stack's
+    constraints, so no pip may run: the fixture needs another torch, and an unconstrained
+    install would replace the stack and then restart into it (no failure to roll back from)."""
+    from app.core.self_update import UpdateState
+
+    def setup() -> tuple[Path, str, str]:
+        up = tmp_path / "upstream"
+        (up / "backend").mkdir(parents=True)
+        _git(up, "init", "-q", "-b", "main")
+        req = up / "backend" / "requirements.txt"
+        stack_pins = f"torch=={sandbox['stack']['torch'].split('+')[0]}\n"
+        req.write_text(stack_pins, encoding="utf-8")
+        shutil.copy(INSTALL_DEPS, up / "backend" / "install-deps.sh")
+        _git(up, "add", "-A")
+        _git(up, "commit", "-q", "-m", "A")
+        a = _git(up, "rev-parse", "HEAD")
+        _git(tmp_path, "clone", "-q", "-c", "core.autocrlf=false", str(up), "app")
+        req.write_text(stack_pins + f"{FIXTURE}==1.0\n", encoding="utf-8")
+        _git(up, "rm", "-q", "backend/install-deps.sh")
+        _git(up, "add", "-A")
+        _git(up, "commit", "-q", "-m", "B: no install-deps.sh")
+        return tmp_path / "app", a, _git(up, "rev-parse", "HEAD")
+
+    app, a, b = await asyncio.to_thread(setup)
+    before = await asyncio.to_thread(_installed, sandbox["python"])
+    svc, calls = _wire(monkeypatch, sandbox, app, sandbox["wheels"], bash_target=INSTALL_DEPS)
+    pip_log = tmp_path / "pip.log"
+    monkeypatch.setenv("PIP_LOG", str(pip_log))
+
+    async def frontend():
+        calls["frontend"] += 1
+
+    monkeypatch.setattr(svc, "_build_frontend", frontend)
+    await svc._apply_impl()
+
+    after = await asyncio.to_thread(_installed, sandbox["python"])
+    assert after == before, f"the stack moved: {before} -> {after}"
+    assert svc.state == UpdateState.ERROR, svc.state
+    assert calls == {"restart": 0, "frontend": 0}
+    assert await asyncio.to_thread(_git, app, "rev-parse", "HEAD") == a != b
+    assert "install-deps.sh" in svc.error and a[:12] in svc.error, svc.error
+    assert not pip_log.exists(), "pip installed something without the stack's constraints"
+
+
+@in_sandbox
+@requires_bash
 def test_install_deps_control_without_the_constraint_the_fixture_replaces_torch(sandbox, tmp_path):
     """The same script, where no torch is confirmed (constraints' own no-torch code), outside an
     image: the unconstrained install, as it always was.
@@ -601,11 +652,14 @@ def _upstream(tmp_path: Path, pins_b: dict[str, str], *, broken_probe: bool) -> 
     return tmp_path / "app", a, _git(up, "rev-parse", "HEAD")
 
 
-def _wire(monkeypatch, rv, app: Path, wheels: Path):
-    """The service, running the real install-deps.sh in the throwaway venv, offline."""
+def _wire(monkeypatch, rv, app: Path, wheels: Path, *, bash_target: Path | None = None):
+    """The service, running the real install-deps.sh in the throwaway venv, offline.
+
+    ``bash_target``: the file the bash must open, when the checkout has no install-deps.sh.
+    """
     from app.core import self_update as su
 
-    script = app / "backend" / "install-deps.sh"
+    script = bash_target or app / "backend" / "install-deps.sh"
     bash = find_bash(script)
     assert bash, bash_skip_reason(script)
     monkeypatch.setattr(su, "_PYTHON", str(rv["python"]))

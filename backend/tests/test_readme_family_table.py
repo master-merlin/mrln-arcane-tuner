@@ -132,6 +132,31 @@ def test_the_architecture_link_points_at_a_heading_that_exists():
     )
 
 
+def _licence_rows() -> dict[str, str]:
+    """The model-weights licence table: family -> its row."""
+    text = README.read_text(encoding="utf-8")
+    start = text.index("### Model weights are licensed separately")
+    rest = text[start + 1 :]
+    end = rest.find("\n### ")
+    section = rest if end == -1 else rest[:end]
+    return {m.group(1): m.group(0) for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|.*$", section, re.M)}
+
+
+def test_every_licence_row_is_a_family_that_exists():
+    rows = _licence_rows()
+    assert rows, "the licence-table extractor found no rows: the section moved or its shape changed"
+    ghosts = sorted(set(rows) - _tree_families())
+    assert not ghosts, f"the README licence table lists families the tree does not have: {ghosts}"
+
+
+def test_the_minimax_h3_image_licence_row_names_the_licence_and_links_its_text():
+    """A reference, as every row is: the licence's name and its text upstream, nothing more."""
+    row = _licence_rows().get("minimax_h3_image")
+    assert row, "README's licence table has no `minimax_h3_image` row"
+    assert "[MiniMax-H3-Image Community License](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/blob/main/LICENSE)" in row
+    assert "(https://huggingface.co/MiniMaxAI/MiniMax-H3-Image)" in row
+
+
 def _family_rows() -> dict[str, str]:
     return {m.group(1): m.group(0) for m in re.finditer(r"^\|\s*`([a-z0-9_]+)`\s*\|.*$", _readme_section(), re.M)}
 

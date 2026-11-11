@@ -246,6 +246,27 @@ def test_the_dockerfile_names_no_torch_version():
     assert named == [], f"image stack: the Dockerfile names torch versions {named}; they live in torch-stack.cfg"
 
 
+def test_the_runtime_stage_ships_a_c_toolchain_for_torch_compile():
+    """torch.compile (inductor/triton) builds kernels and its launcher at run time: it needs
+    a C compiler and Python.h, so Blackwell fp8 training does not fail at its first step."""
+    code = _dockerfile_code()
+    stages = list(re.finditer(r"^FROM\s+\S+(?:\s+AS\s+(\S+))?", code, re.M | re.I))
+    assert stages, "image stack: the Dockerfile has no FROM line"
+    final = stages[-1]
+    assert final.group(1) == "runtime", (
+        f"image stack: the final stage is {final.group(1)!r}; expected the runtime stage"
+    )
+    joined = re.sub(r"\\\s*\n", " ", code[final.end():])  # fold shell line continuations
+    installs = re.findall(r"apt-get\s+install\b[^\n&|;]*", joined)
+    wanted = ("gcc", "libc6-dev", "python3-dev")
+    assert any(
+        all(re.search(rf"(?<![\w.-]){re.escape(p)}(?![\w.-])", ln) for p in wanted) for ln in installs
+    ), (
+        "image stack: no apt-get install in the runtime stage names gcc, libc6-dev and python3-dev; "
+        "torch.compile/triton then fails with 'Failed to find C compiler'"
+    )
+
+
 def test_the_version_matcher_notices_a_pin_and_a_prose_version():
     assert _torch_versions_named("RUN pip install torch==9.9.9\n")
     some = sorted(_stack_versions())[0]

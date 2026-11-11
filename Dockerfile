@@ -141,8 +141,12 @@ RUN python /opt/torch-stack/torch_stack.py install --set ${TORCH_CUDA} --platfor
 # re-encode. PyAV's bundled libs cover decode/probe/encode, but a real ffmpeg
 # binary (found first by shutil.which, ahead of the imageio-ffmpeg fallback)
 # is the robust path for re-encode + AAC mux.
+# gcc libc6-dev python3-dev: torch.compile (inductor/triton) builds its kernels
+# and launcher at run time and needs a C compiler and Python.h; without them
+# Blackwell fp8 training fails at its first step ("Failed to find C compiler").
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 ffmpeg \
+        gcc libc6-dev python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Ollama (local LLM sidecar for caption refinement) ---

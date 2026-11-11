@@ -1,6 +1,6 @@
 """MiniMax-H3-Image loader, manifest-driven through ``GenericComponentLoader``.
 
-Repo layout (MiniMaxAI/MiniMax-H3-Image at fbde899f): ``transformer_diffusers/``
+Repo layout (MiniMaxAI/MiniMax-H3-Image at 00dd081e): ``transformer_diffusers/``
 (66.28 GB, diffusers keys), ``vae_diffusers/``, ``text_encoder/`` (the H3
 Qwen3-VL), ``tokenizer/``, ``processor/``.
 

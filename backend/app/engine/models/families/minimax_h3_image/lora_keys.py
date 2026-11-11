@@ -1,6 +1,6 @@
 """MiniMax-H3-Image: the diffusers module -> native module map of the LoRA file.
 
-The checkpoint ships its transformer twice (``MiniMaxAI/MiniMax-H3-Image`` at ``fbde899f``):
+The checkpoint ships its transformer twice (``MiniMaxAI/MiniMax-H3-Image`` at ``00dd081e``):
 ``transformer_diffusers/`` under the vendored diffusers class's names, which PEFT trains
 (``transformer_blocks.N.attn.to_q``), and ``transformer/`` under the model's native names,
 which ComfyUI's repack and the rest of the ecosystem load (``blocks.N.attn.qkv_proj``). The LoRA

@@ -8,7 +8,7 @@
 # The model classes are VENDORED (vendor/README.md): diffusers 0.41.0 ships none of them. The
 # family loads transformer_diffusers/ and vae_diffusers/; the transformer/ and vae/ folders hold
 # the model's native configs, which the enricher harvests (the four config files of
-# MiniMaxAI/MiniMax-H3-Image at fbde899f are the fixture of
+# MiniMaxAI/MiniMax-H3-Image at 00dd081e are the fixture of
 # test_minimax_h3_image_definition_enricher_fixed_point.py).
 id: minimax-h3-image-t2i
 family: minimax_h3_image
@@ -31,7 +31,9 @@ defaults:
   # are one value.
 components:
   repo:
-    path: huggingface:MiniMaxAI/MiniMax-H3-Image@fbde899f
+    # The full commit sha, so an offline resolve finds the snapshot a download of main left.
+    # 00dd081e is byte-identical to fbde899f in every file but README.md.
+    path: huggingface:MiniMaxAI/MiniMax-H3-Image@00dd081ebdd33315adf2c4d84f64aa327ddf3039
     type: diffusers
     params: {}
 control_inputs: 0
@@ -39,7 +41,7 @@ detected_precision:
   text_encoder: torch.bfloat16
   vae: torch.float32
   unet: torch.bfloat16
-# On-disk component sizes (MiB = bytes / 1024^2) at fbde899f: the transformer_diffusers and
+# On-disk component sizes (MiB = bytes / 1024^2) at 00dd081e: the transformer_diffusers and
 # text_encoder safetensors index files' metadata.total_size (66,289,356,032 and 66,714,780,128
 # bytes), and vae_diffusers' single float32 safetensors file (2,336,973,400 bytes). The estimator
 # prefers these over its _FAMILY_PARAMS["minimax_h3_image"] fallback (kept in sync).
@@ -70,7 +72,7 @@ architecture_params:
   # minimax_h3_image.py: "Training draws only the 6 sampling sigmas"): a uniform draw from the
   # head grid. Any other mode uses the head of the nearest grid sigma (DiffSynth-Studio 6ccfd64d).
   timestep.default_mode: fixed_sigmas
-  # The head grid, head i at index i: modular_model_index.json `sample_sigmas` at fbde899f without
+  # The head grid, head i at index i: modular_model_index.json `sample_sigmas` at 00dd081e without
   # the terminal 0.0 (not a training level). The sampler runs exactly these 6 steps, unshifted.
   timestep.fixed_sigmas:
   - 1.0
@@ -80,7 +82,7 @@ architecture_params:
   - 0.5327739119529724
   - 0.23200887441635132
   # -- Harvested by the enricher, verbatim, from the native transformer/, text_encoder/,
-  #    scheduler/ and vae/ configs at fbde899f (the loader reads the *_diffusers folders) --
+  #    scheduler/ and vae/ configs at 00dd081e (the loader reads the *_diffusers folders) --
   transformer._class_name: MiniMaxH3DiTModel
   transformer.hidden_size: 5376
   transformer.num_layers: 50

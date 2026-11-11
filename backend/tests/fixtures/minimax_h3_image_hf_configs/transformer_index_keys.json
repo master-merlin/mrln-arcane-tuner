@@ -1,6 +1,6 @@
 {
  "repo": "MiniMaxAI/MiniMax-H3-Image",
- "revision": "fbde899f",
+ "revision": "00dd081e",
  "native_index": "transformer/model.safetensors.index.json",
  "native_index_sha256": "067f163d406bc30980a618e87318c2de1dc4bfa6fcbc26c420988c77074467fb",
  "diffusers_index": "transformer_diffusers/diffusion_pytorch_model.safetensors.index.json",

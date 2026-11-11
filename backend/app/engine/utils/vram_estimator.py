@@ -394,7 +394,7 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
     },
     "minimax_h3_image": {
         # The definition ships concrete on-disk model_size_mb (MiniMaxAI/MiniMax-H3-Image at
-        # fbde899f), so this table is the fallback-only path, kept in sync with it. These are
+        # 00dd081e), so this table is the fallback-only path, kept in sync with it. These are
         # checkpoint sizes, not training peaks: the measured peaks of the int8 and bf16 runs
         # on a 96 GB card replace the guesswork once the GPU probes have run.
         #

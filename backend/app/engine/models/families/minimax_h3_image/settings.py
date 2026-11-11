@@ -7,7 +7,7 @@ the model's sampling sigmas without the terminal 0.0:
     1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.5327739119529724, 0.23200887441635132
 
 (``modular_model_index.json`` ``sample_sigmas`` of MiniMaxAI/MiniMax-H3-Image at
-fbde899f). The definition states it once, as ``timestep.fixed_sigmas``: the same
+00dd081e). The definition states it once, as ``timestep.fixed_sigmas``: the same
 list is the family's default training draw (``timestep.default_mode:
 fixed_sigmas``, ostris/ai-toolkit's rule "each head only ever sees its own
 sigma") and the grid a sigma's head is looked up on. Any other draw uses the

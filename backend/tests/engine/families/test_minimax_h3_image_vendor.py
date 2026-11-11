@@ -5,7 +5,7 @@ diffusers 0.41.0 ships neither ``MiniMaxH3ImageTransformer2DModel`` nor
 commit ``875373ac7f5856071e345a3e394c74efccc6b9e6``. What this file holds them to:
 
 * the config fixtures are the HF repo's ``transformer_diffusers/config.json`` and
-  ``vae_diffusers/config.json`` at sha ``fbde899f`` byte for byte (pinned by sha256), so a
+  ``vae_diffusers/config.json`` at sha ``00dd081e`` byte for byte (pinned by sha256), so a
   shrunk or edited fixture fails here rather than silently testing another model;
 * the tiny test models are built from those fixtures with the overrides written below, in
   test code only (2 layers, smaller widths);
@@ -40,7 +40,7 @@ VAE_CONFIG = FIXTURES / "vae_diffusers" / "config.json"
 MERGE_COMMIT = "875373ac7f5856071e345a3e394c74efccc6b9e6"
 
 # sha256 of the two files as served by
-# https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/raw/fbde899f/<folder>/config.json
+# https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/raw/00dd081e/<folder>/config.json
 FIXTURE_SHA256 = {
     TRANSFORMER_CONFIG: "f8a1f3f87e708d0d4268d7c1abd040a7af9f2b7c435827f14e0a2d6fc260bcf9",
     VAE_CONFIG: "6d809326cc9a46763e810777d71d2fdddbd5df820d5644e8fe778ea97d9913a4",
@@ -96,7 +96,7 @@ def test_fixture_is_the_checkpoint_config_byte_for_byte(path: Path):
     assert path.is_file(), f"missing fixture {path}"
     have = hashlib.sha256(path.read_bytes()).hexdigest()
     assert have == FIXTURE_SHA256[path], (
-        f"{path.name} in {path.parent.name} is not the file at MiniMaxAI/MiniMax-H3-Image@fbde899f "
+        f"{path.name} in {path.parent.name} is not the file at MiniMaxAI/MiniMax-H3-Image@00dd081e "
         f"(sha256 {have}); the fixture is kept verbatim, tiny overrides live in this test"
     )
 

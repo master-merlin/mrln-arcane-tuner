@@ -6,7 +6,7 @@ its YAML. A definition that ships un-enriched is rewritten by the user's first r
 a tracked file in their checkout.
 
 No network, no weights: the harvester reads four small JSON files, kept byte for byte in
-``fixtures/minimax_h3_image_hf_configs`` from ``MiniMaxAI/MiniMax-H3-Image`` at ``fbde899f``:
+``fixtures/minimax_h3_image_hf_configs`` from ``MiniMaxAI/MiniMax-H3-Image`` at ``00dd081e``:
 ``transformer/config.json``, ``vae/config.json``, ``text_encoder/config.json`` and
 ``scheduler/scheduler_config.json``, the four folders ``config_harvester.COMPONENTS`` finds in
 that repo (``transformer/`` and ``vae/`` hold the model's native configs; the family loads the
@@ -30,7 +30,7 @@ DEFINITION = BACKEND / "app/engine/models/families/minimax_h3_image/definitions/
 DEFINITION_ID = "minimax-h3-image-t2i"
 HF_CONFIGS = Path(__file__).resolve().parent / "fixtures/minimax_h3_image_hf_configs"
 
-# sha256 of each file as served at https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/raw/fbde899f/<path>.
+# sha256 of each file as served at https://huggingface.co/MiniMaxAI/MiniMax-H3-Image/raw/00dd081e/<path>.
 FIXTURE_SHA256 = {
     "transformer/config.json": "67ceb1d7752942ee984405c26c1187ff58c073b698839ea0ca289e34b8dc61a9",
     "vae/config.json": "7fcc21bec549804ff0a04d8246e7f90e679d4f8d4b0a27a252bbd18c30e3e4bb",
@@ -38,7 +38,7 @@ FIXTURE_SHA256 = {
     "scheduler/scheduler_config.json": "ce1792ea34cef021fec782abf9f45125f6bf0438f7c424e567ce28b246ad0a08",
 }
 
-# modular_model_index.json `sample_sigmas` at fbde899f, without the terminal 0.0.
+# modular_model_index.json `sample_sigmas` at 00dd081e, without the terminal 0.0.
 HEAD_SIGMAS = [1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.5327739119529724, 0.23200887441635132]
 
 

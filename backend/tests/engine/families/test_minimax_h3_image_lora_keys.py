@@ -11,7 +11,7 @@ What this file holds it to:
 
 * **0 unmatched against the real checkpoint.** ``fixtures/minimax_h3_image_hf_configs/
   transformer_index_keys.json`` holds the key NAMES of both safetensors indexes of
-  ``MiniMaxAI/MiniMax-H3-Image`` at ``fbde899f``: the native ``transformer/`` folder and the
+  ``MiniMaxAI/MiniMax-H3-Image`` at ``00dd081e``: the native ``transformer/`` folder and the
   diffusers ``transformer_diffusers/`` folder (sha256s of the source files inside). Every
   LoRA-able Linear of every block in the diffusers index maps onto a module the native index
   holds, and every native block Linear is reached.
@@ -53,7 +53,7 @@ _NATIVE_BLOCK_LINEAR = re.compile(
 @pytest.fixture(scope="module")
 def index_keys() -> dict:
     data = json.loads(_FIXTURE.read_text(encoding="utf-8"))
-    assert data["repo"] == "MiniMaxAI/MiniMax-H3-Image" and data["revision"] == "fbde899f"
+    assert data["repo"] == "MiniMaxAI/MiniMax-H3-Image" and data["revision"] == "00dd081e"
     assert len(data["native"]) == 531, "fixture drifted: native key count"
     assert len(data["diffusers"]) == 644, "fixture drifted: diffusers key count"
     return data

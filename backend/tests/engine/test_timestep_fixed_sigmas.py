@@ -22,7 +22,7 @@ from app.engine.models.registry import registry
 from app.engine.strategies.timestep_sampling import TimestepSampler, validate_fixed_sigmas
 
 CPU = torch.device("cpu")
-# MiniMax-H3-Image's sampling sigmas without the terminal 0.0 (modular_model_index.json, sha fbde899f).
+# MiniMax-H3-Image's sampling sigmas without the terminal 0.0 (modular_model_index.json, sha 00dd081e).
 H3_SIGMAS = [1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.5327739119529724, 0.23200887441635132]
 
 

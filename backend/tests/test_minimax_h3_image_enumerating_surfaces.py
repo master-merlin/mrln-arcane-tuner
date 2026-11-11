@@ -3,7 +3,7 @@
 Registry block topology (shipped in the YAML, and derived by ``_derive_block_topology`` for a
 definition that ships none), the curated LoRA targets against the native key map, and the VRAM
 estimator's fallback table against the on-disk sizes of ``MiniMaxAI/MiniMax-H3-Image`` at
-``fbde899f``. The mutant for the registry branch is "the ``minimax_h3_image`` branch removed from
+``00dd081e``. The mutant for the registry branch is "the ``minimax_h3_image`` branch removed from
 ``_derive_block_topology``".
 """
 
@@ -27,7 +27,7 @@ DEF_ID = "minimax-h3-image-t2i"
 FAMILY = "minimax_h3_image"
 MIB = 1024 * 1024
 
-# On-disk bytes at fbde899f: the two safetensors index files' metadata.total_size, and the VAE's
+# On-disk bytes at 00dd081e: the two safetensors index files' metadata.total_size, and the VAE's
 # single safetensors file (no index), from the repo's file listing.
 TRANSFORMER_BYTES = 66_289_356_032  # transformer_diffusers/diffusion_pytorch_model.safetensors.index.json
 TEXT_ENCODER_BYTES = 66_714_780_128  # text_encoder/model.safetensors.index.json

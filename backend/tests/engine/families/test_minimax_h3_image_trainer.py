@@ -51,7 +51,7 @@ from tests.engine.families.test_minimax_h3_image_vendor import (
 FAMILY_PKG = "app.engine.models.families.minimax_h3_image"
 DEFINITION_ID = "minimax-h3-image-t2i"
 
-# modular_model_index.json `sample_sigmas` of MiniMaxAI/MiniMax-H3-Image at fbde899f,
+# modular_model_index.json `sample_sigmas` of MiniMaxAI/MiniMax-H3-Image at 00dd081e,
 # without the terminal 0.0 (not a training level).
 H3_IMAGE_SIGMAS = [1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.5327739119529724, 0.23200887441635132]
 LORA_TARGETS = ["to_q", "to_k", "to_v", "to_out.0"]

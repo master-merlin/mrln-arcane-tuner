@@ -12,7 +12,7 @@ upstream paths.
 |---|---|
 | **Python code** (`transformer_minimax_h3_image.py`) | `src/diffusers/models/transformers/transformer_minimax_h3_image.py` @ `875373ac` |
 | **Python code** (`autoencoder_kl_minimax_h3_image.py`) | `src/diffusers/models/autoencoders/autoencoder_kl_minimax_h3_image.py` @ `875373ac` |
-| **Model weights** | HuggingFace Hub: [`MiniMaxAI/MiniMax-H3-Image`](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image) @ `fbde899f` (`transformer_diffusers/`, `vae_diffusers/`) |
+| **Model weights** | HuggingFace Hub: [`MiniMaxAI/MiniMax-H3-Image`](https://huggingface.co/MiniMaxAI/MiniMax-H3-Image) @ `00dd081e` (`transformer_diffusers/`, `vae_diffusers/`; byte-identical to `fbde899f` in every file but `README.md`) |
 
 ## Why these two, and not the scheduler?
 

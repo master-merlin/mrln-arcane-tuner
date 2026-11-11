@@ -265,24 +265,56 @@ function submitted(c: ReturnType<typeof build>): Record<string, unknown> {
     return payload;
 }
 
-describe('TrainingDynamicConfig: the MiniMax-H3-Image timestep default', () => {
-    function h3Form() {
-        const c = build(TIMESTEP_SCHEMA);
-        c.form.get('definition_id')?.setValue('minimax-h3-image-t2i');
-        c.form.get('model_family')?.setValue('minimax_h3_image');
-        c.patchFormRecursive(c.form, { datasets: [{ dataset_name: 'foxes', num_repeats: 1, masking_enabled: false }] });
-        c.applyDefinitionDefaults(H3_IMAGE_DEFAULTS);
-        return c;
-    }
+function h3Form() {
+    const c = build(TIMESTEP_SCHEMA);
+    c.form.get('definition_id')?.setValue('minimax-h3-image-t2i');
+    c.form.get('model_family')?.setValue('minimax_h3_image');
+    c.patchFormRecursive(c.form, { datasets: [{ dataset_name: 'foxes', num_repeats: 1, masking_enabled: false }] });
+    c.applyDefinitionDefaults(H3_IMAGE_DEFAULTS);
+    return c;
+}
 
+describe('TrainingDynamicConfig: the MiniMax-H3-Image timestep default', () => {
     it('an untouched form submits the family default fixed_sigmas', () => {
         const c = h3Form();
         expect(c.form.get('timestep_sampling')?.value).toBe('fixed_sigmas');
         const payload = submitted(c);
         expect(payload['timestep_sampling']).toBe('fixed_sigmas');
-        // The list is never a different one: the field stays the schema's "not given", and the
-        // trainer then takes the definition's grid (minimax_h3_image settings.apply_timestep_default).
-        expect([null, H3_IMAGE_SIGMAS]).toContainEqual(payload['fixed_sigmas'] ?? null);
+        expect(payload['fixed_sigmas']).toEqual(H3_IMAGE_SIGMAS);
+    });
+
+    it('an untouched form shows the six sigmas in the list field, not an empty list', () => {
+        const c = h3Form();
+        expect(c.getFormArray('fixed_sigmas').value).toEqual(H3_IMAGE_SIGMAS);
+        expect(c.getFormArray('fixed_sigmas').dirty).toBe(false);
+    });
+
+    it('a list the user edited survives the defaults arriving again', () => {
+        const c = h3Form();
+        const list = c.getFormArray('fixed_sigmas');
+        list.removeAt(5);
+        list.at(0).setValue(0.9);
+        list.markAsDirty();
+        c.applyDefinitionDefaults(H3_IMAGE_DEFAULTS);
+        expect(list.value).toEqual([0.9, ...H3_IMAGE_SIGMAS.slice(1, 5)]);
+    });
+
+    it('a list a template or job restored is kept when the defaults arrive', () => {
+        const c = build(TIMESTEP_SCHEMA);
+        c.patchFormRecursive(c.form, { timestep_sampling: 'fixed_sigmas', fixed_sigmas: [0.8, 0.4] });
+        c.applyDefinitionDefaults(H3_IMAGE_DEFAULTS);
+        expect(c.getFormArray('fixed_sigmas').value).toEqual([0.8, 0.4]);
+    });
+
+    it('seeding the list does not re-arm template auto-save or mark the form dirty', () => {
+        const c = build(TIMESTEP_SCHEMA);
+        const selector = { suppressAutoSave: Object.assign(vi.fn(() => false), { set: vi.fn() }) };
+        (c as unknown as { templateSelector: unknown }).templateSelector = selector;
+        c.applyDefinitionDefaults(H3_IMAGE_DEFAULTS);
+        expect(c.getFormArray('fixed_sigmas').value).toEqual(H3_IMAGE_SIGMAS);
+        expect(c.form.dirty).toBe(false);
+        expect(selector.suppressAutoSave.set).toHaveBeenNthCalledWith(1, true);
+        expect(selector.suppressAutoSave.set).toHaveBeenLastCalledWith(false);
     });
 
     it('a mode the user picks is submitted instead, without the list', () => {
@@ -302,5 +334,40 @@ describe('TrainingDynamicConfig: the MiniMax-H3-Image timestep default', () => {
         mode.markAsDirty();
         c.applyDefinitionDefaults(H3_IMAGE_DEFAULTS);
         expect(submitted(c)['timestep_sampling']).toBe('logit_normal');
+    });
+});
+
+describe('TrainingDynamicConfig: array defaults from a definition', () => {
+    it('a family with no array default keeps every array as the schema built it', () => {
+        const c = build();
+        c.applyDefinitionDefaults({ resolution: 1024, learning_rate: 1e-4, scheduler: 'flow_match' });
+        expect(c.getFormArray('resolutions').value).toEqual([1024]);
+        expect(c.getFormArray('datasets').length).toBe(1);
+        expect(c.getFormArray('sample_prompts').length).toBe(0);
+        expect(c.form.get('targeted_layers')?.value).toEqual([]);
+    });
+
+    it('a primitive list still at its schema default takes the definition default', () => {
+        const c = build();
+        c.applyDefinitionDefaults({ resolutions: [768, 512] });
+        expect(c.getFormArray('resolutions').value).toEqual([768, 512]);
+    });
+
+    it('a primitive list that differs from its schema default is never overwritten', () => {
+        const c = build();
+        c.patchFormRecursive(c.form, { resolutions: [1024, 512] });
+        c.applyDefinitionDefaults({ resolutions: [768] });
+        expect(c.getFormArray('resolutions').value).toEqual([1024, 512]);
+    });
+
+    it('object lists and non-list values for a list are ignored', () => {
+        const c = build();
+        c.applyDefinitionDefaults({
+            datasets: [{ dataset_name: 'x', num_repeats: 2, masking_enabled: true }, { dataset_name: 'y' }],
+            resolutions: 768,
+        });
+        expect(c.getFormArray('datasets').length).toBe(1);
+        expect(c.getFormArray('datasets').at(0).value.dataset_name).toBe('');
+        expect(c.getFormArray('resolutions').value).toEqual([1024]);
     });
 });

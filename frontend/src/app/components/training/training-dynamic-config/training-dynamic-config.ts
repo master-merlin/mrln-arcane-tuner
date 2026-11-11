@@ -883,7 +883,9 @@ export class TrainingDynamicConfigComponent {
    * A control is patched ONLY when ALL of:
    *  (a) we are NOT currently applying a template (template values win — early
    *      return guards the entire operation);
-   *  (b) the key maps to a real, non-array/non-group form control (backend key);
+   *  (b) the key maps to a real, non-group form control (backend key); a list
+   *      control is seeded only when it is a list of primitives
+   *      (`_seedPrimitiveArray`), never an object list such as `datasets`;
    *  (c) the control is pristine (`!control.dirty`) AND its current value still
    *      equals the field's schema default — or, when no schema default exists,
    *      the current value is empty (null / undefined / ''). This conservative
@@ -908,10 +910,14 @@ export class TrainingDynamicConfigComponent {
     let patchedAny = false;
     try {
       for (const key of Object.keys(defaults)) {
-        // (b) Must be a real, primitive backend control. Arrays/groups are
-        // handled by their own machinery and are out of scope for defaults.
+        // (b) Must be a real backend control. A list of primitives is seeded by
+        // its own rule; object lists and groups are out of scope for defaults.
         const control = this.form.get(key);
-        if (!control || control instanceof FormArray || control instanceof FormGroup) continue;
+        if (control instanceof FormArray) {
+          if (this._seedPrimitiveArray(key, control, defaults[key])) patchedAny = true;
+          continue;
+        }
+        if (!control || control instanceof FormGroup) continue;
 
         // (c) Only fill pristine controls that still hold the schema default
         // (or are empty when no schema default is defined). Never overwrite a
@@ -942,6 +948,28 @@ export class TrainingDynamicConfigComponent {
       this._updateLoraNamePreview();
       this.vramEstimation.schedule();
     }
+  }
+
+  /**
+   * Seed a list-of-primitives control (e.g. `fixed_sigmas`) from a definition default, by the
+   * same rule as a scalar: only a pristine list that still holds its schema default (an absent
+   * or null schema default counts as the empty list) is replaced, and only by a list of
+   * primitives. Object lists (`datasets`, `sample_prompts`) and a non-list value are ignored.
+   * The rows are swapped without events and without marking anything dirty.
+   */
+  private _seedPrimitiveArray(key: string, control: FormArray, next: unknown): boolean {
+    if (!Array.isArray(next) || !this.isPrimitiveArray(key)) return false;
+    if (next.some((v) => v !== null && typeof v === 'object')) return false;
+    if (control.dirty) return false;
+    const schemaDefault = this._schemaDefaultFor(key);
+    const baseline = Array.isArray(schemaDefault) ? schemaDefault : [];
+    const current = control.value as unknown[];
+    const sameList = (a: unknown[], b: unknown[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+    if (!sameList(current, baseline) || sameList(current, next)) return false;
+
+    control.clear({ emitEvent: false });
+    for (const value of next) control.push(new FormControl(value), { emitEvent: false });
+    return true;
   }
 
   /** The sample-prompt fields a definition's `defaults` seed (field -> defaults key). */

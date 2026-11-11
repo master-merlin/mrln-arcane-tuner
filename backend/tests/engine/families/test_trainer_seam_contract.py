@@ -267,6 +267,14 @@ FAMILIES: list[FamilySpec] = [
         encode_kind="teo_emb_mask", encode_seed=_seed_tuple_emb_mask, encode_check=_check_teo_emb_mask,
     ),
     FamilySpec(
+        # The image sibling: per-caption [L, D] rows padded to a TextEncoderOutput, no pooled.
+        "minimax_h3_image",
+        "app.engine.models.families.minimax_h3_image.trainer:MiniMaxH3ImageTrainer",
+        "app.engine.models.families.minimax_h3_image.driver:MiniMaxH3ImageDriver",
+        "transformer", "transformer",
+        encode_kind="teo_emb_mask", encode_seed=_seed_variable_tensor, encode_check=_check_teo_emb_mask,
+    ),
+    FamilySpec(
         "microsoft_lens",
         "app.engine.models.families.microsoft_lens.trainer:MicrosoftLensTrainer",
         "app.engine.models.families.microsoft_lens.driver:MicrosoftLensDriver",

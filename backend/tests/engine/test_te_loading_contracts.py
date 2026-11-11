@@ -461,6 +461,9 @@ CASES: list[_Case] = [
     # exemption needed.
     _Case("minimax_h3", _m("minimax_h3"), "MiniMaxH3Loader", "text_encoder",
           "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
+    # minimax_h3_image ships a copy of the same H3 Qwen3-VL encoder (text_encoder/).
+    _Case("minimax_h3_image", _m("minimax_h3_image"), "MiniMaxH3ImageLoader", "text_encoder",
+          "transformers.Qwen3VLForConditionalGeneration", "Qwen3VLForConditionalGeneration"),
     # flux3 (LANE-144): flux-3-image-klein-base's text_encoder/config.json declares
     # architectures ["Qwen3VLForConditionalGeneration"] (byte-identical to
     # Qwen/Qwen3-VL-4B-Instruct).

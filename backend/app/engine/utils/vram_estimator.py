@@ -392,6 +392,16 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 33.36,
         "vae": 5.21,
     },
+    "minimax_h3_image": {
+        # PLACEHOLDER until the GPU probes measure this family. transformer:
+        # transformer_diffusers/diffusion_pytorch_model.safetensors.index.json
+        # total_size 66,289,356,032 bytes (mixed bf16/fp32) -> ~33.1 B at 2 bytes;
+        # text_encoder: the same Qwen3-VL as minimax_h3 (66,714,780,128 bytes bf16).
+        # vae: the image VAE's size is not measured yet (a small fraction of the DiT).
+        "transformer": 33.14,
+        "text_encoder": 33.36,
+        "vae": 0.5,
+    },
 }
 
 # Bytes-per-param for common dtypes

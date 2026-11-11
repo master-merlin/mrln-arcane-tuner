@@ -10,6 +10,7 @@ only in-process task_manager work blocks the restart.
 from __future__ import annotations
 
 import asyncio
+import json
 import os
 import re
 import subprocess
@@ -27,6 +28,12 @@ _IDLE_POLL_S = 3.0
 _GIT_TIMEOUT_S = 120.0
 _BUILD_TIMEOUT_S = 1800.0
 _CHECK_INTERVAL_S = 1800.0  # periodic availability check (30 min)
+
+# The interpreter whose packages the update installs, and the shell that runs
+# install-deps.sh: the container's own, found on PATH, as install-deps.sh finds
+# its `python`. Module attributes so a test can point them at a throwaway venv.
+_PYTHON = "python"
+_BASH = "bash"
 
 # Same package set install-deps.sh excludes from its requirements install: the
 # torch stack (torch/torchvision/torchaudio/torchao/triton/triton-windows) is
@@ -204,13 +211,24 @@ class SelfUpdateService:
             # scenedetect / imageio-ffmpeg for video training) would pull the
             # code that imports it but never install it, crashing on restart.
             if self._req_blob() != req_before:
+                # A failed update must leave ONE revision: its code and its
+                # packages. install-deps.sh is several pip runs, so a later one
+                # can fail after the bulk install already moved packages, and
+                # resetting the checkout alone would put the old code on the
+                # new packages. So the packages are listed first, and an update
+                # that cannot list them is refused before anything changes.
+                packages_before = await asyncio.to_thread(self._installed_packages)
+                if packages_before is None:
+                    note = await asyncio.to_thread(self._roll_back, head_before)
+                    error = ("the installed packages could not be listed, so the update's "
+                             f"dependencies were not installed ({note})")
+                    logger.error("self_update_failed", error=error)
+                    self._set_state(UpdateState.ERROR, error=error)
+                    return
                 try:
                     await self._install_backend_deps()
                 except Exception as e:  # noqa: BLE001 — reported below, never masked
-                    # New code on the old dependencies would crash on the next
-                    # restart, so the pull is undone: the checkout goes back to
-                    # the commit the running process was started from.
-                    note = await asyncio.to_thread(self._roll_back, head_before)
+                    note = await asyncio.to_thread(self._recover, head_before, packages_before)
                     logger.error("self_update_failed", error=str(e), rollback=note)
                     self._set_state(UpdateState.ERROR, error=f"{e} ({note})")
                     return
@@ -270,6 +288,76 @@ class SelfUpdateService:
         logger.warning("self_update_rolled_back", head=head)
         return f"the checkout was reset to {head[:12]}"
 
+    def _pip(self, args: list[str]) -> subprocess.CompletedProcess | None:
+        """`python -m pip <args>` in the interpreter the update installs into; None if it cannot run."""
+        try:
+            return subprocess.run(
+                [_PYTHON, "-m", "pip", *args, "--disable-pip-version-check"],
+                capture_output=True, text=True, timeout=_BUILD_TIMEOUT_S,
+            )
+        except (OSError, subprocess.SubprocessError) as e:
+            logger.error("self_update_pip_failed", args=args, error=str(e))
+            return None
+
+    def _installed_packages(self) -> dict[str, str] | None:
+        """{name: version} of every installed distribution, or None if pip cannot say."""
+        proc = self._pip(["list", "--format=json"])
+        if proc is None or proc.returncode != 0:
+            logger.error("self_update_pip_list_failed", stderr=(proc.stderr if proc else "")[-500:])
+            return None
+        try:
+            return {row["name"].lower(): row["version"] for row in json.loads(proc.stdout)}
+        except (ValueError, KeyError, TypeError) as e:
+            logger.error("self_update_pip_list_unreadable", error=str(e))
+            return None
+
+    def _recover(self, head: str, before: dict[str, str]) -> str:
+        """After a failed dependency install: the packages back to *before* (when the install
+        had changed any, then verified), and the checkout back to *head*; say what happened.
+
+        A failure before anything was installed (a refused resolve, a probe that stopped the
+        script) needs the checkout reset alone. One that cannot be undone is said loudly: the
+        running process still serves from memory, but no revision on disk matches these
+        packages, so nothing may restart into it.
+        """
+        after = self._installed_packages()
+        packages = "no package had changed"
+        if after != before:
+            wrong = self._restore_packages(before, after)
+            if wrong:
+                logger.critical("self_update_environment_broken", differences=wrong)
+                code = self._roll_back(head)
+                return (f"THE PACKAGES COULD NOT BE RESTORED ({'; '.join(wrong)[:600]}), and {code}. "
+                        "Do not restart this server: no revision matches the installed packages. "
+                        "Retry the update, or recreate the container from its image.")
+            packages = f"the packages were restored ({self._changes(before, after)})"
+        return f"{packages}; {self._roll_back(head)}"
+
+    @staticmethod
+    def _changes(before: dict[str, str], after: dict[str, str] | None) -> str:
+        after = after or {}
+        moved = [n for n in before if after.get(n) != before[n]]
+        added = [n for n in after if n not in before]
+        return f"{len(moved)} put back, {len(added)} removed"
+
+    def _restore_packages(self, before: dict[str, str], after: dict[str, str] | None) -> list[str]:
+        """Put the installed packages back to *before*; [] when verified, else what still differs."""
+        if after is None:
+            return ["the installed packages could not be listed after the failed install"]
+        added = sorted(n for n in after if n not in before)
+        moved = sorted(f"{n}=={v}" for n, v in before.items() if after.get(n) != v)
+        logger.warning("self_update_restoring_packages", remove=added, reinstall=moved)
+        if added:
+            self._pip(["uninstall", "-y", "--break-system-packages", *added])
+        if moved:
+            # --no-deps: the exact old set is put back, nothing resolved anew.
+            self._pip(["install", "--no-deps", "--break-system-packages", *moved])
+        final = self._installed_packages()
+        if final is None:
+            return ["the installed packages could not be listed after the restore"]
+        return [f"{n}: {final.get(n) or 'not installed'}, was {before.get(n) or 'not installed'}"
+                for n in sorted(set(before) | set(final)) if final.get(n) != before.get(n)]
+
     def _req_blob(self) -> str:
         """Git blob hash of backend/requirements.txt at HEAD (empty if unknown).
         Compared before/after a pull to decide whether deps must be reinstalled."""
@@ -289,7 +377,7 @@ class SelfUpdateService:
         def _run():
             tmp_path: str | None = None
             if os.path.exists(script):
-                cmd = ["bash", script]
+                cmd = [_BASH, script]
             else:
                 # install-deps.sh is missing (unexpected repo state) — fall
                 # back to pip directly, but still filter out the torch-stack
@@ -303,7 +391,7 @@ class SelfUpdateService:
                 with os.fdopen(fd, "w", encoding="utf-8") as f:
                     f.writelines(kept)
                 cmd = [
-                    "python", "-m", "pip", "install",
+                    _PYTHON, "-m", "pip", "install",
                     "--break-system-packages", "-r", tmp_path,
                 ]
             try:

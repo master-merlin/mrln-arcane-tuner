@@ -137,6 +137,7 @@ async def test_apply_reinstalls_deps_when_requirements_changed(svc, monkeypatch)
     monkeypatch.setattr(svc, "_build_frontend", fake_build)
     monkeypatch.setattr(svc, "_do_restart", fake_restart)
     monkeypatch.setattr(svc, "active_task_count", lambda: 0)
+    monkeypatch.setattr(svc, "_installed_packages", lambda: {"fastapi": "1.0"})
 
     await svc._apply_impl()
     assert installed["v"] is True
@@ -315,6 +316,8 @@ async def test_failed_dep_install_resets_the_checkout_to_the_old_head(monkeypatc
     monkeypatch.setattr(svc, "_install_backend_deps", failing_install)
     monkeypatch.setattr(svc, "_build_frontend", must_not_run)
     monkeypatch.setattr(svc, "_do_restart", must_not_run)
+    # A refusal before anything was installed: the packages read the same before and after.
+    monkeypatch.setattr(svc, "_installed_packages", lambda: {"fastapi": "1.0"})
 
     await svc._apply_impl()
 
@@ -323,6 +326,38 @@ async def test_failed_dep_install_resets_the_checkout_to_the_old_head(monkeypatc
     assert svc.state == UpdateState.ERROR
     assert "ResolutionImpossible" in svc.error, "the original error is masked"
     assert old[:12] in svc.error, f"the error does not say the checkout was reset: {svc.error}"
+
+
+@pytest.mark.asyncio
+async def test_an_update_whose_packages_cannot_be_listed_is_refused_before_installing(monkeypatch, tmp_path):
+    """Without the list there is nothing to restore a failed install to, so nothing is installed."""
+
+    def setup():
+        upstream = tmp_path / "upstream"
+        upstream.mkdir()
+        _git(upstream, "init", "-q", "-b", "main")
+        old = _commit_requirements(upstream, "fastapi==1.0\n", "old")
+        _git(tmp_path, "clone", "-q", str(upstream), "app")
+        _commit_requirements(upstream, "fastapi==2.0\n", "new")
+        return old
+
+    old = await asyncio.to_thread(setup)
+    app = tmp_path / "app"
+    svc = SelfUpdateService(app_dir=str(app), branch="main", remote=str(tmp_path / "upstream"))
+
+    async def must_not_run():
+        raise AssertionError("ran although the packages could not be listed")
+
+    monkeypatch.setattr(svc, "_installed_packages", lambda: None)
+    monkeypatch.setattr(svc, "_install_backend_deps", must_not_run)
+    monkeypatch.setattr(svc, "_build_frontend", must_not_run)
+    monkeypatch.setattr(svc, "_do_restart", must_not_run)
+
+    await svc._apply_impl()
+
+    assert await asyncio.to_thread(_git, app, "rev-parse", "HEAD") == old
+    assert svc.state == UpdateState.ERROR
+    assert "could not be listed" in svc.error
 
 
 @pytest.mark.asyncio

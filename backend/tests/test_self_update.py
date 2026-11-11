@@ -11,6 +11,7 @@ torch stack (the last section).
 
 from __future__ import annotations
 
+import asyncio
 import importlib.util
 import json
 import os
@@ -521,3 +522,208 @@ def test_install_deps_control_without_the_constraint_the_fixture_replaces_torch(
     assert proc.returncode == 0, f"{proc.stdout}\n{proc.stderr}"
     assert after.get("torch") == "9.9.0", after
     assert after.get(FIXTURE) == "1.0", after
+
+
+# -- a failed update leaves a runnable revision: its code and its packages match --
+#
+# install-deps.sh is several pip runs: the bulk resolve, then scenedetect, sam3 and hpsv2
+# (--no-deps each). A failure in a later one comes after the bulk install has already moved
+# packages, so resetting the checkout alone would put the old code on the new packages.
+#
+# The real flow, offline: a git upstream whose commit A pins fixturedep 1.0 and whose commit B
+# pins fixturedep 2.0 and adds newdep; the real install-deps.sh and torch_stack.py; a
+# throwaway venv; every wheel from --find-links. A failure is injected at each phase by
+# commit B asking for a version no wheel offers (or, for the probe, a torch_stack.py that
+# crashes), and once after the install, in the frontend build.
+
+in_rollback_sandbox = pytest.mark.xdist_group("self_update_rollback_sandbox")
+PINS_A = {"fixturedep": "1.0", "scenedetect": "1.0", "sam3": "1.0", "hpsv2": "1.0"}
+PINS_B = {"fixturedep": "2.0", "newdep": "1.0", "scenedetect": "2.0", "sam3": "2.0", "hpsv2": "2.0"}
+FIXTURE_NAMES = sorted(set(PINS_A) | set(PINS_B))
+
+
+def _git(cwd: Path, *args: str) -> str:
+    done = subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false",
+         "-c", "core.autocrlf=false", *args],
+        cwd=cwd, capture_output=True, text=True, timeout=60, check=True,
+    )
+    return done.stdout.strip()
+
+
+def _pip(python: Path, *args: str, env: dict | None = None) -> None:
+    subprocess.run([str(python), "-m", "pip", *args, "--disable-pip-version-check"],
+                   check=True, capture_output=True, text=True, timeout=_TIMEOUT_S, env=env)
+
+
+@pytest.fixture(scope="module")
+def rollback_venv(tmp_path_factory):
+    root = tmp_path_factory.mktemp("rollback")
+    wheels = root / "wheels"
+    wheels.mkdir()
+    for name in FIXTURE_NAMES:
+        for version in ("1.0", "2.0"):
+            _wheel(wheels, name, version)
+    venv = root / "venv"
+    subprocess.run([sys.executable, "-m", "venv", str(venv)], check=True, timeout=_TIMEOUT_S)
+    return {"root": root, "wheels": wheels, "venv": venv, "python": _venv_python(venv)}
+
+
+def _baseline(rv) -> dict[str, str]:
+    """The venv as commit A's install leaves it, whatever an earlier case did to it."""
+    python = rv["python"]
+    extra = [n for n in _installed(python) if n in FIXTURE_NAMES and n not in PINS_A]
+    if extra:
+        _pip(python, "uninstall", "-y", *extra)
+    _pip(python, "install", "--no-index", "--find-links", str(rv["wheels"]), "--no-deps",
+         *(f"{n}=={v}" for n, v in PINS_A.items()))
+    return _installed(python)
+
+
+def _upstream(tmp_path: Path, pins_b: dict[str, str], *, broken_probe: bool) -> tuple[Path, str, str]:
+    """An upstream repo at commit B and a clone of it at commit A; (clone, A, B)."""
+    up = tmp_path / "upstream"
+    (up / "backend").mkdir(parents=True)
+    _git(up, "init", "-q", "-b", "main")
+    for name in ("install-deps.sh", "torch_stack.py", "torch-stack.cfg"):
+        shutil.copy(BACKEND / name, up / "backend" / name)
+    req = up / "backend" / "requirements.txt"
+    req.write_text("".join(f"{n}=={v}\n" for n, v in PINS_A.items()), encoding="utf-8")
+    _git(up, "add", "-A")
+    _git(up, "commit", "-q", "-m", "A")
+    a = _git(up, "rev-parse", "HEAD")
+    _git(tmp_path, "clone", "-q", "-c", "core.autocrlf=false", str(up), "app")
+    req.write_text("".join(f"{n}=={v}\n" for n, v in pins_b.items()), encoding="utf-8")
+    if broken_probe:
+        (up / "backend" / "torch_stack.py").write_text("raise RuntimeError('probe broke')\n", encoding="utf-8")
+    _git(up, "add", "-A")
+    _git(up, "commit", "-q", "-m", "B")
+    return tmp_path / "app", a, _git(up, "rev-parse", "HEAD")
+
+
+def _wire(monkeypatch, rv, app: Path, wheels: Path):
+    """The service, running the real install-deps.sh in the throwaway venv, offline."""
+    from app.core import self_update as su
+
+    script = app / "backend" / "install-deps.sh"
+    bash = find_bash(script)
+    assert bash, bash_skip_reason(script)
+    monkeypatch.setattr(su, "_PYTHON", str(rv["python"]))
+    monkeypatch.setattr(su, "_BASH", bash)
+    monkeypatch.setattr(su, "set_draining", lambda v: None)
+    for var in ("PYTHONPATH", "PYTHONHOME", "MRLN_TORCH_SET", "PIP_LOG", "PIP_INDEX_URL", "PIP_EXTRA_INDEX_URL"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setenv("PATH", os.pathsep.join([str(rv["python"].parent), *_bash_tool_dirs(bash),
+                                                os.environ.get("PATH", "")]))
+    monkeypatch.setenv("VIRTUAL_ENV", str(rv["venv"]))
+    monkeypatch.setenv("PIP_NO_INDEX", "1")
+    monkeypatch.setenv("PIP_FIND_LINKS", str(wheels))
+    monkeypatch.setenv("PIP_DISABLE_PIP_VERSION_CHECK", "1")
+    tmp = rv["root"] / "tmp"
+    tmp.mkdir(exist_ok=True)
+    monkeypatch.setenv("TMPDIR", str(tmp))
+
+    svc = SelfUpdateService(app_dir=str(app), branch="main", remote="")
+    svc.set_loop(None)
+    calls = {"restart": 0, "frontend": 0}
+
+    async def restart():
+        calls["restart"] += 1
+
+    async def idle():
+        return True
+
+    monkeypatch.setattr(svc, "_do_restart", restart)
+    monkeypatch.setattr(svc, "_wait_for_idle", idle)
+    return svc, calls
+
+
+# Where the failure is injected: (what commit B does wrong, whether the frontend build fails).
+_PHASES = {
+    "the stack probe": ("probe", False),
+    "the bulk resolve": ("fixturedep", False),
+    "scenedetect, after the bulk install": ("scenedetect", False),
+    "sam3, after scenedetect": ("sam3", False),
+    "hpsv2, after sam3": ("hpsv2", False),
+    "the frontend build, after every install": (None, True),
+    "nothing (the control)": (None, False),
+}
+
+
+@in_rollback_sandbox
+@requires_bash
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", list(_PHASES))
+async def test_failed_update_preserves_runnable_revision(rollback_venv, tmp_path, monkeypatch, phase):
+    """Wherever the update fails, HEAD and the installed packages are one revision's: A's if
+    the install failed (whether or not it had moved packages), B's if only the frontend did;
+    and nothing restarts unless every step passed."""
+    from app.core.self_update import UpdateState
+
+    missing, frontend_fails = _PHASES[phase]
+    pins_b = dict(PINS_B)
+    if missing not in (None, "probe"):
+        pins_b[missing] = "9999.0"
+    before = await asyncio.to_thread(_baseline, rollback_venv)
+    app, a, b = await asyncio.to_thread(_upstream, tmp_path, pins_b, broken_probe=missing == "probe")
+    svc, calls = _wire(monkeypatch, rollback_venv, app, rollback_venv["wheels"])
+
+    async def frontend():
+        calls["frontend"] += 1
+        if frontend_fails:
+            raise RuntimeError("npm ci failed")
+
+    monkeypatch.setattr(svc, "_build_frontend", frontend)
+    await svc._apply_impl()
+
+    head = await asyncio.to_thread(_git, app, "rev-parse", "HEAD")
+    after = await asyncio.to_thread(_installed, rollback_venv["python"])
+    fixtures = {n: v for n, v in after.items() if n in FIXTURE_NAMES}
+    if missing is None and not frontend_fails:
+        assert svc.state == UpdateState.RESTARTING and calls["restart"] == 1, svc.error
+        assert (head, fixtures) == (b, PINS_B)
+        return
+    assert svc.state == UpdateState.ERROR
+    assert calls["restart"] == 0, "restarted after a failed update"
+    if frontend_fails:
+        assert (head, fixtures) == (b, PINS_B), "B's code and B's packages"
+    else:
+        assert calls["frontend"] == 0
+        assert head == a, f"the checkout is not back at A: {svc.error}"
+        assert after == before, f"A's code on other packages: {svc.error}"
+
+
+@in_rollback_sandbox
+@requires_bash
+@pytest.mark.asyncio
+async def test_failed_update_that_cannot_restore_the_packages_says_so_and_never_restarts(
+    rollback_venv, tmp_path, monkeypatch
+):
+    """The old fixturedep is gone from the index by the time the restore needs it: the update
+    must say loudly that the packages are not A's, and not restart."""
+    from app.core.self_update import UpdateState
+
+    wheels = tmp_path / "wheels"
+    shutil.copytree(rollback_venv["wheels"], wheels)
+    await asyncio.to_thread(_baseline, rollback_venv)
+    app, a, _b = await asyncio.to_thread(_upstream, tmp_path, {**PINS_B, "sam3": "9999.0"}, broken_probe=False)
+    svc, calls = _wire(monkeypatch, rollback_venv, app, wheels)
+    real_install = svc._install_backend_deps
+
+    async def install_then_lose_the_old_wheel():
+        try:
+            await real_install()
+        finally:
+            (wheels / "fixturedep-1.0-py3-none-any.whl").unlink()
+
+    monkeypatch.setattr(svc, "_install_backend_deps", install_then_lose_the_old_wheel)
+    errors: list[str] = []
+    monkeypatch.setattr("app.core.self_update.logger.critical",
+                        lambda event, **kw: errors.append(event), raising=False)
+    await svc._apply_impl()
+
+    assert svc.state == UpdateState.ERROR
+    assert calls["restart"] == 0
+    assert "could not be restored" in svc.error.lower() and "do not restart" in svc.error.lower(), svc.error
+    assert "fixturedep" in svc.error, f"the error does not name what is wrong: {svc.error}"
+    assert "self_update_environment_broken" in errors

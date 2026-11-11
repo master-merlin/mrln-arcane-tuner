@@ -183,6 +183,20 @@ describe('TrainingDynamicConfig — Default template reset keeps the form comple
         expect(c.getFormArray('datasets').length).toBe(1);
     });
 
+    it('places the fixed_sigmas list right after the timestep mode in Training Dynamics', () => {
+        const c = build();
+        c.organizeGroups([
+            { key: 'logit_normal_mu', schema: { group: 'STRATEGY' } },
+            { key: 'fixed_sigmas', schema: { group: 'STRATEGY', type: 'array' } },
+            { key: 'max_train_steps', schema: { group: 'STRATEGY' } },
+            { key: 'timestep_sampling', schema: { group: 'STRATEGY' } },
+        ] as unknown as Parameters<typeof c.organizeGroups>[0]);
+        const strategy = c.groups().find(g => g.name === 'Training Dynamics');
+        expect(strategy?.props.map(p => p.key)).toEqual([
+            'max_train_steps', 'timestep_sampling', 'fixed_sigmas', 'logit_normal_mu',
+        ]);
+    });
+
     it('releases the selector auto-save suppression even if the reset throws', () => {
         vi.useFakeTimers();
         try {

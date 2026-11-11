@@ -19,6 +19,11 @@ model_shift    – Inference-matched flow-match shift in logit space.
                  LTX (dynamic): mu interpolates base_shift→max_shift with seq-len.
                  WAN (fixed):   mu = ln(flow_shift) (seq-len independent).
                  else (fallback): flux-style mid shift.
+fixed_sigmas   – Uniform over the configured ``fixed_sigmas`` list (each value in
+                 (0, 1]): a model distilled to a fixed schedule trains on its levels.
+
+Every mode takes an optional local ``generator``; without one it draws from the
+global RNG exactly as before.
 """
 
 from __future__ import annotations
@@ -141,6 +146,41 @@ def _radc_center(
 # ── Public API ────────────────────────────────────────────────────────────
 
 
+def validate_fixed_sigmas(values: Any) -> list[float]:
+    """The ``fixed_sigmas`` list as floats, or a ``ValueError`` naming it.
+
+    It must be a non-empty list or tuple whose every value lies in ``(0, 1]``: sigma 0 is the clean
+    endpoint, never a training level, and a value past 1 is no flow-matching sigma.
+    """
+    if not isinstance(values, (list, tuple)) or len(values) == 0:
+        raise ValueError(f"fixed_sigmas must be a non-empty list of sigmas in (0, 1], got {values!r}")
+    out: list[float] = []
+    for value in values:
+        try:
+            sigma = float(value)
+        except (TypeError, ValueError):
+            raise ValueError(f"fixed_sigmas holds a non-number: {value!r}") from None
+        if not 0.0 < sigma <= 1.0:  # also refuses NaN
+            raise ValueError(f"fixed_sigmas values must lie in (0, 1], got {value!r}")
+        out.append(sigma)
+    return out
+
+
+def _rand(bs: int, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
+    """``U(0,1)`` of shape ``[bs]`` on ``device``. With a generator, drawn on its device and moved,
+    so the global RNG is untouched; without one, exactly the plain ``torch.rand`` call."""
+    if generator is None:
+        return torch.rand((bs,), device=device)
+    return torch.rand((bs,), device=generator.device, generator=generator).to(device)
+
+
+def _randn(bs: int, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
+    """``N(0,1)`` counterpart of :func:`_rand`."""
+    if generator is None:
+        return torch.randn((bs,), device=device)
+    return torch.randn((bs,), device=generator.device, generator=generator).to(device)
+
+
 class TimestepSampler:
     """Static factory for timestep sampling — one implementation for all
     model families.
@@ -167,6 +207,7 @@ class TimestepSampler:
         "flux_shift",
         "radc",
         "model_shift",
+        "fixed_sigmas",
     ]
 
     # ``draw_in_band``'s limits. A batch of 4 spends them over 29 rounds, and fills on
@@ -185,6 +226,7 @@ class TimestepSampler:
         *,
         latents: torch.Tensor | None = None,
         progress: float = 0.0,
+        generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         """Sample raw timesteps in ``[0, 1]``.
 
@@ -196,12 +238,22 @@ class TimestepSampler:
             latents: Optional latents for resolution-dependent modes.
             progress: Training progress in ``[0, 1]`` (step / total_steps).
                       Used by ``radc`` mode for curriculum shifting.
+            generator: Optional local RNG. Every mode draws from it instead of the
+                      global RNG; ``None`` keeps the global draws exactly as before.
 
         Returns:
             Timestep tensor ``[bs]`` in ``[0, 1]``.
         """
+        if mode == "fixed_sigmas":
+            # A uniform draw from the configured list (a model distilled to a fixed
+            # schedule trains on that schedule's levels only).
+            sigmas = validate_fixed_sigmas(config.get("fixed_sigmas"))
+            gen_device = generator.device if generator is not None else device
+            idx = torch.randint(0, len(sigmas), (bs,), device=gen_device, generator=generator)
+            return torch.tensor(sigmas, dtype=torch.float32, device=gen_device)[idx].to(device)
+
         if mode == "uniform":
-            return torch.rand((bs,), device=device)
+            return _rand(bs, device, generator)
 
         if mode == "logit_normal":
             # Accept both naming conventions for backward compat
@@ -214,19 +266,19 @@ class TimestepSampler:
                            config.get("logit_normal_std", 1.0))
             )
             return torch.sigmoid(
-                torch.randn((bs,), device=device) * sigma + mu
+                _randn(bs, device, generator) * sigma + mu
             )
 
         if mode == "sigmoid":
-            return torch.sigmoid(torch.randn((bs,), device=device))
+            return torch.sigmoid(_randn(bs, device, generator))
 
         if mode == "cosmap":
-            u = torch.rand((bs,), device=device)
+            u = _rand(bs, device, generator)
             return 1.0 - torch.cos(u * math.pi / 2.0)
 
         if mode == "mode":
             scale = float(config.get("mode_scale", 1.5))
-            u = torch.rand((bs,), device=device)
+            u = _rand(bs, device, generator)
             return 1.0 - u / (scale + (1.0 - scale) * u)
 
         if mode == "flux_shift":
@@ -255,13 +307,13 @@ class TimestepSampler:
                          min(base_shift, max_shift))
             else:
                 mu = (base_shift + max_shift) / 2.0
-            return torch.sigmoid(torch.randn((bs,), device=device) + mu)
+            return torch.sigmoid(_randn(bs, device, generator) + mu)
 
         if mode == "radc":
             center = _radc_center(config, progress, latents)
             width = float(config.get("radc_width", 0.5))
             cdf = _radc_cdf(round(center * 1000), round(width * 1000)).to(device)
-            u = torch.rand((bs,), device=device)
+            u = _rand(bs, device, generator)
             indices = torch.searchsorted(cdf, u)
             # searchsorted can return len(cdf) when u exceeds the final bin by a
             # float epsilon, which would yield t = 1.001; clamp so the raw
@@ -293,16 +345,16 @@ class TimestepSampler:
                 mu = math.log(float(fixed))
             else:
                 mu = (0.5 + 1.16) / 2.0
-            t = torch.sigmoid(torch.randn((bs,), device=device) * std + mu)
+            t = torch.sigmoid(_randn(bs, device, generator) * std + mu)
             uniform_prob = float(config.get("timestep_uniform_prob", 0.1))
             if uniform_prob > 0.0:
-                u_mask = torch.rand((bs,), device=device) < uniform_prob
-                t = torch.where(u_mask, torch.rand((bs,), device=device), t)
+                u_mask = _rand(bs, device, generator) < uniform_prob
+                t = torch.where(u_mask, _rand(bs, device, generator), t)
             return t
 
         # Unknown → fallback with warning
         logger.warning("unknown_timestep_mode", mode=mode, fallback="uniform")
-        return torch.rand((bs,), device=device)
+        return _rand(bs, device, generator)
 
     # ── Convenience wrapper ───────────────────────────────────────────
 
@@ -316,6 +368,7 @@ class TimestepSampler:
         scale: float = 1000.0,
         latents: torch.Tensor | None = None,
         progress: float = 0.0,
+        generator: torch.Generator | None = None,
     ) -> torch.Tensor:
         """Sample timesteps and scale to ``[0, scale]``.
 
@@ -325,8 +378,10 @@ class TimestepSampler:
         Returns:
             Timestep tensor ``[bs]`` clamped to ``[0, scale]``.
         """
+        # The generator is passed only when given, so a call without one is the same call as before.
+        extra = {} if generator is None else {"generator": generator}
         t = TimestepSampler.sample(
-            mode, bs, device, config, latents=latents, progress=progress,
+            mode, bs, device, config, latents=latents, progress=progress, **extra,
         )
         return (t * scale).clamp(0, scale)
 

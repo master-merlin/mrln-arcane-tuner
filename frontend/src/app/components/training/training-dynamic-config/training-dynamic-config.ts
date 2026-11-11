@@ -1698,7 +1698,7 @@ export class TrainingDynamicConfigComponent {
       'persist_latents', 'persist_embeddings',
       'resume_from_checkpoint', 'use_cached_latents', 'use_cached_embeddings',
       'resolutions', 'bucketing_mode',
-      'timestep_sampling', 'logit_normal_mu', 'logit_normal_sigma',
+      'timestep_sampling', 'fixed_sigmas', 'logit_normal_mu', 'logit_normal_sigma',
     ];
     if (groupMap['STRATEGY']) {
       groupMap['STRATEGY'].sort((a, b) => {

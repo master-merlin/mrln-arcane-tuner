@@ -30,6 +30,9 @@ SHAPE_TOLERANCE = 2.0
 # ``timestep_shift`` 5: the warp 5t / (1 + 4t) adds ln 5 to the logit of t.
 BERNINI_SHIFT = 5.0
 NORMAL = NormalDist()
+# What a mode needs beyond its name: ``fixed_sigmas`` refuses to draw without a list. These levels
+# put mass in both bands (with or without Bernini's warp) and none on either edge.
+_MODE_CONFIG = {"fixed_sigmas": {"fixed_sigmas": [0.95, 0.9, 0.5, 0.25]}}
 
 
 class _Log:
@@ -172,7 +175,7 @@ def test_a_draw_that_fills_at_once_is_one_draw_of_what_is_missing():
 
 @pytest.mark.parametrize("mode", TimestepSampler.SUPPORTED_MODES)
 def test_a_draw_that_fills_at_once_consumes_the_stream_as_one_plain_draw(mode):
-    cfg = {"timestep_sampling": mode}
+    cfg = {"timestep_sampling": mode, **_MODE_CONFIG.get(mode, {})}
 
     def draw(k: int) -> torch.Tensor:
         return TimestepSampler.sample_scaled(mode, k, CPU, cfg, progress=0.5)
@@ -300,7 +303,7 @@ def _edge_limit(family: str, mode: str, progress: float, expert: str) -> float:
 @pytest.mark.parametrize("expert", [HIGH, LOW])
 @pytest.mark.parametrize("mode,progress", _CASES)
 def test_draws_stay_in_the_band_and_do_not_pile_up_on_its_edge(family, expert, mode, progress):
-    sample, log = _sampler(family, {"timestep_sampling": mode})
+    sample, log = _sampler(family, {"timestep_sampling": mode, **_MODE_CONFIG.get(mode, {})})
     torch.manual_seed(1)
     t = sample(expert, EDGE_DRAWS, progress=progress)
     if expert == HIGH:

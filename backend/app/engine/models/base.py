@@ -10,7 +10,7 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ── Configuration Schema ─────────────────────────────────────────────────
@@ -438,12 +438,28 @@ class BaseTrainingConfig(BaseModel):
         json_schema_extra={"group": "STRATEGY"},
     )
     timestep_sampling: Literal[
-        "logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc", "model_shift"
+        "logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc", "model_shift",
+        "fixed_sigmas",
     ] = Field(
         "logit_normal",
         description="Timestep sampling strategy for training (HiDream-O1 runs flux_shift/model_shift as uniform and ignores radc_res_influence; SDXL hides it)",
         json_schema_extra={"group": "STRATEGY"},
     )
+    fixed_sigmas: list[float] | None = Field(
+        None,
+        description="The sigmas fixed_sigmas draws from, uniformly (each in (0, 1]; a model distilled to a fixed schedule trains on its levels)",
+        json_schema_extra={"group": "STRATEGY", "depends_on": "timestep_sampling:fixed_sigmas"},
+    )
+
+    @field_validator("fixed_sigmas")
+    @classmethod
+    def _validate_fixed_sigmas(cls, value: list[float] | None) -> list[float] | None:
+        # An empty list means "not given" here; the sampler refuses a fixed_sigmas draw without one.
+        if not value:
+            return value
+        from app.engine.strategies.timestep_sampling import validate_fixed_sigmas
+
+        return validate_fixed_sigmas(value)
     logit_normal_mu: float = Field(
         0.0,
         description="Mean of the logit-normal distribution",

@@ -135,7 +135,7 @@ ARCHETYPES: dict[str, Archetype] = {
 # schema order) so a sub-field added later is gated with the rest, never silently
 # shown to a family that ignores it: the mode itself plus every parameter one of
 # the ``TimestepSampler`` modes reads.
-_FLOW_TIMESTEP_NAMES = frozenset({"timestep_sampling", "timestep_uniform_prob", "mode_scale"})
+_FLOW_TIMESTEP_NAMES = frozenset({"timestep_sampling", "timestep_uniform_prob", "mode_scale", "fixed_sigmas"})
 _FLOW_TIMESTEP_PREFIXES = ("radc_", "flux_shift_", "model_shift_", "logit_normal_")
 FLOW_TIMESTEP_FIELDS: tuple[str, ...] = tuple(
     name
@@ -316,6 +316,36 @@ def _coerce_number(value):
         return value
 
 
+def _timestep_defaults(definition) -> dict:
+    """The form defaults a definition's family timestep default implies.
+
+    A definition names its default draw in ``architecture_params`` as ``timestep.default_mode``
+    (and, for ``fixed_sigmas``, its list as ``timestep.fixed_sigmas``); its trainer applies them
+    to a config that carries no ``timestep_sampling``. The form reads ``defaults``, so the same
+    keys are derived into it here, and a ``defaults`` block that says otherwise is refused: the
+    job default and the form default are one value, never two that can drift apart.
+    """
+    from app.engine.strategies.timestep_sampling import TimestepSampler, validate_fixed_sigmas
+
+    arch_params = getattr(definition, "architecture_params", None) or {}
+    mode = arch_params.get("timestep.default_mode")
+    if mode is None:
+        return {}
+    if mode not in TimestepSampler.SUPPORTED_MODES:
+        raise ValueError(f"{getattr(definition, 'id', '?')}: timestep.default_mode {mode!r} is no timestep mode")
+    derived: dict = {"timestep_sampling": mode}
+    if mode == "fixed_sigmas" or "timestep.fixed_sigmas" in arch_params:
+        derived["fixed_sigmas"] = validate_fixed_sigmas(arch_params.get("timestep.fixed_sigmas"))
+    own = definition.defaults or {}
+    for key, value in derived.items():
+        source = "timestep.default_mode" if key == "timestep_sampling" else "timestep.fixed_sigmas"
+        if key in own and own[key] != value:
+            raise ValueError(
+                f"{getattr(definition, 'id', '?')}: defaults.{key} {own[key]!r} disagrees with {source} {value!r}"
+            )
+    return derived
+
+
 def resolve_capabilities(definition) -> dict:
     """Merge archetype template -> per-model YAML defaults -> family capability
     overrides into the descriptor the Training UI consumes. Additive/read-only."""
@@ -356,7 +386,7 @@ def resolve_capabilities(definition) -> dict:
     caps["supports_augmentation"] = not is_edit and not is_audio
     caps["supports_masking_variants"] = not is_edit and not is_audio
 
-    merged = {**arch.config_defaults, **(definition.defaults or {})}
+    merged = {**arch.config_defaults, **(definition.defaults or {}), **_timestep_defaults(definition)}
     defaults = {k: _coerce_number(v) for k, v in merged.items()}
     return {
         "archetype": arch.id,

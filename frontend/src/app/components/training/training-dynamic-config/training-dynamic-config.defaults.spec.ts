@@ -62,7 +62,7 @@ const SCHEMA: SchemaNode = {
     },
 } as unknown as SchemaNode;
 
-function build() {
+function build(schema: SchemaNode = SCHEMA) {
     TestBed.configureTestingModule({
         imports: [TrainingDynamicConfigComponent],
         providers: [
@@ -79,7 +79,7 @@ function build() {
     });
     TestBed.overrideComponent(TrainingDynamicConfigComponent, { set: { template: '', imports: [] } });
     const fixture = TestBed.createComponent(TrainingDynamicConfigComponent);
-    fixture.componentRef.setInput('schema', SCHEMA);
+    fixture.componentRef.setInput('schema', schema);
     fixture.detectChanges(); // runs the effect → buildForm()
     return fixture.componentInstance;
 }
@@ -214,5 +214,93 @@ describe('TrainingDynamicConfig — Default template reset keeps the form comple
         } finally {
             vi.useRealTimers();
         }
+    });
+});
+
+/**
+ * MiniMax-H3-Image is distilled to a fixed 6-step grid, so its family default draw is
+ * `fixed_sigmas` over that grid. The backend derives the descriptor's `defaults` from the
+ * definition's `timestep.default_mode` / `timestep.fixed_sigmas` (resolve_capabilities); the
+ * form must submit that default when untouched, and the user's own mode when they pick one.
+ */
+const H3_IMAGE_SIGMAS = [1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.5327739119529724, 0.23200887441635132];
+
+// resolve_capabilities(minimax-h3-image-t2i)["defaults"], as the backend returns it.
+const H3_IMAGE_DEFAULTS: Record<string, unknown> = {
+    resolution: 1024,
+    scheduler: 'flow_match',
+    learning_rate: 1e-4,
+    mixed_precision: 'bf16',
+    num_inference_steps: 6,
+    guidance_scale: 1.0,
+    timestep_sampling: 'fixed_sigmas',
+    fixed_sigmas: H3_IMAGE_SIGMAS,
+};
+
+const TIMESTEP_SCHEMA: SchemaNode = {
+    type: 'object',
+    properties: {
+        ...(SCHEMA.properties as Record<string, unknown>),
+        timestep_sampling: {
+            type: 'string',
+            enum: ['logit_normal', 'uniform', 'sigmoid', 'cosmap', 'mode', 'flux_shift', 'radc', 'model_shift', 'fixed_sigmas'],
+            default: 'logit_normal',
+            group: 'STRATEGY',
+        },
+        fixed_sigmas: {
+            anyOf: [{ type: 'array', items: { type: 'number' } }, { type: 'null' }],
+            default: null,
+            group: 'STRATEGY',
+            depends_on: 'timestep_sampling:fixed_sigmas',
+        },
+    },
+} as unknown as SchemaNode;
+
+function submitted(c: ReturnType<typeof build>): Record<string, unknown> {
+    let payload: Record<string, unknown> | undefined;
+    const sub = c.configSubmitted.subscribe((cfg: Record<string, unknown>) => { payload = cfg; });
+    c.onSubmit();
+    sub.unsubscribe();
+    if (!payload) throw new Error('the form did not submit');
+    return payload;
+}
+
+describe('TrainingDynamicConfig: the MiniMax-H3-Image timestep default', () => {
+    function h3Form() {
+        const c = build(TIMESTEP_SCHEMA);
+        c.form.get('definition_id')?.setValue('minimax-h3-image-t2i');
+        c.form.get('model_family')?.setValue('minimax_h3_image');
+        c.patchFormRecursive(c.form, { datasets: [{ dataset_name: 'foxes', num_repeats: 1, masking_enabled: false }] });
+        c.applyDefinitionDefaults(H3_IMAGE_DEFAULTS);
+        return c;
+    }
+
+    it('an untouched form submits the family default fixed_sigmas', () => {
+        const c = h3Form();
+        expect(c.form.get('timestep_sampling')?.value).toBe('fixed_sigmas');
+        const payload = submitted(c);
+        expect(payload['timestep_sampling']).toBe('fixed_sigmas');
+        // The list is never a different one: the field stays the schema's "not given", and the
+        // trainer then takes the definition's grid (minimax_h3_image settings.apply_timestep_default).
+        expect([null, H3_IMAGE_SIGMAS]).toContainEqual(payload['fixed_sigmas'] ?? null);
+    });
+
+    it('a mode the user picks is submitted instead, without the list', () => {
+        const c = h3Form();
+        const mode = c.form.get('timestep_sampling')!;
+        mode.setValue('logit_normal');
+        mode.markAsDirty();
+        const payload = submitted(c);
+        expect(payload['timestep_sampling']).toBe('logit_normal');
+        expect('fixed_sigmas' in payload).toBe(false);
+    });
+
+    it('a user-picked mode survives the defaults arriving again', () => {
+        const c = h3Form();
+        const mode = c.form.get('timestep_sampling')!;
+        mode.setValue('logit_normal');
+        mode.markAsDirty();
+        c.applyDefinitionDefaults(H3_IMAGE_DEFAULTS);
+        expect(submitted(c)['timestep_sampling']).toBe('logit_normal');
     });
 });

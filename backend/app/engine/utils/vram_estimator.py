@@ -393,14 +393,24 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "vae": 5.21,
     },
     "minimax_h3_image": {
-        # PLACEHOLDER until the GPU probes measure this family. transformer:
-        # transformer_diffusers/diffusion_pytorch_model.safetensors.index.json
-        # total_size 66,289,356,032 bytes (mixed bf16/fp32) -> ~33.1 B at 2 bytes;
-        # text_encoder: the same Qwen3-VL as minimax_h3 (66,714,780,128 bytes bf16).
-        # vae: the image VAE's size is not measured yet (a small fraction of the DiT).
-        "transformer": 33.14,
+        # The definition ships concrete on-disk model_size_mb (MiniMaxAI/MiniMax-H3-Image at
+        # fbde899f), so this table is the fallback-only path, kept in sync with it. These are
+        # checkpoint sizes, not training peaks: the measured peaks of the int8 and bf16 runs
+        # on a 96 GB card replace the guesswork once the GPU probes have run.
+        #
+        # transformer: the vendored MiniMaxH3ImageTransformer2DModel built on the meta device
+        # from transformer_diffusers/config.json has 33,125,224,384 parameters
+        # (transformer_diffusers/diffusion_pytorch_model.safetensors.index.json total_size
+        # 66,289,356,032 bytes: bf16, with proj_in / time_embedder / pdd_proj_out in fp32).
+        # text_encoder: the same Qwen3-VL-32B as minimax_h3,
+        # text_encoder/model.safetensors.index.json total_size 66,714,780,128 bytes bf16
+        # -> 33.36 B.
+        # vae: AutoencoderKLMiniMaxH3Image built the same way from vae_diffusers/config.json
+        # has 584,228,408 parameters, stored fp32 (vae_diffusers/diffusion_pytorch_model.
+        # safetensors, 2,336,973,400 bytes, no index).
+        "transformer": 33.13,
         "text_encoder": 33.36,
-        "vae": 0.5,
+        "vae": 0.584,
     },
 }
 

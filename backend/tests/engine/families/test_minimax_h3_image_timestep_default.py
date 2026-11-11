@@ -28,7 +28,6 @@ from app.engine.models.registry import registry
 from tests.engine.families.test_minimax_h3_image_trainer import (
     DEFINITION_ID,
     H3_IMAGE_SIGMAS,
-    stand_in_definition,
 )
 
 
@@ -45,19 +44,12 @@ class _RecordingPlugin:
 
 @pytest.fixture
 def definition():
-    """The family's definition in the registry for the length of one test (the shipped YAML is a
-    later task; the stand-in carries the model's timestep keys)."""
+    """The shipped definition, exactly as the registry loads it from its YAML."""
     registry.initialize()
-    saved = registry._definitions.get(DEFINITION_ID)
-    defn = stand_in_definition()
-    registry._definitions[DEFINITION_ID] = defn
-    try:
-        yield defn
-    finally:
-        if saved is None:
-            registry._definitions.pop(DEFINITION_ID, None)
-        else:
-            registry._definitions[DEFINITION_ID] = saved
+    defn = registry.get_definition(DEFINITION_ID)
+    assert defn is not None, f"{DEFINITION_ID} is not in the registry"
+    assert defn.family == "minimax_h3_image"
+    return defn
 
 
 def _job_config(**extra) -> dict:

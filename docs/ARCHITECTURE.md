@@ -192,7 +192,7 @@ engine/
 ├── factories/             # Optimizer + quantization (bitsandbytes/quanto/torchao) factories + base/impl subdirs
 ├── models/
 │   ├── registry.py        # Model family registry (plugin-driven) + count()
-│   └── families/          # 32 families + 3 support packages (see below)
+│   └── families/          # 33 families + 3 support packages (see below)
 ├── strategies/            # EMA, timestep sampling, noise interpolation, sigma schedule/tracker
 └── utils/                 # LoRA tools + conversion, safe save, introspection, VRAM/cost estimators, override manager
 ```
@@ -200,7 +200,7 @@ engine/
 
 #### Model families
 
-**32 shipped families across 58 definitions**, plus three support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share), `prx_shared` (the same role for `prx` and `prx_pixel`) and `minimax_h3_shared` (the MiniMax-H3 text tap and text-cache key, the text-encoder release, the pixel adapter, the inverted flow-match convention and the native LoRA artifact core, used by `minimax_h3`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (29), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
+**33 shipped families across 59 definitions**, plus three support packages that ship no definitions of their own: `wan_shared` (the WAN text-encoding/cache mixin and the driver/sampler/saver/trainer bases wan21/wan22/wan22_ti2v_5b share), `prx_shared` (the same role for `prx` and `prx_pixel`) and `minimax_h3_shared` (the MiniMax-H3 text tap and text-cache key, the text-encoder release, the pixel adapter, the inverted flow-match convention and the native LoRA artifact core, used by `minimax_h3`). WAN loaders build on the cross-family `engine/core/pipeline/loader_base.py`. Every family declares an `archetype` — **`latent_diffusion` (29), `unified_transformer` (1, `hidream_o1`), `pixel_transformer` (1, `prx_pixel`)**. Video families keep the `latent_diffusion` archetype and flip video capability flags via `capability_overrides`; `ace_step15` is the audio family and flips `is_audio_family`, which hides the spatial-resolution surface entirely.
 
 Counts here are pinned by `backend/tests/test_architecture_family_counts.py` — the table below is generated from the tree, and a family added without a row in it fails the gate. That guard exists because this section said "13 families" for fifteen families' worth of releases.
 
@@ -219,6 +219,7 @@ Counts here are pinned by `backend/tests/test_architecture_family_counts.py` —
 | `longcat_image`   | LongCat-Image                                                      | latent_diffusion    | —                                   |
 | `lumina2`         | Lumina-Image 2.0                                                   | latent_diffusion    | —                                   |
 | `microsoft_lens`  | Microsoft Lens (Base 3.8B; decoupled GPT-OSS, vendored DiT)        | latent_diffusion    | —                                   |
+| `minimax_h3_image` | MiniMax-H3-Image (text → image; vendored transformer + VAE, Qwen3-VL TE, 6-step distilled) | latent_diffusion | —                      |
 | `moss_image`      | MOSS-Image (Base / SFT 5B; vendored transformer + scheduler, Qwen3.5 TE + FLUX.2 VAE) | latent_diffusion | —                      |
 | `nucleus_image`   | Nucleus-Image                                                      | latent_diffusion    | —                                   |
 | `omnigen2`        | OmniGen2                                                           | latent_diffusion    | —                                   |

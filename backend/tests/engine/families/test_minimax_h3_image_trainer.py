@@ -21,8 +21,9 @@ real weights:
 * the loader: the deferred vendored DiT from ``transformer_diffusers``, the vendored VAE
   from ``vae_diffusers`` wrapped once in the shared pixel adapter, and the 6 PDD heads.
 
-The shipped definition YAML lands later; ``stand_in_definition()`` carries exactly the keys
-these modules read, with the model's values.
+``stand_in_definition()`` carries the keys these modules read with the shipped YAML's values
+(``test_the_stand_in_agrees_with_the_shipped_definition``), and a target list the tiny models
+have; the API -> job -> trainer tests run the shipped definition itself.
 """
 
 from __future__ import annotations
@@ -631,3 +632,98 @@ def test_the_family_registers_as_an_image_family():
     assert caps.get("is_video") is False and caps.get("has_audio") is False
     family = MiniMaxH3ImageFamily(stand_in_definition(), {})
     assert family.get_trainer_class() is MiniMaxH3ImageTrainer
+
+
+def test_the_stand_in_agrees_with_the_shipped_definition():
+    """The stand-in differs from the shipped YAML only where a tiny model needs it (the target
+    list); every key it shares with the YAML carries the YAML's value."""
+    from app.engine.models.registry import registry
+
+    registry.initialize()
+    shipped = registry.get_definition(DEFINITION_ID)
+    assert shipped is not None and shipped.family == stand_in_definition().family
+    for key, value in stand_in_definition().architecture_params.items():
+        assert shipped.architecture_params[key] == value, key
+    stand_in_stacks = [(g["attr_path"], g["count"]) for g in stand_in_definition().block_topology]
+    assert stand_in_stacks == [(g["attr_path"], g["count"]) for g in shipped.block_topology]
+
+
+# ── The latent-cache fingerprint ──────────────────────────────────────────
+
+
+class _ConfigOnlyVAE:
+    """A VAE seen only through what the fingerprint reads: its class name and its config."""
+
+    def __init__(self, **config: Any) -> None:
+        self.config = dict(config)
+
+
+_VAE_CONFIG = {"latent_channels": 24, "latents_mean": [0.1] * 24, "latents_std": [1.2] * 24}
+
+
+def _fingerprint(vae: Any = None, divisibility: int = 32) -> str:
+    driver = _driver()
+    driver.assign_components({"vae": vae if vae is not None else _ConfigOnlyVAE(**_VAE_CONFIG)})
+    return driver.latent_cache_fingerprint(divisibility)
+
+
+def test_the_latent_key_is_stable_and_changes_with_every_input(monkeypatch):
+    from app.engine.models.families.minimax_h3_shared import pixel_adapter
+
+    base = _fingerprint()
+    assert base == _fingerprint() and len(base) == 8
+    # the VAE normalisation statistics
+    assert _fingerprint(_ConfigOnlyVAE(**{**_VAE_CONFIG, "latents_mean": [0.2] * 24})) != base
+    assert _fingerprint(_ConfigOnlyVAE(**{**_VAE_CONFIG, "latents_std": [1.0] * 24})) != base
+    # the bucket rule
+    assert _fingerprint(divisibility=16) != base
+    # the pixel adapter, read at call time
+    monkeypatch.setattr(pixel_adapter, "PIXEL_ADAPTER_VERSION", pixel_adapter.PIXEL_ADAPTER_VERSION + 1)
+    assert _fingerprint() != base
+
+
+def test_the_latent_key_reads_through_the_pixel_adapter_to_the_vae():
+    from app.engine.models.families.minimax_h3_shared.pixel_adapter import H3PixelAdaptedVAE
+
+    vae = _vendor("AutoencoderKLMiniMaxH3Image").from_config(_tiny_config(VAE_CONFIG, VAE_TINY))
+    wrapped = H3PixelAdaptedVAE(vae)
+    assert _fingerprint(wrapped) == _fingerprint(vae)
+
+
+def test_the_latent_key_needs_the_vae():
+    with pytest.raises(RuntimeError, match="no VAE"):
+        _driver().latent_cache_fingerprint(32)
+
+
+def test_prepare_data_moves_every_latent_cache_dir_under_the_key(monkeypatch):
+    """The production seam: the base ``prepare_data`` writes the inventory's cache dirs, and
+    every later reader (coverage, pre-cache, batches) reads them from there."""
+    import asyncio
+    import os
+    from types import SimpleNamespace
+
+    from app.engine.core.pipeline import GenericTrainingPipeline
+
+    async def base_prepare_data(self):
+        self.bucket_manager = SimpleNamespace(divisibility=32)
+        self.inventory = [
+            {"path": "d/a.png", "cache_dir": os.path.join("ds", "latents", "1024", "original")},
+            {"path": "d/b.png", "cache_dir": os.path.join("ds", "latents", "1024", "original"),
+             "masked_cache_dir": os.path.join("ds", "latents", "1024", "masked")},
+            {"path": "d/c.mp4", "is_video": True, "cache_dir": os.path.join("ds", "latents", "1024", "original")},
+        ]
+
+    monkeypatch.setattr(GenericTrainingPipeline, "prepare_data", base_prepare_data)
+    trainer = set_up()
+    trainer.components = {"vae": _ConfigOnlyVAE(**_VAE_CONFIG)}
+    trainer.driver.assign_components(trainer.components)
+    asyncio.run(trainer.prepare_data())
+
+    key = trainer.driver.latent_cache_fingerprint(32)
+    assert [i["path"] for i in trainer.inventory] == ["d/a.png", "d/b.png"]
+    for item in trainer.inventory:
+        assert item["cache_dir"] == os.path.join("ds", "latents", "1024", f"original-h3i{key}")
+    assert trainer.inventory[1]["masked_cache_dir"] == os.path.join("ds", "latents", "1024", f"masked-h3i{key}")
+    assert trainer.logger.named("minimax_h3_image_latent_cache_fingerprint") == [
+        {"event": "minimax_h3_image_latent_cache_fingerprint", "fingerprint": key}
+    ]

@@ -53,6 +53,7 @@ ALL_FAMILIES = (
     "lumina2",
     "microsoft_lens",
     "minimax_h3",
+    "minimax_h3_image",
     "nucleus_image",
     "omnigen2",
     "ovis_image",

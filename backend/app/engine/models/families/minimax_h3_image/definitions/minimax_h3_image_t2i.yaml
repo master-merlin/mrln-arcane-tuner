@@ -1,0 +1,322 @@
+# MiniMax-H3-Image: the MiniMax-H3 33B single-stream DiT without its audio stream, distilled to
+# 6 sampling steps with no CFG and one output head per step (pdd_proj_out[0..5]). Text-to-image
+# only. It is NOT the minimax_h3 video family: no audio, no frames, no dual shift, no 17n+5 rule;
+# the code both share lives in minimax_h3_shared.
+# MiniMax-H3-Image Community License; tracked in the README "licensed separately" table, never
+# here or in the app.
+#
+# The model classes are VENDORED (vendor/README.md): diffusers 0.41.0 ships none of them. The
+# family loads transformer_diffusers/ and vae_diffusers/; the transformer/ and vae/ folders hold
+# the model's native configs, which the enricher harvests (the four config files of
+# MiniMaxAI/MiniMax-H3-Image at fbde899f are the fixture of
+# test_minimax_h3_image_definition_enricher_fixed_point.py).
+id: minimax-h3-image-t2i
+family: minimax_h3_image
+name: MiniMax-H3-Image (text -> image)
+version: '1.0'
+defaults:
+  # One latent token covers 32x32 px; the default training area is about 1 MP, as DiffSynth-Studio
+  # trains. Previews run on the reference canvas (at least 4 MP) and are resized back.
+  resolution: 1024
+  scheduler: flow_match
+  learning_rate: 1e-4
+  # Every weight ships bf16 and the trainer refuses any other training precision at setup.
+  mixed_precision: bf16
+  # The distilled grid: 6 steps, no guidance. The sampler ignores any other count or scale.
+  num_inference_steps: 6
+  guidance_scale: 1.0
+  is_distilled: true
+  # timestep_sampling / fixed_sigmas are NOT stated here: resolve_capabilities derives them from
+  # timestep.default_mode / timestep.fixed_sigmas below, so the form default and the job default
+  # are one value.
+components:
+  repo:
+    path: huggingface:MiniMaxAI/MiniMax-H3-Image@fbde899f
+    type: diffusers
+    params: {}
+control_inputs: 0
+detected_precision:
+  text_encoder: torch.bfloat16
+  vae: torch.float32
+  unet: torch.bfloat16
+# On-disk component sizes (MiB = bytes / 1024^2) at fbde899f: the transformer_diffusers and
+# text_encoder safetensors index files' metadata.total_size (66,289,356,032 and 66,714,780,128
+# bytes), and vae_diffusers' single float32 safetensors file (2,336,973,400 bytes). The estimator
+# prefers these over its _FAMILY_PARAMS["minimax_h3_image"] fallback (kept in sync).
+model_size_mb:
+  transformer: 63218.46
+  text_encoder: 63624.17
+  vae: 2228.71
+architecture_params:
+  mode: t2i
+  # Generic activation-estimate hints.
+  hidden_size: 5376
+  depth: 52
+  in_channels: 24
+  context_dim: 5120
+  num_heads: 56
+  # The text tap (minimax_h3_shared.text): Qwen3-VL hidden_states[50], NOT the last layer, the
+  # prompt verbatim without special tokens, at most 4096 tokens.
+  te.type: qwen3_vl
+  te.hidden_size: 5120
+  te.hidden_state_tap_index: 50
+  te.max_length: 4096
+  # Opt-in: a NEW sample-prompt row in the training form is seeded with this definition's own
+  # steps / guidance / size (6 / 1.0 / 1024) instead of the fixed 20 / 3.5 / 1024.
+  sampling.seed_prompt_defaults: true
+  # Family DEFAULT timestep draw, read by the trainer and used only where the run config names no
+  # `timestep_sampling` (a mode the config carries is never touched). The model trains on its
+  # sampling schedule, each head only on its own sigma (ostris/ai-toolkit 5b1670a5,
+  # minimax_h3_image.py: "Training draws only the 6 sampling sigmas"): a uniform draw from the
+  # head grid. Any other mode uses the head of the nearest grid sigma (DiffSynth-Studio 6ccfd64d).
+  timestep.default_mode: fixed_sigmas
+  # The head grid, head i at index i: modular_model_index.json `sample_sigmas` at fbde899f without
+  # the terminal 0.0 (not a training level). The sampler runs exactly these 6 steps, unshifted.
+  timestep.fixed_sigmas:
+  - 1.0
+  - 0.9675236940383911
+  - 0.8875485062599182
+  - 0.75
+  - 0.5327739119529724
+  - 0.23200887441635132
+  # -- Harvested by the enricher, verbatim, from the native transformer/, text_encoder/,
+  #    scheduler/ and vae/ configs at fbde899f (the loader reads the *_diffusers folders) --
+  transformer._class_name: MiniMaxH3DiTModel
+  transformer.hidden_size: 5376
+  transformer.num_layers: 50
+  transformer.token_refiner_num_layers: 2
+  transformer.num_attention_heads: 56
+  transformer.attention_head_dim: 128
+  transformer.ffn_hidden_size: 14336
+  transformer.latents_dim: 24
+  transformer.audio_latents_dim: 32
+  transformer.patch_size:
+  - 1
+  - 2
+  - 2
+  transformer.text_dim: 5120
+  transformer.timestep_input_dim: 256
+  transformer.time_embed_hidden_size: 5376
+  transformer.time_embed_dim: 2688
+  transformer.adaln_out_features: 96768
+  transformer.final_adaln_out_features: 10752
+  transformer.rope_inv_freq_len: 16
+  transformer.norm_eps: 1.0e-05
+  transformer.qk_norm_eps: 1.0e-05
+  transformer.final_norm_eps: 1.0e-05
+  transformer.audio_enabled: false
+  te.architectures:
+  - Qwen3VLForConditionalGeneration
+  te.image_token_id: 151655
+  te.model_type: qwen3_vl
+  te.text_config:
+    attention_bias: false
+    attention_dropout: 0.0
+    bos_token_id: 151643
+    dtype: bfloat16
+    eos_token_id: 151645
+    head_dim: 128
+    hidden_act: silu
+    hidden_size: 5120
+    initializer_range: 0.02
+    intermediate_size: 25600
+    max_position_embeddings: 262144
+    model_type: qwen3_vl_text
+    num_attention_heads: 64
+    num_hidden_layers: 64
+    num_key_value_heads: 8
+    rms_norm_eps: 1.0e-06
+    rope_scaling:
+      mrope_interleaved: true
+      mrope_section:
+      - 24
+      - 20
+      - 20
+      rope_type: default
+    rope_theta: 5000000
+    use_cache: true
+    vocab_size: 151936
+  te.text_config.attention_bias: false
+  te.text_config.attention_dropout: 0.0
+  te.text_config.bos_token_id: 151643
+  te.text_config.dtype: bfloat16
+  te.text_config.eos_token_id: 151645
+  te.text_config.head_dim: 128
+  te.text_config.hidden_act: silu
+  te.text_config.hidden_size: 5120
+  te.text_config.initializer_range: 0.02
+  te.text_config.intermediate_size: 25600
+  te.text_config.max_position_embeddings: 262144
+  te.text_config.model_type: qwen3_vl_text
+  te.text_config.num_attention_heads: 64
+  te.text_config.num_hidden_layers: 64
+  te.text_config.num_key_value_heads: 8
+  te.text_config.rms_norm_eps: 1.0e-06
+  te.text_config.rope_scaling:
+    mrope_interleaved: true
+    mrope_section:
+    - 24
+    - 20
+    - 20
+    rope_type: default
+  te.text_config.rope_scaling.mrope_interleaved: true
+  te.text_config.rope_scaling.mrope_section:
+  - 24
+  - 20
+  - 20
+  te.text_config.rope_scaling.rope_type: default
+  te.text_config.rope_theta: 5000000
+  te.text_config.use_cache: true
+  te.text_config.vocab_size: 151936
+  te.tie_word_embeddings: false
+  te.video_token_id: 151656
+  te.vision_config:
+    deepstack_visual_indexes:
+    - 8
+    - 16
+    - 24
+    depth: 27
+    hidden_act: gelu_pytorch_tanh
+    hidden_size: 1152
+    in_channels: 3
+    initializer_range: 0.02
+    intermediate_size: 4304
+    model_type: qwen3_vl
+    num_heads: 16
+    num_position_embeddings: 2304
+    out_hidden_size: 5120
+    patch_size: 16
+    spatial_merge_size: 2
+    temporal_patch_size: 2
+  te.vision_config.deepstack_visual_indexes:
+  - 8
+  - 16
+  - 24
+  te.vision_config.depth: 27
+  te.vision_config.hidden_act: gelu_pytorch_tanh
+  te.vision_config.hidden_size: 1152
+  te.vision_config.in_channels: 3
+  te.vision_config.initializer_range: 0.02
+  te.vision_config.intermediate_size: 4304
+  te.vision_config.model_type: qwen3_vl
+  te.vision_config.num_heads: 16
+  te.vision_config.num_position_embeddings: 2304
+  te.vision_config.out_hidden_size: 5120
+  te.vision_config.patch_size: 16
+  te.vision_config.spatial_merge_size: 2
+  te.vision_config.temporal_patch_size: 2
+  te.vision_end_token_id: 151653
+  te.vision_start_token_id: 151652
+  scheduler._class_name: MiniMaxH3Scheduler
+  scheduler.shift_provided_sigmas: false
+  scheduler.euler_update_form: velocity
+  vae._class_name: MiniMaxH3ImageVAE
+  vae.latent_channels: 24
+  vae.latents_mean:
+  - 0.858090341091156
+  - -0.9606591463088989
+  - 1.0661640167236328
+  - -0.5090325474739075
+  - -0.2727581858634949
+  - -1.3675414323806763
+  - -0.2553254961967468
+  - -0.26907554268836975
+  - -0.5376840829849243
+  - -0.0464097298681736
+  - 0.6657370328903198
+  - 0.19690127670764923
+  - -0.5460608005523682
+  - -0.4035342037677765
+  - -0.23683024942874908
+  - 0.25928452610969543
+  - -0.30133944749832153
+  - 0.211341992020607
+  - -1.1206848621368408
+  - 0.3581933379173279
+  - -0.04225143790245056
+  - 0.2604829967021942
+  - 0.22864092886447906
+  - 0.7056031823158264
+  vae.latents_std:
+  - 1.2223774194717407
+  - 1.2767263650894165
+  - 1.6831774711608887
+  - 1.7549455165863037
+  - 1.5636216402053833
+  - 2.194143533706665
+  - 0.9653137922286987
+  - 1.0569885969161987
+  - 0.841948926448822
+  - 0.7729952931404114
+  - 1.8955937623977661
+  - 0.946841835975647
+  - 0.7996809482574463
+  - 0.44988900423049927
+  - 0.7197399735450745
+  - 0.6936293244361877
+  - 2.961095094680786
+  - 2.7694199085235596
+  - 3.0496184825897217
+  - 2.1088054180145264
+  - 3.276226282119751
+  - 3.1627357006073
+  - 2.2816812992095947
+  - 2.6127843856811523
+  vae.vae_chunk_dim: -1
+  vae.vae_clip_length: 17
+  vae.vae_decoder_tiling: 1
+  vae.vae_encoder_tiling: 1
+  vae.vae_parallel_tiling: 0
+  vae.vae_tile_overlap_min: 64
+  vae.vae_tile_size: 256
+  vae.vae_token_drop: 0
+  vae.vit_decoder_2d: true
+  vae.vit_decoder_kwargs:
+    dim_head: 64
+    ffn_activation_fn: silu
+    ffn_use_gated: true
+    heads: 16
+    norm_affine: true
+    norm_type: rms_norm
+    num_layers: 24
+    qk_norm_affine: false
+    qk_norm_type: rms_norm
+    rope_dim_ratio: 0.5
+    rope_theta: 100.0
+  vae.vit_decoder_kwargs.dim_head: 64
+  vae.vit_decoder_kwargs.ffn_activation_fn: silu
+  vae.vit_decoder_kwargs.ffn_use_gated: true
+  vae.vit_decoder_kwargs.heads: 16
+  vae.vit_decoder_kwargs.norm_affine: true
+  vae.vit_decoder_kwargs.norm_type: rms_norm
+  vae.vit_decoder_kwargs.num_layers: 24
+  vae.vit_decoder_kwargs.qk_norm_affine: false
+  vae.vit_decoder_kwargs.qk_norm_type: rms_norm
+  vae.vit_decoder_kwargs.rope_dim_ratio: 0.5
+  vae.vit_decoder_kwargs.rope_theta: 100.0
+enrich_pinned_keys:
+- timestep.default_mode
+- timestep.fixed_sigmas
+# Attention q/k/v/out and the SwiGLU FFN of every main and refiner block (the video family's
+# portable scope). The AdaLN branch, the stems and the 6 output heads are not targets. The saver
+# writes these in the native layout (lora_keys.py: attn.qkv_proj fused, attn.out_proj, mlp.fc1,
+# mlp.fc2).
+lora_targetable_modules:
+- attn.to_q
+- attn.to_k
+- attn.to_v
+- attn.to_out.0
+- ff.net.0.proj
+- ff.net.2
+# approx_vram_mb = bf16 bytes of ONE block, from the vendored class built on the meta device from
+# transformer_diffusers/config.json: 645,571,840 parameters per transformer block, 385,362,688 per
+# refiner block (the refiner has no AdaLN projection). The refiners are NESTED under token_refiner.
+block_topology:
+- name: transformer_blocks
+  attr_path: transformer_blocks
+  count: 50
+  approx_vram_mb: 1231
+- name: token_refiner_blocks
+  attr_path: token_refiner.refiner_blocks
+  count: 2
+  approx_vram_mb: 735

@@ -37,6 +37,8 @@ CLOBBER hooks this driver does override (``add_noise``, ``compute_target``,
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from typing import Any
 
@@ -200,6 +202,42 @@ class MiniMaxH3ImageDriver(IModelDriver):
                 f"text encoder still resident ({gb:.2f} GB) at DiT load; "
                 "release it (cache the embeddings) before materialising the transformer"
             )
+
+    # --- The latent cache ---
+
+    def latent_cache_fingerprint(self, bucket_divisibility: int) -> str:
+        """Short hash of every input a cached latent depends on: the pixel convention
+        (``PIXEL_ADAPTER_VERSION``, read at call time), the VAE's class and config (its
+        normalisation statistics included) and the bucket rule (the multiple every bucket side
+        snaps to). Nothing that only shapes the sequence at train time is in it, so a settings
+        change never re-encodes a dataset."""
+        from app.engine.models.families.minimax_h3_shared import pixel_adapter
+
+        vae = self.vae
+        if vae is None:
+            raise RuntimeError(
+                "minimax_h3_image latent_cache_fingerprint: no VAE assigned; the cache key "
+                "cannot be derived without the encoder's identity"
+            )
+        inner = getattr(vae, "inner", vae)
+        config = getattr(inner, "config", None)
+        if config is None:
+            config_dict: dict[str, Any] = {}
+        elif hasattr(config, "items"):  # diffusers FrozenDict or a plain dict
+            config_dict = dict(config.items())
+        else:
+            config_dict = dict(vars(config))
+        payload = json.dumps(
+            {
+                "pixel_adapter": pixel_adapter.PIXEL_ADAPTER_VERSION,
+                "vae_class": type(inner).__name__,
+                "vae_config": config_dict,
+                "bucket_divisibility": int(bucket_divisibility),
+            },
+            sort_keys=True,
+            default=str,
+        )
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:8]
 
     # --- The head grid ---
 

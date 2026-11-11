@@ -49,6 +49,7 @@ BASE_CONFIG = {
 ENGINE_FIELDS = ("timestep_sampling", "noise_offset", "min_snr_gamma", "optimizer_type", "lr_scheduler")
 # Sentinels no family default equals, so a call that carries one proves the config value arrived.
 TIMESTEP_SENTINEL = "radc"
+_BF16_ONLY = frozenset({"minimax_h3", "minimax_h3_image"})
 OPTIMIZER_SENTINEL = "Lion"
 SCHEDULER_SENTINEL = "polynomial"
 
@@ -75,8 +76,8 @@ def _trainer(defn, **config):
     family.config = {}
     trainer = object.__new__(family.get_trainer_class())
     trainer.definition = defn
-    # minimax_h3 refuses any precision but bf16 (its own explicit validation), whatever the field under test
-    base = {**BASE_CONFIG, "mixed_precision": "bf16"} if defn.family == "minimax_h3" else BASE_CONFIG
+    # the two H3 families refuse any precision but bf16 (their own explicit validation), whatever the field under test
+    base = {**BASE_CONFIG, "mixed_precision": "bf16"} if defn.family in _BF16_ONLY else BASE_CONFIG
     trainer.config = {**base, **config}
     trainer.device = torch.device("cpu")
     trainer.logger = structlog.get_logger("lane-168-test")
@@ -437,6 +438,9 @@ _PROFILES: dict[str, _Profile] = {
     "microsoft_lens": _Profile(latents=(2, 32, 8, 8), text=lambda: _rand(2, 3, 4, 32, seed=2), returns="tensor"),
     # a video-only step (no audio latents in the batch): the audio stream is off, as for a silent clip
     "minimax_h3": _Profile(latents=(2, 16, 3, 8, 8), setup=_setup_minimax, config={"train_audio": False}),
+    # one packed [text | target] sequence per item; the model returns the target rows only, so the
+    # zeros shaped like its patchified input are the prediction (patch (1, 2, 2), 24 channels)
+    "minimax_h3_image": _Profile(latents=(2, 24, 8, 8), model_config={"patch_size": (1, 2, 2)}),
     "moss_image": _Profile(latents=(2, 32, 8, 8), text=lambda: _pair()[0]),
     "nucleus_image": _Profile(model_config={"patch_size": 2}),
     "omnigen2": _Profile(model_config={"axes_dim_rope": (8, 4, 4), "axes_lens": (64, 64, 64)},

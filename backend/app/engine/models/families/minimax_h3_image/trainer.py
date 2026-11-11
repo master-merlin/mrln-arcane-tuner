@@ -16,7 +16,9 @@
   host copy, before the 66.28 GB DiT loads. A caption missing from the cache
   after the release is an error naming it, never a silent reload.
 - **Data**: video and audio files are skipped loudly, with a count; a dataset
-  left without images fails.
+  left without images fails. Every latent-cache dir is keyed on the driver's
+  ``latent_cache_fingerprint`` (pixel adapter, VAE config, bucket rule), so a
+  change to any of them never reuses stale latents.
 """
 
 from __future__ import annotations
@@ -140,6 +142,23 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
     async def prepare_data(self):
         await super().prepare_data()
         self._skip_non_image_items()
+        self._fingerprint_latent_cache_dirs()
+
+    def _fingerprint_latent_cache_dirs(self) -> None:
+        """Key every latent-cache dir on what its latents depend on (the driver's fingerprint):
+        coverage, the pre-cache and the batches all read ``item["cache_dir"]`` from the
+        inventory the base ``prepare_data`` wrote, so the key is applied here, before any of
+        them. The key goes INSIDE the last path segment: ``_resolve_te_cache_dirs`` walks a
+        fixed number of levels up from ``cache_dir``."""
+        divisibility = int(getattr(getattr(self, "bucket_manager", None), "divisibility", 32) or 32)
+        fingerprint = self.driver.latent_cache_fingerprint(divisibility)
+        for item in self.inventory:
+            for key in ("cache_dir", "masked_cache_dir"):
+                path = item.get(key)
+                if path:
+                    head, tail = os.path.split(path.rstrip("/\\"))
+                    item[key] = os.path.join(head, f"{tail}-h3i{fingerprint}")
+        self.logger.info("minimax_h3_image_latent_cache_fingerprint", fingerprint=fingerprint)
 
     def _skip_non_image_items(self) -> None:
         """The shared ingestion turns video and audio files into inventory items

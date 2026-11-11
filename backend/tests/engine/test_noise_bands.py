@@ -121,6 +121,7 @@ def test_the_random_streams_are_untouched():
     [
         ("boogu_image", "BooguImageTrainer", (0.0, 1.0)),
         ("minimax_h3", "MiniMaxH3Trainer", (0.0, 1.0)),
+        ("minimax_h3_image", "MiniMaxH3ImageTrainer", (0.0, 1.0)),
         ("omnigen2", "OmniGen2Trainer", (0.0, 1.0)),
         ("sdxl", "SDXLTrainer", None),
         ("hidream_o1", "HiDreamO1Trainer", None),

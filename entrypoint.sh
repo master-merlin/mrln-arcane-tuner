@@ -109,6 +109,9 @@ fi
 # through is refused here: a GPU the set has no kernels for (the cu126 image
 # on Blackwell), and a driver below the set's floor admitted anyway (a
 # datacenter driver in forward-compatibility mode, where the first GEMM fails).
+# The checker reads the operator's CUDA_VISIBLE_DEVICES (and CUDA_DEVICE_ORDER)
+# from this environment and checks only the GPUs it selects: one it hides is
+# never touched by torch, so it neither refuses nor passes the set.
 #   0  fits                    -> start
 #   3  refused                 -> the checker has printed why, the images that
 #                                 fit and the table; refuse to start

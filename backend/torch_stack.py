@@ -13,9 +13,11 @@ The image build and the container's start name their set instead, and never choo
 
     python torch_stack.py install --set <name> [--platform linux] --python <py>
                                                   # that set, whatever GPU this machine has (or none)
-    python torch_stack.py check --set <name>      # does that set run on this machine's GPUs?
-                                                  # 0 fits, 3 refused (with the images that fit),
-                                                  # 4 no GPU information (no or a failing nvidia-smi)
+    python torch_stack.py check --set <name>      # does that set run on the GPUs CUDA can see
+                                                  # (CUDA_VISIBLE_DEVICES)? 0 fits, 3 refused (with
+                                                  # the images that fit), 4 no GPU information (no
+                                                  # or a failing nvidia-smi, no GPU visible, or a
+                                                  # visible set it cannot pin down)
     python torch_stack.py constraints --python <py> <out>
                                                   # the installed stack as pip constraints;
                                                   # 0 written, 5 confirmed no torch, else a fault
@@ -31,17 +33,20 @@ The choice:
 - Nothing fits: exit 2 with the table, before anything is installed.
 
 ``MRLN_TORCH_NVIDIA_SMI`` names a file holding canned ``nvidia-smi
---query-gpu=driver_version,compute_cap --format=csv,noheader`` output, used instead of
-running it (tests, and simulating another machine).
+--query-gpu=index,uuid,driver_version,compute_cap --format=csv,noheader`` output (or the older
+two columns, ``driver_version,compute_cap``), used instead of running it (tests, and simulating
+another machine).
 """
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -103,6 +108,8 @@ class StackSet:
 class Gpu:
     driver: str
     cc: tuple[int, int]
+    index: int | None = None  # nvidia-smi's index: the PCI bus order
+    uuid: str | None = None  # "GPU-...", as nvidia-smi and CUDA_VISIBLE_DEVICES spell it
 
     @property
     def driver_major(self) -> int:
@@ -149,13 +156,19 @@ def read_stack(path: Path = STACK_FILE) -> tuple[str, dict[str, StackSet]]:
 
 
 def parse_gpus(text: str) -> list[Gpu]:
+    """``index, uuid, driver_version, compute_cap`` lines, or the older ``driver_version,
+    compute_cap`` ones (each then indexed by its position, with no UUID)."""
     gpus = []
     for line in text.splitlines():
         if not line.strip():
             continue
-        driver, _, cc = (part.strip() for part in line.partition(","))
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) == 4:
+            index, uuid, driver, cc = int(parts[0]), parts[1], parts[2], parts[3]
+        else:
+            (driver, cc), index, uuid = parts, len(gpus), None
         major, _, minor = cc.partition(".")
-        gpus.append(Gpu(driver=driver, cc=(int(major), int(minor or 0))))
+        gpus.append(Gpu(driver=driver, cc=(int(major), int(minor or 0)), index=index, uuid=uuid))
     return gpus
 
 
@@ -166,7 +179,7 @@ def detect_gpus() -> list[Gpu] | None:
         return parse_gpus(Path(canned).read_text(encoding="utf-8"))
     try:
         done = subprocess.run(
-            ["nvidia-smi", "--query-gpu=driver_version,compute_cap", "--format=csv,noheader"],
+            ["nvidia-smi", "--query-gpu=index,uuid,driver_version,compute_cap", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=60,
         )
     except FileNotFoundError:
@@ -215,8 +228,84 @@ def images_that_fit(sets: dict[str, StackSet], default: str, gpus: list[Gpu]) ->
     return fit
 
 
+def visible_candidates(gpus: list[Gpu], env: Mapping[str, str]) -> list[list[Gpu]]:
+    """Each set of ``gpus`` that CUDA may make visible under ``env``; one set unless it cannot tell.
+
+    ``CUDA_VISIBLE_DEVICES`` unset: every GPU. Otherwise its comma-separated entries, read up
+    to the first that names no device or repeats one (CUDA ignores the rest): an ordinal, a
+    ``GPU-<uuid>`` (or a prefix matching one GPU alone), or a MIG instance, whose GPU is known
+    from ``MIG-GPU-<uuid>/<gi>/<ci>`` and not from ``MIG-<uuid>``. Empty, or ``-1``, selects none.
+    An ordinal is nvidia-smi's index (the PCI bus order) only under
+    ``CUDA_DEVICE_ORDER=PCI_BUS_ID``; under the default FASTEST_FIRST, and for a MIG UUID,
+    the device could be any GPU not already named, so every such choice is a candidate.
+    """
+    raw = env.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return [list(gpus)]
+    pci_order = env.get("CUDA_DEVICE_ORDER", "").strip().upper() == "PCI_BUS_ID"
+    by_index = sorted(gpus, key=lambda g: g.index if g.index is not None else 0)
+
+    def by_uuid(prefix: str) -> Gpu | None:
+        matches = [g for g in gpus if g.uuid and g.uuid.lower().startswith(prefix.lower())]
+        return matches[0] if len(matches) == 1 and len(prefix) > len("GPU-") else None
+
+    known: list[Gpu] = []
+    ordinals: set[int] = set()
+    unknown_ordinals = unknown_migs = 0
+    for token in (t.strip() for t in raw.split(",")):
+        if token.isdigit():
+            i = int(token)
+            if i >= len(gpus) or i in ordinals:
+                break
+            ordinals.add(i)
+            if pci_order:
+                if by_index[i] in known:
+                    break
+                known.append(by_index[i])
+            else:
+                unknown_ordinals += 1
+        elif token.upper().startswith("GPU-"):
+            g = by_uuid(token)
+            if g is None or g in known:
+                break
+            known.append(g)
+        elif token.upper().startswith("MIG-GPU-"):
+            g = by_uuid(token[len("MIG-"):].split("/")[0])
+            if g is None:
+                break
+            if g not in known:  # several instances of one GPU are one GPU to check
+                known.append(g)
+        elif token.upper().startswith("MIG-") and len(token) > len("MIG-"):
+            unknown_migs += 1
+        else:
+            break
+    if not unknown_ordinals and not unknown_migs:
+        return [known]
+    rest = [g for g in gpus if g not in known]
+    # An unplaced ordinal is a GPU of its own unless it is one already named; a MIG UUID may be
+    # an instance of a named GPU, adding none.
+    low = max(0, unknown_ordinals - len(known))
+    high = min(unknown_ordinals + unknown_migs, len(rest))
+    out = []
+    for size in range(low, high + 1):
+        for extra in itertools.combinations(rest, size):
+            if known or extra:
+                out.append(known + list(extra))
+    return out or [known]
+
+
+def _described(gpus: list[Gpu]) -> str:
+    return ", ".join(f"cc {g.cc[0]}.{g.cc[1]}" + (f" (index {g.index})" if g.index is not None else "")
+                     for g in gpus)
+
+
 def check(sets: dict[str, StackSet], default: str, name: str) -> int:
-    """Whether set ``name`` runs on this machine's GPUs, said on stderr; the exit code."""
+    """Whether set ``name`` runs on this machine's GPUs, said on stderr; the exit code.
+
+    Only the GPUs CUDA can see are checked (``visible_candidates``): one that
+    ``CUDA_VISIBLE_DEVICES`` hides is never touched by torch, so it neither refuses nor passes
+    the set.
+    """
     try:
         gpus = detect_gpus()
     except Refused as failed:
@@ -227,7 +316,26 @@ def check(sets: dict[str, StackSet], default: str, name: str) -> int:
         print(f"[torch] cannot check the {name} set: {said}, so there is no GPU to check", file=sys.stderr)
         return CHECK_NO_GPU_INFO
     print(f"[torch] {machine(gpus)}", file=sys.stderr)
-    reason = why_not(sets[name], gpus)
+    candidates = visible_candidates(gpus, os.environ)
+    shown = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if all(not c for c in candidates):
+        print(f"[torch] cannot check the {name} set: CUDA_VISIBLE_DEVICES={shown!r} leaves no GPU visible,"
+              " so there is no GPU to check", file=sys.stderr)
+        return CHECK_NO_GPU_INFO
+    reasons = [why_not(sets[name], c) for c in candidates]
+    if any(r is None for r in reasons) and any(r is not None for r in reasons):
+        print(f"[torch] cannot check the {name} set: CUDA_VISIBLE_DEVICES={shown!r} could select any of"
+              f" {' / '.join(_described(c) for c in candidates)}, and the set fits some of them only."
+              " Name GPUs by UUID, or set CUDA_DEVICE_ORDER=PCI_BUS_ID so an ordinal is nvidia-smi's index.",
+              file=sys.stderr)
+        return CHECK_NO_GPU_INFO
+    if shown is not None:
+        print(f"[torch] CUDA_VISIBLE_DEVICES={shown!r}: checking {' / '.join(_described(c) for c in candidates)}",
+              file=sys.stderr)
+    # Every candidate agrees. Their union is what the refusal speaks for: an image that fits it
+    # fits each of them.
+    gpus = [g for g in gpus if any(g in c for c in candidates)]
+    reason = reasons[0]
     if reason is None:
         print(f"[torch] the {name} set (torch {sets[name].torch}) fits this machine", file=sys.stderr)
         return 0

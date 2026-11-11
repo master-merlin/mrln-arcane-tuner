@@ -826,7 +826,7 @@ class _Supervised:
         for stale in ("MRLN_RESTART", "MRLN_SUPERVISED", "PORT", "MRLN_BIND_HOST",
                       "MRLN_SETTINGS_PATH", "MRLN_AUTH_TOKEN", "NUMBA_CACHE_DIR",
                       "MRLN_TORCH_SET", "MRLN_TORCH_STACK_DIR", "MRLN_TORCH_NVIDIA_SMI",
-                      "MRLN_TORCH_INDEX"):
+                      "MRLN_TORCH_INDEX", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"):
             env.pop(stale, None)
         self.check_log = tmp / "check_calls.txt"
         env["STUB_CHECK_LOG"] = self.check_log.as_posix()
@@ -1004,6 +1004,17 @@ class TestTheEntrypointChecksTheImagesSetAgainstTheHost:
         assert "no kernels for compute capability 12.0" in out, out
         assert "mastermerlin/mrln-arcane-tuner:latest " in out, out
         assert "set     torch    driver" in out, "the refusal does not print the table\n" + out
+
+    @requires_bash
+    def test_a_blackwell_gpu_hidden_by_cuda_visible_devices_does_not_refuse_cu126(self, tmp_path):
+        """The operator's CUDA_VISIBLE_DEVICES reaches the checker, which checks only what it selects."""
+        ampere, blackwell = "GPU-1a2b3c4d-0000-1111-2222-333344445555", "GPU-9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff"
+        smi = f"0, {ampere}, 616.92, 8.6\n1, {blackwell}, 616.92, 12.0\n"
+        sup = self._real(tmp_path, "cu126", smi)
+        sup.env["CUDA_VISIBLE_DEVICES"] = ampere
+        code, out = sup.run("0")
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+        assert "the cu126 set (torch" in out and "fits" in out, out
 
     @requires_bash
     def test_the_cu132_image_refuses_a_driver_below_its_floor(self, tmp_path):

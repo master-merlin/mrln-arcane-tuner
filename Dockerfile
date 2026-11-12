@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1
 
 # Global build arg: must be declared before the first FROM so the runtime stage's
-# FROM can interpolate it. See the runtime stage below for the cu128/cu126 rationale.
-ARG CUDA_BASE=12.8.1
+# FROM can interpolate it. See the runtime stage below for the cu132/cu126 rationale.
+ARG CUDA_BASE=13.0.3
 
 # ── Stage 1: build the Angular SPA ───────────────────────────────────────
 FROM node:24-bookworm AS frontend
@@ -16,20 +16,24 @@ COPY frontend/ ./
 RUN npm run build -- --configuration production
 
 # ── Stage 2: runtime (CUDA + Python 3.12) ───────────────────────────────
-# CUDA target is parameterized so one Dockerfile builds two variants:
-#   • cu128 (DEFAULT — the `latest` / version tags): ships Blackwell (sm_120)
-#     kernels alongside Hopper/Ada/Ampere. Needs an R570+ host driver, but
-#     Blackwell cards mandate R570+ anyway, so this natively covers the whole
-#     modern GPU fleet. cu126 has NO Blackwell SASS → "no kernel image is
-#     available for execution on the device" on RTX/PRO Blackwell cards.
-#   • cu126 (the `-cu126` fallback tag): for legacy hosts pinned to R560–R565
-#     drivers (no Blackwell). Build with:
+# One Dockerfile builds two variants, each a named set of backend/torch-stack.cfg
+# (the versions live there, and nowhere in this file):
+#   • cu132 (DEFAULT — the `latest` / version tags) on the CUDA 13.0 base: the
+#     cfg's default set, with kernels from Turing to Blackwell (sm_120). Needs an
+#     R580+ host driver; the set's CUDA 13.2 libraries run on the 13.0 base's
+#     R580 floor by minor-version compatibility.
+#   • cu126 (the `-cu126` fallback tag) on the 12.6.3 base: the cu126 set, for
+#     hosts on R560–R579 without Blackwell (it has no sm_100/sm_120 kernels).
+#     Build with:
 #       --build-arg CUDA_BASE=12.6.3 --build-arg TORCH_CUDA=cu126
-# Do NOT default to cu130 (CUDA 13): it needs R580+ and the 12→13 forward-compat
-# layer breaks cuBLAS on older drivers (every GEMM → CUBLAS_STATUS_INVALID_VALUE).
-# The base-image CUDA version also sets NVIDIA_REQUIRE_CUDA, which gates
-# container startup on the host driver — keep CUDA_BASE's minor aligned with
-# TORCH_CUDA so the gate matches the wheels' real driver floor.
+#   The cu128 image is frozen: never rebuilt, its tags never moved.
+# The base-image CUDA version sets NVIDIA_REQUIRE_CUDA, which gates container
+# startup on the host driver before the entrypoint runs: CUDA_BASE 13.0 admits
+# R580+, matching the cu132 set's DRIVER_MIN, and 12.6 admits R560+, matching
+# cu126's. What that gate lets through (a GPU the set has no kernels for, a
+# datacenter driver admitted in forward-compatibility mode below the floor) is
+# refused by the entrypoint's `torch_stack.py check`.
+# docker-build.ps1 passes the pair for each variant.
 # (CUDA_BASE is declared as a global ARG at the top of this file.)
 FROM nvidia/cuda:${CUDA_BASE}-cudnn-runtime-ubuntu24.04 AS runtime
 
@@ -41,6 +45,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     # error-and-retry so the build self-heals instead of wedging.
     PIP_DEFAULT_TIMEOUT=120 \
     PIP_RETRIES=5 \
+    # The image installs into the system Python (no venv), which Ubuntu 24.04
+    # marks externally managed; torch_stack.py's own pip calls need this too.
+    PIP_BREAK_SYSTEM_PACKAGES=1 \
     MRLN_CONTAINER=1 \
     MRLN_FRONTEND_DIST=/app/frontend/browser \
     PORT=8000
@@ -70,41 +77,32 @@ RUN curl -fsSL https://deb.nodesource.com/setup_24.x | bash - \
     && npm install -g npm@11.21.0 \
     && rm -rf /var/lib/apt/lists/*
 
-# Install PyTorch (pinned versions, independent of the repo so this heavy layer
-# stays cached across code changes). TORCH_CUDA selects the wheel build (cu128
-# default; cu126 for the fallback tag). The app's own deps are installed from the
-# cloned requirements.txt after the git checkout below — keeping /app empty until
-# then so the clone (which requires an empty target) succeeds.
+# Install the torch stack: the set TORCH_CUDA names (cu132 default; cu126 for
+# the fallback tag), as backend/torch-stack.cfg defines it. Only the cfg and
+# torch_stack.py are copied in, to /opt/torch-stack, so this heavy layer stays
+# cached across code changes and is rebuilt only when the stack itself changes.
+# The app's own deps are installed from the cloned requirements.txt after the
+# git checkout below — keeping /app empty until then so the clone (which
+# requires an empty target) succeeds.
 #
-# Split-stack: the image pins torch 2.11.0 here (cu128/R570+ and cu126/R560+
-# both publish it, preserving today's exact host-driver floors for both
-# variants), while the LOCAL dev venv runs torch 2.12.1+cu130 instead (newer
-# CUDA, no matching Linux wheel index parity yet). requirements.txt's torch/
-# torchvision/torchaudio/triton pins document the LOCAL 2.12.1 stack only —
-# install-deps.sh filters those lines out of its requirements install so
-# neither this image build nor the runtime self-update ever clobbers the
-# trio baked into this layer.
-# torchao belongs in THIS layer, with the trio, and for the same reason: it
-# ships compiled CUDA extensions, so its wheel is bound to a CUDA ABI. PyPI
-# publishes only the CUDA-13 build, whose kernels need `libcudart.so.13` — an
-# image on the 12.8/12.6 base therefore loaded neither `_C_cutlass_90a` nor
-# `_C_mxfp8`, and every published image has shipped it that way. The failure was
-# invisible to the app: `import torchao` still succeeds, so `is_available()`
-# returns True and none of the product's "quantization unavailable" fallbacks
-# fire — the wheel is broken UNDERNEATH that predicate, and the error surfaces
-# inside `quantize_()` at load time instead.
-# NOT a version change: `download.pytorch.org/whl/${TORCH_CUDA}` publishes the
-# same pinned 0.17.0 as `0.17.0+${TORCH_CUDA}`, so this is the pin we already
-# had, fetched from the index that matches the base image.
-# install-deps.sh excludes torchao with the rest of the torch stack, so neither
-# this build's bulk resolve nor a running container's self-update can replace
-# this wheel with PyPI's. requirements.txt's torchao pin is the LOCAL stack's
-# and may differ from this one; the local installers never run install-deps.sh.
-ARG TORCH_CUDA=cu128
-RUN python -m pip install --break-system-packages \
-        torch==2.11.0 torchvision==0.26.0 torchaudio==2.11.0 \
-        torchao==0.17.0 \
-        --index-url https://download.pytorch.org/whl/${TORCH_CUDA} \
+# /opt/torch-stack is the BAKED copy and outlives every self-update, which only
+# moves /app: the entrypoint checks the host against it at start, and
+# install-deps.sh writes its constraints from the stack it installed. The set's
+# name is recorded as MRLN_TORCH_SET for both.
+#
+# `install --set <name> --platform linux` installs that set without asking this
+# build machine's GPU (a build has none, or another one), every build pinned
+# with its local version from the set's own index. torchao comes from that index
+# too, never from PyPI: it ships compiled CUDA extensions bound to one CUDA, and
+# PyPI's Linux wheel carries CUDA-13 extensions only, which on a cu126 base load
+# nothing while `import torchao` still succeeds. install-deps.sh excludes the
+# whole stack from its bulk resolve and runs it under constraints of this
+# layer's stack, so neither this build nor a running container's self-update
+# can replace it. The torchao load check after install-deps.sh proves it.
+ARG TORCH_CUDA=cu132
+ENV MRLN_TORCH_SET=${TORCH_CUDA}
+COPY backend/torch-stack.cfg backend/torch_stack.py /opt/torch-stack/
+RUN python /opt/torch-stack/torch_stack.py install --set ${TORCH_CUDA} --platform linux --python python \
     # setuptools/wheel ship via apt in the base image (no pip RECORD), so pip
     # can't uninstall them to honor the pinned versions. Install pip-managed
     # copies with --ignore-installed first; requirements.txt then sees the
@@ -143,8 +141,12 @@ RUN python -m pip install --break-system-packages \
 # re-encode. PyAV's bundled libs cover decode/probe/encode, but a real ffmpeg
 # binary (found first by shutil.which, ahead of the imageio-ffmpeg fallback)
 # is the robust path for re-encode + AAC mux.
+# gcc libc6-dev python3-dev: torch.compile (inductor/triton) builds its kernels
+# and launcher at run time and needs a C compiler and Python.h; without them
+# Blackwell fp8 training fails at its first step ("Failed to find C compiler").
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libgl1 libglib2.0-0 libxcb1 libsm6 libxext6 libxrender1 ffmpeg \
+        gcc libc6-dev python3-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Ollama (local LLM sidecar for caption refinement) ---
@@ -241,9 +243,9 @@ RUN --mount=type=secret,id=git_token \
              echo "ERROR: /app is not at $GIT_SHA after reset." >&2; exit 1; }'
 WORKDIR /app/backend
 # Install the app's Python deps from the cloned checkout. install-deps.sh
-# filters the torch/torchvision/torchaudio/triton/triton-windows lines out of
-# requirements.txt before installing, so this step never touches (or clobbers)
-# the trio already baked into the cached layer above.
+# filters the torch stack's lines out of requirements.txt and resolves the rest
+# under constraints of the stack installed above, so this step never touches
+# (or clobbers) the set baked into the cached layer above.
 # It also installs requirements.txt EXCEPT scenedetect and sam3, then
 # installs each of those with --no-deps: scenedetect's declared GUI
 # `opencv-python` dep would otherwise clobber the pinned

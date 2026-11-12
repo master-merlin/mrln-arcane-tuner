@@ -3,8 +3,9 @@
 Reads Dockerfile, docker-build.ps1, backend/requirements.txt, the tracked Docker Scout snapshot
 (backend/tests/fixtures/container_cves/) and
 ``backend/container-cve-dispositions.json`` from the repo root (anchored on
-``__file__``), offline. Every failing assertion starts with ``LANE-135: ``; a
-missing file is an assertion failure, never a collection error.
+``__file__``), offline. Every failing floor assertion starts with ``LANE-135: ``,
+and every base or torch-stack one with ``image stack: ``; a missing file is an
+assertion failure, never a collection error.
 
 Register shape: ``{"findings": [{"cve", "purl", "disposition", "reason", "revisit"}]}``
 with one row per (cve, purl) of the snapshot; disposition is one of
@@ -187,15 +188,87 @@ def test_every_scout_finding_has_one_disposition():
                 )
 
 
-def test_cuda_base_minor_unchanged():
+CFG = REPO / "backend" / "torch-stack.cfg"
+
+
+def _cfg() -> dict[str, str]:
+    """backend/torch-stack.cfg as KEY -> VALUE (the file the image installs its stack from)."""
+    values: dict[str, str] = {}
+    for raw in _read(CFG).splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip()
+    return values
+
+
+def test_the_default_image_is_the_default_set_on_a_cuda_13_0_base():
+    """The base's NVIDIA_REQUIRE_CUDA gate is what admits a host driver, so the default
+    base is an EXACT 13.0.x tag (R580+), and the default set is the cfg's own DEFAULT."""
     text = _read(DOCKERFILE)
     base = re.search(r"^ARG CUDA_BASE=(\S+)", text, re.M)
-    assert base and base.group(1).startswith("12.8."), "LANE-135: ARG CUDA_BASE must stay 12.8.x (LANE-140 owns CUDA 13)"
-    alt = re.search(r"--build-arg CUDA_BASE=(\S+)", text)
-    assert alt and alt.group(1).startswith("12.6."), "LANE-135: the cu126 build-arg must stay 12.6.x"
+    assert base and re.fullmatch(r"13\.0\.\d+", base.group(1)), (
+        f"image stack: ARG CUDA_BASE defaults to {base.group(1) if base else None!r}; "
+        "it must be an exact 13.0.x tag (nvidia/cuda:13.0.x-cudnn-runtime-ubuntu24.04)"
+    )
+    torch_cuda = re.search(r"^ARG TORCH_CUDA=(\S+)", text, re.M)
+    assert torch_cuda and torch_cuda.group(1) == _cfg()["DEFAULT"], (
+        f"image stack: ARG TORCH_CUDA defaults to {torch_cuda.group(1) if torch_cuda else None!r}; "
+        f"torch-stack.cfg's DEFAULT is {_cfg()['DEFAULT']}"
+    )
 
 
-def test_torch_trio_unchanged():
-    text = _dockerfile_code()
-    for pin in ("torch==2.11.0", "torchvision==0.26.0", "torchaudio==2.11.0", "torchao==0.17.0"):
-        assert re.search(rf"(?<![\w-]){re.escape(pin)}\b", text), f"LANE-135: Dockerfile must keep {pin}"
+def test_the_cu126_build_stays_on_the_12_6_3_base():
+    """cu126 gets no torch after 2.14.1, and its base's gate is R560."""
+    alt = re.search(r"--build-arg CUDA_BASE=(\S+) --build-arg TORCH_CUDA=cu126", _read(DOCKERFILE))
+    assert alt and alt.group(1) == "12.6.3", (
+        "image stack: the documented cu126 build must name --build-arg CUDA_BASE=12.6.3"
+    )
+
+
+def _stack_versions() -> set[str]:
+    cfg = _cfg()
+    keys = ("TORCH", "TORCHVISION", "TORCHAUDIO", "TORCHAO")
+    return {cfg[f"{name.upper()}_{key}"] for name in cfg["SETS"].split() for key in keys}
+
+
+def _torch_versions_named(text: str) -> list[str]:
+    """Every pinned stack distribution, and every cfg stack version, the text names."""
+    named = re.findall(r"(?<![\w-])(?:torch|torchvision|torchaudio|torchao)==\S+", text)
+    named += [v for v in sorted(_stack_versions()) if re.search(rf"(?<![\d.]){re.escape(v)}(?![\d.])", text)]
+    return named
+
+
+def test_the_dockerfile_names_no_torch_version():
+    """The versions live in torch-stack.cfg alone; the Dockerfile installs a set by name.
+    Comments included: a version in a comment is the next stale claim."""
+    named = _torch_versions_named(_read(DOCKERFILE))
+    assert named == [], f"image stack: the Dockerfile names torch versions {named}; they live in torch-stack.cfg"
+
+
+def test_the_runtime_stage_ships_a_c_toolchain_for_torch_compile():
+    """torch.compile (inductor/triton) builds kernels and its launcher at run time: it needs
+    a C compiler and Python.h, so Blackwell fp8 training does not fail at its first step."""
+    code = _dockerfile_code()
+    stages = list(re.finditer(r"^FROM\s+\S+(?:\s+AS\s+(\S+))?", code, re.M | re.I))
+    assert stages, "image stack: the Dockerfile has no FROM line"
+    final = stages[-1]
+    assert final.group(1) == "runtime", (
+        f"image stack: the final stage is {final.group(1)!r}; expected the runtime stage"
+    )
+    joined = re.sub(r"\\\s*\n", " ", code[final.end():])  # fold shell line continuations
+    installs = re.findall(r"apt-get\s+install\b[^\n&|;]*", joined)
+    wanted = ("gcc", "libc6-dev", "python3-dev")
+    assert any(
+        all(re.search(rf"(?<![\w.-]){re.escape(p)}(?![\w.-])", ln) for p in wanted) for ln in installs
+    ), (
+        "image stack: no apt-get install in the runtime stage names gcc, libc6-dev and python3-dev; "
+        "torch.compile/triton then fails with 'Failed to find C compiler'"
+    )
+
+
+def test_the_version_matcher_notices_a_pin_and_a_prose_version():
+    assert _torch_versions_named("RUN pip install torch==9.9.9\n")
+    some = sorted(_stack_versions())[0]
+    assert _torch_versions_named(f"# the image bundles torch {some}\n")
+    assert _torch_versions_named("# ffmpeg 6.1 and python3.12\n") == []

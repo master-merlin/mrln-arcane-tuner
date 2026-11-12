@@ -20,10 +20,12 @@ that CAN run every time, and the docstring says plainly what it does not cover
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
 import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -580,13 +582,12 @@ class TestBuildContract:
         """
         df = _dockerfile()
         code = _code_only(df)
-        assert "torchao==0.17.0" in code, "torchao is not pinned in the Dockerfile layer"
-        # In the SAME install as the torch trio, i.e. the CUDA-matched index.
-        torch_install = code[code.index("torch==2.11.0"):]
-        torch_install = torch_install[: torch_install.index("RUN", 1)] if "RUN" in torch_install[1:] else torch_install
-        assert "torchao==0.17.0" in torch_install, (
-            "torchao must be installed from download.pytorch.org/whl/${TORCH_CUDA}, "
-            "in the same layer as torch — PyPI's wheel is built for another CUDA"
+        # torchao comes with the rest of the set: torch_stack.py installs it from
+        # the set's own index on linux (asserted in test_torch_stack.py), so the
+        # Dockerfile's half is that the stack layer installs the set FOR linux.
+        assert _STACK_INSTALL in code, (
+            "the torch layer must install the set through "
+            f"`{_STACK_INSTALL}`; without --platform linux torchao would come from PyPI"
         )
         # And the load check must exist and run AFTER the bulk resolve, which is
         # the step that could put PyPI's wheel back.
@@ -623,14 +624,6 @@ class TestBuildContract:
             f"install-deps.sh must exclude the whole torch stack; it excludes {sorted(names)}"
         )
 
-    def test_the_self_update_fallback_excludes_torchao_too(self):
-        """The self-update's own filter, used when install-deps.sh is missing, matches it."""
-        from app.core.self_update import _TORCH_STACK_RE
-
-        for name in ("torch", "torchvision", "torchaudio", "torchao", "triton", "triton-windows"):
-            assert _TORCH_STACK_RE.match(f"{name}==1.0"), f"the fallback would install {name} from requirements.txt"
-        assert not _TORCH_STACK_RE.match("torchmetrics==1.0")
-
     def test_no_local_installer_runs_the_shared_dependency_install(self):
         """The premise of the exclusion above: only the image, its self-update and CI run it."""
         for name in ("install.ps1", "install.bat", "install.sh"):
@@ -660,6 +653,59 @@ class TestBuildContract:
         df = _dockerfile()
         for item in ("digest pinning", "SBOM", "signing"):
             assert item in df, f"{item!r} deferral is no longer recorded"
+
+
+#: The torch layer's install, as the Dockerfile writes it.
+_STACK_INSTALL = (
+    "python /opt/torch-stack/torch_stack.py install --set ${TORCH_CUDA} --platform linux --python python"
+)
+_STACK_COPY = "COPY backend/torch-stack.cfg backend/torch_stack.py /opt/torch-stack/"
+
+
+def _stack_layer_problems(code: str) -> list[str]:
+    """What is wrong with the image's torch layer, read from the Dockerfile's code lines."""
+    problems = []
+    if _STACK_COPY not in code:
+        problems.append(f"the stack files are not copied with `{_STACK_COPY}`")
+    if _STACK_INSTALL not in code:
+        problems.append(f"the torch layer does not run `{_STACK_INSTALL}`")
+    if problems:
+        return problems
+    copy, install = code.index(_STACK_COPY), code.index(_STACK_INSTALL)
+    clone = code.index("git clone")
+    # Before the install (it reads them) and before the clone: the layer depends on
+    # these two files only, so a code change elsewhere keeps it cached.
+    if not copy < install < clone:
+        problems.append("the copy, the stack install and the clone are not in that order")
+    arg = re.search(r"^ARG TORCH_CUDA=\S+$", code, re.M)
+    if not arg or not arg.start() < install:
+        problems.append("ARG TORCH_CUDA is not declared before the stack install")
+    if not re.search(r"^ENV MRLN_TORCH_SET=\$\{TORCH_CUDA\}$", code, re.M):
+        problems.append("the image does not record its set as ENV MRLN_TORCH_SET=${TORCH_CUDA}")
+    env = re.search(r"PIP_BREAK_SYSTEM_PACKAGES=1", code)
+    if not env or not env.start() < install:
+        problems.append("PIP_BREAK_SYSTEM_PACKAGES=1 is not set before the stack install")
+    return problems
+
+
+class TestTheImageInstallsItsSetFromTheCfg:
+    """The image's stack is a named set of backend/torch-stack.cfg, never versions in the Dockerfile."""
+
+    def test_the_torch_layer_installs_the_named_set_from_the_baked_copy(self):
+        assert _stack_layer_problems(_code_only(_dockerfile())) == []
+
+    def test_the_layer_matcher_notices_each_removal(self):
+        code = _code_only(_dockerfile())
+        for mutated in (
+            code.replace(_STACK_COPY, "COPY backend/ /opt/torch-stack/"),
+            code.replace("--platform linux", ""),
+            code.replace("ENV MRLN_TORCH_SET=${TORCH_CUDA}", "ENV MRLN_TORCH_SET=cu132"),
+            code.replace("PIP_BREAK_SYSTEM_PACKAGES=1", "PIP_NO_INPUT=1"),
+            # the copy moved below the clone, so every code change rebuilds the torch layer
+            code.replace(_STACK_COPY, "").replace("WORKDIR /app/backend", _STACK_COPY + "\nWORKDIR /app/backend"),
+        ):
+            assert mutated != code, "the mutation did not apply"
+            assert _stack_layer_problems(mutated), "the matcher passed a broken torch layer"
 
 
 class TestTheseMatchersActuallyFail:
@@ -704,6 +750,14 @@ class TestTheseMatchersActuallyFail:
 # next code in STUB_CODES ("wait" = block until TERM, then record it, exit 0).
 _STUB_PYTHON = r'''#!/bin/sh
 case "$1" in
+  */torch_stack.py)
+    echo "$*" >> "$STUB_CHECK_LOG"
+    if [ -n "${STUB_REAL_PYTHON:-}" ]; then
+      exec "$STUB_REAL_PYTHON" "$@"
+    fi
+    echo "${STUB_CHECK_SAYS:-}" >&2
+    exit "${STUB_CHECK_CODE:-0}"
+    ;;
   */port_resolver.py)
     echo asked >> "$STUB_RESOLVER_LOG"
     echo "${PORT:-8765}"
@@ -762,8 +816,12 @@ class _Supervised:
         assert self.bash is not None  # requires_bash guards every caller
         env = dict(os.environ)
         for stale in ("MRLN_RESTART", "MRLN_SUPERVISED", "PORT", "MRLN_BIND_HOST",
-                      "MRLN_SETTINGS_PATH", "MRLN_AUTH_TOKEN", "NUMBA_CACHE_DIR"):
+                      "MRLN_SETTINGS_PATH", "MRLN_AUTH_TOKEN", "NUMBA_CACHE_DIR",
+                      "MRLN_TORCH_SET", "MRLN_TORCH_STACK_DIR", "MRLN_TORCH_NVIDIA_SMI",
+                      "MRLN_TORCH_INDEX", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"):
             env.pop(stale, None)
+        self.check_log = tmp / "check_calls.txt"
+        env["STUB_CHECK_LOG"] = self.check_log.as_posix()
         env["PATH"] = os.pathsep.join([str(shim), *_bash_tool_dirs(self.bash)])
         env["MRLN_DATA_DIR"] = str(tmp / "data")
         env["MRLN_APP_DIR"] = (tmp / "app").as_posix()
@@ -796,6 +854,16 @@ class _Supervised:
     def resolver_calls(self) -> int:
         return len(self.resolver_log.read_text(encoding="utf-8").split()) \
             if self.resolver_log.exists() else 0
+
+    def check_calls(self) -> list[str]:
+        if not self.check_log.exists():
+            return []
+        return self.check_log.read_text(encoding="utf-8").splitlines()
+
+    def with_torch_set(self, set_name: str, stack_dir: Path) -> None:
+        """Give the run an image's set and its baked torch_stack.py, as the Dockerfile does."""
+        self.env["MRLN_TORCH_SET"] = set_name
+        self.env["MRLN_TORCH_STACK_DIR"] = _sh_path(stack_dir)
 
 
 class TestEntrypointRelaunchesOnTheSentinel:
@@ -854,6 +922,121 @@ class TestEntrypointRelaunchesOnTheSentinel:
         assert sup.term_mark.exists(), ("the server never received TERM", out)
         assert proc.returncode == 0, (proc.returncode, out)
         assert len(sup.runs()) == 1, "a forwarded TERM must not look like a restart"
+
+
+def _baked_stack(tmp: Path, *, real: bool) -> Path:
+    """/opt/torch-stack as the Dockerfile bakes it: torch_stack.py and its cfg."""
+    stack = tmp / "torch-stack"
+    stack.mkdir()
+    for name in ("torch_stack.py", "torch-stack.cfg"):
+        if real:
+            shutil.copyfile(REPO_ROOT / "backend" / name, stack / name)
+        else:
+            (stack / name).write_text("# stand-in; the stub python answers for it\n", encoding="utf-8")
+    return stack
+
+
+class TestTheEntrypointChecksTheImagesSetAgainstTheHost:
+    """The entrypoint runs ``torch_stack.py check --set $MRLN_TORCH_SET`` against the baked
+    copy before anything that needs the GPU: 0 starts, 3 refuses (the check's own text names
+    the images that fit), 4 (no GPU information) warns and starts.
+
+    The first three tests prove the entrypoint's handling of each exit code, with the
+    check stubbed. The last ones run the REAL checker under the entrypoint, with canned
+    nvidia-smi output (MRLN_TORCH_NVIDIA_SMI): the cu126 image on a cc 12.0 GPU and the
+    cu132 image on driver 575. Neither proves the NVIDIA runtime's own gate, which only a
+    real container run sees.
+    """
+
+    @requires_bash
+    def test_a_fitting_set_starts_the_server_after_the_check(self, tmp_path):
+        sup = _Supervised(tmp_path)
+        sup.with_torch_set("cu132", _baked_stack(tmp_path, real=False))
+        code, out = sup.run("0")
+        calls = sup.check_calls()
+        assert len(calls) == 1 and calls[0].endswith("torch_stack.py check --set cu132"), (calls, out)
+        assert calls[0].startswith(sup.env["MRLN_TORCH_STACK_DIR"]), (calls, out)
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+
+    @requires_bash
+    def test_a_refused_set_never_starts_the_server(self, tmp_path):
+        sup = _Supervised(tmp_path)
+        sup.with_torch_set("cu126", _baked_stack(tmp_path, real=False))
+        sup.env["STUB_CHECK_CODE"] = "3"
+        sup.env["STUB_CHECK_SAYS"] = "[torch] REFUSED: stand-in reason"
+        code, out = sup.run("0")
+        assert sup.runs() == [], ("the server started on a refused set", out)
+        assert code != 0, (code, out)
+        assert "[torch] REFUSED: stand-in reason" in out, out
+        assert "refusing to start" in out, out
+
+    @requires_bash
+    def test_no_gpu_information_warns_and_starts(self, tmp_path):
+        sup = _Supervised(tmp_path)
+        sup.with_torch_set("cu132", _baked_stack(tmp_path, real=False))
+        sup.env["STUB_CHECK_CODE"] = "4"
+        code, out = sup.run("0")
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+        assert "WARNING" in out and "no GPU" in out, out
+
+    def _real(self, tmp_path: Path, set_name: str, smi: str) -> _Supervised:
+        sup = _Supervised(tmp_path)
+        sup.with_torch_set(set_name, _baked_stack(tmp_path, real=True))
+        canned = tmp_path / "nvidia-smi.csv"
+        canned.write_text(smi, encoding="utf-8")
+        sup.env["MRLN_TORCH_NVIDIA_SMI"] = canned.as_posix()
+        sup.env["STUB_REAL_PYTHON"] = _sh_path(Path(sys.executable))
+        return sup
+
+    @requires_bash
+    def test_the_cu126_image_refuses_a_blackwell_gpu_and_names_latest(self, tmp_path):
+        sup = self._real(tmp_path, "cu126", "616.92, 12.0\n")
+        code, out = sup.run("0")
+        assert sup.runs() == [] and code != 0, (sup.runs(), code, out)
+        assert "no kernels for compute capability 12.0" in out, out
+        assert "mastermerlin/mrln-arcane-tuner:latest " in out, out
+        assert "set     torch    driver" in out, "the refusal does not print the table\n" + out
+
+    @requires_bash
+    def test_a_blackwell_gpu_hidden_by_cuda_visible_devices_does_not_refuse_cu126(self, tmp_path):
+        """The operator's CUDA_VISIBLE_DEVICES reaches the checker, which checks only what it selects."""
+        ampere, blackwell = "GPU-1a2b3c4d-0000-1111-2222-333344445555", "GPU-9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff"
+        smi = f"0, {ampere}, 616.92, 8.6\n1, {blackwell}, 616.92, 12.0\n"
+        sup = self._real(tmp_path, "cu126", smi)
+        sup.env["CUDA_VISIBLE_DEVICES"] = ampere
+        code, out = sup.run("0")
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+        assert "the cu126 set (torch" in out and "fits" in out, out
+
+    @requires_bash
+    def test_the_cu132_image_refuses_a_driver_below_its_floor(self, tmp_path):
+        sup = self._real(tmp_path, "cu132", "575.64, 8.9\n")
+        code, out = sup.run("0")
+        assert sup.runs() == [] and code != 0, (sup.runs(), code, out)
+        assert "driver 575 is below R580" in out, out
+        assert "mastermerlin/mrln-arcane-tuner:latest-cu126" in out, out
+
+    @requires_bash
+    def test_the_cu132_image_starts_on_a_fitting_host(self, tmp_path):
+        sup = self._real(tmp_path, "cu132", "616.92, 12.0\n")
+        code, out = sup.run("0")
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+        assert "fits this machine" in out, out
+
+    @requires_bash
+    def test_a_host_without_gpus_starts_with_a_warning(self, tmp_path):
+        sup = self._real(tmp_path, "cu132", "")
+        code, out = sup.run("0")
+        assert len(sup.runs()) == 1 and code == 0, (sup.runs(), code, out)
+        assert "WARNING" in out, out
+
+    def test_the_check_comes_before_the_sidecar_and_the_server(self):
+        code = _code_only(_entrypoint())
+        check = code.find('torch_stack.py" check --set "$MRLN_TORCH_SET"')
+        assert check != -1, "the entrypoint does not run the set check"
+        assert check < code.index("ollama serve") < code.index("python -m uvicorn"), (
+            "the set check must run before anything that needs the GPU"
+        )
 
 
 class TestNumbaHasAWritableCacheLocation:
@@ -1927,6 +2110,10 @@ class TestTheAccessTokenIsNeverThePublishedPlaceholder:
 # trusting either one alone.
 
 
+#: The variant that takes the unsuffixed `:latest` / `:<version>`: the cfg's default set.
+DEFAULT_VARIANT = "cu132"
+
+
 def _release_tag_set(code: str, variant: str) -> set[str]:
     """The tags docker-build.ps1 applies for *variant*, by substitution.
 
@@ -1936,15 +2123,15 @@ def _release_tag_set(code: str, variant: str) -> set[str]:
     base = re.search(r"^\$tags = @\((.+?)\)$", code, re.M)
     assert base, "could not find the base $tags assignment"
     branch = re.search(
-        r"if \(\$Variant -eq 'cu128'\) \{\s*\$tags \+= @\((.+?)\)\s*\}", code, re.S
+        rf"if \(\$Variant -eq '{DEFAULT_VARIANT}'\) \{{\s*\$tags \+= @\((.+?)\)\s*\}}", code, re.S
     )
     assert branch, (
-        "the cu128 branch must ADD to $tags with `+=`. A plain `=` there drops "
+        f"the {DEFAULT_VARIANT} branch must ADD to $tags with `+=`. A plain `=` there drops "
         "the variant-suffixed names the -ReleaseTags help text promises."
     )
 
     exprs = list(re.findall(r'"([^"]+)"', base.group(1)))
-    if variant == "cu128":
+    if variant == DEFAULT_VARIANT:
         exprs += re.findall(r'"([^"]+)"', branch.group(1))
     return {
         e.replace("${Repository}", "R")
@@ -1963,15 +2150,16 @@ class TestEveryVariantHasBothAPinnedNameAndAMovingPointer:
             "current cu126 image' without knowing the version string"
         )
 
-    def test_cu128_keeps_the_unsuffixed_names_it_already_published(self):
-        tags = _release_tag_set(_code_only(_build_script()), "cu128")
-        # Tags are a public surface: this set may grow, never shrink. Both of
-        # these are already on the hub and pinned from our own README.
-        assert "R:V" in tags
-        assert "R:latest" in tags
-        # And the explicit ones, so cu128 is nameable as a variant too.
-        assert "R:V-cu128" in tags
-        assert "R:latest-cu128" in tags
+    def test_the_default_variant_takes_the_unsuffixed_names(self):
+        """cu132 is the default image now, so `:latest` and `:<version>` are its.
+        They move off the frozen cu128 image, which keeps `:latest-cu128` and its
+        version tags and never gets another one."""
+        tags = _release_tag_set(_code_only(_build_script()), DEFAULT_VARIANT)
+        assert tags == {"R:V", "R:latest", "R:V-cu132", "R:latest-cu132"}, tags
+
+    def test_the_fallback_variant_takes_only_its_own_names(self):
+        tags = _release_tag_set(_code_only(_build_script()), "cu126")
+        assert tags == {"R:V-cu126", "R:latest-cu126"}, tags
 
     def test_the_ReleaseTags_help_text_and_the_code_name_the_same_tags(self):
         """The help text is documentation ABOUT the code, so compare them.
@@ -1996,10 +2184,121 @@ class TestEveryVariantHasBothAPinnedNameAndAMovingPointer:
         }
         produced = {
             tag.split(":", 1)[1]
-            for v in ("cu128", "cu126")
+            for v in (DEFAULT_VARIANT, "cu126")
             for tag in _release_tag_set(code, v)
         }
         documented = {d.lstrip(":") for d in documented}
         assert documented == produced, (
             f"help text says {sorted(documented)}, code produces {sorted(produced)}"
         )
+
+
+# -- docker-build.ps1, run for real against a stand-in docker -----------------
+#
+# The script is executed with a `docker` on PATH that records its argv and
+# answers like a successful build: `build` exits 0, the verifier's `run ... git`
+# prints the requested sha, the version check's `run ... python` prints the
+# version. Nothing is built. Without -ReleaseTags the script ends at
+# "DONE (validation)", so no `git ls-remote` and no `docker tag` is reached.
+
+_DOCKER_SHIM_PY = r'''
+import json, os, sys
+args = sys.argv[1:]
+with open(os.environ["DOCKER_SHIM_LOG"], "a", encoding="utf-8") as fh:
+    fh.write(json.dumps(args) + "\n")
+if args[:1] == ["build"]:
+    sys.exit(int(os.environ.get("DOCKER_SHIM_BUILD_EXIT", "0")))
+if args[:1] == ["run"]:
+    print(os.environ["DOCKER_SHIM_SHA"] if "git" in args else os.environ["DOCKER_SHIM_VERSION"])
+sys.exit(0)
+'''
+
+_SHA = "0123456789abcdef0123456789abcdef01234567"
+
+
+class _BuildRun:
+    def __init__(self, tmp: Path) -> None:
+        shell = _powershell()
+        if shell is None:
+            pytest.skip("no PowerShell on PATH")
+        if os.name != "nt":
+            pytest.skip("the stand-in docker is a .cmd file")
+        self.shell = shell
+        self.tmp = tmp
+        shim = tmp / "shim"
+        shim.mkdir()
+        (shim / "docker_shim.py").write_text(_DOCKER_SHIM_PY, encoding="utf-8")
+        (shim / "docker.cmd").write_text(
+            f'@"{sys.executable}" "%~dp0docker_shim.py" %*\r\n', encoding="utf-8"
+        )
+        self.docker_log = tmp / "docker_calls.jsonl"
+        self.log_dir = tmp / "logs"
+        self.token = tmp / "token"
+        self.token.write_text("not-a-real-token\n", encoding="utf-8")
+        self.env = dict(os.environ)
+        self.env["PATH"] = os.pathsep.join([str(shim), self.env.get("PATH", "")])
+        self.env["DOCKER_SHIM_LOG"] = str(self.docker_log)
+        self.env["DOCKER_SHIM_SHA"] = _SHA
+        self.env["DOCKER_SHIM_VERSION"] = "0.0.0-beta.1"
+
+    def run(self, variant: str, *, token: Path | None = None) -> tuple[int, str]:
+        proc = subprocess.run(
+            [self.shell, "-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass",
+             "-File", str(BUILD_SCRIPT), "-GitSha", _SHA, "-Variant", variant,
+             "-Version", "0.0.0-beta.1", "-TokenPath", str(token or self.token),
+             "-Context", str(REPO_ROOT), "-LogDir", str(self.log_dir)],
+            capture_output=True, text=True, env=self.env, timeout=300, cwd=str(REPO_ROOT),
+        )
+        return proc.returncode, proc.stdout + proc.stderr
+
+    def docker_calls(self) -> list[list[str]]:
+        if not self.docker_log.exists():
+            return []
+        return [json.loads(ln) for ln in self.docker_log.read_text(encoding="utf-8").splitlines()]
+
+    def argv_records(self) -> list[str]:
+        if not self.log_dir.exists():
+            return []
+        return [p.read_text(encoding="utf-8-sig") for p in sorted(self.log_dir.glob("*.argv.txt"))]
+
+
+def _dockerfile_cuda_base() -> str:
+    return re.search(r"^ARG CUDA_BASE=(\S+)", _dockerfile(), re.M).group(1)
+
+
+class TestTheBuildWrapperBuildsEachVariantOnItsOwnBase:
+    @pytest.mark.parametrize("variant, base", [("cu132", None), ("cu126", "12.6.3")])
+    def test_a_validation_build_names_its_set_its_base_and_its_scratch_tag(self, tmp_path, variant, base):
+        base = base or _dockerfile_cuda_base()  # cu132's base is the Dockerfile's default
+        run = _BuildRun(tmp_path)
+        code, out = run.run(variant)
+        assert code == 0, out
+        assert "DONE (validation)" in out, out
+        records = run.argv_records()
+        assert len(records) == 1, (records, out)
+        scratch = f"mrln-build-scratch:{variant}-{_SHA[:12]}"
+        assert f"--build-arg CUDA_BASE={base} --build-arg TORCH_CUDA={variant}" in records[0], records[0]
+        assert f"-t {scratch}" in records[0], records[0]
+        builds = [c for c in run.docker_calls() if c[:1] == ["build"]]
+        assert len(builds) == 1, run.docker_calls()
+        assert f"CUDA_BASE={base}" in builds[0] and f"TORCH_CUDA={variant}" in builds[0], builds[0]
+        # A validation build names no release: nothing tagged, nothing pushed.
+        assert not [c for c in run.docker_calls() if c[:1] in (["tag"], ["push"])], run.docker_calls()
+
+    def test_the_cu128_variant_is_refused_at_once_as_frozen(self, tmp_path):
+        run = _BuildRun(tmp_path)
+        # A token path that does not exist: the refusal must come before every other check.
+        code, out = run.run("cu128", token=tmp_path / "missing-token")
+        assert code != 0, out
+        assert "frozen" in out and "cu128" in out, out
+        assert "Git token file not found" not in out, out
+        assert run.docker_calls() == [], "docker was called for the frozen variant"
+        assert run.argv_records() == [], "an argv record was written for the frozen variant"
+
+    def test_the_default_base_agrees_with_the_dockerfile(self):
+        """docker-build.ps1 passes cu132's base explicitly; it must be the Dockerfile's default,
+        or a hand build and a wrapper build of the same commit sit on different bases."""
+        code = _code_only(_build_script())
+        found = re.search(r"cu132\s*=\s*'([^']+)'", code)
+        assert found, "docker-build.ps1 names no base for cu132"
+        assert found.group(1) == _dockerfile_cuda_base()

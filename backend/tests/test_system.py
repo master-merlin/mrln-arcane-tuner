@@ -153,6 +153,7 @@ class TestRestartEndpoint:
         svc = self_update.SelfUpdateService(app_dir=".", branch="main", remote="")
         monkeypatch.setenv("MRLN_SUPERVISED", "1")
         with (
+            patch.object(svc, "_head", return_value="0" * 40),
             patch.object(svc, "_pull", return_value=True),
             patch.object(svc, "_req_blob", return_value="same"),
             patch.object(svc, "_build_frontend", new=AsyncMock()),

@@ -359,6 +359,49 @@ class TestAgreement:
         assert app.__version__ == app_version()
 
 
+#: The variants docker-build.ps1 builds, read from its ValidateSet minus the one it refuses.
+BUILD_SCRIPT = REPO_ROOT / "docker-build.ps1"
+
+
+def _buildable_variants(script: str) -> set[str]:
+    allowed = re.search(r"\[ValidateSet\(([^)]*)\)\]\s*\[string\]\$Variant", script)
+    assert allowed, "docker-build.ps1's -Variant ValidateSet moved; re-anchor this guard"
+    refused = set(re.findall(r"if \(\$Variant -eq '(\w+)'\) \{\s*throw", script))
+    return set(re.findall(r"'(\w+)'", allowed.group(1))) - refused
+
+
+def variant_tag_offenders(readme: str, version: str, buildable: set[str]) -> list[str]:
+    """README image tags naming THIS version on a variant the build script cannot build.
+
+    The frozen cu128 image keeps its own tags (`:latest-cu128` and older versions), but it
+    is never rebuilt, so no release of this version can carry a `-cu128` tag.
+    """
+    offenders = []
+    for tag in _README_IMAGE_TAG.findall(readme):
+        suffix = re.search(r"-(cu\d+)$", tag)
+        if suffix and tag.startswith(version) and suffix.group(1) not in buildable:
+            offenders.append(tag)
+    return offenders
+
+
+class TestTheVariantTags:
+    def test_the_frozen_variant_is_not_buildable(self):
+        buildable = _buildable_variants(_read(BUILD_SCRIPT))
+        assert buildable == {"cu132", "cu126"}, buildable
+
+    def test_no_readme_tag_claims_this_version_on_an_unbuildable_variant(self):
+        offenders = variant_tag_offenders(
+            _read(README), app_version(), _buildable_variants(_read(BUILD_SCRIPT))
+        )
+        assert offenders == [], (
+            f"README.md names {offenders}, which docker-build.ps1 cannot produce for this version"
+        )
+
+    def test_the_offender_scan_sees_a_frozen_version_tag(self):
+        readme = "mastermerlin/mrln-arcane-tuner:1.0.0-cu128 and mrln-arcane-tuner:latest-cu128"
+        assert variant_tag_offenders(readme, "1.0.0", {"cu132", "cu126"}) == ["1.0.0-cu128"]
+
+
 class TestBothStandards:
     """Valid semver AND valid PEP 440 — neither grammar contains the other."""
 

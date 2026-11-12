@@ -1,5 +1,4 @@
 import asyncio
-import os
 import subprocess
 
 import pytest
@@ -116,8 +115,11 @@ async def test_apply_runs_pull_build_then_drains_and_restarts(svc, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_apply_reinstalls_deps_when_requirements_changed(svc, monkeypatch):
+async def test_apply_reinstalls_deps_when_requirements_changed(svc, monkeypatch, tmp_path):
     # requirements blob differs before vs after the pull → deps reinstalled.
+    (tmp_path / "backend").mkdir()
+    await asyncio.to_thread((tmp_path / "backend" / "install-deps.sh").write_text, "#!/usr/bin/env bash\n")
+    svc.app_dir = str(tmp_path)
     blobs = iter(["oldsha", "newsha"])
     monkeypatch.setattr(svc, "_req_blob", lambda: next(blobs))
     monkeypatch.setattr(svc, "_run_git", lambda *a, **k: (0, "", ""))
@@ -137,6 +139,7 @@ async def test_apply_reinstalls_deps_when_requirements_changed(svc, monkeypatch)
     monkeypatch.setattr(svc, "_build_frontend", fake_build)
     monkeypatch.setattr(svc, "_do_restart", fake_restart)
     monkeypatch.setattr(svc, "active_task_count", lambda: 0)
+    monkeypatch.setattr(svc, "_installed_packages", lambda: {"fastapi": "1.0"})
 
     await svc._apply_impl()
     assert installed["v"] is True
@@ -226,50 +229,168 @@ async def test_install_backend_deps_uses_script_when_present(svc, monkeypatch, t
 
 
 @pytest.mark.asyncio
-async def test_install_backend_deps_fallback_filters_torch_stack(svc, monkeypatch, tmp_path):
-    # install-deps.sh absent → the fallback must still exclude the
-    # torch-stack lines (torch/torchvision/torchaudio/torchao/triton/
-    # triton-windows), matching install-deps.sh's own exclusion — otherwise a
-    # plain `pip install -r requirements.txt` would clobber the stack baked into
-    # the image's cached Dockerfile layer.
+async def test_install_backend_deps_without_the_script_runs_nothing(svc, monkeypatch, tmp_path):
+    """Only install-deps.sh keeps the installed torch stack, so without it nothing runs."""
     backend = tmp_path / "backend"
     backend.mkdir()
-    await asyncio.to_thread(
-        (backend / "requirements.txt").write_text,
-        "fastapi==1.0\n"
-        "torch==2.15.0\n"
-        "torchao==0.18.0\n"
-        "torchaudio==2.11.1  # the stack's: declares torch>=2.11\n"
-        "torchvision==0.29.2\n"
-        "triton-windows==3.9.0.post30; sys_platform == 'win32'\n"
-        "triton==3.9.0; sys_platform == 'linux'\n"
-        "pydantic==2.0\n",
-    )
+    await asyncio.to_thread((backend / "requirements.txt").write_text, "fastapi==1.0\n")
     svc.app_dir = str(tmp_path)
+    ran = []
 
-    captured = {}
-
-    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
-        captured["cmd"] = cmd
-        with open(cmd[-1], encoding="utf-8") as f:
-            captured["filtered"] = f.read()
+    def fake_run(cmd, **kwargs):
+        ran.append(cmd)
         return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
 
     monkeypatch.setattr(subprocess, "run", fake_run)
 
-    await svc._install_backend_deps()
+    with pytest.raises(RuntimeError, match="install-deps.sh is missing"):
+        await svc._install_backend_deps()
+    assert ran == []
 
-    assert captured["cmd"][:4] == [
-        "python", "-m", "pip", "install",
-    ]
-    assert "--break-system-packages" in captured["cmd"]
-    filtered = captured["filtered"]
-    assert "fastapi==1.0" in filtered
-    assert "pydantic==2.0" in filtered
-    for pkg_line in ("torch==", "torchao==", "torchvision==", "torchaudio==", "triton-windows==", "triton=="):
-        assert pkg_line not in filtered
-    # the filtered temp file must not survive the call
-    assert not os.path.exists(captured["cmd"][-1])
+
+@pytest.mark.asyncio
+async def test_an_update_whose_checkout_lacks_install_deps_is_refused_before_listing(monkeypatch, tmp_path):
+    """The refusal comes before any pip: the checkout is reset, and nothing is listed or installed."""
+
+    def setup():
+        upstream = tmp_path / "upstream"
+        upstream.mkdir()
+        _git(upstream, "init", "-q", "-b", "main")
+        old = _commit_requirements(upstream, "fastapi==1.0\n", "old")
+        _git(tmp_path, "clone", "-q", str(upstream), "app")
+        new = _commit_requirements(upstream, "fastapi==2.0\n", "new", installer=False)
+        return old, new
+
+    old, new = await asyncio.to_thread(setup)
+    app = tmp_path / "app"
+    svc = SelfUpdateService(app_dir=str(app), branch="main", remote=str(tmp_path / "upstream"))
+
+    async def must_not_run():
+        raise AssertionError("ran although install-deps.sh is missing")
+
+    def must_not_list():
+        raise AssertionError("listed packages although install-deps.sh is missing")
+
+    monkeypatch.setattr(svc, "_installed_packages", must_not_list)
+    monkeypatch.setattr(svc, "_install_backend_deps", must_not_run)
+    monkeypatch.setattr(svc, "_build_frontend", must_not_run)
+    monkeypatch.setattr(svc, "_do_restart", must_not_run)
+
+    await svc._apply_impl()
+
+    assert await asyncio.to_thread(_git, app, "rev-parse", "HEAD") == old != new
+    assert svc.state == UpdateState.ERROR
+    assert "install-deps.sh is missing" in svc.error and old[:12] in svc.error, svc.error
+
+
+def _git(cwd, *args):
+    done = subprocess.run(
+        ["git", "-c", "user.name=t", "-c", "user.email=t@t", "-c", "commit.gpgsign=false", *args],
+        cwd=cwd, capture_output=True, text=True, timeout=60, check=True,
+    )
+    return done.stdout.strip()
+
+
+def _commit_requirements(repo, text, message, *, installer=True):
+    """Commit *text* as requirements.txt; with *installer*, a stub install-deps.sh beside it."""
+    req = repo / "backend" / "requirements.txt"
+    req.parent.mkdir(exist_ok=True)
+    req.write_text(text, encoding="utf-8")
+    script = repo / "backend" / "install-deps.sh"
+    if installer:
+        script.write_text("#!/usr/bin/env bash\n", encoding="utf-8")
+    elif script.exists():
+        _git(repo, "rm", "-q", "backend/install-deps.sh")
+    _git(repo, "add", "backend")
+    _git(repo, "commit", "-q", "-m", message)
+    return _git(repo, "rev-parse", "HEAD")
+
+
+@pytest.mark.asyncio
+async def test_failed_dep_install_resets_the_checkout_to_the_old_head(monkeypatch, tmp_path):
+    """New code on old dependencies is what a failed install would leave; the update undoes the pull."""
+
+    def setup():
+        upstream = tmp_path / "upstream"
+        upstream.mkdir()
+        _git(upstream, "init", "-q", "-b", "main")
+        old = _commit_requirements(upstream, "fastapi==1.0\n", "old")
+        _git(tmp_path, "clone", "-q", str(upstream), "app")
+        new = _commit_requirements(upstream, "fastapi==1.0\nstackneedy==1.0\n", "new")
+        return old, new
+
+    old, new = await asyncio.to_thread(setup)
+    app = tmp_path / "app"
+    svc = SelfUpdateService(app_dir=str(app), branch="main", remote=str(tmp_path / "upstream"))
+
+    async def failing_install():
+        raise RuntimeError("backend dep install failed: ResolutionImpossible")
+
+    async def must_not_run():
+        raise AssertionError("ran after a failed dependency install")
+
+    monkeypatch.setattr(svc, "_install_backend_deps", failing_install)
+    monkeypatch.setattr(svc, "_build_frontend", must_not_run)
+    monkeypatch.setattr(svc, "_do_restart", must_not_run)
+    # A refusal before anything was installed: the packages read the same before and after.
+    monkeypatch.setattr(svc, "_installed_packages", lambda: {"fastapi": "1.0"})
+
+    await svc._apply_impl()
+
+    head = await asyncio.to_thread(_git, app, "rev-parse", "HEAD")
+    assert head == old != new
+    assert svc.state == UpdateState.ERROR
+    assert "ResolutionImpossible" in svc.error, "the original error is masked"
+    assert old[:12] in svc.error, f"the error does not say the checkout was reset: {svc.error}"
+
+
+@pytest.mark.asyncio
+async def test_an_update_whose_packages_cannot_be_listed_is_refused_before_installing(monkeypatch, tmp_path):
+    """Without the list there is nothing to restore a failed install to, so nothing is installed."""
+
+    def setup():
+        upstream = tmp_path / "upstream"
+        upstream.mkdir()
+        _git(upstream, "init", "-q", "-b", "main")
+        old = _commit_requirements(upstream, "fastapi==1.0\n", "old")
+        _git(tmp_path, "clone", "-q", str(upstream), "app")
+        _commit_requirements(upstream, "fastapi==2.0\n", "new")
+        return old
+
+    old = await asyncio.to_thread(setup)
+    app = tmp_path / "app"
+    svc = SelfUpdateService(app_dir=str(app), branch="main", remote=str(tmp_path / "upstream"))
+
+    async def must_not_run():
+        raise AssertionError("ran although the packages could not be listed")
+
+    monkeypatch.setattr(svc, "_installed_packages", lambda: None)
+    monkeypatch.setattr(svc, "_install_backend_deps", must_not_run)
+    monkeypatch.setattr(svc, "_build_frontend", must_not_run)
+    monkeypatch.setattr(svc, "_do_restart", must_not_run)
+
+    await svc._apply_impl()
+
+    assert await asyncio.to_thread(_git, app, "rev-parse", "HEAD") == old
+    assert svc.state == UpdateState.ERROR
+    assert "could not be listed" in svc.error
+
+
+@pytest.mark.asyncio
+async def test_install_backend_deps_reports_the_tail_of_stderr(svc, monkeypatch, tmp_path):
+    """The script's verdict (the image to pull) comes last, after pip's own output."""
+    backend = tmp_path / "backend"
+    backend.mkdir()
+    await asyncio.to_thread((backend / "install-deps.sh").write_text, "#!/usr/bin/env bash\n")
+    svc.app_dir = str(tmp_path)
+    stderr = "pip noise\n" * 200 + "pull mastermerlin/mrln-arcane-tuner:latest"
+
+    def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):
+        return subprocess.CompletedProcess(cmd, 1, stdout="", stderr=stderr)
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    with pytest.raises(RuntimeError, match="mastermerlin/mrln-arcane-tuner:latest"):
+        await svc._install_backend_deps()
 
 
 @pytest.mark.asyncio
@@ -277,6 +398,7 @@ async def test_install_backend_deps_raises_on_failure(svc, monkeypatch, tmp_path
     backend = tmp_path / "backend"
     backend.mkdir()
     await asyncio.to_thread((backend / "requirements.txt").write_text, "fastapi==1.0\n")
+    await asyncio.to_thread((backend / "install-deps.sh").write_text, "#!/usr/bin/env bash\n")
     svc.app_dir = str(tmp_path)
 
     def fake_run(cmd, cwd=None, capture_output=None, text=None, timeout=None):

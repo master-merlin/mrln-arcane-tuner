@@ -97,6 +97,50 @@ if [ "$(id -u)" = "0" ]; then
     fi
 fi
 
+# ── Does this image's torch set run on this host's GPUs? ─────────────────
+# Before anything that needs the GPU (the Ollama sidecar, the server). The
+# image records its set as MRLN_TORCH_SET and bakes the checker in
+# /opt/torch-stack, which a self-update never changes, so the check always
+# speaks for the stack that is actually installed.
+#
+# This can only speak in a container the NVIDIA runtime admitted: the base
+# image's NVIDIA_REQUIRE_CUDA gate rejects a host driver below the base's CUDA
+# before this script runs, with the runtime's own error. What the gate lets
+# through is refused here: a GPU the set has no kernels for (the cu126 image
+# on Blackwell), and a driver below the set's floor admitted anyway (a
+# datacenter driver in forward-compatibility mode, where the first GEMM fails).
+# The checker reads the operator's CUDA_VISIBLE_DEVICES (and CUDA_DEVICE_ORDER)
+# from this environment and checks only the GPUs it selects: one it hides is
+# never touched by torch, so it neither refuses nor passes the set.
+#   0  fits                    -> start
+#   3  refused                 -> the checker has printed why, the images that
+#                                 fit and the table; refuse to start
+#   4  no GPU information      -> warn and start (a GPU-less container)
+#   anything else, or nothing to check -> warn and start: a check that cannot
+#      run must not turn into an outage, and it must not pass in silence.
+TORCH_STACK_DIR="${MRLN_TORCH_STACK_DIR:-/opt/torch-stack}"
+if [ -n "${MRLN_TORCH_SET:-}" ] && [ -f "$TORCH_STACK_DIR/torch_stack.py" ]; then
+    check_rc=0
+    python "$TORCH_STACK_DIR/torch_stack.py" check --set "$MRLN_TORCH_SET" || check_rc=$?
+    case "$check_rc" in
+        0) ;;
+        3)
+            echo "[entrypoint] refusing to start: this image's torch set ($MRLN_TORCH_SET) cannot run on this host." >&2
+            echo "[entrypoint] the reason and the images that fit are above." >&2
+            exit 3
+            ;;
+        4)
+            echo "[entrypoint] WARNING: no GPU information, so the $MRLN_TORCH_SET set was not checked;"
+            echo "[entrypoint] WARNING: starting anyway. Training needs an NVIDIA GPU (docker run --gpus all)."
+            ;;
+        *)
+            echo "[entrypoint] WARNING: the torch set check could not run (exit $check_rc); starting without it."
+            ;;
+    esac
+else
+    echo "[entrypoint] WARNING: no torch set to check (MRLN_TORCH_SET='${MRLN_TORCH_SET:-}', $TORCH_STACK_DIR/torch_stack.py); starting without the check."
+fi
+
 # The checkout is MRLN_APP_DIR (the same variable the self-updater reads,
 # backend/app/core/self_update.py) — which is also what lets the supervisor
 # loop below be exercised by a test outside a container.

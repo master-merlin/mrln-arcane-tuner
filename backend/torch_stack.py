@@ -9,6 +9,21 @@ Standard library only: it runs before any dependency is installed.
                                                   # requirements minus the stack (and NAMEs)
     python torch_stack.py verify --python <py>    # the installed stack equals the chosen set
 
+The image build and the container's start name their set instead, and never choose:
+
+    python torch_stack.py install --set <name> [--platform linux] --python <py>
+                                                  # that set, whatever GPU this machine has (or none)
+    python torch_stack.py check --set <name>      # does that set run on the GPUs CUDA can see
+                                                  # (CUDA_VISIBLE_DEVICES)? 0 fits, 3 refused (with
+                                                  # the images that fit), 4 no GPU information (no
+                                                  # or a failing nvidia-smi, no GPU visible, or a
+                                                  # visible set it cannot pin down)
+    python torch_stack.py constraints --python <py> <out>
+                                                  # the installed stack as pip constraints;
+                                                  # 0 written, 5 confirmed no torch, else a fault
+    python torch_stack.py verify --set <name> [--platform linux] --python <py>
+                                                  # the installed stack equals that set
+
 The choice:
 - ``MRLN_TORCH_INDEX`` names a set (or ``cpu``). It chooses the set but never skips its checks.
 - Otherwise the highest set in ``SETS`` that fits. A set fits when the driver meets its
@@ -18,17 +33,20 @@ The choice:
 - Nothing fits: exit 2 with the table, before anything is installed.
 
 ``MRLN_TORCH_NVIDIA_SMI`` names a file holding canned ``nvidia-smi
---query-gpu=driver_version,compute_cap --format=csv,noheader`` output, used instead of
-running it (tests, and simulating another machine).
+--query-gpu=index,uuid,driver_version,compute_cap --format=csv,noheader`` output (or the older
+two columns, ``driver_version,compute_cap``), used instead of running it (tests, and simulating
+another machine).
 """
 from __future__ import annotations
 
 import argparse
+import itertools
 import json
 import os
 import re
 import subprocess
 import sys
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,6 +59,14 @@ CPU = "cpu"
 STACK_DISTRIBUTIONS = ("torch", "torchvision", "torchaudio", "torchao", "triton", "triton-windows")
 
 REFUSED = 2
+CHECK_REFUSED = 3
+CHECK_NO_GPU_INFO = 4
+#: ``constraints``: confirmed that no torch is installed. Never 1, which any unhandled exception
+#: exits with, nor 2 (argparse's): a probe that crashed must never read as "nothing to keep".
+CONSTRAINTS_NO_TORCH = 5
+
+#: The published container images. The default set's image takes the unsuffixed ``:latest``.
+IMAGE = "mastermerlin/mrln-arcane-tuner"
 
 
 class Refused(Exception):
@@ -82,6 +108,8 @@ class StackSet:
 class Gpu:
     driver: str
     cc: tuple[int, int]
+    index: int | None = None  # nvidia-smi's index: the PCI bus order
+    uuid: str | None = None  # "GPU-...", as nvidia-smi and CUDA_VISIBLE_DEVICES spell it
 
     @property
     def driver_major(self) -> int:
@@ -128,13 +156,19 @@ def read_stack(path: Path = STACK_FILE) -> tuple[str, dict[str, StackSet]]:
 
 
 def parse_gpus(text: str) -> list[Gpu]:
+    """``index, uuid, driver_version, compute_cap`` lines, or the older ``driver_version,
+    compute_cap`` ones (each then indexed by its position, with no UUID)."""
     gpus = []
     for line in text.splitlines():
         if not line.strip():
             continue
-        driver, _, cc = (part.strip() for part in line.partition(","))
+        parts = [part.strip() for part in line.split(",")]
+        if len(parts) == 4:
+            index, uuid, driver, cc = int(parts[0]), parts[1], parts[2], parts[3]
+        else:
+            (driver, cc), index, uuid = parts, len(gpus), None
         major, _, minor = cc.partition(".")
-        gpus.append(Gpu(driver=driver, cc=(int(major), int(minor or 0))))
+        gpus.append(Gpu(driver=driver, cc=(int(major), int(minor or 0)), index=index, uuid=uuid))
     return gpus
 
 
@@ -145,7 +179,7 @@ def detect_gpus() -> list[Gpu] | None:
         return parse_gpus(Path(canned).read_text(encoding="utf-8"))
     try:
         done = subprocess.run(
-            ["nvidia-smi", "--query-gpu=driver_version,compute_cap", "--format=csv,noheader"],
+            ["nvidia-smi", "--query-gpu=index,uuid,driver_version,compute_cap", "--format=csv,noheader"],
             capture_output=True, text=True, timeout=60,
         )
     except FileNotFoundError:
@@ -169,6 +203,147 @@ def why_not(stack: StackSet, gpus: list[Gpu]) -> str | None:
     if missing:
         return "no kernels for compute capability " + ", ".join(f"{g.cc[0]}.{g.cc[1]}" for g in missing)
     return None
+
+
+#: The cu128 image (torch 2.11.0), frozen: never rebuilt, its tags never moved. It is the one image
+#: for Blackwell on R570-R579, where cu132 is below its driver floor and cu126 has no sm_100/sm_120.
+#: Its architectures are what its README row claims: Ampere and newer, Blackwell included.
+FROZEN_CU128 = StackSet("cu128", torch="2.11.0", torchvision="", torchaudio="", torchao="", triton="",
+                        triton_windows="", driver_min=570, archs=((8, 0), (8, 6), (9, 0), (10, 0), (12, 0)))
+
+
+def image_name(name: str, default: str) -> str:
+    """The rolling tag of the image that carries set ``name``."""
+    return f"{IMAGE}:latest" if name == default else f"{IMAGE}:latest-{name}"
+
+
+def images_that_fit(sets: dict[str, StackSet], default: str, gpus: list[Gpu]) -> list[str]:
+    """The images whose set runs on ``gpus``, each with what it carries; the frozen cu128 one only
+    when no current image fits."""
+    fit = [f"{image_name(s.name, default)} ({s.name}: torch {s.torch}, R{s.driver_min}+)"
+           for s in sets.values() if s.driver_min is not None and why_not(s, gpus) is None]
+    if not fit and why_not(FROZEN_CU128, gpus) is None:
+        fit.append(f"{IMAGE}:latest-cu128 (cu128: torch {FROZEN_CU128.torch}, R{FROZEN_CU128.driver_min}+;"
+                   " frozen, it gets no further updates)")
+    return fit
+
+
+def visible_candidates(gpus: list[Gpu], env: Mapping[str, str]) -> list[list[Gpu]]:
+    """Each set of ``gpus`` that CUDA may make visible under ``env``; one set unless it cannot tell.
+
+    ``CUDA_VISIBLE_DEVICES`` unset: every GPU. Otherwise its comma-separated entries, read up
+    to the first that names no device or repeats one (CUDA ignores the rest): an ordinal, a
+    ``GPU-<uuid>`` (or a prefix matching one GPU alone), or a MIG instance, whose GPU is known
+    from ``MIG-GPU-<uuid>/<gi>/<ci>`` and not from ``MIG-<uuid>``. Empty, or ``-1``, selects none.
+    An ordinal is nvidia-smi's index (the PCI bus order) only under
+    ``CUDA_DEVICE_ORDER=PCI_BUS_ID``; under the default FASTEST_FIRST, and for a MIG UUID,
+    the device could be any GPU not already named, so every such choice is a candidate.
+    """
+    raw = env.get("CUDA_VISIBLE_DEVICES")
+    if raw is None:
+        return [list(gpus)]
+    pci_order = env.get("CUDA_DEVICE_ORDER", "").strip().upper() == "PCI_BUS_ID"
+    by_index = sorted(gpus, key=lambda g: g.index if g.index is not None else 0)
+
+    def by_uuid(prefix: str) -> Gpu | None:
+        matches = [g for g in gpus if g.uuid and g.uuid.lower().startswith(prefix.lower())]
+        return matches[0] if len(matches) == 1 and len(prefix) > len("GPU-") else None
+
+    known: list[Gpu] = []
+    ordinals: set[int] = set()
+    unknown_ordinals = unknown_migs = 0
+    for token in (t.strip() for t in raw.split(",")):
+        if token.isdigit():
+            i = int(token)
+            if i >= len(gpus) or i in ordinals:
+                break
+            ordinals.add(i)
+            if pci_order:
+                if by_index[i] in known:
+                    break
+                known.append(by_index[i])
+            else:
+                unknown_ordinals += 1
+        elif token.upper().startswith("GPU-"):
+            g = by_uuid(token)
+            if g is None or g in known:
+                break
+            known.append(g)
+        elif token.upper().startswith("MIG-GPU-"):
+            g = by_uuid(token[len("MIG-"):].split("/")[0])
+            if g is None:
+                break
+            if g not in known:  # several instances of one GPU are one GPU to check
+                known.append(g)
+        elif token.upper().startswith("MIG-") and len(token) > len("MIG-"):
+            unknown_migs += 1
+        else:
+            break
+    if not unknown_ordinals and not unknown_migs:
+        return [known]
+    rest = [g for g in gpus if g not in known]
+    # An unplaced ordinal is a GPU of its own unless it is one already named; a MIG UUID may be
+    # an instance of a named GPU, adding none.
+    low = max(0, unknown_ordinals - len(known))
+    high = min(unknown_ordinals + unknown_migs, len(rest))
+    out = []
+    for size in range(low, high + 1):
+        for extra in itertools.combinations(rest, size):
+            if known or extra:
+                out.append(known + list(extra))
+    return out or [known]
+
+
+def _described(gpus: list[Gpu]) -> str:
+    return ", ".join(f"cc {g.cc[0]}.{g.cc[1]}" + (f" (index {g.index})" if g.index is not None else "")
+                     for g in gpus)
+
+
+def check(sets: dict[str, StackSet], default: str, name: str) -> int:
+    """Whether set ``name`` runs on this machine's GPUs, said on stderr; the exit code.
+
+    Only the GPUs CUDA can see are checked (``visible_candidates``): one that
+    ``CUDA_VISIBLE_DEVICES`` hides is never touched by torch, so it neither refuses nor passes
+    the set.
+    """
+    try:
+        gpus = detect_gpus()
+    except Refused as failed:
+        print(f"[torch] cannot check the {name} set: {failed}", file=sys.stderr)
+        return CHECK_NO_GPU_INFO
+    if not gpus:
+        said = "no nvidia-smi" if gpus is None else "nvidia-smi lists no GPU"
+        print(f"[torch] cannot check the {name} set: {said}, so there is no GPU to check", file=sys.stderr)
+        return CHECK_NO_GPU_INFO
+    print(f"[torch] {machine(gpus)}", file=sys.stderr)
+    candidates = visible_candidates(gpus, os.environ)
+    shown = os.environ.get("CUDA_VISIBLE_DEVICES")
+    if all(not c for c in candidates):
+        print(f"[torch] cannot check the {name} set: CUDA_VISIBLE_DEVICES={shown!r} leaves no GPU visible,"
+              " so there is no GPU to check", file=sys.stderr)
+        return CHECK_NO_GPU_INFO
+    reasons = [why_not(sets[name], c) for c in candidates]
+    if any(r is None for r in reasons) and any(r is not None for r in reasons):
+        print(f"[torch] cannot check the {name} set: CUDA_VISIBLE_DEVICES={shown!r} could select any of"
+              f" {' / '.join(_described(c) for c in candidates)}, and the set fits some of them only."
+              " Name GPUs by UUID, or set CUDA_DEVICE_ORDER=PCI_BUS_ID so an ordinal is nvidia-smi's index.",
+              file=sys.stderr)
+        return CHECK_NO_GPU_INFO
+    if shown is not None:
+        print(f"[torch] CUDA_VISIBLE_DEVICES={shown!r}: checking {' / '.join(_described(c) for c in candidates)}",
+              file=sys.stderr)
+    # Every candidate agrees. Their union is what the refusal speaks for: an image that fits it
+    # fits each of them.
+    gpus = [g for g in gpus if any(g in c for c in candidates)]
+    reason = reasons[0]
+    if reason is None:
+        print(f"[torch] the {name} set (torch {sets[name].torch}) fits this machine", file=sys.stderr)
+        return 0
+    fit = images_that_fit(sets, default, gpus)
+    instead = ("use instead:\n  " + "\n  ".join(fit)) if fit else "no image fits this machine"
+    print(f"[torch] REFUSED: the {name} set (torch {sets[name].torch}) cannot run here: {reason}\n"
+          f"{instead}\n{table(sets, gpus)}", file=sys.stderr)
+    return CHECK_REFUSED
 
 
 def table(sets: dict[str, StackSet], gpus: list[Gpu]) -> str:
@@ -287,6 +462,16 @@ def installed_versions(python: str) -> dict[str, str | None]:
     return json.loads(done.stdout)
 
 
+def constraint_lines(installed: dict[str, str | None]) -> list[str]:
+    """The installed stack as pip constraints, each pinned with its local version (torch==2.15.0+cu132).
+
+    A local version in a constraint admits only that build, while ``torch>=2`` or ``torch==2.15.0``
+    in another package's metadata still matches it; a package that needs any other torch fails
+    pip's resolution instead of replacing the stack.
+    """
+    return [f"{name}=={installed[name]}" for name in STACK_DISTRIBUTIONS if installed.get(name)]
+
+
 def differences(stack: StackSet, installed: dict[str, str | None], platform: str = sys.platform) -> list[str]:
     """Each stack distribution whose installed version is not the set's, as a line."""
     out = []
@@ -313,20 +498,48 @@ def main(argv: list[str] | None = None) -> int:
     for name in ("install", "verify"):
         p = sub.add_parser(name)
         p.add_argument("--python", required=True)
+        p.add_argument("--set", dest="set_name", help="this set, never chosen by this machine")
+        p.add_argument("--platform", help="with --set: the OS to install or verify for (default: this one)")
         if name == "install":
             p.add_argument("--dry-run", action="store_true")
+    c = sub.add_parser("check")
+    c.add_argument("--set", dest="set_name", required=True)
+    k = sub.add_parser("constraints")
+    k.add_argument("--python", required=True)
+    k.add_argument("out")
     f = sub.add_parser("filter")
     f.add_argument("requirements")
     f.add_argument("out")
     f.add_argument("--also", nargs="*", default=[])
     args = parser.parse_args(argv)
+    if getattr(args, "platform", None) and not args.set_name:
+        parser.error("--platform needs --set: a chosen set is always for this machine's OS")
 
     if args.command == "filter":
         lines = Path(args.requirements).read_text(encoding="utf-8").splitlines()
         Path(args.out).write_text("\n".join(filter_requirements(lines, tuple(args.also))) + "\n", encoding="utf-8")
         return 0
+    if args.command == "constraints":
+        pins = constraint_lines(installed_versions(args.python))
+        if not any(p.startswith("torch==") for p in pins):
+            print(f"[torch] no torch is installed in {args.python}: no constraints written", file=sys.stderr)
+            return CONSTRAINTS_NO_TORCH
+        Path(args.out).write_text("# The installed torch stack: torch_stack.py constraints\n"
+                                  + "\n".join(pins) + "\n", encoding="utf-8")
+        print(f"[torch] constraints: {' '.join(pins)}", file=sys.stderr)
+        return 0
 
-    _, sets = read_stack()
+    default, sets = read_stack()
+    if getattr(args, "set_name", None):
+        if args.set_name not in sets:
+            print(f"[torch] REFUSED: {args.set_name} is not a set; the sets are: {', '.join(sets)}", file=sys.stderr)
+            return REFUSED
+        if args.command == "check":
+            return check(sets, default, args.set_name)
+        stack, platform = sets[args.set_name], args.platform or sys.platform
+        print(f"[torch] {stack.name}: torch {stack.torch} (--set {stack.name}, for {platform})", file=sys.stderr)
+        return _install_or_verify(args, stack, platform)
+
     override = os.environ.get("MRLN_TORCH_INDEX") or None
     try:
         # The CPU set needs no GPU, so an override naming it never asks nvidia-smi: a broken
@@ -344,17 +557,21 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "select":
         print(stack.name)
         return 0
+    return _install_or_verify(args, stack, sys.platform)
+
+
+def _install_or_verify(args: argparse.Namespace, stack: StackSet, platform: str) -> int:
     if args.command == "install":
-        for command in install_commands(stack, args.python):
+        for command in install_commands(stack, args.python, platform):
             print("[torch] " + " ".join(command[1:]), file=sys.stderr)
             if not args.dry_run:
                 subprocess.run(command, check=True)
         return 0
     installed = installed_versions(args.python)
     for name in STACK_DISTRIBUTIONS:
-        if name in stack.pins():
+        if name in stack.pins(platform):
             print(f"[torch] {name} {installed.get(name) or 'not installed'}", file=sys.stderr)
-    wrong = differences(stack, installed)
+    wrong = differences(stack, installed, platform)
     if wrong:
         print("[torch] WRONG STACK:\n  " + "\n  ".join(wrong), file=sys.stderr)
         return 1

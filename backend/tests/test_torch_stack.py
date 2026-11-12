@@ -282,6 +282,342 @@ class TestVerify:
             "torchao: installed 0.18.0+cu132, the cu132 set needs 0.18.0"]
 
 
+def _never_asks_the_machine(monkeypatch):
+    def asked():
+        raise AssertionError("a named set must never ask this machine's nvidia-smi")
+
+    monkeypatch.setattr(torch_stack, "detect_gpus", asked)
+    monkeypatch.delenv("MRLN_TORCH_INDEX", raising=False)
+
+
+@pytest.fixture(scope="module")
+def bare_python(tmp_path_factory) -> str:
+    """An interpreter that sees no installed distribution but the stub stack put on its PYTHONPATH."""
+    venv = tmp_path_factory.mktemp("bare") / "venv"
+    subprocess.run([sys.executable, "-m", "venv", "--without-pip", str(venv)], check=True)
+    return str(venv / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python"))
+
+
+def _stub_stack(root: Path, versions: dict[str, str]) -> dict:
+    """A directory of bare dist-info metadata, put on PYTHONPATH: what the stub interpreter reports."""
+    for name, version in versions.items():
+        info = root / f"{name.replace('-', '_')}-{version}.dist-info"
+        info.mkdir(parents=True)
+        (info / "METADATA").write_text(f"Metadata-Version: 2.1\nName: {name}\nVersion: {version}\n", encoding="utf-8")
+    return {**_env(), "PYTHONPATH": str(root)}
+
+
+CU126_ON_LINUX = {"torch": "2.14.1+cu126", "torchvision": "0.29.1+cu126", "torchaudio": "2.11.0+cu126",
+                  "torchao": "0.18.0+cu126", "triton": "3.8.0"}
+
+
+class TestInstallANamedSet:
+    """The image build installs the set it names, whatever GPU the build machine has (or none)."""
+
+    def test_it_installs_the_named_set_for_linux_without_asking_the_machine(self, monkeypatch, capsys):
+        _never_asks_the_machine(monkeypatch)
+        code = torch_stack.main(["install", "--set", "cu126", "--platform", "linux", "--python", "py", "--dry-run"])
+        assert code == 0
+        err = capsys.readouterr().err
+        for pin in ("torch==2.14.1+cu126", "torchvision==0.29.1+cu126", "torchaudio==2.11.0+cu126",
+                    "torchao==0.18.0+cu126", "triton==3.8.0"):
+            assert pin in err
+        assert "triton-windows" not in err
+        assert "--index-url https://download.pytorch.org/whl/cu126" in err
+
+    def test_an_unknown_set_is_refused_with_the_names(self, monkeypatch, capsys):
+        _never_asks_the_machine(monkeypatch)
+        assert torch_stack.main(["install", "--set", "cu999", "--python", "py", "--dry-run"]) == torch_stack.REFUSED
+        err = capsys.readouterr().err
+        assert "cu132" in err and "cu126" in err
+        assert "pip install" not in err
+
+    def test_the_platform_is_only_for_a_named_set(self, monkeypatch):
+        _never_asks_the_machine(monkeypatch)
+        with pytest.raises(SystemExit):
+            torch_stack.main(["install", "--platform", "linux", "--python", "py", "--dry-run"])
+
+
+class TestCheckANamedSet:
+    """The container's start: does the set baked into the image run on this host?"""
+
+    def _check(self, tmp_path, name, smi_text):
+        canned = tmp_path / "smi.txt"
+        canned.write_text(smi_text, encoding="utf-8")
+        env = {**_env(), "MRLN_TORCH_NVIDIA_SMI": str(canned)}
+        return subprocess.run([sys.executable, str(BACKEND / "torch_stack.py"), "check", "--set", name],
+                              capture_output=True, text=True, env=env)
+
+    def test_a_set_that_fits_passes(self, tmp_path):
+        done = self._check(tmp_path, "cu132", "616.92, 12.0\n")
+        assert done.returncode == 0, done.stderr
+        assert "cu132" in done.stderr and "cc 12.0" in done.stderr
+
+    def test_a_driver_below_the_floor_is_refused_naming_the_images_that_fit(self, tmp_path):
+        done = self._check(tmp_path, "cu132", "575.64, 8.6\n")
+        assert done.returncode == torch_stack.CHECK_REFUSED == 3
+        assert "below R580" in done.stderr
+        assert ":latest-cu126" in done.stderr
+        assert "set     torch    driver" in done.stderr, "the refusal shows the table"
+
+    def test_cu126_on_blackwell_is_refused_naming_latest(self, tmp_path):
+        done = self._check(tmp_path, "cu126", "616.92, 12.0\n")
+        assert done.returncode == 3
+        assert "no kernels for compute capability 12.0" in done.stderr
+        assert "mastermerlin/mrln-arcane-tuner:latest " in done.stderr
+        assert ":latest-cu128" not in done.stderr, "a current image fits; the frozen one is not offered"
+
+    def test_blackwell_below_r580_is_sent_to_the_frozen_cu128_image(self, tmp_path):
+        done = self._check(tmp_path, "cu132", "575.64, 12.0\n")
+        assert done.returncode == 3
+        assert ":latest-cu128" in done.stderr and "frozen" in done.stderr
+        assert ":latest-cu126" not in done.stderr
+
+    def test_nothing_fits_says_so(self, tmp_path):
+        done = self._check(tmp_path, "cu132", "559.99, 8.6\n")
+        assert done.returncode == 3
+        assert "no image fits this machine" in done.stderr
+
+    def test_no_nvidia_smi_is_its_own_code(self, monkeypatch, capsys):
+        # In process: Windows finds System32's nvidia-smi whatever PATH a subprocess gets.
+        def no_such_program(*args, **kwargs):
+            raise FileNotFoundError("nvidia-smi")
+
+        monkeypatch.delenv("MRLN_TORCH_NVIDIA_SMI", raising=False)
+        monkeypatch.setattr(torch_stack.subprocess, "run", no_such_program)
+        assert torch_stack.main(["check", "--set", "cu132"]) == torch_stack.CHECK_NO_GPU_INFO == 4
+        assert "no nvidia-smi" in capsys.readouterr().err
+
+    def test_an_nvidia_smi_listing_no_gpu_is_no_gpu_info(self, tmp_path):
+        assert self._check(tmp_path, "cu132", "").returncode == 4
+
+    def test_a_failing_nvidia_smi_is_no_gpu_info_with_its_error(self, monkeypatch, capsys):
+        def broken_driver():
+            raise torch_stack.Refused("nvidia-smi failed (exit 9): driver/library version mismatch")
+
+        monkeypatch.setattr(torch_stack, "detect_gpus", broken_driver)
+        assert torch_stack.main(["check", "--set", "cu132"]) == 4
+        assert "driver/library version mismatch" in capsys.readouterr().err
+
+    def test_the_override_does_not_change_what_is_checked(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("MRLN_TORCH_INDEX", "cpu")
+        canned = tmp_path / "smi.txt"
+        canned.write_text("616.92, 12.0\n", encoding="utf-8")
+        monkeypatch.setenv("MRLN_TORCH_NVIDIA_SMI", str(canned))
+        assert torch_stack.main(["check", "--set", "cu126"]) == 3
+
+    def test_an_unknown_set_is_refused(self, monkeypatch):
+        _never_asks_the_machine(monkeypatch)
+        assert torch_stack.main(["check", "--set", "cu999"]) == torch_stack.REFUSED
+
+
+AMPERE_UUID = "GPU-1a2b3c4d-0000-1111-2222-333344445555"
+BLACKWELL_UUID = "GPU-9f8e7d6c-aaaa-bbbb-cccc-ddddeeeeffff"
+# nvidia-smi --query-gpu=index,uuid,driver_version,compute_cap: an Ampere and a Blackwell card.
+MIXED = f"0, {AMPERE_UUID}, 616.92, 8.6\n1, {BLACKWELL_UUID}, 616.92, 12.0\n"
+
+
+def _verdict(monkeypatch, capsys, smi_text: str, name: str, env: dict[str, str]) -> tuple[int, str]:
+    """``check --set name`` in process, on canned GPUs, with exactly ``env``'s CUDA variables."""
+    monkeypatch.setattr(torch_stack, "detect_gpus", lambda: torch_stack.parse_gpus(smi_text))
+    for var in ("CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER"):
+        monkeypatch.delenv(var, raising=False)
+    for var, value in env.items():
+        monkeypatch.setenv(var, value)
+    code = torch_stack.main(["check", "--set", name])
+    return code, capsys.readouterr().err
+
+
+class TestCheckSeesOnlyTheVisibleGpus:
+    """The README supports CUDA_VISIBLE_DEVICES; a GPU it hides is one torch never touches, so
+    it must not refuse (or pass) the image's set."""
+
+    def test_a_hidden_blackwell_does_not_refuse_cu126_on_the_selected_ampere(self, monkeypatch, capsys):
+        code, err = _verdict(monkeypatch, capsys, MIXED, "cu126", {"CUDA_VISIBLE_DEVICES": AMPERE_UUID})
+        assert code == 0, err
+
+    def test_the_selected_blackwell_still_refuses_cu126(self, monkeypatch, capsys):
+        code, err = _verdict(monkeypatch, capsys, MIXED, "cu126", {"CUDA_VISIBLE_DEVICES": BLACKWELL_UUID})
+        assert code == torch_stack.CHECK_REFUSED, err
+        assert "12.0" in err
+
+    def test_unset_checks_every_gpu(self, monkeypatch, capsys):
+        assert _verdict(monkeypatch, capsys, MIXED, "cu126", {})[0] == torch_stack.CHECK_REFUSED
+
+    def test_a_unique_uuid_prefix_selects_its_gpu(self, monkeypatch, capsys):
+        code, err = _verdict(monkeypatch, capsys, MIXED, "cu126", {"CUDA_VISIBLE_DEVICES": "GPU-1a2b"})
+        assert code == 0, err
+
+    def test_an_ordinal_in_pci_order_is_nvidia_smis_index(self, monkeypatch, capsys):
+        env = {"CUDA_VISIBLE_DEVICES": "0", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}
+        assert _verdict(monkeypatch, capsys, MIXED, "cu126", env)[0] == 0
+        env["CUDA_VISIBLE_DEVICES"] = "1"
+        assert _verdict(monkeypatch, capsys, MIXED, "cu126", env)[0] == torch_stack.CHECK_REFUSED
+
+    def test_an_ordinal_in_fastest_first_order_that_could_be_either_gpu_is_not_guessed(self, monkeypatch, capsys):
+        code, err = _verdict(monkeypatch, capsys, MIXED, "cu126", {"CUDA_VISIBLE_DEVICES": "0"})
+        assert code == torch_stack.CHECK_NO_GPU_INFO, err
+        assert "CUDA_DEVICE_ORDER=PCI_BUS_ID" in err
+
+    def test_an_ordinal_on_identical_gpus_needs_no_order(self, monkeypatch, capsys):
+        same = f"0, {AMPERE_UUID}, 616.92, 12.0\n1, {BLACKWELL_UUID}, 616.92, 12.0\n"
+        assert _verdict(monkeypatch, capsys, same, "cu126", {"CUDA_VISIBLE_DEVICES": "1"})[0] == torch_stack.CHECK_REFUSED
+        assert _verdict(monkeypatch, capsys, same, "cu132", {"CUDA_VISIBLE_DEVICES": "1"})[0] == 0
+
+    @pytest.mark.parametrize("value", ["", "-1", " ", "junk", "7", "GPU-0000", "GPU-"])
+    def test_a_list_that_selects_no_gpu_is_no_gpu_to_check(self, monkeypatch, capsys, value):
+        code, err = _verdict(monkeypatch, capsys, MIXED, "cu126", {"CUDA_VISIBLE_DEVICES": value})
+        assert code == torch_stack.CHECK_NO_GPU_INFO, err
+        assert "CUDA_VISIBLE_DEVICES" in err
+
+    def test_parsing_stops_at_the_first_invalid_entry(self, monkeypatch, capsys):
+        env = {"CUDA_VISIBLE_DEVICES": f"{AMPERE_UUID},-1,{BLACKWELL_UUID}"}
+        assert _verdict(monkeypatch, capsys, MIXED, "cu126", env)[0] == 0
+        env = {"CUDA_VISIBLE_DEVICES": f"{AMPERE_UUID},{AMPERE_UUID},{BLACKWELL_UUID}"}
+        assert _verdict(monkeypatch, capsys, MIXED, "cu126", env)[0] == 0, "a repeated device ends the list"
+
+    def test_a_mig_instance_named_with_its_parent_gpu_checks_that_gpu(self, monkeypatch, capsys):
+        env = {"CUDA_VISIBLE_DEVICES": f"MIG-{AMPERE_UUID}/1/0"}
+        assert _verdict(monkeypatch, capsys, MIXED, "cu126", env)[0] == 0
+        env = {"CUDA_VISIBLE_DEVICES": f"MIG-{BLACKWELL_UUID}/1/0"}
+        assert _verdict(monkeypatch, capsys, MIXED, "cu126", env)[0] == torch_stack.CHECK_REFUSED
+
+    def test_a_mig_uuid_whose_parent_is_unknown_is_not_guessed(self, monkeypatch, capsys):
+        env = {"CUDA_VISIBLE_DEVICES": "MIG-5c1e9d2a-1111-2222-3333-444455556666"}
+        assert _verdict(monkeypatch, capsys, MIXED, "cu126", env)[0] == torch_stack.CHECK_NO_GPU_INFO
+
+    def test_the_old_two_column_listing_still_parses(self):
+        gpus = torch_stack.parse_gpus("616.92, 12.0\n575.64, 8.6\n")
+        assert [(g.index, g.driver, g.cc) for g in gpus] == [(0, "616.92", (12, 0)), (1, "575.64", (8, 6))]
+
+    def test_nvidia_smi_is_asked_for_index_and_uuid(self, monkeypatch):
+        asked = {}
+
+        def run(cmd, **kwargs):
+            asked["cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout=MIXED, stderr="")
+
+        monkeypatch.delenv("MRLN_TORCH_NVIDIA_SMI", raising=False)
+        monkeypatch.setattr(torch_stack.subprocess, "run", run)
+        gpus = torch_stack.detect_gpus()
+        assert "--query-gpu=index,uuid,driver_version,compute_cap" in asked["cmd"]
+        assert [(g.index, g.uuid, g.cc) for g in gpus] == [(0, AMPERE_UUID, (8, 6)), (1, BLACKWELL_UUID, (12, 0))]
+
+    def test_hidden_devices_do_not_change_startup_verdict(self, monkeypatch, capsys):
+        """Property, over seeded random machines: the verdict for a CUDA_VISIBLE_DEVICES that
+        selects V equals the verdict on a machine holding only V, whatever the hidden GPUs are
+        and whichever way V is spelled (UUID, unique UUID prefix, PCI-order ordinal, MIG parent,
+        an invalid tail)."""
+        import random
+
+        rng = random.Random(20261111)
+        archs = [(7, 5), (8, 0), (8, 6), (8, 9), (9, 0), (10, 0), (12, 0)]
+        drivers = ["560.35", "575.64", "580.82", "616.92"]
+
+        def listing(gpus):
+            return "".join(f"{i}, {u}, {d}, {c[0]}.{c[1]}\n" for i, (u, d, c) in enumerate(gpus))
+
+        for trial in range(150):
+            n = rng.randint(1, 5)
+            driver = rng.choice(drivers)
+            uuids = [f"GPU-{rng.getrandbits(128):032x}" for _ in range(n)]
+            machine = [(u, driver, rng.choice(archs)) for u in uuids]
+            visible = rng.sample(range(n), rng.randint(1, n))
+            pci = rng.random() < 0.5
+            tokens = []
+            for i in visible:
+                form = rng.choice(["uuid", "prefix", "mig"] + (["ordinal"] if pci else []))
+                u = uuids[i]
+                if form == "uuid":
+                    tokens.append(u)
+                elif form == "prefix":
+                    k = next(k for k in range(5, len(u) + 1)
+                             if sum(o.startswith(u[:k]) for o in uuids) == 1)
+                    tokens.append(u[:k])
+                elif form == "mig":
+                    tokens.append(f"MIG-{u}/{rng.randint(0, 6)}/0")
+                else:
+                    tokens.append(str(i))
+            if rng.random() < 0.3:
+                hidden = [uuids[i] for i in range(n) if i not in visible]
+                tokens += [rng.choice(["-1", "junk", str(n + 3)]), *hidden]
+            env = {"CUDA_VISIBLE_DEVICES": ",".join(tokens)}
+            if pci:
+                env["CUDA_DEVICE_ORDER"] = "PCI_BUS_ID"
+            # The hidden GPUs re-rolled: none of them may matter.
+            rerolled = [m if i in visible else (m[0], m[1], rng.choice(archs)) for i, m in enumerate(machine)]
+            only_v = listing([machine[i] for i in visible])
+            for name in ("cu132", "cu126"):
+                want, _ = _verdict(monkeypatch, capsys, only_v, name, {})
+                for gpus in (machine, rerolled):
+                    got, err = _verdict(monkeypatch, capsys, listing(gpus), name, env)
+                    assert got == want, (trial, name, env, gpus, err)
+
+
+class TestConstraints:
+    def test_the_installed_stack_is_written_with_its_local_versions(self, tmp_path, bare_python):
+        env = _stub_stack(tmp_path / "site", {"torch": "2.15.0+cu132", "torchvision": "0.29.2+cu132",
+                                              "torchaudio": "2.11.1+cu132", "torchao": "0.18.0+cu132",
+                                              "triton": "3.9.0"})
+        out = tmp_path / "constraints.txt"
+        done = subprocess.run([sys.executable, str(BACKEND / "torch_stack.py"), "constraints",
+                               "--python", bare_python, str(out)], capture_output=True, text=True, env=env)
+        assert done.returncode == 0, done.stderr
+        pins = [ln for ln in out.read_text(encoding="utf-8").splitlines() if ln and not ln.startswith("#")]
+        assert pins == ["torch==2.15.0+cu132", "torchvision==0.29.2+cu132", "torchaudio==2.11.1+cu132",
+                        "torchao==0.18.0+cu132", "triton==3.9.0"]
+
+    def test_it_writes_what_is_installed_not_what_a_set_says(self, monkeypatch, tmp_path):
+        _never_asks_the_machine(monkeypatch)
+        monkeypatch.setattr(torch_stack, "installed_versions", lambda python: {
+            "torch": "2.14.1+cu126", "torchvision": "0.29.1+cu126", "torchaudio": "2.11.0+cu126",
+            "torchao": "0.18.0+cu126", "triton": "3.8.0", "triton-windows": None})
+        out = tmp_path / "c.txt"
+        assert torch_stack.main(["constraints", "--python", "py", str(out)]) == 0
+        text = out.read_text(encoding="utf-8")
+        assert "torch==2.14.1+cu126" in text and "triton==3.8.0" in text
+        assert "triton-windows" not in text
+
+    def test_no_torch_installed_writes_nothing(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(torch_stack, "installed_versions", lambda python: dict.fromkeys(torch_stack.STACK_DISTRIBUTIONS))
+        out = tmp_path / "c.txt"
+        code = torch_stack.main(["constraints", "--python", "py", str(out)])
+        assert code == torch_stack.CONSTRAINTS_NO_TORCH
+        assert not out.exists()
+
+    def test_confirmed_absence_has_a_code_no_crash_can_give(self):
+        """An unhandled exception exits 1 and argparse exits 2: neither may read as "no torch"."""
+        assert torch_stack.CONSTRAINTS_NO_TORCH not in (0, 1, 2)
+
+    def test_a_failing_probe_is_not_absence(self, monkeypatch, tmp_path):
+        def broken(python):
+            raise subprocess.CalledProcessError(1, [python, "-c", "..."])
+
+        monkeypatch.setattr(torch_stack, "installed_versions", broken)
+        with pytest.raises(subprocess.CalledProcessError):
+            torch_stack.main(["constraints", "--python", "py", str(tmp_path / "c.txt")])
+
+
+class TestVerifyANamedSet:
+    def test_a_cu126_stack_passes_with_no_nvidia_smi(self, tmp_path, bare_python):
+        """The image's stack is verified by name: on this PC (cc 12.0) today's verify would refuse cu126."""
+        env = _stub_stack(tmp_path / "site", CU126_ON_LINUX)
+        # Asking the machine would read this missing file and crash: verify --set must never ask.
+        env["MRLN_TORCH_NVIDIA_SMI"] = str(tmp_path / "no-nvidia-smi-here.txt")
+        done = subprocess.run([sys.executable, str(BACKEND / "torch_stack.py"), "verify", "--set", "cu126",
+                               "--platform", "linux", "--python", bare_python],
+                              capture_output=True, text=True, env=env)
+        assert done.returncode == 0, done.stderr
+        assert "the cu126 set is installed" in done.stderr
+
+    def test_another_stack_is_caught(self, monkeypatch, capsys):
+        _never_asks_the_machine(monkeypatch)
+        monkeypatch.setattr(torch_stack, "installed_versions", lambda python: {**CU126_ON_LINUX, "torch": "2.15.0+cu132"})
+        code = torch_stack.main(["verify", "--set", "cu126", "--platform", "linux", "--python", "py"])
+        assert code == 1
+        assert "torch: installed 2.15.0+cu132, the cu126 set needs 2.14.1" in capsys.readouterr().err
+
+
 INSTALLERS = ("install.ps1", "install.bat", "install.sh")
 
 
@@ -424,5 +760,6 @@ class TestTheTorchaudioClaimIsItsMetadata:
 def _env() -> dict:
     import os
 
-    env = {k: v for k, v in os.environ.items() if k not in ("MRLN_TORCH_INDEX", "MRLN_TORCH_NVIDIA_SMI")}
+    env = {k: v for k, v in os.environ.items()
+           if k not in ("MRLN_TORCH_INDEX", "MRLN_TORCH_NVIDIA_SMI", "CUDA_VISIBLE_DEVICES", "CUDA_DEVICE_ORDER")}
     return env

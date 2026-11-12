@@ -15,20 +15,17 @@ way later. So the checks here are two-sided: every claim about a thing must
 agree with every other claim about that thing, **and** the agreed value must
 match the source of truth.
 
-THE TRAP THIS FILE MUST NOT BECOME. There are **two** correct PyTorch versions
-here and they are deliberately different:
+WHERE THE VERSIONS COME FROM. ``backend/torch-stack.cfg`` is the one place:
 
-* the LOCAL dev venv runs ``backend/requirements.txt``'s pin, which is
-  ``backend/torch-stack.cfg``'s default set (2.15.0+cu132; older machines get
-  the cu126 set's 2.14.1, which the README names as plain ``torch 2.14.1``);
-* the CONTAINER bakes the ``Dockerfile``'s pin (2.11.0) — see ``Dockerfile``'s
-  split-stack comment. The install path filters the torch lines out of
-  ``requirements.txt`` precisely so the local pin never clobbers the image's.
+* the LOCAL dev venv runs ``backend/requirements.txt``'s pin, which a test holds
+  equal to the cfg's default set (older machines get the cu126 set, which the
+  README names as plain ``torch <version>``, never as ``PyTorch <version>``);
+* the CONTAINER installs the set its ``Dockerfile`` names in ``ARG TORCH_CUDA``,
+  by name, from the same cfg. The Dockerfile names no version of its own.
 
-**Do not "fix" the container's 2.11.0 to match ``requirements.txt``** — that
-breaks the Docker build. The README has to state both and say which is which,
-which is why the check below asserts the set of claimed versions equals
-``{local pin, container pin}`` rather than asserting a single value.
+So the default image and the local venv run the same torch, and the README's
+``PyTorch <version>`` claims are exactly that one version; the cu126 image's
+torch is named once, as ``torch <version>``.
 
 KNOWN LIMIT, stated so it is inherited rather than rediscovered. These checks
 read PROSE, and prose can legitimately name an old version — a changelog line
@@ -86,10 +83,31 @@ def _local_torch_pin(requirements: str) -> str:
     return match.group(1)
 
 
-def _container_torch_pin(dockerfile: str) -> str:
-    match = _TORCH_PIN.search(dockerfile)
-    assert match, "the Dockerfile no longer installs a pinned torch=="
-    return match.group(1)
+TORCH_STACK_CFG = REPO_ROOT / "backend" / "torch-stack.cfg"
+
+
+def _cfg_values(cfg: str) -> dict[str, str]:
+    values: dict[str, str] = {}
+    for raw in cfg.splitlines():
+        line = raw.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key, _, value = line.partition("=")
+            values[key.strip()] = value.strip()
+    return values
+
+
+def _set_torch(cfg: str, set_name: str) -> str:
+    values = _cfg_values(cfg)
+    key = f"{set_name.upper()}_TORCH"
+    assert key in values, f"backend/torch-stack.cfg has no {key}"
+    return values[key]
+
+
+def _container_torch_pin(dockerfile: str, cfg: str) -> str:
+    """The default image's torch: the cfg set the Dockerfile's ``ARG TORCH_CUDA`` names."""
+    match = re.search(r"^ARG TORCH_CUDA=(\S+)", dockerfile, re.M)
+    assert match, "the Dockerfile no longer names its torch set in ARG TORCH_CUDA"
+    return _set_torch(cfg, match.group(1))
 
 
 def _angular_major(package_json: str) -> str:
@@ -133,21 +151,26 @@ def readme_angular_claims(readme: str) -> set[str]:
 
 
 class TestPyTorch:
-    def test_the_readme_announces_exactly_the_two_pins_that_exist(self):
-        """Both versions named, neither invented, and each traceable.
+    def test_the_readme_announces_exactly_the_pins_that_exist(self):
+        """Every ``PyTorch <version>`` is the local pin or the default image's,
+        and both are named.
 
-        Set equality rather than "every claim is one of the two", because the
-        weaker form passes a README that has quietly dropped the container
-        version entirely — which is how a reader ends up installing the local
-        pin into an image that cannot take it.
+        Set equality rather than "every claim is one of them", because the
+        weaker form passes a README that has quietly dropped one entirely.
         """
         local = _local_torch_pin(_read(REQUIREMENTS))
-        container = _container_torch_pin(_read(DOCKERFILE))
+        container = _container_torch_pin(_read(DOCKERFILE), _read(TORCH_STACK_CFG))
         assert readme_torch_claims(_read(README)) == {local, container}, (
-            "README.md's PyTorch versions no longer match the two pins that "
-            f"exist: local {local} (backend/requirements.txt), container "
-            f"{container} (Dockerfile). These are DIFFERENT on purpose — read "
-            "this module's docstring before changing either."
+            "README.md's PyTorch versions no longer match the pins that exist: "
+            f"local {local} (backend/requirements.txt), default image {container} "
+            "(the torch-stack.cfg set the Dockerfile's ARG TORCH_CUDA names)."
+        )
+
+    def test_the_readme_names_the_cu126_images_torch(self):
+        """The fallback image carries the cu126 set, whose torch the README states."""
+        cu126 = _set_torch(_read(TORCH_STACK_CFG), "cu126")
+        assert f"torch {cu126}" in _read(README), (
+            f"README.md does not name the cu126 set's torch ({cu126}) as `torch {cu126}`"
         )
 
     def test_no_install_instruction_names_its_own_torch(self):
@@ -167,20 +190,113 @@ class TestPyTorch:
         )
         assert "torch_stack.py install" in readme, "README.md no longer shows how torch is installed"
 
-    def test_the_two_pins_are_read_from_different_files(self):
-        """Anti-vacuity: the local and container pins are separate sources.
+    def test_the_container_pin_follows_the_dockerfiles_set(self):
+        """Anti-vacuity: the image's torch is read through ARG TORCH_CUDA, so a
+        Dockerfile naming the other set yields the other set's torch."""
+        cfg = _read(TORCH_STACK_CFG)
+        dockerfile = _read(DOCKERFILE)
+        named = re.search(r"^ARG TORCH_CUDA=(\S+)", dockerfile, re.M).group(1)
+        other = next(s for s in _cfg_values(cfg)["SETS"].split() if s != named)
+        swapped = dockerfile.replace(f"ARG TORCH_CUDA={named}", f"ARG TORCH_CUDA={other}", 1)
+        assert _container_torch_pin(swapped, cfg) == _set_torch(cfg, other)
+        assert _set_torch(cfg, other) != _set_torch(cfg, named)
 
-        If someone collapses them to one file the set-equality assertion above
-        keeps passing while checking half of what its name promises.
-        """
-        assert REQUIREMENTS != DOCKERFILE
-        assert _local_torch_pin(_read(REQUIREMENTS)) != _container_torch_pin(
-            _read(DOCKERFILE)
-        ), (
-            "the local and container torch pins are now identical — if that is "
-            "deliberate, this file's docstring and the set assertion above both "
-            "need rewriting, because the distinction they exist for is gone"
+
+BUILD_SCRIPT = REPO_ROOT / "docker-build.ps1"
+IMAGE = "mastermerlin/mrln-arcane-tuner"
+#: The frozen cu128 image's driver floor: never rebuilt, so it is not in the cfg.
+FROZEN_CU128_DRIVER_MIN = "570"
+
+
+def _build_script_tags(script: str, variant: str) -> set[str]:
+    """The release tags docker-build.ps1 applies for ``variant``, as ``V``/``latest`` names."""
+    code = "\n".join(ln for ln in script.splitlines() if not ln.lstrip().startswith("#"))
+    base = re.search(r"^\$tags = @\((.+?)\)$", code, re.M)
+    branch = re.search(r"if \(\$Variant -eq '(\w+)'\) \{\s*\$tags \+= @\((.+?)\)\s*\}", code, re.S)
+    assert base and branch, "docker-build.ps1's tag list moved; re-anchor this guard"
+    exprs = re.findall(r'"([^"]+)"', base.group(1))
+    if variant == branch.group(1):
+        exprs += re.findall(r'"([^"]+)"', branch.group(2))
+    return {e.replace("${Repository}:", "").replace("$Version", "V").replace("$Variant", variant) for e in exprs}
+
+
+def _readme_tag_table(readme: str, version: str) -> dict[str, set[str]]:
+    """The README's "Tags applied on success" table: variant -> its tags, version as ``V``."""
+    table: dict[str, set[str]] = {}
+    for line in readme.splitlines():
+        row = re.match(r"\|\s*`(cu\d+)`[^|]*\|(.*)\|\s*$", line)
+        if row:
+            tags = re.findall(rf"{re.escape(IMAGE)}:([\w.+-]+)", row.group(2))
+            table[row.group(1)] = {t.replace(version, "V") for t in tags}
+    return table
+
+
+def _app_version() -> str:
+    text = _read(REPO_ROOT / "backend" / "app" / "__init__.py")
+    return re.search(r"""^__version__\s*=\s*["']([^"']+)["']""", text, re.M).group(1)
+
+
+def _troubleshooting(readme: str) -> str:
+    start = readme.find("unsatisfied condition: cuda>=")
+    return readme[max(0, start - 200): start + 1500] if start != -1 else ""
+
+
+class TestTheContainerClaims:
+    """The README's image claims hold against torch-stack.cfg, the Dockerfile and docker-build.ps1."""
+
+    def test_the_tag_table_is_what_the_build_script_applies(self):
+        table = _readme_tag_table(_read(README), _app_version())
+        script = _read(BUILD_SCRIPT)
+        assert set(table) == {"cu132", "cu126"}, f"the README's tag table lists the variants {sorted(table)}"
+        for variant, tags in table.items():
+            assert tags == _build_script_tags(script, variant), (
+                f"README's {variant} row lists {sorted(tags)}; docker-build.ps1 applies "
+                f"{sorted(_build_script_tags(script, variant))}"
+            )
+
+    def test_every_driver_floor_named_is_a_real_one(self):
+        """R580 (cu132) and R560 (cu126) from the cfg; R570 only for the frozen cu128 image."""
+        cfg = _cfg_values(_read(TORCH_STACK_CFG))
+        floors = {cfg[f"{s.upper()}_DRIVER_MIN"] for s in cfg["SETS"].split()}
+        named = set(re.findall(r"\bR(\d{3})\+", _read(README)))
+        assert floors <= named, f"README.md does not name the floors R{sorted(floors)}+"
+        assert named <= floors | {FROZEN_CU128_DRIVER_MIN}, (
+            f"README.md names driver floors {sorted(named)}; the real ones are "
+            f"{sorted(floors)} and the frozen cu128 image's {FROZEN_CU128_DRIVER_MIN}"
         )
+
+    def test_the_deploy_filter_is_the_bases_cuda(self):
+        """The base's NVIDIA_REQUIRE_CUDA gate is its CUDA major.minor; a host filter below it
+        offers hosts the runtime then rejects."""
+        base = re.search(r"^ARG CUDA_BASE=(\d+\.\d+)", _read(DOCKERFILE), re.M).group(1)
+        assert f"CUDA ≥ {base}" in _read(README), f"README.md does not give the deploy filter `CUDA ≥ {base}`"
+
+    def test_the_frozen_cu128_image_is_the_blackwell_escape_below_r580(self):
+        readme = _read(README)
+        assert f"{IMAGE}:latest-cu128" in readme or "`:latest-cu128`" in readme
+        assert "R570–R579" in readme and "frozen" in readme, (
+            "README.md must name the frozen :latest-cu128 image for Blackwell on R570–R579"
+        )
+
+    def test_the_runtimes_own_rejection_is_explained(self):
+        base = re.search(r"^ARG CUDA_BASE=(\d+\.\d+)", _read(DOCKERFILE), re.M).group(1)
+        section = _troubleshooting(_read(README))
+        assert f"unsatisfied condition: cuda>={base}" in section, (
+            f"README.md does not quote the NVIDIA runtime's `unsatisfied condition: cuda>={base}`"
+        )
+        assert ":latest-cu126" in section and ":latest-cu128" in section, (
+            "the troubleshooting entry must name the images to use instead"
+        )
+
+    def test_the_readme_builds_only_variants_the_script_builds(self):
+        variants = set(re.findall(r"docker-build\.ps1[^\n]*-Variant\s+(\w+)", _read(README)))
+        assert variants, "README.md shows no docker-build.ps1 -Variant command"
+        assert variants <= {"cu132", "cu126"}, f"README.md builds {sorted(variants)}; cu128 is frozen"
+
+    def test_the_tag_parsers_see_a_drifted_row(self):
+        readme = f"| `cu126` (fallback) | `{IMAGE}:1.0-cu126` |\n"
+        assert _readme_tag_table(readme, "1.0") == {"cu126": {"V-cu126"}}
+        assert _readme_tag_table(readme, "1.0")["cu126"] != _build_script_tags(_read(BUILD_SCRIPT), "cu126")
 
 
 class TestAngular:

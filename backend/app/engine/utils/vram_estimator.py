@@ -441,9 +441,10 @@ _CALIB_MAX = 4.0
 #: definition that states ``transformer.residual_stream_dtype`` gets its
 #: activation row from the token inventory instead of the rough term (H3: the
 #: rough term budgeted 43.8 GB where 29.5 GB was traced).
-#: v5 — a quantized text encoder's declared float32 modules (T5/UMT5 ``wo``,
-#: about 1 B parameters on an XXL encoder) are charged at its loaded precision
-#: in the caching peak, as QuantizationFactory leaves them unquantized.
+#: v5 — what a quantized text encoder keeps unquantized is charged at its
+#: loaded precision in the caching peak: T5/UMT5's declared float32 ``wo``
+#: (about 1 B parameters on an XXL encoder) and its input embedding, which no
+#: backend quantizes (about 1.05 B on UMT5-XXL's 256,384-token vocabulary).
 VRAM_FORMULA_VERSION = 5
 
 
@@ -761,8 +762,8 @@ class VRAMEstimator:
         else:
             te_total_params_b = _get_te_params(family)
             te_mb = (te_total_params_b * 1e9 * te_effective_bpp) / (1024 * 1024)
-        # The modules a text encoder declares float32 (T5's ``wo``) are never quantized
-        # (QuantizationFactory), so that share stays at the encoder's loaded precision.
+        # What a quantized text encoder keeps unquantized (T5's declared-float32 ``wo`` and its
+        # input embedding, no Linear) stays at the encoder's loaded precision.
         te_kept_params = _te_kept_params(arch) if te_quant not in ("none", "bf16") else 0
         if te_kept_params and te_effective_bpp != te_bpp:
             te_full_mb = te_disk_mb if te_disk_mb > 0 else (te_total_params_b * 1e9 * te_bpp) / (1024 * 1024)
@@ -1130,17 +1131,23 @@ def _get_te_params(family: str) -> float:
     return 0.35  # default ~350M for unknown families
 
 
-def _t5_wo_params(config: dict[str, Any]) -> int:
-    """T5 and UMT5 declare ``wo`` float32: one ``d_ff × d_model`` matrix (no bias) per layer."""
-    return int(config["num_layers"]) * int(config["d_model"]) * int(config["d_ff"])
+def _t5_kept_params(config: dict[str, Any]) -> int:
+    """What a quantized T5 or UMT5 encoder keeps at its loaded precision.
+
+    ``wo``, which the model declares float32: one ``d_ff × d_model`` matrix (no bias) per layer.
+    And the input embedding ``shared`` (``vocab_size × d_model``), which is no Linear, so no backend
+    quantizes it; the encoder's ``embed_tokens`` is tied to it, so it is counted once.
+    """
+    d_model = int(config["d_model"])
+    return int(config["num_layers"]) * d_model * int(config["d_ff"]) + int(config["vocab_size"]) * d_model
 
 
-#: Text-encoder classes whose model declares modules QuantizationFactory leaves unquantized, with
-#: the parameter count of those modules from the encoder's config. A class not listed here is
-#: charged entirely at the quantized size.
+#: Text-encoder classes that keep part of their parameters unquantized under QuantizationFactory,
+#: with that parameter count from the encoder's config. A class not listed here is charged
+#: entirely at the quantized size.
 _TE_KEPT_PARAMS: dict[str, Any] = {
-    "T5EncoderModel": _t5_wo_params,
-    "UMT5EncoderModel": _t5_wo_params,
+    "T5EncoderModel": _t5_kept_params,
+    "UMT5EncoderModel": _t5_kept_params,
 }
 
 

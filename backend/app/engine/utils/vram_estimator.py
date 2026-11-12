@@ -441,7 +441,10 @@ _CALIB_MAX = 4.0
 #: definition that states ``transformer.residual_stream_dtype`` gets its
 #: activation row from the token inventory instead of the rough term (H3: the
 #: rough term budgeted 43.8 GB where 29.5 GB was traced).
-VRAM_FORMULA_VERSION = 4
+#: v5 — a quantized text encoder's declared float32 modules (T5/UMT5 ``wo``,
+#: about 1 B parameters on an XXL encoder) are charged at its loaded precision
+#: in the caching peak, as QuantizationFactory leaves them unquantized.
+VRAM_FORMULA_VERSION = 5
 
 
 # ---------------------------------------------------------------------------
@@ -758,6 +761,13 @@ class VRAMEstimator:
         else:
             te_total_params_b = _get_te_params(family)
             te_mb = (te_total_params_b * 1e9 * te_effective_bpp) / (1024 * 1024)
+        # The modules a text encoder declares float32 (T5's ``wo``) are never quantized
+        # (QuantizationFactory), so that share stays at the encoder's loaded precision.
+        te_kept_params = _te_kept_params(arch) if te_quant not in ("none", "bf16") else 0
+        if te_kept_params and te_effective_bpp != te_bpp:
+            te_full_mb = te_disk_mb if te_disk_mb > 0 else (te_total_params_b * 1e9 * te_bpp) / (1024 * 1024)
+            te_kept_mb = min((te_kept_params * te_bpp) / (1024 * 1024), te_full_mb)
+            te_mb = (te_full_mb - te_kept_mb) * (te_effective_bpp / te_bpp) + te_kept_mb
 
         # During caching: TE on GPU + VAE might be loaded too
         vae_disk_mb = _get_component_disk_mb(size_mb, "vae")
@@ -1118,6 +1128,43 @@ def _get_te_params(family: str) -> float:
     if te_keys:
         return sum(te_keys)
     return 0.35  # default ~350M for unknown families
+
+
+def _t5_wo_params(config: dict[str, Any]) -> int:
+    """T5 and UMT5 declare ``wo`` float32: one ``d_ff × d_model`` matrix (no bias) per layer."""
+    return int(config["num_layers"]) * int(config["d_model"]) * int(config["d_ff"])
+
+
+#: Text-encoder classes whose model declares modules QuantizationFactory leaves unquantized, with
+#: the parameter count of those modules from the encoder's config. A class not listed here is
+#: charged entirely at the quantized size.
+_TE_KEPT_PARAMS: dict[str, Any] = {
+    "T5EncoderModel": _t5_wo_params,
+    "UMT5EncoderModel": _t5_wo_params,
+}
+
+
+def _te_kept_params(arch: dict[str, Any]) -> int:
+    """The parameters every text encoder of a definition keeps unquantized, summed.
+
+    Each encoder's config sits in ``architecture_params`` under its own prefix (``te.``,
+    ``te2.``, ...), its class in ``<prefix>.architectures`` or ``<prefix>._class_name``. An
+    encoder of an unlisted class, or whose config lacks a field the count needs, adds 0.
+    """
+    prefixes = {key.split(".", 1)[0] for key in arch if key.startswith("te") and "." in key}
+    total = 0
+    for prefix in sorted(prefixes):
+        classes = arch.get(f"{prefix}.architectures")
+        name = classes[0] if isinstance(classes, list) and classes else arch.get(f"{prefix}._class_name")
+        count = _TE_KEPT_PARAMS.get(name) if isinstance(name, str) else None
+        if count is None:
+            continue
+        config = {key[len(prefix) + 1:]: value for key, value in arch.items() if key.startswith(f"{prefix}.")}
+        try:
+            total += count(config)
+        except (KeyError, TypeError, ValueError):
+            continue
+    return total
 
 
 def _get_vae_params(family: str) -> float:

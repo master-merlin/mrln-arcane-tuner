@@ -84,3 +84,76 @@ def build_artifact(adapters: dict[str, Adapter]) -> dict[str, Any]:
     """The LoRA file's tensors (float32; the saver casts) in the native layout, through the
     shared core with this family's :func:`native_module_for`."""
     return _core.build_artifact(adapters, native_module_for)
+
+
+# ── The other direction: a native-layout file onto the training modules ──────
+
+_NATIVE = re.compile(
+    r"^(?:(?P<refiner>token_refiner\.blocks)|blocks)\.(?P<n>\d+)\."
+    r"(?P<rest>attn\.qkv_proj|attn\.out_proj|mlp\.fc1|mlp\.fc2|adaln_proj\.linear)$"
+)
+# native block-relative module -> the diffusers block-relative modules it feeds
+_NATIVE_TO_DIFFUSERS: dict[str, tuple[str, ...]] = {
+    "attn.qkv_proj": ("attn.to_q", "attn.to_k", "attn.to_v"),
+    "attn.out_proj": ("attn.to_out.0",),
+    "mlp.fc1": ("ff.net.0.proj",),
+    "mlp.fc2": ("ff.net.2",),
+    "adaln_proj.linear": ("adaln_proj.linear",),
+}
+
+
+def training_modules_for(native_module: str) -> tuple[str, ...]:
+    """A native module path -> the diffusers module paths PEFT trains for it (q, k, v for the
+    fused ``qkv_proj``). Raises ``KeyError`` on a module no rule covers, a refiner block's
+    AdaLN projection included (a refiner block has none)."""
+    match = _NATIVE.match(native_module)
+    if match is not None and not (match.group("refiner") and match.group("rest") == "adaln_proj.linear"):
+        stack = "token_refiner.refiner_blocks" if match.group("refiner") else "transformer_blocks"
+        return tuple(f"{stack}.{match.group('n')}.{rest}" for rest in _NATIVE_TO_DIFFUSERS[match.group("rest")])
+    raise KeyError(f"no MiniMax-H3-Image LoRA rule maps native module {native_module!r}")
+
+
+def training_adapter_from_native(tensors: dict[str, Any]) -> dict[str, tuple[Any, Any]]:
+    """A native-layout LoRA file (``diffusion_model.<native>.lora_A/B.weight``, an optional
+    ``.alpha``) -> ``{diffusers module: (lora_A, lora_B)}`` with the scale folded into ``lora_B``,
+    the key map the shared training adapter (``core/training_adapter.py``) loads through.
+
+    The inverse of :func:`build_artifact`, exactly: the fused ``qkv_proj`` delta ``B @ A`` is
+    split by ``B``'s rows in thirds (q, k, v), each third keeping the whole ``A``, so each
+    projection's delta is its third of the fused one; ``fc1``'s rows go back from the native
+    ``[gate; value]`` to diffusers' ``[value; gate]``. A key no rule covers raises."""
+    import torch
+
+    pairs: dict[str, dict[str, Any]] = {}
+    for key, value in tensors.items():
+        if not key.startswith(ARTIFACT_PREFIX):
+            raise KeyError(f"{_OWNER}: {key!r} is not under {ARTIFACT_PREFIX!r}")
+        body = key[len(ARTIFACT_PREFIX):]
+        for suffix, slot in ((".lora_A.weight", "A"), (".lora_B.weight", "B"), (".alpha", "alpha")):
+            if body.endswith(suffix):
+                pairs.setdefault(body[: -len(suffix)], {})[slot] = value
+                break
+        else:
+            raise KeyError(f"{_OWNER}: {key!r} is no LoRA tensor")
+
+    out: dict[str, tuple[Any, Any]] = {}
+    for native, pair in sorted(pairs.items()):
+        if "A" not in pair or "B" not in pair:
+            raise ValueError(f"{_OWNER}: incomplete LoRA pair on {native!r}")
+        a = pair["A"].float()
+        b = pair["B"].float()
+        if "alpha" in pair:
+            b = b * (float(pair["alpha"]) / a.shape[0])
+        modules = training_modules_for(native)
+        rest = native.rsplit(".", 2)[-2:]
+        if len(modules) == 3:
+            if b.shape[0] % 3:
+                raise ValueError(f"{_OWNER}: {native} lora_B has {b.shape[0]} rows, not three equal thirds")
+            for module, third in zip(modules, torch.chunk(b, 3, dim=0)):
+                out[module] = (a.clone(), third.contiguous())
+        elif rest == ["mlp", "fc1"]:
+            half = b.shape[0] // 2
+            out[modules[0]] = (a, torch.cat([b[half:], b[:half]], dim=0))  # [gate; value] -> [value; gate]
+        else:
+            out[modules[0]] = (a, b)
+    return out

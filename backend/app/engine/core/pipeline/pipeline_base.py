@@ -473,6 +473,39 @@ class PipelineBaseMixin(BaseTrainer):
         self.text_cache: dict[str, torch.Tensor] = {}
         self._te_unloaded = False
         self._setup_family()
+        self._setup_distillation()
+
+    def _setup_distillation(self) -> None:
+        """Resolve the job's distillation handling against the definition, and fetch and
+        verify the training adapter when it is in play, before any weight loads.
+
+        ``run_trainer.py`` awaits ``setup()`` before ``load_model()``, so a handling the
+        definition does not allow, a missing adapter file or a wrong sha256 refuses the job
+        before the transformer or the text encoder loads. ``_apply_peft`` only attaches the
+        file verified here. A definition without a ``distillation`` block resolves to
+        ``none`` and nothing else happens."""
+        from app.engine.core import training_adapter
+        from app.engine.core.definitions import ResolvedDistillation, resolve_distillation
+
+        definition = getattr(self, "definition", None)
+        self.distillation = (
+            resolve_distillation(definition, self.config) if definition is not None
+            else ResolvedDistillation("none", None, None)
+        )
+        self._training_adapter_path = None
+        self._training_adapter_key_map = None
+        if self.distillation.uses_adapter:
+            spec = definition.distillation.training_adapter
+            self._training_adapter_key_map = training_adapter.family_key_map(definition)
+            self._training_adapter_path = training_adapter.fetch_verified(spec)
+        if self.distillation.handling != "none":
+            self.logger.info(
+                "distillation_handling",
+                handling=self.distillation.handling,
+                guidance_scale=self.distillation.guidance_scale,
+                guidance_schedule=self.distillation.guidance_schedule,
+                training_adapter=self._training_adapter_path,
+            )
 
     @abstractmethod
     def _setup_family(self) -> None:

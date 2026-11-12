@@ -642,6 +642,66 @@ def test_an_optimizer_without_modes_is_left_alone(tmp_path):
     assert _run(t)["images"] > 0
 
 
+# ── A training adapter (distillation handling) is off for the pass ───────────
+
+
+def _with_training_adapter(t):
+    """Give the stub the user's LoRA and a training adapter on its Linear; return the twin
+    model that has the user's LoRA only."""
+    import copy
+
+    from peft import LoraConfig, get_peft_model
+
+    from app.engine.core import training_adapter
+
+    model = get_peft_model(_Model(), LoraConfig(r=2, lora_alpha=2, target_modules=["linear"]))
+    g = torch.Generator().manual_seed(4)
+    with torch.no_grad():
+        for name, p in sorted(model.named_parameters()):
+            if ".lora_" in name:
+                p.copy_(0.2 * torch.randn(p.shape, generator=g))
+    plain = copy.deepcopy(model)
+    training_adapter.attach(
+        model, {"linear": (torch.randn(2, LATENT, generator=g), torch.randn(LATENT, 2, generator=g))}
+    )
+    model.train()
+    plain.train()
+    t._model = model
+    return plain
+
+
+def _active_adapters(model):
+    from app.engine.core import training_adapter
+
+    return {tuple(layer.active_adapters) for layer in training_adapter._tuner_layers(model)}
+
+
+def test_the_pass_measures_the_weights_without_the_training_adapter(tmp_path):
+    t = _pipeline(tmp_path)
+    plain = _with_training_adapter(t)
+    twin = _pipeline(tmp_path)
+    twin._model = plain
+    with_adapter = _numbers(_run(t))
+    assert with_adapter == _numbers(_run(twin, step=1)), "the pass measured the training adapter"
+    assert _active_adapters(t._model) == {("default", "training_adapter")}
+
+
+def test_the_training_adapter_is_on_again_when_a_forward_fails(tmp_path):
+    t = _pipeline(tmp_path)
+    _with_training_adapter(t)
+    seen = []
+
+    def boom(*_args):
+        seen.append(_active_adapters(t._model))
+        raise RuntimeError("forward failed")
+
+    t.forward_pass = boom
+    with pytest.raises(RuntimeError):
+        _run(t)
+    assert seen == [{("default",)}]
+    assert _active_adapters(t._model) == {("default", "training_adapter")}
+
+
 def test_the_optimizer_stays_out_of_eval_when_the_ema_swap_fails(tmp_path):
     t = _pipeline(tmp_path)
     before = t._model.linear.weight.detach().clone()

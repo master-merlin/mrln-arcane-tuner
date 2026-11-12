@@ -18,6 +18,7 @@ import torch
 
 from app.engine.core.pipeline.hessian_estimate import _capture_random_state, _restore_random_state
 from app.engine.core.pipeline.noise_bands import band_centres, timesteps_for_bands
+from app.engine.core.training_adapter import adapter_off as training_adapter_off
 
 
 def is_due(step: int, every: int, max_steps: int) -> bool:
@@ -123,7 +124,8 @@ def run_validation_pass(trainer, split, step: int) -> dict[str, Any]:
     model = trainer._get_primary_model()
     modes = [(module, module.training) for module in model.modules()]
     random_state = _capture_random_state()
-    # The weights a sample would use: a schedule-free optimizer's evaluation weights, and EMA's.
+    # The weights a sample would use: a schedule-free optimizer's evaluation weights, and EMA's,
+    # without the training adapter.
     optimizer = getattr(trainer, "optimizer", None)
     ema = getattr(trainer, "ema_handler", None)
     optimizer_switched = swapped = False
@@ -135,7 +137,8 @@ def run_validation_pass(trainer, split, step: int) -> dict[str, Any]:
         if ema:
             ema.store_and_swap()
             swapped = True
-        with torch.no_grad():
+        # A training adapter is off here too, and back on in the context's own finally.
+        with torch.no_grad(), training_adapter_off(model):
             per_image = [
                 _image_band_losses(trainer, representative, bands, split_seed)
                 for representative in split.representatives

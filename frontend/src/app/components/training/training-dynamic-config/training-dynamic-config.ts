@@ -1244,6 +1244,7 @@ export class TrainingDynamicConfigComponent {
     try {
       if (event.isDefault) {
         this.resetFormToDefaults();
+        this._reapplyModelDefaults();
         // The reset drops the knob dict back to `{}`; the card re-materializes
         // it so the control never holds a partial config.
         this.adaptiveCard?.refreshFromControl();
@@ -1275,6 +1276,28 @@ export class TrainingDynamicConfigComponent {
         }
       }, 1500);
     }
+  }
+
+  /**
+   * "Default" means the current model's default settings, so after the schema reset the
+   * model's own defaults (`capabilities().defaults`) go back in, and the distillation
+   * controls are made valid again. The selector applies Default by itself on load, often
+   * just after those defaults landed; without this the reset wiped them on first load.
+   * The template guard is lifted for this one call only: Default carries no values of its
+   * own that the model's defaults could clobber.
+   */
+  private _reapplyModelDefaults(): void {
+    const defaults = this.capabilities()?.defaults;
+    if (defaults) {
+      const applying = this._isTemplateApplying;
+      this._isTemplateApplying = false;
+      try {
+        this.applyDefinitionDefaults(defaults);
+      } finally {
+        this._isTemplateApplying = applying;
+      }
+    }
+    this.syncDistillationControls();
   }
 
   resetFormToDefaults() {

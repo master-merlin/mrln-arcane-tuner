@@ -107,9 +107,16 @@ function caps(distillation: DistillationDescriptor | null): ModelCapabilities {
     };
 }
 
+function withDefaults(c: ModelCapabilities, extra: Record<string, unknown>): ModelCapabilities {
+    return { ...c, defaults: { ...c.defaults, ...extra } };
+}
+
 const BY_DEFINITION: Record<string, ModelCapabilities> = {
-    // resolve_capabilities(minimax-h3-image-t2i): adapter + guidance, default adapter.
-    'minimax-h3-image-t2i': caps(descriptor(['adapter', 'contrastive_guidance', 'both', 'none'], 'adapter')),
+    // resolve_capabilities(minimax-h3-image-t2i): adapter + guidance, default adapter; one
+    // ordinary per-definition default besides (max_train_steps), as every family has some.
+    'minimax-h3-image-t2i': withDefaults(caps(descriptor(['adapter', 'contrastive_guidance', 'both', 'none'], 'adapter')), {
+        max_train_steps: 2000,
+    }),
     // A guidance-distilled model without an adapter.
     'cg-only': caps(descriptor(['contrastive_guidance', 'none'], 'contrastive_guidance')),
     'sdxl_base_1.0': caps(null),
@@ -261,6 +268,35 @@ describe('TrainingDynamicConfig: distillation handling', () => {
         select('sdxl_base_1.0');
         const payload = submitted(c);
         for (const key of FIELDS) expect(key in payload).toBe(false);
+    });
+
+    it('the Default template, applied after the model defaults landed, keeps them', () => {
+        // On load the template selector applies "Default" by itself; it used to reset every
+        // control to the schema default, wiping what the model's defaults had just filled in.
+        const { c, select } = build();
+        select('minimax-h3-image-t2i');
+        expect(c.form.get('distillation_handling')?.value).toBe('adapter');
+        expect(c.form.get('max_train_steps')?.value).toBe(2000);
+        c.onTemplateApplied({ config: {}, isDefault: true, auto: true });
+        expect(c.form.get('distillation_handling')?.value).toBe('adapter');
+        expect(c.form.get('distillation_guidance_schedule')?.value).toBe('constant');
+        expect(c.form.get('max_train_steps')?.value).toBe(2000);
+        expect(c.form.get('distillation_handling')?.dirty).toBe(false);
+        expect(submitted(c)['distillation_handling']).toBe('adapter');
+    });
+
+    it('a template of its own still overrides the model defaults', () => {
+        const { c, select } = build();
+        select('minimax-h3-image-t2i');
+        c.onTemplateApplied({
+            config: { distillation_handling: 'none', max_train_steps: 300 } as never,
+            isDefault: false,
+        });
+        expect(c.form.get('distillation_handling')?.value).toBe('none');
+        expect(c.form.get('max_train_steps')?.value).toBe(300);
+        const payload = submitted(c);
+        expect(payload['distillation_handling']).toBe('none');
+        expect(payload['max_train_steps']).toBe(300);
     });
 
     it('switching back to the distilled model keeps a valid choice; an invalid one becomes the default', () => {

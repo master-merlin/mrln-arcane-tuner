@@ -115,6 +115,39 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
                     f"minimax_h3_image: dataset {ds.get('dataset_name')!r} has masking_enabled=True; "
                     "masked training is not supported for this family. Turn masking off for this dataset"
                 )
+        if self._is_the_spilled_probe_setting(quantization):
+            raise ValueError(
+                f"minimax_h3_image: block_swap_config={cfg.get('block_swap_config')} with quantization="
+                f"{quantization!r} swaps 12 of the 50 transformer blocks, the setting the memory probe P3 "
+                "measured as spilled on a 96 GB card (batch 1, 1024 bucket, rank 16, gradient checkpointing "
+                "on): shared GPU memory rose 21 GiB and each step took 3.1 s. Use int8 without block swap "
+                "(probe P1), or bf16 without it (probe P2)"
+            )
+
+    def _is_the_spilled_probe_setting(self, quantization: str) -> bool:
+        """Whether this run is the setting probe P3 measured as spilled; any other setting is allowed.
+
+        P3: bf16, 12 of 50 transformer blocks swapped (the pipeline's ``round(count * pct / 100)``),
+        no other group swapped, batch 1, the 1024 bucket, rank 16, gradient checkpointing on. A
+        setting no probe measured is never refused here; the estimator warns about it instead.
+        """
+        cfg = self.config
+        if quantization != "none":
+            return False
+        counts = {g["name"]: int(g.get("count") or 0) for g in (getattr(self.definition, "block_topology", None) or [])}
+        swapped = {}
+        for name, pct in (cfg.get("block_swap_config") or {}).items():
+            blocks = round(counts.get(name, 0) * int(pct or 0) / 100)
+            if blocks > 0:
+                swapped[name] = blocks
+        resolutions = cfg.get("resolutions") or [cfg.get("resolution") or 1024]
+        return (
+            swapped == {"transformer_blocks": 12}
+            and int(cfg.get("train_batch_size") or 1) == 1
+            and int(cfg.get("network_rank") or 16) == 16
+            and bool(cfg.get("gradient_checkpointing", True))
+            and 1024 in [int(r) for r in resolutions]
+        )
 
     def _create_sampler(self):
         """The 6-step preview sampler when sampling is on (``sample_every_n_steps > 0``)."""

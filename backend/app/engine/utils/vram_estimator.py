@@ -395,8 +395,16 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
     "minimax_h3_image": {
         # The definition ships concrete on-disk model_size_mb (MiniMaxAI/MiniMax-H3-Image at
         # 00dd081e), so this table is the fallback-only path, kept in sync with it. These are
-        # checkpoint sizes, not training peaks: the measured peaks of the int8 and bf16 runs
-        # on a 96 GB card replace the guesswork once the GPU probes have run.
+        # checkpoint sizes, not training peaks.
+        #
+        # Measured peaks (torch allocated; 20-step probes on a 96 GB card, 2026-11-12; batch 1,
+        # the 1024 bucket, rank 16, gradient checkpointing on). The analytic estimate sits 11-17 %
+        # above each, never below (test_vram_estimator_minimax_h3_image):
+        # - P1 int8, no block swap: 35 139 MB, 1.48 s/step. PASS.
+        # - P2 bf16, no block swap: 65 684 MB, 0.97 s/step. PASS.
+        # - P3 bf16, 12 of 50 blocks swapped: 51 452 MB, 3.13 s/step. SPILLED: shared GPU
+        #   memory rose 21 GiB, 6.6 GiB beyond the pinned swap blocks. The trainer refuses
+        #   this setting by name; the estimate alone says it fits.
         #
         # transformer: the vendored MiniMaxH3ImageTransformer2DModel built on the meta device
         # from transformer_diffusers/config.json has 33,125,224,384 parameters

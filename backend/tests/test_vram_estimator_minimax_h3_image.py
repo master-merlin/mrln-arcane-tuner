@@ -17,9 +17,14 @@ refusal). No test here queries the device: the card is a fabricated 97 887 MB on
 
 from __future__ import annotations
 
+import importlib
+import inspect
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+import torch
 
 from app.engine.models.registry import registry
 from app.engine.utils.vram_estimator import VRAMEstimator
@@ -132,3 +137,45 @@ def test_every_setting_no_probe_measured_as_spilled_is_allowed(over):
     trainer = bare_trainer(**_p3(**over))
     trainer._setup_family()
     assert trainer.loader is not None
+
+
+# ── The modules int8 keeps in float32 ─────────────────────────────────────
+
+
+_FIXTURE_CONFIG = (
+    Path(__file__).resolve().parent
+    / "fixtures" / "minimax_h3_image_diffusers_configs" / "transformer_diffusers" / "config.json"
+)
+_KEPT = ("proj_in", "time_embedder", "pdd_proj_out")
+
+
+@pytest.mark.usefixtures("_loaded_registry")
+def test_the_estimator_finds_the_kept_modules_of_the_vendored_transformer():
+    """The definition names the checkpoint's own class (``MiniMaxH3DiTModel``, harvested from
+    ``transformer/config.json``); the estimator must reach the vendored port the loader builds,
+    with the full-size model, so an int8 run charges what the port keeps in float32."""
+    from app.engine.utils.vram_estimator import _primary_kept
+
+    defn = registry.get_definition(DEFINITION_ID)
+    kept = _primary_kept(defn)
+    names = [name for name, _ in kept.params]
+    for module in _KEPT:
+        assert any(n.split(".")[0] == module for n in names), (module, names[:5])
+
+    vendored = importlib.import_module("app.engine.models.families.minimax_h3_image.vendor")
+    cls = vendored.MiniMaxH3ImageTransformer2DModel
+    with torch.device("meta"):
+        reference = cls.from_config(json.loads(_FIXTURE_CONFIG.read_text(encoding="utf-8")))
+    declared = list(cls._keep_in_fp32_modules)
+    want = {n: p.numel() for n, p in reference.named_parameters() if any(m in n.split(".") for m in declared)}
+    assert dict(kept.params) == want
+    # The build from the definition's native keys is the checkpoint's model, parameter for
+    # parameter: a renamed key falls back to the port's default, which must be the checkpoint's.
+    accepted = set(inspect.signature(cls.__init__).parameters)
+    arch = defn.architecture_params
+    native = {k[len("transformer."):]: v for k, v in arch.items() if k.startswith("transformer.")}
+    with torch.device("meta"):
+        built = cls.from_config({k: v for k, v in native.items() if k in accepted})
+    shapes = {n: tuple(p.shape) for n, p in built.named_parameters()}
+    assert shapes == {n: tuple(p.shape) for n, p in reference.named_parameters()}
+    assert sum(p.numel() for p in built.parameters()) == 33_125_224_384

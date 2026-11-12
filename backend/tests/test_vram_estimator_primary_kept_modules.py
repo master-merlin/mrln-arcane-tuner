@@ -167,7 +167,7 @@ def _declaring() -> list[Path]:
 
 def test_the_class_covers_every_family_that_declares_kept_modules():
     families = {_definition(p).family for p in _declaring()}
-    assert {"wan21", "wan22", "wan22_ti2v_5b", "bernini_r", "kandinsky5", "krea2", "minimax_h3", "flux3"} <= families
+    assert {"wan21", "wan22", "wan22_ti2v_5b", "bernini_r", "kandinsky5", "krea2", "minimax_h3", "flux3", "minimax_h3_image"} <= families
 
 
 @pytest.mark.parametrize("path", _declaring(), ids=lambda p: p.stem)

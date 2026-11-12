@@ -14,6 +14,10 @@ Usage::
 
 from __future__ import annotations
 
+import functools
+import importlib
+import inspect
+import json
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -445,7 +449,15 @@ _CALIB_MAX = 4.0
 #: loaded precision in the caching peak: T5/UMT5's declared float32 ``wo``
 #: (about 1 B parameters on an XXL encoder) and its input embedding, which no
 #: backend quantizes (about 1.05 B on UMT5-XXL's 256,384-token vocabulary).
+#: The weights row and the block-swap credit likewise charge what a quantized
+#: transformer keeps unquantized (its ``_keep_in_fp32_modules``) at float32:
+#: 2.38 B parameters on Kandinsky 5 Pro.
 VRAM_FORMULA_VERSION = 5
+
+#: Bytes per parameter of a module the transformer declares in ``_keep_in_fp32_modules``:
+#: diffusers loads it in float32 whatever ``torch_dtype`` the loader asks for, and the
+#: quantization factory leaves it as loaded.
+_KEPT_BPP = 4
 
 
 # ---------------------------------------------------------------------------
@@ -578,6 +590,23 @@ class VRAMEstimator:
             model_bytes = primary_params_b * 1e9 * effective_bpp
             report.model_weights_mb = model_bytes / (1024 * 1024)
 
+        # ── 1a. What a quantized transformer keeps unquantized ───────────
+        # The modules its class declares in ``_keep_in_fp32_modules`` are loaded in
+        # float32 and never quantized; they stay at ``_KEPT_BPP``, the rest is quantized.
+        kept = (
+            _primary_kept(definition)
+            if quant_scheme not in ("none", "bf16") and quant_scheme in _QUANT_BITS
+            else _NO_KEPT
+        )
+        kept_extra_bpp = 0.0
+        if kept.total:
+            full_mb = primary_disk_mb if primary_disk_mb > 0 else primary_params_b * 1e9 * native_bpp / (1024 * 1024)
+            kept_mb = min(kept.total * native_bpp / (1024 * 1024), full_mb)
+            report.model_weights_mb = (full_mb - kept_mb) * (effective_bpp / native_bpp) + kept_mb * (
+                _KEPT_BPP / native_bpp
+            )
+            kept_extra_bpp = _KEPT_BPP - effective_bpp
+
         # ── 1b. Dual-expert (WAN 2.2 MoE) second transformer ─────────────
         # WAN 2.2 is a Mixture-of-Experts: a high-noise + a low-noise expert,
         # each the same size as ``model_weights_mb`` above. How much extra GPU
@@ -607,7 +636,7 @@ class VRAMEstimator:
         # ── 1c. Block swap: swapped blocks live in host RAM ──────────────
         # Additive: a config that swaps nothing subtracts exactly 0.0.
         report.model_weights_mb -= min(
-            _block_swap_credit_mb(definition, config, effective_bpp / native_bpp),
+            _block_swap_credit_mb(definition, config, effective_bpp / native_bpp, kept, kept_extra_bpp),
             report.model_weights_mb,
         )
 
@@ -903,14 +932,22 @@ class VRAMEstimator:
 # ---------------------------------------------------------------------------
 
 
-def _block_swap_credit_mb(definition: Any, config: dict[str, Any], quant_ratio: float) -> float:
+def _block_swap_credit_mb(
+    definition: Any,
+    config: dict[str, Any],
+    quant_ratio: float,
+    kept: _PrimaryKept | None = None,
+    kept_extra_bpp: float = 0.0,
+) -> float:
     """MB of backbone weights that ``block_swap_config`` moves off the device.
 
     ``block_swap_config`` maps a ``block_topology`` group name to a PERCENT of
     that group's blocks; the count is ``round(count * pct / 100)`` — the same
     expression ``PipelineOptimization._configure_block_swapping`` swaps by.
     ``approx_vram_mb`` is the group's stated size of ONE block at the native
-    dtype, so a quantized backbone is credited at ``quant_ratio`` of it.
+    dtype, so a quantized backbone is credited at ``quant_ratio`` of it. A block's
+    share of ``kept`` (the modules a quantized backbone keeps at ``_KEPT_BPP``)
+    leaves with it at that precision: ``kept_extra_bpp`` more bytes per kept parameter.
     """
     swap_config = config.get("block_swap_config") or {}
     if not isinstance(swap_config, dict) or not swap_config:
@@ -927,8 +964,111 @@ def _block_swap_credit_mb(definition: Any, config: dict[str, Any], quant_ratio: 
             continue
         if pct <= 0 or count <= 0 or block_mb <= 0:
             continue
-        credit += min(round(count * pct / 100), count) * block_mb * quant_ratio
+        on_card_mb = block_mb * quant_ratio
+        if kept is not None and kept_extra_bpp:
+            on_card_mb += kept.per_block(str(group.get("attr_path") or ""), count) * kept_extra_bpp / (1024 * 1024)
+        credit += min(round(count * pct / 100), count) * on_card_mb
     return credit
+
+
+@dataclass(frozen=True)
+class _PrimaryKept:
+    """The parameters a transformer keeps unquantized, from a meta-device instance of its class.
+
+    ``params`` is every kept parameter's qualified name with its element count; ``lengths``
+    is the length of every ``ModuleList`` of the instance, by qualified name.
+    """
+
+    params: tuple[tuple[str, int], ...] = ()
+    lengths: tuple[tuple[str, int], ...] = ()
+
+    @property
+    def total(self) -> int:
+        return sum(n for _, n in self.params)
+
+    def per_block(self, attr_path: str, count: int) -> float:
+        """The kept parameters of one block of the ``ModuleList`` at ``attr_path``, on average."""
+        if not attr_path:
+            return 0.0
+        prefix = f"{attr_path}."
+        under = sum(n for name, n in self.params if name.startswith(prefix))
+        blocks = dict(self.lengths).get(attr_path) or count
+        return under / blocks if blocks > 0 else 0.0
+
+
+_NO_KEPT = _PrimaryKept()
+
+
+def _transformer_class(family: str, name: str) -> type | None:
+    """The transformer class ``name``: diffusers' own, else the family's vendored export."""
+    try:
+        import diffusers
+
+        cls = getattr(diffusers, name, None)
+    except Exception:
+        cls = None
+    if cls is None:
+        try:
+            cls = getattr(importlib.import_module(f"app.engine.models.families.{family}.vendor"), name, None)
+        except Exception:
+            cls = None
+    return cls if isinstance(cls, type) else None
+
+
+def _primary_kept(definition: Any) -> _PrimaryKept:
+    """What the definition's transformer keeps unquantized under ``QuantizationFactory``.
+
+    The class is ``transformer._class_name`` from ``architecture_params``, built on the meta
+    device from the ``transformer.*`` config there (keys the class does not take are left out,
+    and a key the definition does not state takes the class default). The kept modules are
+    found by ``fp32_module_names``, the rule the factory skips by, and by diffusers' own loading
+    rule for a bare parameter. A class that declares no
+    kept module, or that cannot be found or built, keeps nothing.
+    """
+    arch = getattr(definition, "architecture_params", {}) or {}
+    name = arch.get("transformer._class_name")
+    family = getattr(definition, "family", None) or ""
+    if not isinstance(name, str) or not name:
+        return _NO_KEPT
+    cls = _transformer_class(family, name)
+    if cls is None or not (getattr(cls, "_keep_in_fp32_modules", None) or getattr(cls, "_keep_in_fp32_modules_strict", None)):
+        return _NO_KEPT
+    config = {k[len("transformer."):]: v for k, v in arch.items() if k.startswith("transformer.")}
+    try:
+        accepted = set(inspect.signature(cls.__init__).parameters)
+        key = json.dumps({k: v for k, v in config.items() if k in accepted}, sort_keys=True, default=str)
+    except (TypeError, ValueError):
+        return _NO_KEPT
+    return _meta_kept(cls, key)
+
+
+@functools.lru_cache(maxsize=64)
+def _meta_kept(cls: type, config_json: str) -> _PrimaryKept:
+    try:
+        import torch
+        from torch import nn
+
+        from app.engine.factories.quantization import fp32_module_names
+
+        with torch.device("meta"):
+            model = cls.from_config(json.loads(config_json))
+        # A parameter is kept when the factory skips its module, or when a declared name is a
+        # whole segment of its own path: diffusers loads such a parameter in float32 even when
+        # it is no module's (WAN's ``scale_shift_table``), and no backend quantizes a bare one.
+        kept_modules = fp32_module_names(model)
+        declared = [str(n) for n in (getattr(cls, "_keep_in_fp32_modules", None) or []) if n]
+        params = tuple(
+            (name, p.numel())
+            for name, p in model.named_parameters()
+            if name.rpartition(".")[0] in kept_modules or any(m in name.split(".") for m in declared)
+        )
+        lengths = tuple(
+            (name, len(module)) for name, module in model.named_modules() if name and isinstance(module, nn.ModuleList)
+        )
+        return _PrimaryKept(params, lengths)
+    except Exception as exc:  # the estimator must answer for every input
+        logger.debug("vram_estimate_kept_inventory_failed", cls=getattr(cls, "__name__", str(cls)), error=str(exc))
+        return _NO_KEPT
 
 
 def _latent_frames_for_rule(num_frames: int, rule: str | None, temporal_ratio: int) -> int:

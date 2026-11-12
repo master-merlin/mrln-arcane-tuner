@@ -821,10 +821,16 @@ def test_moss_image_definition_defaults():
     for definition_id in (BASE_ID, SFT_ID):
         assert resolve_capabilities(ModelRegistry.get_definition(definition_id))["capabilities"][
             "seed_prompt_defaults"] is True, f"{MARK}: {definition_id} capabilities must expose the opt-in"
+    # Other families may opt in too, but only through their own key: the capability is exactly
+    # what each definition states, and a definition that states nothing never gets it.
     others = [d for d in ModelRegistry._definitions.values() if d.family != "moss_image"]
-    assert others and not [d.id for d in others
-                           if resolve_capabilities(d)["capabilities"]["seed_prompt_defaults"]], (
-        f"{MARK}: no other definition may opt in")
+    exposed = {d.id: resolve_capabilities(d)["capabilities"]["seed_prompt_defaults"] for d in others}
+    stated = {d.id: (d.architecture_params or {}).get("sampling.seed_prompt_defaults") is True
+              for d in others}
+    assert exposed == stated, f"{MARK}: the capability must follow each definition's own opt-in"
+    silent = [d.id for d in others if "sampling.seed_prompt_defaults" not in (d.architecture_params or {})]
+    assert silent and not [i for i in silent if exposed[i]], (
+        f"{MARK}: a definition without sampling.seed_prompt_defaults must not opt in")
 
 
 # ── scenario 12: MOSS's own text recipe ───────────────────────────────────────────────────────────

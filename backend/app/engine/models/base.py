@@ -460,6 +460,46 @@ class BaseTrainingConfig(BaseModel):
         from app.engine.strategies.timestep_sampling import validate_fixed_sigmas
 
         return validate_fixed_sigmas(value)
+
+    # ── Distillation handling (definitions with a ``distillation`` block only) ──
+    # ``None`` = the definition's default (``distillation.default_handling``; the guidance
+    # target from ``distillation.guidance_scale``; the ``constant`` schedule). The one
+    # resolver is ``core/definitions.resolve_distillation``, which refuses at setup a value
+    # the definition does not allow. Gated by ``supports_distillation_handling`` in
+    # ``archetypes._FIELD_RULES``, so a model that is not distilled never shows them.
+    distillation_handling: Literal["adapter", "contrastive_guidance", "both", "none"] | None = Field(
+        None,
+        title="Distillation handling",
+        description=(
+            "How training compensates for a distilled model: a frozen training adapter, "
+            "contrastive guidance, both, or none (empty = the model's default)"
+        ),
+        json_schema_extra={"group": "STRATEGY"},
+    )
+    distillation_guidance_scale: float | None = Field(
+        None,
+        title="Guidance target",
+        description=(
+            "Contrastive guidance: the target is u + s*(v - u), u the blank-prompt prediction; "
+            "1 trains as without guidance (empty = the model's default)"
+        ),
+        json_schema_extra={
+            "group": "STRATEGY",
+            "depends_on": "distillation_handling:contrastive_guidance,both",
+            "min": 1.0,
+            "max": 10.0,
+            "step": 0.1,
+        },
+    )
+    distillation_guidance_schedule: Literal["constant", "sigma"] | None = Field(
+        None,
+        title="Guidance schedule",
+        description="constant: s at every noise level; sigma: 1 + (s - 1) * sigma, weaker toward clean (empty = constant)",
+        json_schema_extra={
+            "group": "STRATEGY",
+            "depends_on": "distillation_handling:contrastive_guidance,both",
+        },
+    )
     logit_normal_mu: float = Field(
         0.0,
         description="Mean of the logit-normal distribution",

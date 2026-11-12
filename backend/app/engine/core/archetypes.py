@@ -143,6 +143,14 @@ FLOW_TIMESTEP_FIELDS: tuple[str, ...] = tuple(
     if name in _FLOW_TIMESTEP_NAMES or name.startswith(_FLOW_TIMESTEP_PREFIXES)
 )
 
+# The run-config fields of distillation handling, shown only for a definition that declares a
+# ``distillation`` block (``supports_distillation_handling``, set per definition below).
+DISTILLATION_FIELDS: tuple[str, ...] = (
+    "distillation_handling",
+    "distillation_guidance_scale",
+    "distillation_guidance_schedule",
+)
+
 # Maps a config field -> the capability flag that gates it + a human reason.
 _FIELD_RULES: list[tuple[str, str, str]] = [
     ("cache_latents", "has_vae", "pixel-space model — no VAE/latents to cache"),
@@ -279,6 +287,11 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
         )
         for name in FLOW_TIMESTEP_FIELDS
     ),
+    # ── Distillation handling (a definition's ``distillation`` block) ─────
+    *(
+        (name, "supports_distillation_handling", "this model is not distilled — it trains without a distillation handling")
+        for name in DISTILLATION_FIELDS
+    ),
 ]
 
 
@@ -346,6 +359,43 @@ def _timestep_defaults(definition) -> dict:
     return derived
 
 
+def _distillation_descriptor(definition) -> dict | None:
+    """What the Training form needs to offer a definition's distillation handling, or None
+    for a definition that is not distilled: the handlings it allows (in display order), the
+    default one, the guidance target each guidance handling starts from, and the schedules."""
+    from app.engine.core.definitions import DEFAULT_GUIDANCE_SCHEDULE, GUIDANCE_SCHEDULES, DistillationSpec
+
+    spec = getattr(definition, "distillation", None)
+    if not isinstance(spec, DistillationSpec):
+        return None
+    handlings = spec.allowed_handlings()
+    return {
+        "step": spec.step,
+        "guidance": spec.guidance,
+        "handlings": handlings,
+        "default_handling": spec.default_handling,
+        "has_training_adapter": spec.training_adapter is not None,
+        "guidance_scale_defaults": {
+            h: spec.default_guidance_scale(h) for h in handlings if h in ("contrastive_guidance", "both")
+        },
+        "guidance_schedules": list(GUIDANCE_SCHEDULES),
+        "default_guidance_schedule": DEFAULT_GUIDANCE_SCHEDULE,
+    }
+
+
+def _distillation_defaults(descriptor: dict | None) -> dict:
+    """The form defaults of a distilled definition: its default handling and the constant
+    schedule, and the guidance target when the default handling uses guidance."""
+    if descriptor is None:
+        return {}
+    handling = descriptor["default_handling"]
+    out = {"distillation_handling": handling, "distillation_guidance_schedule": descriptor["default_guidance_schedule"]}
+    scale = descriptor["guidance_scale_defaults"].get(handling)
+    if scale is not None:
+        out["distillation_guidance_scale"] = scale
+    return out
+
+
 def resolve_capabilities(definition) -> dict:
     """Merge archetype template -> per-model YAML defaults -> family capability
     overrides into the descriptor the Training UI consumes. Additive/read-only."""
@@ -386,7 +436,17 @@ def resolve_capabilities(definition) -> dict:
     caps["supports_augmentation"] = not is_edit and not is_audio
     caps["supports_masking_variants"] = not is_edit and not is_audio
 
-    merged = {**arch.config_defaults, **(definition.defaults or {}), **_timestep_defaults(definition)}
+    distillation = _distillation_descriptor(definition)
+    caps["supports_distillation_handling"] = distillation is not None
+    if distillation is not None:
+        caps["distillation"] = distillation
+
+    merged = {
+        **arch.config_defaults,
+        **(definition.defaults or {}),
+        **_timestep_defaults(definition),
+        **_distillation_defaults(distillation),
+    }
     defaults = {k: _coerce_number(v) for k, v in merged.items()}
     return {
         "archetype": arch.id,

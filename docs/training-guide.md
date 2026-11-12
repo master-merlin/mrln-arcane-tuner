@@ -507,6 +507,9 @@ this list.
 <!-- schema-explainers:STRATEGY start -->
 - **Bucketing Mode** (`bucketing_mode`) — How images are assigned to resolution buckets. Placeholder: {bucketing_mode} *(schema: Kohya: single best resolution per image. Multi: image appears at every qualifying resolution (more latent diversity).)*. Default `kohya` (choices: `kohya`, `multi`).
 - **Control Resolution** (`control_resolution`) — From the schema: Base resolution for control images in paired edit training (0 = follow the target's bucket). Qwen-Edit recommends 1024. Default `0` (range 0 to 2048, step 64).
+- **Guidance target** (`distillation_guidance_scale`) — From the schema: Contrastive guidance: the target is u + s*(v - u), u the blank-prompt prediction; 1 trains as without guidance (empty = the model's default). Default `None` (range 1.0 to 10.0, step 0.1).
+- **Guidance schedule** (`distillation_guidance_schedule`) — From the schema: constant: s at every noise level; sigma: 1 + (s - 1) * sigma, weaker toward clean (empty = constant). Default `None`.
+- **Distillation handling** (`distillation_handling`) — From the schema: How training compensates for a distilled model: a frozen training adapter, contrastive guidance, both, or none (empty = the model's default). Default `None`.
 - **Fixed Sigmas** (`fixed_sigmas`) — From the schema: The sigmas fixed_sigmas draws from, uniformly (each in (0, 1]; a model distilled to a fixed schedule trains on its levels). Default `None`.
 - **Flux Shift Base** (`flux_shift_base`) — Shift factor applied to low-resolution images. Placeholder: {flux_shift_base} *(schema: Base shift for low-res images)*. Default `0.5` (range 0.0 to 2.0, step 0.1).
 - **Flux Shift Max** (`flux_shift_max`) — Shift factor applied to high-resolution images. Placeholder: {flux_shift_max} *(schema: Max shift for high-res images)*. Default `1.16` (range 0.5 to 3.0, step 0.1).

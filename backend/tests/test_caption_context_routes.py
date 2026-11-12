@@ -50,8 +50,14 @@ def test_definitions_carry_frame_rule(client):
     # LANE-92 row 5.1 / REQUEST-15: this route excludes definitions carrying an
     # `unavailable_reason`, so the ungated H3 definition is served here — with
     # its own rule, from the real route (row 4.3 could only inject it).
-    h3 = {d["id"]: d["frame_rule"] for d in body if d["id"].startswith("minimax-h3-")}
+    # Selected by family, not by id prefix: the image family's ids share the
+    # `minimax-h3-` prefix and must serve no rule at all.
+    h3 = {d["id"]: d["frame_rule"] for d in body if d["family"] == "minimax_h3"}
     assert h3 == {"minimax-h3-t2va": "17n+5"}, h3
+    h3_image = {
+        d["id"]: d["frame_rule"] for d in body if d["family"] == "minimax_h3_image"
+    }
+    assert h3_image == {"minimax-h3-image-t2i": None}, h3_image
 
 
 def test_definitions_carry_the_ingestion_clock(client):

@@ -39,6 +39,55 @@ _FALLBACK_MAP: dict[str, list[str]] = {
 }
 
 
+def _declared_fp32(model: nn.Module) -> list[tuple[str, ...]]:
+    """The names ``model`` declares in either attribute, each as its dotted segments."""
+    names: set[str] = set()
+    for attr in ("_keep_in_fp32_modules", "_keep_in_fp32_modules_strict"):
+        declared = getattr(model, attr, None)
+        if isinstance(declared, (list, tuple, set, frozenset)):
+            names.update(str(n) for n in declared if n)
+    return [tuple(name.split(".")) for name in sorted(names)]
+
+
+def _holds(segments: list[str], run: tuple[str, ...]) -> bool:
+    """True if ``run`` is a contiguous run of whole ``segments``."""
+    width = len(run)
+    return any(tuple(segments[i:i + width]) == run for i in range(len(segments) - width + 1))
+
+
+def fp32_module_names(model: nn.Module) -> frozenset[str]:
+    """The qualified name of every submodule ``model`` declares float32, with all their descendants.
+
+    diffusers' and transformers' ``_keep_in_fp32_modules`` (and transformers'
+    ``_keep_in_fp32_modules_strict``) name the modules each library keeps in float32, because the
+    model is not accurate without it; both libraries' own quantizers leave them unconverted. A name
+    matches whole segments of a dotted path, as diffusers matches it: ``time_embedder`` keeps
+    ``time_embedder.linear_1``, never ``pre_time_embedder``. A dotted name (``gate.weight``, as
+    some transformers models declare) matches the same segments in a row, and names the module
+    that holds such a parameter.
+    """
+    runs = _declared_fp32(model)
+    if not runs:
+        return frozenset()
+    kept: set[str] = set()
+    for name, module in model.named_modules():
+        if not name:
+            continue
+        segments = name.split(".")
+        if any(_holds(segments, run) for run in runs) or any(
+            len(run) > 1 and run[-1] == param and tuple(segments[-(len(run) - 1):]) == run[:-1]
+            for param, _ in module.named_parameters(recurse=False)
+            for run in runs
+        ):
+            kept.add(name)
+    # Every descendant of a kept module, whichever way the module matched.
+    for name, _ in model.named_modules():
+        parts = name.split(".")
+        if any(".".join(parts[:i]) in kept for i in range(1, len(parts))):
+            kept.add(name)
+    return frozenset(kept)
+
+
 def _is_blackwell() -> bool:
     """True if the active CUDA device is an NVIDIA Blackwell GPU.
 
@@ -155,7 +204,14 @@ class QuantizationFactory:
         param_count = sum(p.numel() for p in module.parameters())
         logger.info("quantizing_model", backend=resolved_backend, scheme=resolved_scheme, params=param_count)
 
-        quantized = backend.quantize(module, resolved_scheme, device=device)
+        # The modules the model declares float32 stay as they are (fp32_module_names).
+        skip = fp32_module_names(module)
+        if skip:
+            kept = sorted(name for name in skip if "." not in name or name.rsplit(".", 1)[0] not in skip)
+            logger.info("quantization_kept_fp32_modules", scheme=resolved_scheme, modules=kept)
+            quantized = backend.quantize(module, resolved_scheme, device=device, skip=skip)
+        else:
+            quantized = backend.quantize(module, resolved_scheme, device=device)
         wrapped = trainable_backward.make_quantized_linears_trainable(quantized)
         if wrapped:
             logger.info("quantized_layers_dequantized_backward", scheme=resolved_scheme, layers=wrapped)
@@ -410,6 +466,27 @@ class QuantizationFactory:
         return None if other is None else type(other).__name__
 
     @staticmethod
+    def _quantized_fp32_module(module: nn.Module, state_dict: dict[str, Any]) -> str | None:
+        """The first entry key under a module ``module`` declares float32 that ``quantize`` would not
+        have written (a quantized tensor, or a key the plain module lacks), else None.
+
+        Builds before 2026-11 quantized those modules like any other: such an entry is stale.
+        """
+        skip = fp32_module_names(module)
+        if not skip:
+            return None
+        plain = module.state_dict()
+        for key, value in state_dict.items():
+            owner = key
+            while "." in owner:
+                owner = owner.rsplit(".", 1)[0]
+                if owner in skip:
+                    if key not in plain or (isinstance(value, torch.Tensor) and type(value) is not torch.Tensor):
+                        return f"{key} ({type(value).__name__})"
+                    break
+        return None
+
+    @staticmethod
     def load_quantized(
         module: nn.Module,
         cache_path: str,
@@ -490,6 +567,8 @@ class QuantizationFactory:
                 )
 
             stale = QuantizationFactory._stale_representation(scheme, state_dict)
+            if stale is None:
+                stale = QuantizationFactory._quantized_fp32_module(module, state_dict)
             if stale is not None:
                 logger.warning(
                     "quantized_cache_stale_representation", path=cache_path, scheme=scheme, found=stale

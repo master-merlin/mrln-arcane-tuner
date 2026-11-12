@@ -1,3 +1,5 @@
+from collections.abc import Collection
+
 import torch
 import torch.nn as nn
 
@@ -38,6 +40,12 @@ try:
 except Exception:  # noqa: BLE001 — see the note above
     Int8Tensor = None
 
+try:  # quantize_'s own default filter (every Linear, once), extended by _filter
+    from torchao.quantization.quant_api import _is_linear as _default_filter
+except Exception:  # noqa: BLE001 — see the note above
+    def _default_filter(layer: nn.Module, fqn: str) -> bool:
+        return isinstance(layer, nn.Linear)
+
 from ..quantization_base import QuantizationBase
 from app.core.logger import get_logger
 
@@ -50,20 +58,34 @@ def _nvfp4_quantizable(module: nn.Module, fqn: str) -> bool:
     return isinstance(module, nn.Linear) and all(d % _NVFP4_BLOCK == 0 for d in module.weight.shape)
 
 
-def _quantize_in_bf16(module: nn.Module, config: object) -> None:
+def _filter(skip: Collection[str], base=None) -> dict:
+    """``quantize_``'s ``filter_fn`` as keyword arguments: ``base`` (torchao's own default when
+    None) minus the modules in ``skip`` (``QuantizationFactory`` passes the ones the model declares
+    float32). Without a skip it is ``base`` itself, so every call quantizes as it did before."""
+    if not skip:
+        return {} if base is None else {"filter_fn": base}
+    first = _default_filter if base is None else base
+
+    def keep(layer: nn.Module, fqn: str) -> bool:
+        return fqn not in skip and bool(first(layer, fqn))
+
+    return {"filter_fn": keep}
+
+
+def _quantize_in_bf16(module: nn.Module, config: object, skip: Collection[str] = ()) -> None:
     """``quantize_`` for a layout that takes bf16 weights only, in a model of any dtype.
 
     Each ``Linear`` of another dtype goes to bf16 first. One the config then leaves unquantized
     (int4 skips a layer whose in_features its group size does not divide) goes back to its own
     dtype, so only quantized layers change dtype; their forward casts at the boundary
-    (trainable_backward._forward).
+    (trainable_backward._forward). A layer in ``skip`` is never touched.
     """
     cast: dict[str, torch.dtype] = {}
     for name, layer in module.named_modules():
-        if isinstance(layer, nn.Linear) and layer.weight.dtype != torch.bfloat16:
+        if isinstance(layer, nn.Linear) and name not in skip and layer.weight.dtype != torch.bfloat16:
             cast[name] = layer.weight.dtype
             layer.to(torch.bfloat16)
-    quantize_(module, config)
+    quantize_(module, config, **_filter(skip))
     for name, dtype in cast.items():
         layer = module.get_submodule(name)
         if type(layer.weight) is nn.Parameter and type(layer.weight.data) is torch.Tensor:
@@ -117,8 +139,10 @@ class TorchAOBackend(QuantizationBase):
         return major >= 8
 
     @classmethod
-    def quantize(cls, module: nn.Module, scheme: str, device: str | None = None) -> nn.Module:
-        """Applies torchao quantization in-place."""
+    def quantize(
+        cls, module: nn.Module, scheme: str, device: str | None = None, skip: Collection[str] = ()
+    ) -> nn.Module:
+        """Applies torchao quantization in-place; the modules named in ``skip`` stay as they are."""
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         if not cls.is_available(scheme):
@@ -134,22 +158,22 @@ class TorchAOBackend(QuantizationBase):
             # PyTorch's own tinygemm kernel. The default "plain" packing needs mslk, which has no
             # Windows build; tile-packed runs everywhere a card does. Its backward comes from
             # trainable_backward, wired in by QuantizationFactory. It takes bf16 weights only.
-            _quantize_in_bf16(module, Int4WeightOnlyConfig(int4_packing_format="tile_packed_to_4d"))
+            _quantize_in_bf16(module, Int4WeightOnlyConfig(int4_packing_format="tile_packed_to_4d"), skip)
         elif scheme == "int8":
             # Version 2 is Int8Tensor: torchao 0.18's default, asked for so 0.17 makes the same.
-            quantize_(module, Int8WeightOnlyConfig(version=2))
+            quantize_(module, Int8WeightOnlyConfig(version=2), **_filter(skip))
         elif scheme == "int8_dynamic":
             # Int8Tensor with act_quant_kwargs; its backward comes from trainable_backward.
-            quantize_(module, Int8DynamicActivationInt8WeightConfig(version=2))
+            quantize_(module, Int8DynamicActivationInt8WeightConfig(version=2), **_filter(skip))
         elif scheme == "fp8":
-            quantize_(module, Float8WeightOnlyConfig())
+            quantize_(module, Float8WeightOnlyConfig(), **_filter(skip))
         elif scheme == "fp8_dynamic":
-            quantize_(module, Float8DynamicActivationFloat8WeightConfig())
+            quantize_(module, Float8DynamicActivationFloat8WeightConfig(), **_filter(skip))
         elif scheme == "nvfp4":
             # Weight-only NVFP4: its tensor dequantizes in the matmul, so it trains as it is. It
             # raises on a weight whose dims 16 does not divide; such a layer stays unquantized, as
             # int4 and fp8_dynamic leave theirs.
-            quantize_(module, NVFP4WeightOnlyConfig(), filter_fn=_nvfp4_quantizable)
+            quantize_(module, NVFP4WeightOnlyConfig(), **_filter(skip, base=_nvfp4_quantizable))
         else:
             raise ValueError(f"Unknown torchao scheme: {scheme}")
 

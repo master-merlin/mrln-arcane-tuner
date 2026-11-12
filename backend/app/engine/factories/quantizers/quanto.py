@@ -1,3 +1,6 @@
+import glob
+from collections.abc import Collection
+
 import torch
 import torch.nn as nn
 
@@ -57,8 +60,11 @@ class QuantoBackend(QuantizationBase):
         return True
 
     @classmethod
-    def quantize(cls, module: nn.Module, scheme: str, device: str | None = None) -> nn.Module:
-        """Applies Hugging Face's optimum-quanto quantization in-place."""
+    def quantize(
+        cls, module: nn.Module, scheme: str, device: str | None = None, skip: Collection[str] = ()
+    ) -> nn.Module:
+        """Applies Hugging Face's optimum-quanto quantization in-place; the modules named in
+        ``skip`` stay as they are."""
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         if not cls.is_available(scheme):
@@ -86,7 +92,9 @@ class QuantoBackend(QuantizationBase):
              raise ValueError(f"Unknown quanto scheme: {scheme}")
 
         # Quanto modifies the graph in place and requires freezing.
-        quantize(module, weights=qtype)
+        # quanto's exclude takes fnmatch patterns; each name is escaped so it matches only itself.
+        exclude = [glob.escape(name) for name in sorted(skip)] or None
+        quantize(module, weights=qtype, exclude=exclude)
         freeze(module)
 
         return module

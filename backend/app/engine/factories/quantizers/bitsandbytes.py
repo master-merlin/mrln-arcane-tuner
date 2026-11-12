@@ -1,3 +1,5 @@
+from collections.abc import Collection
+
 import torch
 import torch.nn as nn
 
@@ -51,27 +53,32 @@ class BitsAndBytesBackend(QuantizationBase):
         return major >= 7
 
     @classmethod
-    def quantize(cls, module: nn.Module, scheme: str, device: str | None = None) -> nn.Module:
-        """Applies bitsandbytes NF4 quantization in-place via PyTorch swapping."""
+    def quantize(
+        cls, module: nn.Module, scheme: str, device: str | None = None, skip: Collection[str] = ()
+    ) -> nn.Module:
+        """Applies bitsandbytes NF4 quantization in-place via PyTorch swapping; the modules named
+        in ``skip`` stay as they are."""
         device = device or ("cuda" if torch.cuda.is_available() else "cpu")
 
         if not cls.is_available(scheme):
              logger.warning("bitsandbytes_unavailable", scheme=scheme)
              return module
-             
+
         logger.info("quantizing_bitsandbytes", scheme=scheme)
 
         if scheme == "nf4":
-             module = cls._quantize_nf4(module, device)
+             module = cls._quantize_nf4(module, device, skip)
         else:
              raise ValueError(f"Unknown bitsandbytes scheme: {scheme}")
 
         return module
-        
+
     @classmethod
-    def _quantize_nf4(cls, module: nn.Module, device: str) -> nn.Module:
+    def _quantize_nf4(cls, module: nn.Module, device: str, skip: Collection[str] = (), prefix: str = "") -> nn.Module:
         """Recursively replaces Linear and Conv1D layers with NF4 bnb layers."""
         for name, child in module.named_children():
+            if f"{prefix}{name}" in skip:
+                continue  # a module the model keeps in float32, with everything under it
             if isinstance(child, nn.Linear):
                 in_features = child.in_features
                 out_features = child.out_features
@@ -90,7 +97,7 @@ class BitsAndBytesBackend(QuantizationBase):
                 # Optionally handle Conv2D swapping if needed (usually ignored in LoRA training)
                 pass
             else:
-                cls._quantize_nf4(child, device)
+                cls._quantize_nf4(child, device, skip, f"{prefix}{name}.")
 
 
         return module.to(device)

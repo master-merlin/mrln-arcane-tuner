@@ -37,6 +37,16 @@ components:
     type: diffusers
     params: {}
 control_inputs: 0
+distillation:
+  step: true
+  guidance: true
+  guidance_scale: 3.5
+  training_adapter:
+    repo: ostris/minimax_h3_training_adapter
+    revision: e4e119caa391053286145e48ebbaf0e0c00293d3
+    file: minimax_h3_image_training_adapter_v1.safetensors
+    sha256: 45a5d60d7dfb008461d9546a6849d8d41bd00fe45849bf2d525a9db5ed68bb60
+  default_handling: adapter
 detected_precision:
   text_encoder: torch.bfloat16
   vae: torch.float32

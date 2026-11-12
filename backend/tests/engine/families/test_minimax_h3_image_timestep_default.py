@@ -13,6 +13,10 @@ run the path the app runs:
 
 An unset field reaches the trainer as ``fixed_sigmas`` with the 6-value list; an explicit
 ``logit_normal`` reaches it untouched. Nothing loads weights or spawns a process.
+
+The shipped definition's distillation default is its training adapter, so ``setup()`` fetches
+and checks the pinned file. The fetch is stubbed here (no test reaches the network); the
+stub records what ``setup()`` asked for, so the shipped default is still the one exercised.
 """
 
 from __future__ import annotations
@@ -40,6 +44,24 @@ class _RecordingPlugin:
     def start_training(self, config):
         self.launched.append(dict(config))
         return object()
+
+
+_STUB_ADAPTER_PATH = "stub/minimax_h3_image_training_adapter_v1.safetensors"
+
+
+@pytest.fixture(autouse=True)
+def adapter_fetches(monkeypatch):
+    """Stands in for the pinned adapter download: records each spec, returns a fixed path."""
+    from app.engine.core import training_adapter
+
+    fetched: list = []
+
+    def _fetch(spec, *, local_files_only=False):
+        fetched.append(spec)
+        return _STUB_ADAPTER_PATH
+
+    monkeypatch.setattr(training_adapter, "fetch_verified", _fetch)
+    return fetched
 
 
 @pytest.fixture
@@ -89,6 +111,20 @@ def test_an_unset_timestep_setting_reaches_the_trainer_as_the_family_default(cli
     trainer = _through_the_app(client, definition, _job_config())
     assert trainer.config["timestep_sampling"] == "fixed_sigmas"
     assert trainer.config["fixed_sigmas"] == H3_IMAGE_SIGMAS
+
+
+def test_the_shipped_distillation_default_fetches_the_pinned_adapter_at_setup(
+    client, definition, adapter_fetches
+):
+    trainer = _through_the_app(client, definition, _job_config())
+    assert trainer.distillation.handling == "adapter"
+    assert adapter_fetches == [definition.distillation.training_adapter]
+    spec = adapter_fetches[0]
+    assert spec.repo == "ostris/minimax_h3_training_adapter"
+    assert spec.revision == "e4e119caa391053286145e48ebbaf0e0c00293d3"
+    assert spec.file == "minimax_h3_image_training_adapter_v1.safetensors"
+    assert spec.sha256 == "45a5d60d7dfb008461d9546a6849d8d41bd00fe45849bf2d525a9db5ed68bb60"
+    assert trainer._training_adapter_path == _STUB_ADAPTER_PATH
 
 
 def test_an_explicit_logit_normal_reaches_the_trainer_untouched(client, definition):

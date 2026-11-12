@@ -244,6 +244,11 @@ class PipelineTrainMixin:
         # Target (family hook)
         target = self.compute_target(prepared_latents, prepared_noise, timesteps)
 
+        # Contrastive guidance (distillation handling): the target becomes u + s*(v - u),
+        # u the blank-prompt prediction on this very noisy_input and timesteps. No-op
+        # otherwise, and for a step where every item trains at s = 1.
+        target = self._contrastive_guidance_target(noisy_input, timesteps, pred, target, batch)
+
         # Loss — family hook allows full override (e.g. pixel-space
         # families like HiDream-O1 that bypass the latent/noise path
         # and compute their own recipe loss in forward_pass).
@@ -252,6 +257,69 @@ class PipelineTrainMixin:
             loss, timesteps, noise, prepared_latents, prepared_noise,
             noisy_input, pred, target,
         )
+
+    def _contrastive_guidance_target(
+        self,
+        noisy_input: torch.Tensor,
+        timesteps: torch.Tensor,
+        pred: Any,
+        target: Any,
+        batch: dict[str, Any],
+    ) -> Any:
+        """The target with contrastive guidance on (``core/contrastive_guidance.py``), else
+        ``target`` itself.
+
+        The blank pass is the family's own ``forward_pass`` under no_grad, on the grad
+        pass's ``noisy_input`` and ``timesteps`` (so the same sigma and, for a model with
+        per-step heads, the same head), with the blank-prompt embedding; the training
+        adapter, when one is attached, is on in it as in the grad pass. ``s_eff`` is 1 for
+        every item the batch's caption-dropout mask marks. A step where every item trains at
+        ``s_eff == 1`` returns ``target`` unchanged and runs no blank pass."""
+        resolved = getattr(self, "distillation", None)
+        if resolved is None or not resolved.uses_contrastive_guidance:
+            return target
+        from app.engine.core.contrastive_guidance import guidance_scales, guided_target
+
+        if not (
+            isinstance(pred, torch.Tensor)
+            and isinstance(target, torch.Tensor)
+            and pred.shape == target.shape
+        ):
+            raise ValueError(
+                f"{type(self).__name__}: contrastive guidance needs the prediction and the target "
+                f"as tensors of one shape, got {type(pred).__name__} "
+                f"{tuple(getattr(pred, 'shape', ()))} and {type(target).__name__} "
+                f"{tuple(getattr(target, 'shape', ()))}; set distillation_handling to adapter or none"
+            )
+        batch_size = target.shape[0]
+        sigma = self.noise_fraction(timesteps) if resolved.guidance_schedule == "sigma" else None
+        s_eff = guidance_scales(
+            resolved.guidance_scale,
+            resolved.guidance_schedule,
+            batch_size,
+            sigma=sigma,
+            dropped=batch.get("caption_dropped"),
+        )
+        if bool((s_eff == 1.0).all()):
+            return target
+        blank_text = self._blank_text_embeddings(batch_size)
+        with torch.no_grad():
+            blank = self.forward_pass(noisy_input, timesteps, blank_text, batch)
+        if not isinstance(blank, torch.Tensor) or blank.shape != target.shape:
+            raise ValueError(
+                f"{type(self).__name__}: the blank-prompt prediction has shape "
+                f"{tuple(getattr(blank, 'shape', ()))}, the target {tuple(target.shape)}"
+            )
+        return guided_target(blank, target, s_eff)
+
+    def _blank_text_embeddings(self, batch_size: int) -> Any:
+        """The blank prompt's embeddings for a batch of ``batch_size``, through the family's
+        own text path, encoded once per job (per batch size) and kept."""
+        cache = self.__dict__.setdefault("_contrastive_blank_embeddings", {})
+        if batch_size not in cache:
+            dtype = getattr(self, "autocast_dtype", None) or torch.float32
+            cache[batch_size] = self.encode_text([""] * batch_size, dtype, batch=None)
+        return cache[batch_size]
 
     def _hessian_for_step(
         self,

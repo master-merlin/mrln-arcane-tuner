@@ -170,6 +170,10 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
     def compute_target(self, latents: torch.Tensor, noise: torch.Tensor, timesteps: torch.Tensor) -> torch.Tensor:
         return self.driver.compute_target(latents, noise, timesteps)
 
+    def noise_fraction(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """Contrastive guidance's sigma: ``1 - t`` on this family's clock."""
+        return self.driver.noise_fraction(timesteps)
+
     # ── Data ──────────────────────────────────────────────────────────────
 
     async def prepare_data(self):

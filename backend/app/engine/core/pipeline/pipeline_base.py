@@ -285,6 +285,17 @@ class PipelineBaseMixin(BaseTrainer):
         """
         return self.driver.prepare_noise(noise)
 
+    def noise_fraction(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """The noise fraction sigma in ``[0, 1]`` (1 = pure noise) of each of ``timesteps``,
+        on this family's own clock (0-1000, sigma itself, or ``1 - sigma``).
+
+        Contrastive guidance's ``sigma`` schedule reads it. The base pipeline does not know a
+        family's clock, so it raises; ``setup()`` refuses the ``sigma`` schedule for a family
+        that does not implement it (``constant`` needs no sigma)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement noise_fraction(timesteps): its clock is unknown"
+        )
+
     def compute_loss_weight(self, timesteps: torch.Tensor) -> torch.Tensor | None:
         """Optionally return per-sample loss weights (e.g. Min-SNR gamma).
 
@@ -492,6 +503,15 @@ class PipelineBaseMixin(BaseTrainer):
             resolve_distillation(definition, self.config) if definition is not None
             else ResolvedDistillation("none", None, None)
         )
+        if (
+            self.distillation.uses_contrastive_guidance
+            and self.distillation.guidance_schedule == "sigma"
+            and type(self).noise_fraction is PipelineBaseMixin.noise_fraction
+        ):
+            raise ValueError(
+                f"{type(self).__name__}: distillation_guidance_schedule='sigma' needs the family's "
+                "noise_fraction(timesteps), which it does not implement; use the constant schedule"
+            )
         self._training_adapter_path = None
         self._training_adapter_key_map = None
         if self.distillation.uses_adapter:

@@ -283,6 +283,10 @@ class MiniMaxH3ImageDriver(IModelDriver):
         """``v = x0 - noise``: the opposite sign of the house default."""
         return h3_flow.velocity_target(latents, noise)
 
+    def noise_fraction(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """sigma from the clock: ``t = 1 - sigma`` (``t = 1`` clean), so sigma is ``1 - t``."""
+        return 1.0 - timesteps.float()
+
     # --- The packed sequence ---
 
     def patch_size(self) -> tuple[int, int, int]:

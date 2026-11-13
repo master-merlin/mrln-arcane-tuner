@@ -150,11 +150,14 @@ def test_video_latent_cache_fingerprint_is_unchanged(definitions):
     )
 
 
-def _video_artifact(definitions) -> dict[str, torch.Tensor]:
+def _lora_params(model) -> list[tuple[str, torch.nn.Parameter]]:
+    """The LoRA weights of a PEFT model, in a fixed order (sorted by name)."""
+    return [(n, p) for n, p in sorted(model.named_parameters()) if ".lora_A." in n or ".lora_B." in n]
+
+
+def _video_peft_model(definitions):
     from diffusers import MiniMaxH3Transformer3DModel
     from peft import LoraConfig, get_peft_model
-
-    from app.engine.models.families.minimax_h3.lora_keys import adapters_from_peft_model, build_artifact
 
     torch.manual_seed(0)
     targets = list(definitions["minimax-h3-t2va"].lora_targetable_modules)
@@ -166,10 +169,39 @@ def _video_artifact(definitions) -> dict[str, torch.Tensor]:
     # depend on nothing but this seed (not on PEFT's init or the global RNG).
     g = torch.Generator().manual_seed(1234)
     with torch.no_grad():
-        for name, p in sorted(model.named_parameters()):
-            if ".lora_A." in name or ".lora_B." in name:
-                p.copy_(torch.randn(p.shape, generator=g, dtype=torch.float32))
+        for _, p in _lora_params(model):
+            p.copy_(torch.randn(p.shape, generator=g, dtype=torch.float32))
+    return model
+
+
+def _video_artifact_of(model) -> dict[str, torch.Tensor]:
+    from app.engine.models.families.minimax_h3.lora_keys import adapters_from_peft_model, build_artifact
+
     return build_artifact(adapters_from_peft_model(model))
+
+
+def _video_artifact(definitions) -> dict[str, torch.Tensor]:
+    return _video_artifact_of(_video_peft_model(definitions))
+
+
+def test_video_lora_pin_inputs_are_exact_fractions(definitions):
+    """The pinned digests hash exact values only, so they hold on every
+    platform and torch build: each LoRA weight is its slice of one ramp of
+    multiples of 1/64 (recomputed here independently), never the output of a
+    random-number kernel, and the artifact keeps every value a multiple of
+    1/64 (no rounding-sensitive op between the weights and the file)."""
+    model = _video_peft_model(definitions)
+    params = _lora_params(model)
+    total = sum(p.numel() for _, p in params)
+    ramp = (torch.arange(total, dtype=torch.float64) - total // 2) / 64
+    start = 0
+    for name, p in params:
+        expected = ramp[start : start + p.numel()].reshape(p.shape).to(torch.float32)
+        assert torch.equal(p.detach().cpu(), expected), f"{name}: not the deterministic ramp"
+        start += p.numel()
+    for key, tensor in _video_artifact_of(model).items():
+        scaled = tensor.double() * 64
+        assert torch.equal(scaled, scaled.round()), f"{key}: a value is not a multiple of 1/64"
 
 
 def test_video_lora_artifact_is_unchanged(definitions):

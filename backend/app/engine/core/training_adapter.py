@@ -21,7 +21,8 @@ sha256); a job uses it when its distillation handling is ``adapter`` or ``both``
 * :func:`adapter_off` is the one context manager every preview and validation sample runs
   under; it turns the adapter off and back on in its ``finally``, and leaves every
   ``requires_grad`` as it found it;
-* the adapter is never merged, never saved (the savers read only :data:`USER_ADAPTER`) and
+* the adapter is never merged, never saved (the savers read only :data:`USER_ADAPTER`; a
+  resumable checkpoint leaves it out, :func:`resumable_save_kwargs`) and
   never trainable, so the optimizer, EMA and the adaptive controller never see it.
 """
 
@@ -135,6 +136,18 @@ def has_training_adapter(model: torch.nn.Module | None) -> bool:
         return False
     config = getattr(model, "peft_config", None)
     return isinstance(config, dict) and TRAINING_ADAPTER in config
+
+
+def resumable_save_kwargs(model: torch.nn.Module) -> dict[str, Any]:
+    """The ``save_pretrained`` arguments for a resumable checkpoint of ``model``: with the
+    training adapter attached, every adapter but it; otherwise none, so the call is as before.
+
+    The adapter is never part of a checkpoint: a resumed run attaches it again from its pinned,
+    verified file, and under block swap its frozen weights hold no storage between runs, so
+    reading them for a save would read freed memory."""
+    if not has_training_adapter(model):
+        return {}
+    return {"selected_adapters": [name for name in model.peft_config if name != TRAINING_ADAPTER]}
 
 
 def adapter_parameters(model: torch.nn.Module) -> list[tuple[str, torch.nn.Parameter]]:

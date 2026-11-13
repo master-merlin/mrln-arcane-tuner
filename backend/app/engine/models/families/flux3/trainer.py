@@ -202,9 +202,9 @@ class Flux3Trainer(GenericTrainingPipeline):
 
     def sample_timesteps(self, batch_size: int, latents: torch.Tensor | None = None) -> torch.Tensor:
         """Base sample of the configured mode -> fixed 6.93 shift -> ``[0, 1000]`` (resolution-free)."""
-        from app.engine.strategies.timestep_sampling import TimestepSampler
+        from app.engine.strategies.timestep_sampling import TimestepSampler, timestep_setting
 
-        mode = self.config.get("timestep_sampling", "uniform")
+        mode = timestep_setting(self.config, "timestep_sampling", getattr(self, "definition", None))
         if mode in _SELF_SHIFTED_MODES:
             if not getattr(self, "_flux3_mode_warned", False):
                 self.logger.warning("flux3_timestep_mode_replaced", configured=mode, used="uniform",

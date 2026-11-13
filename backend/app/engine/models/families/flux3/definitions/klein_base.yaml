@@ -33,6 +33,9 @@ detected_precision:
   vae: torch.bfloat16
   unet: torch.bfloat16
 architecture_params:
+  # The family's timestep draw: uniform, then the trainer's fixed 6.93 shift (the BFL reference
+  # recipe). The form and every job get it from here (timestep_sampling.family_timestep_defaults).
+  timestep.default_mode: uniform
   transformer._class_name: Flux3Transformer2DModel
   transformer.in_channels: 128
   transformer.num_layers: 5

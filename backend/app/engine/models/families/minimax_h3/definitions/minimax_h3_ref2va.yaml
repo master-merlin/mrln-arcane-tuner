@@ -74,6 +74,8 @@ detected_precision:
   vae: torch.bfloat16
   unet: torch.bfloat16
 architecture_params:
+  # The family's timestep draw (research section 4; see minimax_h3_t2va.yaml).
+  timestep.default_mode: uniform
   mode: both
   has_audio: true
   # The ONLY lever separating the modalities: H3 is single-stream, so audio

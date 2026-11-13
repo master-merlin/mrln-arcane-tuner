@@ -77,7 +77,7 @@ from app.engine.components.checkpoints import _run_seed
 from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
 from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
-from app.engine.strategies.timestep_sampling import TimestepSampler
+from app.engine.strategies.timestep_sampling import TimestepSampler, timestep_setting
 from app.engine.models.families.wan_shared.trainer_base import (
     DualExpertDeferredLoadMixin,
     WanTextCacheMixin,
@@ -104,14 +104,12 @@ class BerniniRTrainer(
     validation_timestep_domain = None
 
     # ── Timestep-sampling constants (upstream ``bernini/training/data.py``) ──
-    # SD3 mode weighting scale. Recon §4 leaves ``mode_scale`` symbolic in the
-    # quoted formula; the SD3 convention (and the BR3 brief) pin it at 1.29.
-    DEFAULT_MODE_SCALE: float = 1.29
+    # The family's mode (``mode``) and SD3 mode weighting scale (1.29: recon §4 leaves
+    # ``mode_scale`` symbolic; the SD3 convention and the BR3 brief pin it) are the
+    # definitions' ``defaults:``, read through ``timestep_setting``.
     # Per-task shift-warp. v2v = 5.0 (upstream ``shift_config``); the definition
     # (BR4) supplies the effective value via config; this is the family default.
     DEFAULT_TIMESTEP_SHIFT: float = 5.0
-    # The family's declared transform mode and the YAML preset (``timestep_sampling: mode``).
-    DEFAULT_TIMESTEP_MODE: str = "mode"
     # Wan DiT patch size (1, 2, 2): the token count the resolution-aware modes need.
     PATCHIFY_FACTOR: int = 2
 
@@ -239,7 +237,7 @@ class BerniniRTrainer(
         return sigmas * 1000.0
 
     def _timestep_params(self) -> tuple[float, float]:
-        mode_scale = float(self.config.get("mode_scale", self.DEFAULT_MODE_SCALE))
+        mode_scale = float(timestep_setting(self.config, "mode_scale", getattr(self, "definition", None)))
         shift = float(self.config.get("timestep_shift", self.DEFAULT_TIMESTEP_SHIFT))
         return mode_scale, shift
 
@@ -276,7 +274,7 @@ class BerniniRTrainer(
 
     # ── The ONE distribution: factory base draw + the family's declared warps ──
     def _configured_mode(self) -> str:
-        return str(self.config.get("timestep_sampling", self.DEFAULT_TIMESTEP_MODE))
+        return str(timestep_setting(self.config, "timestep_sampling", getattr(self, "definition", None)))
 
     def _progress(self) -> float:
         """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""
@@ -334,7 +332,8 @@ class BerniniRTrainer(
             configured=mode,
             effective=mode,
             progress_forwarded=True,
-            res_influence=float(self.config.get("radc_res_influence", 0.15)),
+            res_influence=float(timestep_setting(
+                self.config, "radc_res_influence", getattr(self, "definition", None))),
             routing_reference_shape=self._routing_reference_shape(),
         )
 

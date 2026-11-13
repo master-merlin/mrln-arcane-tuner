@@ -60,6 +60,29 @@ def test_every_schema_mode_parameter_is_in_the_shared_set():
     assert schema_params == set(TIMESTEP_PARAMETERS)
 
 
+def test_the_schema_default_table_is_the_schemas():
+    from app.engine.models.base import BaseTrainingConfig
+    from app.engine.strategies.timestep_sampling import TIMESTEP_SCHEMA_DEFAULTS
+
+    fields = BaseTrainingConfig.model_fields
+    assert set(TIMESTEP_SCHEMA_DEFAULTS) == {"timestep_sampling", *TIMESTEP_PARAMETERS} - {"fixed_sigmas"}
+    for key, value in TIMESTEP_SCHEMA_DEFAULTS.items():
+        assert fields[key].default == value, key
+
+
+def test_a_setting_is_the_configs_then_the_familys_then_the_schemas():
+    from app.engine.strategies.timestep_sampling import timestep_setting
+
+    stub = _Stub({"timestep.default_mode": "flux_shift", "timestep.flux_shift_max": 1.15})
+    assert timestep_setting({"flux_shift_max": 2.0}, "flux_shift_max", stub) == 2.0
+    assert timestep_setting({"flux_shift_max": None}, "flux_shift_max", stub) == 1.15
+    assert timestep_setting({}, "timestep_sampling", stub) == "flux_shift"
+    assert timestep_setting({}, "flux_shift_base", stub) == 0.5
+    assert timestep_setting({}, "timestep_sampling") == "logit_normal"
+    with pytest.raises(KeyError):
+        timestep_setting({}, "learning_rate")
+
+
 def test_a_radc_declaration_is_derived():
     stub = _Stub({"timestep.default_mode": "radc", "timestep.radc_start": 0.6, "timestep.radc_width": "0.2"})
     assert family_timestep_defaults(stub) == {"timestep_sampling": "radc", "radc_start": 0.6, "radc_width": 0.2}

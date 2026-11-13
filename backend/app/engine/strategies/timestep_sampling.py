@@ -124,9 +124,9 @@ def _radc_center(
         * ``progress ≈ 1, high-res`` → negative shift → more detail focus
         * ``progress ≈ 1, low-res``  → positive shift → structure emphasis
     """
-    start = float(config.get("radc_start", 0.8))
-    end = float(config.get("radc_end", 0.2))
-    res_influence = float(config.get("radc_res_influence", 0.15))
+    start = float(timestep_setting(config, "radc_start"))
+    end = float(timestep_setting(config, "radc_end"))
+    res_influence = float(timestep_setting(config, "radc_res_influence"))
 
     base_center = start + (end - start) * progress
 
@@ -272,6 +272,43 @@ def apply_family_timestep_defaults(definition, config: dict[str, Any]) -> dict[s
     return config
 
 
+# The run-config schema's own defaults for the timestep keys (``BaseTrainingConfig``'s; a test
+# pins the two equal): the value for a config that names none, of a definition that names none.
+TIMESTEP_SCHEMA_DEFAULTS: dict[str, Any] = {
+    "timestep_sampling": "logit_normal",
+    "logit_normal_mu": 0.0,
+    "logit_normal_sigma": 1.0,
+    "mode_scale": 1.5,
+    "flux_shift_base": 0.5,
+    "flux_shift_max": 1.16,
+    "model_shift_std": 1.0,
+    "timestep_uniform_prob": 0.1,
+    "radc_start": 0.8,
+    "radc_end": 0.2,
+    "radc_width": 0.5,
+    "radc_res_influence": 0.15,
+}
+
+
+def timestep_setting(config: dict[str, Any], key: str, definition=None) -> Any:
+    """A timestep key's value: the config's, else the definition's family default, else the schema's.
+
+    The shared ``setup()`` has already put the family default into a job's config; ``definition``
+    serves a caller whose config did not pass through it (a driver called directly). Family code
+    reads a timestep key through this, never with a fallback of its own.
+    """
+    value = config.get(key)
+    if value is not None:
+        return value
+    if definition is not None:
+        family = family_timestep_defaults(definition)
+        if key in family:
+            return family[key]
+    if key not in TIMESTEP_SCHEMA_DEFAULTS:
+        raise KeyError(f"{key} is no timestep setting with a schema default")
+    return TIMESTEP_SCHEMA_DEFAULTS[key]
+
+
 def _rand(bs: int, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
     """``U(0,1)`` of shape ``[bs]`` on ``device``. With a generator, drawn on its device and moved,
     so the global RNG is untouched; without one, exactly the plain ``torch.rand`` call."""
@@ -365,11 +402,11 @@ class TimestepSampler:
             # Accept both naming conventions for backward compat
             mu = float(
                 config.get("logit_normal_mu",
-                           config.get("logit_normal_mean", 0.0))
+                           config.get("logit_normal_mean", TIMESTEP_SCHEMA_DEFAULTS["logit_normal_mu"]))
             )
             sigma = float(
                 config.get("logit_normal_sigma",
-                           config.get("logit_normal_std", 1.0))
+                           config.get("logit_normal_std", TIMESTEP_SCHEMA_DEFAULTS["logit_normal_sigma"]))
             )
             return torch.sigmoid(
                 _randn(bs, device, generator) * sigma + mu
@@ -383,13 +420,13 @@ class TimestepSampler:
             return 1.0 - torch.cos(u * math.pi / 2.0)
 
         if mode == "mode":
-            scale = float(config.get("mode_scale", 1.5))
+            scale = float(timestep_setting(config, "mode_scale"))
             u = _rand(bs, device, generator)
             return 1.0 - u / (scale + (1.0 - scale) * u)
 
         if mode == "flux_shift":
-            base_shift = float(config.get("flux_shift_base", 0.5))
-            max_shift = float(config.get("flux_shift_max", 1.16))
+            base_shift = float(timestep_setting(config, "flux_shift_base"))
+            max_shift = float(timestep_setting(config, "flux_shift_max"))
             seq_len = _patchified_seq_len(
                 latents, int(config.get("flux_shift_patchify_factor", 1))
             )
@@ -417,7 +454,7 @@ class TimestepSampler:
 
         if mode == "radc":
             center = _radc_center(config, progress, latents)
-            width = float(config.get("radc_width", 0.5))
+            width = float(timestep_setting(config, "radc_width"))
             cdf = _radc_cdf(round(center * 1000), round(width * 1000)).to(device)
             u = _rand(bs, device, generator)
             indices = torch.searchsorted(cdf, u)
@@ -433,7 +470,7 @@ class TimestepSampler:
             #   LTX  (dynamic): mu interpolates base_shift→max_shift with seq-len.
             #   WAN  (fixed):   mu = ln(flow_shift)  (seq-len independent).
             #   else (fallback): flux-style mid shift.
-            std = float(config.get("model_shift_std", 1.0))
+            std = float(timestep_setting(config, "model_shift_std"))
             base_shift = config.get("model_shift_base_shift", None)
             max_shift = config.get("model_shift_max_shift", None)
             fixed = config.get("model_shift_fixed", None)
@@ -452,7 +489,7 @@ class TimestepSampler:
             else:
                 mu = (0.5 + 1.16) / 2.0
             t = torch.sigmoid(_randn(bs, device, generator) * std + mu)
-            uniform_prob = float(config.get("timestep_uniform_prob", 0.1))
+            uniform_prob = float(timestep_setting(config, "timestep_uniform_prob"))
             if uniform_prob > 0.0:
                 u_mask = _rand(bs, device, generator) < uniform_prob
                 t = torch.where(u_mask, _rand(bs, device, generator), t)

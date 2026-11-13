@@ -278,12 +278,12 @@ class Flux2Trainer(GenericTrainingPipeline):
         if self.config.get("timestep_sampling") != "radc":
             return None
 
-        from app.engine.strategies.timestep_sampling import _radc_center, _radc_pdf
+        from app.engine.strategies.timestep_sampling import _radc_center, _radc_pdf, timestep_setting
 
         center = self._radc_draw_center
         if center is None:
             center = _radc_center(self.config, self._training_progress(), latents=None)
-        width = float(self.config.get("radc_width", 0.5))
+        width = float(timestep_setting(self.config, "radc_width", getattr(self, "definition", None)))
         pdf = _radc_pdf(round(center * 1000), round(width * 1000))
         indices = timesteps.long().clamp(1, 1000) - 1
         return pdf[indices.cpu()].to(timesteps.device, dtype=timesteps.dtype)

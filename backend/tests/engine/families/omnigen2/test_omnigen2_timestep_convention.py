@@ -31,13 +31,21 @@ import torch
 
 
 def _make_driver(arch=None):
+    """A driver around a stub definition carrying the SHIPPED omnigen2.yaml's ``timestep.*``
+    keys: the family's flux_shift 0.5 / 1.15 default lives there, not in the driver."""
     from app.engine.models.families.omnigen2.driver import OmniGen2Driver
+    from app.engine.models.registry import registry
+
+    registry.initialize()
+    shipped = registry.get_definition("omnigen2").architecture_params
+    timestep = {k: v for k, v in shipped.items() if k.startswith("timestep.")}
 
     definition = MagicMock()
     definition.family = "omnigen2"
     definition.id = "omnigen2-test"
     definition.lora_targetable_modules = []
-    definition.architecture_params = arch or {}
+    definition.defaults = {}
+    definition.architecture_params = {**timestep, **(arch or {})}
     return OmniGen2Driver(definition, torch.device("cpu"))
 
 

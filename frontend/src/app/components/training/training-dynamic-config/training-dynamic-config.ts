@@ -876,6 +876,9 @@ export class TrainingDynamicConfigComponent {
    * model-change-modal / targeted-layers reset flow.
    */
   private _loadFieldCapabilities(definitionId: string): void {
+    // Only the latest request may land: an answer for a definition the user has since switched
+    // away from would set its descriptor and re-seed its defaults over the current one's.
+    const request = ++this._capabilitiesRequest;
     if (!definitionId) {
       this.capabilities.set(null);
       return;
@@ -888,6 +891,7 @@ export class TrainingDynamicConfigComponent {
     const applyingTemplate = this._isTemplateApplying;
     this.modelCapabilitiesService.getCapabilities(definitionId).subscribe({
       next: (caps) => {
+        if (request !== this._capabilitiesRequest) return; // superseded by a later selection
         this.capabilities.set(caps);
         // Fill pristine controls from the definition's per-definition defaults.
         // Skipped entirely when this load was triggered as part of applying a
@@ -897,9 +901,14 @@ export class TrainingDynamicConfigComponent {
         }
         this.syncDistillationControls();
       },
-      error: () => this.capabilities.set(null),
+      error: () => {
+        if (request === this._capabilitiesRequest) this.capabilities.set(null);
+      },
     });
   }
+
+  /** Counts `_loadFieldCapabilities` calls; a response whose number is not the latest is dropped. */
+  private _capabilitiesRequest = 0;
 
   /**
    * Resolve the schema (JSON-Schema) default for a top-level form key, or

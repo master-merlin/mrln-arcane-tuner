@@ -1,5 +1,5 @@
 import { TestBed } from '@angular/core/testing';
-import { of } from 'rxjs';
+import { of, Subject } from 'rxjs';
 
 import { TrainingDynamicConfigComponent } from './training-dynamic-config';
 import { DatasetService } from '../../../services/dataset';
@@ -60,7 +60,7 @@ const FLUX3 = { learning_rate: 1e-4, timestep_sampling: 'uniform' };
 const OMNIGEN2 = { learning_rate: 1e-4, timestep_sampling: 'flux_shift', flux_shift_max: 1.15 };
 const H3_IMAGE = { learning_rate: 1e-4, timestep_sampling: 'fixed_sigmas', fixed_sigmas: [1.0, 0.75, 0.25] };
 
-function build() {
+function build(capabilities: { getCapabilities: (id: string) => unknown } = { getCapabilities: () => of(null) }) {
     TestBed.configureTestingModule({
         imports: [TrainingDynamicConfigComponent],
         providers: [
@@ -72,7 +72,7 @@ function build() {
             { provide: ConfigHelpService, useValue: { getConfigHelp: () => of({}) } },
             { provide: ModelService, useValue: { getGlobalSettings: () => of({ default_model_path: '' }) } },
             { provide: RegistryStore, useValue: {} },
-            { provide: ModelCapabilitiesService, useValue: { getCapabilities: () => of(null) } },
+            { provide: ModelCapabilitiesService, useValue: capabilities },
         ],
     });
     TestBed.overrideComponent(TrainingDynamicConfigComponent, { set: { template: '', imports: [] } });
@@ -154,6 +154,23 @@ describe('TrainingDynamicConfig: a definition switch re-seeds what it seeded', (
         expect(payload['timestep_sampling']).toBe('logit_normal');
         expect(payload['logit_normal_mu']).toBe(1.09);
         expect(payload['logit_normal_sigma']).toBe(0.95);
+    });
+
+    it('a late answer for a definition no longer selected is ignored (MOSS answers after FLUX.3)', () => {
+        const pending: Record<string, Subject<unknown>> = {};
+        const c = build({
+            getCapabilities: (id: string) => (pending[id] = new Subject<unknown>()),
+        });
+        const load = (id: string) =>
+            (c as unknown as { _loadFieldCapabilities(id: string): void })._loadFieldCapabilities(id);
+        load('moss-image-base');
+        load('flux3-image-klein-base'); // the user switched on before MOSS answered
+        pending['flux3-image-klein-base'].next({ defaults: FLUX3 });
+        expect(value(c, 'timestep_sampling')).toBe('uniform');
+        pending['moss-image-base'].next({ defaults: MOSS });
+        expect(timestep(c)).toEqual({ mode: 'uniform', mu: 0.0, sigma: 1.0 });
+        const caps = (c as unknown as { capabilities(): { defaults?: unknown } | null }).capabilities();
+        expect(caps?.defaults).toEqual(FLUX3);
     });
 
     it('a seeded value marks nothing dirty', () => {

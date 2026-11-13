@@ -9,7 +9,10 @@ Two kinds of test sit here:
   model. The strings and digests are the values the video code produced before
   the shared package existed. A change to any of them means every cached
   embedding or latent of an existing user is rebuilt, or a LoRA file changes,
-  so a failure here is never fixed by editing the pinned value.
+  so a failure here is never fixed by editing the pinned value. (The LoRA
+  digests were recomputed once, when the fill stopped using ``torch.randn``,
+  whose bytes differ between torch builds: the new values were computed on the
+  video code before the move and on the code after it, and the two agreed.)
 * **The shared package itself**: the video family uses its pieces rather than
   keeping copies, and each piece takes what differs per family (the cache-key
   prefix, the native module map) as an argument.
@@ -39,30 +42,30 @@ _PINNED_LATENT_FINGERPRINT = "fc26cc06"
 
 # key -> (shape, sha256[:16] of the float32 bytes)
 _PINNED_ARTIFACT: dict[str, tuple[tuple[int, ...], str]] = {
-    "diffusion_model.blocks.0.attn.out_proj.lora_A.weight": ((2, 32), "b7af54dbdaa72509"),
-    "diffusion_model.blocks.0.attn.out_proj.lora_B.weight": ((16, 2), "ae7251d5b6810b1f"),
-    "diffusion_model.blocks.0.attn.qkv_proj.lora_A.weight": ((6, 16), "b33fddc34242d1d3"),
-    "diffusion_model.blocks.0.attn.qkv_proj.lora_B.weight": ((96, 6), "9b7feb718d158559"),
-    "diffusion_model.blocks.0.mlp.fc1.lora_A.weight": ((2, 16), "fb9b2eb7f00abbc9"),
-    "diffusion_model.blocks.0.mlp.fc1.lora_B.weight": ((64, 2), "52eb499e98a64fb7"),
-    "diffusion_model.blocks.0.mlp.fc2.lora_A.weight": ((2, 32), "f70faec03d3141e4"),
-    "diffusion_model.blocks.0.mlp.fc2.lora_B.weight": ((16, 2), "34e78abd6c3aec2f"),
-    "diffusion_model.blocks.1.attn.out_proj.lora_A.weight": ((2, 32), "e8a885e5ab01e18e"),
-    "diffusion_model.blocks.1.attn.out_proj.lora_B.weight": ((16, 2), "dc1d700ec44d27af"),
-    "diffusion_model.blocks.1.attn.qkv_proj.lora_A.weight": ((6, 16), "3039ad2cdb7a9968"),
-    "diffusion_model.blocks.1.attn.qkv_proj.lora_B.weight": ((96, 6), "50cfbd03084e5bc2"),
-    "diffusion_model.blocks.1.mlp.fc1.lora_A.weight": ((2, 16), "80894f9a900f25ad"),
-    "diffusion_model.blocks.1.mlp.fc1.lora_B.weight": ((64, 2), "90e08a038a6b76cc"),
-    "diffusion_model.blocks.1.mlp.fc2.lora_A.weight": ((2, 32), "9e961812120b041d"),
-    "diffusion_model.blocks.1.mlp.fc2.lora_B.weight": ((16, 2), "01c26e575c34f0b3"),
-    "diffusion_model.token_refiner.blocks.0.attn.out_proj.lora_A.weight": ((2, 32), "ac78edc10cf105f6"),
-    "diffusion_model.token_refiner.blocks.0.attn.out_proj.lora_B.weight": ((16, 2), "3d5eeb19efd4a73a"),
-    "diffusion_model.token_refiner.blocks.0.attn.qkv_proj.lora_A.weight": ((6, 16), "b77cfe911c87c416"),
-    "diffusion_model.token_refiner.blocks.0.attn.qkv_proj.lora_B.weight": ((96, 6), "97d060d53ce353a0"),
-    "diffusion_model.token_refiner.blocks.0.mlp.fc1.lora_A.weight": ((2, 16), "5be14069c0816f7b"),
-    "diffusion_model.token_refiner.blocks.0.mlp.fc1.lora_B.weight": ((64, 2), "6c16872174e07623"),
-    "diffusion_model.token_refiner.blocks.0.mlp.fc2.lora_A.weight": ((2, 32), "5faa7b111a662ff5"),
-    "diffusion_model.token_refiner.blocks.0.mlp.fc2.lora_B.weight": ((16, 2), "4c8e05d36dccc18a"),
+    "diffusion_model.blocks.0.attn.out_proj.lora_A.weight": ((2, 32), "244eed92f5d37426"),
+    "diffusion_model.blocks.0.attn.out_proj.lora_B.weight": ((16, 2), "7b88c87a0a90e4cf"),
+    "diffusion_model.blocks.0.attn.qkv_proj.lora_A.weight": ((6, 16), "c6697023247c5385"),
+    "diffusion_model.blocks.0.attn.qkv_proj.lora_B.weight": ((96, 6), "fb026cc6b43dabc5"),
+    "diffusion_model.blocks.0.mlp.fc1.lora_A.weight": ((2, 16), "4a5750a304704e26"),
+    "diffusion_model.blocks.0.mlp.fc1.lora_B.weight": ((64, 2), "2cb6c6a93a24c5bc"),
+    "diffusion_model.blocks.0.mlp.fc2.lora_A.weight": ((2, 32), "2e43336306c3f457"),
+    "diffusion_model.blocks.0.mlp.fc2.lora_B.weight": ((16, 2), "684b7ffa2fc50d5c"),
+    "diffusion_model.blocks.1.attn.out_proj.lora_A.weight": ((2, 32), "cac0e8f84eb26b35"),
+    "diffusion_model.blocks.1.attn.out_proj.lora_B.weight": ((16, 2), "746cb7dba3868415"),
+    "diffusion_model.blocks.1.attn.qkv_proj.lora_A.weight": ((6, 16), "f760344981417ecf"),
+    "diffusion_model.blocks.1.attn.qkv_proj.lora_B.weight": ((96, 6), "39fc97a98e0e3c7c"),
+    "diffusion_model.blocks.1.mlp.fc1.lora_A.weight": ((2, 16), "5d5e582477547779"),
+    "diffusion_model.blocks.1.mlp.fc1.lora_B.weight": ((64, 2), "a5591baf9e9660c6"),
+    "diffusion_model.blocks.1.mlp.fc2.lora_A.weight": ((2, 32), "14f4a65b49966119"),
+    "diffusion_model.blocks.1.mlp.fc2.lora_B.weight": ((16, 2), "74c1f74853d14113"),
+    "diffusion_model.token_refiner.blocks.0.attn.out_proj.lora_A.weight": ((2, 32), "82c05a4829ae95bc"),
+    "diffusion_model.token_refiner.blocks.0.attn.out_proj.lora_B.weight": ((16, 2), "60dd51421b652e52"),
+    "diffusion_model.token_refiner.blocks.0.attn.qkv_proj.lora_A.weight": ((6, 16), "d130bbc67fb64cb6"),
+    "diffusion_model.token_refiner.blocks.0.attn.qkv_proj.lora_B.weight": ((96, 6), "ae669e4e38dcaabb"),
+    "diffusion_model.token_refiner.blocks.0.mlp.fc1.lora_A.weight": ((2, 16), "11dc78b64aa4db22"),
+    "diffusion_model.token_refiner.blocks.0.mlp.fc1.lora_B.weight": ((64, 2), "8d35650cb0d75251"),
+    "diffusion_model.token_refiner.blocks.0.mlp.fc2.lora_A.weight": ((2, 32), "cc97ab94d1adc86a"),
+    "diffusion_model.token_refiner.blocks.0.mlp.fc2.lora_B.weight": ((16, 2), "5a0a70d555293491"),
 }
 
 # The tiny video transformer, written out here rather than imported from a
@@ -150,11 +153,14 @@ def test_video_latent_cache_fingerprint_is_unchanged(definitions):
     )
 
 
-def _video_artifact(definitions) -> dict[str, torch.Tensor]:
+def _lora_params(model) -> list[tuple[str, torch.nn.Parameter]]:
+    """The LoRA weights of a PEFT model, in a fixed order (sorted by name)."""
+    return [(n, p) for n, p in sorted(model.named_parameters()) if ".lora_A." in n or ".lora_B." in n]
+
+
+def _video_peft_model(definitions):
     from diffusers import MiniMaxH3Transformer3DModel
     from peft import LoraConfig, get_peft_model
-
-    from app.engine.models.families.minimax_h3.lora_keys import adapters_from_peft_model, build_artifact
 
     torch.manual_seed(0)
     targets = list(definitions["minimax-h3-t2va"].lora_targetable_modules)
@@ -162,14 +168,56 @@ def _video_artifact(definitions) -> dict[str, torch.Tensor]:
         MiniMaxH3Transformer3DModel(**_TINY_VIDEO_KWARGS),
         LoraConfig(r=2, lora_alpha=4.0, target_modules=targets),
     )
-    # Every LoRA weight from a local generator, in a fixed order: the values
-    # depend on nothing but this seed (not on PEFT's init or the global RNG).
-    g = torch.Generator().manual_seed(1234)
+    _pin_fill(model)
+    return model
+
+
+def _pin_fill(model) -> None:
+    """Every LoRA weight, in a fixed order, gets the next slice of one ramp of
+    distinct multiples of 1/64 centred on zero: exact in float32 and the same
+    bytes on every platform and torch build. Never a random-number kernel:
+    ``torch.randn`` bytes differ between builds (the Linux CPU wheel and the
+    Windows CUDA wheel disagree), and the pin would then pin that kernel
+    instead of the artifact code. Distinct values keep the pin sensitive to
+    the qkv slot order, the fc1 row swap and the scaling fold."""
+    params = _lora_params(model)
+    mid = sum(p.numel() for _, p in params) // 2
+    offset = 0
     with torch.no_grad():
-        for name, p in sorted(model.named_parameters()):
-            if ".lora_A." in name or ".lora_B." in name:
-                p.copy_(torch.randn(p.shape, generator=g, dtype=torch.float32))
+        for _, p in params:
+            ramp = (torch.arange(p.numel(), dtype=torch.int64) + offset - mid).to(torch.float32) / 64
+            p.copy_(ramp.reshape(p.shape))
+            offset += p.numel()
+
+
+def _video_artifact_of(model) -> dict[str, torch.Tensor]:
+    from app.engine.models.families.minimax_h3.lora_keys import adapters_from_peft_model, build_artifact
+
     return build_artifact(adapters_from_peft_model(model))
+
+
+def _video_artifact(definitions) -> dict[str, torch.Tensor]:
+    return _video_artifact_of(_video_peft_model(definitions))
+
+
+def test_video_lora_pin_inputs_are_exact_fractions(definitions):
+    """The pinned digests hash exact values only, so they hold on every
+    platform and torch build: each LoRA weight is its slice of one ramp of
+    multiples of 1/64 (recomputed here independently), never the output of a
+    random-number kernel, and the artifact keeps every value a multiple of
+    1/64 (no rounding-sensitive op between the weights and the file)."""
+    model = _video_peft_model(definitions)
+    params = _lora_params(model)
+    total = sum(p.numel() for _, p in params)
+    ramp = (torch.arange(total, dtype=torch.float64) - total // 2) / 64
+    start = 0
+    for name, p in params:
+        expected = ramp[start : start + p.numel()].reshape(p.shape).to(torch.float32)
+        assert torch.equal(p.detach().cpu(), expected), f"{name}: not the deterministic ramp"
+        start += p.numel()
+    for key, tensor in _video_artifact_of(model).items():
+        scaled = tensor.double() * 64
+        assert torch.equal(scaled, scaled.round()), f"{key}: a value is not a multiple of 1/64"
 
 
 def test_video_lora_artifact_is_unchanged(definitions):

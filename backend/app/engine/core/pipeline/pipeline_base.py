@@ -477,7 +477,16 @@ class PipelineBaseMixin(BaseTrainer):
         self.logger.info("run_seed_applied", seed=seed)
 
     async def setup(self):
-        """Initialize loader, saver, and family state."""
+        """Initialize loader, saver, and family state.
+
+        The definition's family timestep defaults go into the config first, so every family draws
+        from the config alone: a value the job carries is kept, a missing one is the family's.
+        """
+        from app.engine.strategies.timestep_sampling import apply_family_timestep_defaults
+
+        definition = getattr(self, "definition", None)
+        if definition is not None:
+            apply_family_timestep_defaults(definition, self.config)
         self._apply_run_seed()
         self.logger.info("setting_up_pipeline", family=self.__class__.__name__)
         self.ema_handler: EMAHandler | None = None

@@ -79,6 +79,10 @@ def _trainer(defn, **config):
     # the two H3 families refuse any precision but bf16 (their own explicit validation), whatever the field under test
     base = {**BASE_CONFIG, "mixed_precision": "bf16"} if defn.family in _BF16_ONLY else BASE_CONFIG
     trainer.config = {**base, **config}
+    # what the shared setup() does before _setup_family(): the family's timestep defaults
+    from app.engine.strategies.timestep_sampling import apply_family_timestep_defaults
+
+    apply_family_timestep_defaults(defn, trainer.config)
     trainer.device = torch.device("cpu")
     trainer.logger = structlog.get_logger("lane-168-test")
     trainer.components = {}

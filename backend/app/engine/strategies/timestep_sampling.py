@@ -257,10 +257,14 @@ def apply_family_timestep_defaults(definition, config: dict[str, Any]) -> dict[s
     """Give ``config`` its definition's timestep defaults, in place, and return it.
 
     The mode is set only when the config names none; each parameter only when the config carries
-    neither it nor an older name for it. A value the config carries is never replaced.
+    neither it nor an older name for it. ``fixed_sigmas`` is the ``fixed_sigmas`` mode's schedule,
+    not a tuning value, so it is filled only when that is the config's mode. A value the config
+    carries is never replaced.
     """
     for key, value in family_timestep_defaults(definition).items():
         if config.get(key) not in (None, "", []):  # an empty list or mode is "not given"
+            continue
+        if key == "fixed_sigmas" and config.get("timestep_sampling") != "fixed_sigmas":
             continue
         if any(alias in config for alias in _PARAMETER_ALIASES.get(key, ())):
             continue

@@ -121,6 +121,22 @@ def test_a_legacy_alias_counts_as_the_users_value():
     assert "logit_normal_sigma" not in config
 
 
+def _h3_stub():
+    return _Stub({"timestep.default_mode": "fixed_sigmas", "timestep.fixed_sigmas": [1.0, 0.75, 0.25]})
+
+
+def test_the_family_list_is_filled_only_for_the_fixed_sigmas_mode():
+    config = {"timestep_sampling": "logit_normal"}
+    apply_family_timestep_defaults(_h3_stub(), config)
+    assert config == {"timestep_sampling": "logit_normal"}
+    config = {"timestep_sampling": "fixed_sigmas", "fixed_sigmas": None}
+    apply_family_timestep_defaults(_h3_stub(), config)
+    assert config["fixed_sigmas"] == [1.0, 0.75, 0.25]
+    config = {}
+    apply_family_timestep_defaults(_h3_stub(), config)
+    assert config == {"timestep_sampling": "fixed_sigmas", "fixed_sigmas": [1.0, 0.75, 0.25]}
+
+
 def test_a_definition_without_a_default_leaves_the_config_alone():
     config = {"learning_rate": 1e-4}
     apply_family_timestep_defaults(_Stub({}), config)

@@ -45,7 +45,7 @@ _LIVE_TEXT_ENCODING_REFUSAL = (
 
 
 # The distillation handlings memory probe P3 (bf16, 12 of 50 blocks swapped) measured as spilled.
-_P3_MEASURED_HANDLINGS = ("none", "adapter")
+_P3_MEASURED_HANDLINGS = ("none", "adapter", "both")
 
 
 class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
@@ -124,8 +124,8 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
                 f"minimax_h3_image: block_swap_config={cfg.get('block_swap_config')} with quantization="
                 f"{quantization!r} swaps 12 of the 50 transformer blocks, the setting the memory probe P3 "
                 "measured as spilled on a 96 GB card (batch 1, 1024 bucket, rank 16, gradient checkpointing "
-                "on, distillation handling none or adapter): shared GPU memory rose 21 GiB and each step "
-                "took 3.1 s. "
+                "on, distillation handling none, adapter or both): each step took 3.1-4.5 s, more than twice "
+                "as long as the same run without block swap. "
                 "Use int8 without block swap "
                 "(probe P1), or bf16 without it (probe P2)"
             )
@@ -136,8 +136,9 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
         P3: bf16, 12 of 50 transformer blocks swapped (the pipeline's ``round(count * pct / 100)``),
         no other group swapped, batch 1, the 1024 bucket, rank 16, gradient checkpointing on. A
         setting no probe measured is never refused here; the estimator warns about it instead.
-        The distillation handling is part of a setting's identity: P3 spilled with ``none`` and with
-        ``adapter``; ``contrastive_guidance`` and ``both`` (the definition's default) were not probed.
+        The distillation handling is part of a setting's identity: P3 spilled with ``none``,
+        ``adapter`` and ``both`` (the definition's default), each by its step time (over twice the
+        unswapped P2's); ``contrastive_guidance`` alone was not probed.
         """
         from app.engine.core.definitions import resolve_distillation
 

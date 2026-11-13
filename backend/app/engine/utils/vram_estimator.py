@@ -413,6 +413,14 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         # - P2 bf16: 66 040 MB, 0.95 s/step. PASS.
         # - P3 bf16, 12 blocks swapped: 51 739 MB, 3.15 s/step. SPILLED (21.2 GiB shared,
         #   6.7 GiB beyond the pinned blocks): refused with adapter too.
+        # And with both, the default (P1 and P2 are peaks of 500-step jobs on those settings):
+        # - P1 int8: 35 547 MB, 1.91 s/step. PASS.
+        # - P2 bf16: 66 055 MB, 1.35 s/step. PASS.
+        # - P3 bf16, 12 blocks swapped: 52 217 MB, 4.54 s/step. SPILLED by its step time
+        #   (over twice P2's); refused with both too.
+        # The "beyond the pinned blocks" above is the host allocator's rounding: it pins every
+        # allocation at a power of two, so 12 blocks seat 14.4 GiB and pin 21.0 GiB. P3's VRAM
+        # did not spill; its steps are slow. The swap credit below counts the seated bytes.
         #
         # transformer: the vendored MiniMaxH3ImageTransformer2DModel built on the meta device
         # from transformer_diffusers/config.json has 33,125,224,384 parameters

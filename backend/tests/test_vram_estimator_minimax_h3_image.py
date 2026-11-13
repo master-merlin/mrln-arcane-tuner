@@ -19,8 +19,28 @@ fresh with its float32 modules kept), the definition's default until it became `
 * P3: SPILLED. Shared GPU memory rose 21.17 GiB from "Preparing Training" on, 6.7 GiB beyond the
   14.5 GiB of pinned swap blocks; 50.53 GiB (51 739 MB), 3.15 s/step.
 
-``contrastive_guidance`` and ``both`` (now the default) were not probed, so P3's setting with them
-is allowed.
+The definition's default became ``both`` (the adapter plus contrastive guidance at 2.5, constant) on
+2026-11-13, and the cells were measured again with it. P1's and P2's settings were not probed
+separately: their peaks are JOB peaks, of 500-step jobs on those settings:
+
+* P1-both: the int8 ``both`` job (label job-both-1): 34.71 GiB (35 547 MB), 1.91 s/step.
+* P2-both: the four bf16 ``both`` jobs of the guidance sweep (scale 2.0 and 3.0 constant, 2.5 and
+  3.5 sigma), the highest of their peaks: 64.51 GiB (66 055 MB) in all four, 1.34-1.35 s/step.
+* P3-both, 12 of 50 blocks swapped (a 20-step probe, label probe-both-P3-12-2): 50.99 GiB
+  (52 217 MB), 4.54 s/step.
+
+The spill rule was revised the same day, before these runs: SPILLED when shared GPU memory rises
+more than 1 GiB above the host bytes block swap pins, or a step takes more than twice the unswapped
+P2's. The pinned bytes are the host allocator's, which rounds every pinned allocation up to a power
+of two: 12 blocks seat 14.43 GiB and pin 21.00 GiB. That rounding was the "6.6 GiB beyond the
+pinned blocks" above: P3's 21.07-21.17 GiB rise sits 0.07-0.17 GiB above the pinned bytes with every
+handling. P3 still spills by its step time: 3.13 s (none), 3.15 s (adapter) and 4.54 s (both)
+against 0.97, 0.95 and 1.35 s for P2, over twice each. So P3's setting is refused with ``none``,
+``adapter`` and ``both``; ``contrastive_guidance`` alone was not probed, so it is allowed.
+
+The same setting with 25 of 50 blocks swapped (``transformer_blocks: 50``) did not reach a step:
+seating the swapped blocks' pinned copies failed (``cudaErrorAlreadyMapped``). It is unmeasured,
+so it is allowed here; the estimator's warning is the only guard.
 
 The admission policy: the setting a probe measured as spilled is refused at setup, naming the
 probe; everything else is allowed (an unmeasured setting gets the estimator's warning, never a
@@ -53,6 +73,11 @@ _CELLS = {
     "P2-adapter": ({"quantization": "none", "distillation_handling": "adapter"}, 66_040.0),
     "P3-adapter": ({"quantization": "none", "block_swap_config": {"transformer_blocks": 24},
                     "distillation_handling": "adapter"}, 51_739.0),
+    # With the default from 2026-11-13, both. P1 and P2: job peaks (see the docstring).
+    "P1-both": ({"quantization": "int8", "distillation_handling": "both"}, 35_547.0),
+    "P2-both": ({"quantization": "none", "distillation_handling": "both"}, 66_055.0),
+    "P3-both": ({"quantization": "none", "block_swap_config": {"transformer_blocks": 24},
+                 "distillation_handling": "both"}, 52_217.0),
 }
 _PROBE_SETTINGS = {
     "train_batch_size": 1,
@@ -104,7 +129,7 @@ def test_the_training_peak_never_under_reports_a_measured_probe(probe):
 
 
 @pytest.mark.usefixtures("_loaded_registry", "_a_96gb_card")
-@pytest.mark.parametrize("probe", ["P1", "P2", "P1-adapter", "P2-adapter"])
+@pytest.mark.parametrize("probe", ["P1", "P2", "P1-adapter", "P2-adapter", "P1-both", "P2-both"])
 def test_the_settings_that_passed_fit_without_a_vram_warning(probe):
     report = _estimate(**_CELLS[probe][0])
     assert report.fit_known is True and report.fits is True, (report.peak_mb, report.available_mb)
@@ -126,6 +151,18 @@ def test_bf16_with_twelve_swapped_blocks_is_refused_naming_p3(pct):
     assert getattr(trainer, "loader", None) is None and getattr(trainer, "driver", None) is None
 
 
+def test_the_refusal_says_what_p3_measured():
+    """The handlings P3 measured, and the measure that made it spill: the step time, not the shared
+    memory (that rise was the pinned swap blocks)."""
+    trainer = bare_trainer(**_p3())
+    with pytest.raises(ValueError) as refused:
+        trainer._setup_family()
+    message = str(refused.value)
+    assert "none, adapter or both" in message
+    assert "more than twice" in message
+    assert "21 GiB" not in message
+
+
 def test_the_refusal_reads_the_unset_shared_settings_as_their_defaults():
     config = _p3()
     for key in _PROBE_SETTINGS:
@@ -142,21 +179,21 @@ def _shipped():
 
 
 @pytest.mark.usefixtures("_loaded_registry")
-@pytest.mark.parametrize("handling", ["none", "adapter"])
+# None: the definition's default, both.
+@pytest.mark.parametrize("handling", [None, "none", "adapter", "both"])
 def test_the_shipped_definition_refuses_p3_with_each_handling_p3_measured(handling):
-    """The distillation handling is part of a setting's identity: P3 spilled with ``none`` and with
-    ``adapter``, so both are refused."""
-    trainer = bare_trainer(_shipped(), **_p3(distillation_handling=handling))
+    """The distillation handling is part of a setting's identity: P3 spilled with ``none``,
+    ``adapter`` and ``both`` (the default), so all three are refused."""
+    config = _p3() if handling is None else _p3(distillation_handling=handling)
+    trainer = bare_trainer(_shipped(), **config)
     with pytest.raises(ValueError, match=r"block_swap_config.*P3.*spilled"):
         trainer._setup_family()
 
 
 @pytest.mark.usefixtures("_loaded_registry")
-# None: the definition's default, both, which no probe has measured yet.
-@pytest.mark.parametrize("handling", [None, "contrastive_guidance", "both"])
+@pytest.mark.parametrize("handling", ["contrastive_guidance"])
 def test_p3_with_a_handling_no_probe_measured_is_allowed(handling):
-    config = _p3() if handling is None else _p3(distillation_handling=handling)
-    trainer = bare_trainer(_shipped(), **config)
+    trainer = bare_trainer(_shipped(), **_p3(distillation_handling=handling))
     trainer._setup_family()
     assert trainer.loader is not None
 
@@ -168,6 +205,7 @@ def test_p3_with_a_handling_no_probe_measured_is_allowed(handling):
         {"block_swap_config": {}},  # P2
         {"block_swap_config": {"transformer_blocks": 20}},  # 10 blocks: unmeasured
         {"block_swap_config": {"transformer_blocks": 26}},  # 13 blocks: unmeasured
+        {"block_swap_config": {"transformer_blocks": 50}},  # 25 blocks: never reached a step, unmeasured
         {"block_swap_config": {"transformer_blocks": 24, "refiner_blocks": 50}},  # another group too
         {"quantization": "int8", "block_swap_config": {"transformer_blocks": 24}},  # unmeasured
         {"network_rank": 32},

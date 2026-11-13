@@ -11,15 +11,16 @@ bucket, rank 16, gradient checkpointing on, the shipped definition otherwise:
   beyond the 14.4 GiB of pinned swap blocks; torch peak allocated 50.25 GiB (51 452 MB), 3.13 s/step.
 
 All three ran with distillation handling ``none``. The handling is part of a setting's identity, so
-they were repeated on 2026-11-13 with the definition's default, ``adapter`` (the training adapter
-attached, int8 quantizing fresh with its float32 modules kept):
+they were repeated on 2026-11-13 with ``adapter`` (the training adapter attached, int8 quantizing
+fresh with its float32 modules kept), the definition's default until it became ``both`` that day:
 
 * P1: PASS; 34.70 GiB (35 533 MB), 1.76 s/step.
 * P2: PASS; 64.49 GiB (66 040 MB), 0.95 s/step.
 * P3: SPILLED. Shared GPU memory rose 21.17 GiB from "Preparing Training" on, 6.7 GiB beyond the
   14.5 GiB of pinned swap blocks; 50.53 GiB (51 739 MB), 3.15 s/step.
 
-``contrastive_guidance`` and ``both`` were not probed, so P3's setting with them is allowed.
+``contrastive_guidance`` and ``both`` (now the default) were not probed, so P3's setting with them
+is allowed.
 
 The admission policy: the setting a probe measured as spilled is refused at setup, naming the
 probe; everything else is allowed (an unmeasured setting gets the estimator's warning, never a
@@ -47,7 +48,7 @@ _CELLS = {
     "P1": ({"quantization": "int8"}, 35_139.0),
     "P2": ({"quantization": "none"}, 65_684.0),
     "P3": ({"quantization": "none", "block_swap_config": {"transformer_blocks": 24}}, 51_452.0),
-    # The re-probes with the definition's default distillation handling (adapter), 2026-11-13.
+    # The re-probes with distillation handling adapter, 2026-11-13.
     "P1-adapter": ({"quantization": "int8", "distillation_handling": "adapter"}, 35_533.0),
     "P2-adapter": ({"quantization": "none", "distillation_handling": "adapter"}, 66_040.0),
     "P3-adapter": ({"quantization": "none", "block_swap_config": {"transformer_blocks": 24},
@@ -141,20 +142,21 @@ def _shipped():
 
 
 @pytest.mark.usefixtures("_loaded_registry")
-@pytest.mark.parametrize("handling", [None, "none", "adapter"])  # None: the definition's default, adapter
+@pytest.mark.parametrize("handling", ["none", "adapter"])
 def test_the_shipped_definition_refuses_p3_with_each_handling_p3_measured(handling):
     """The distillation handling is part of a setting's identity: P3 spilled with ``none`` and with
-    the default ``adapter``, so both are refused."""
-    config = _p3() if handling is None else _p3(distillation_handling=handling)
-    trainer = bare_trainer(_shipped(), **config)
+    ``adapter``, so both are refused."""
+    trainer = bare_trainer(_shipped(), **_p3(distillation_handling=handling))
     with pytest.raises(ValueError, match=r"block_swap_config.*P3.*spilled"):
         trainer._setup_family()
 
 
 @pytest.mark.usefixtures("_loaded_registry")
-@pytest.mark.parametrize("handling", ["contrastive_guidance", "both"])
+# None: the definition's default, both, which no probe has measured yet.
+@pytest.mark.parametrize("handling", [None, "contrastive_guidance", "both"])
 def test_p3_with_a_handling_no_probe_measured_is_allowed(handling):
-    trainer = bare_trainer(_shipped(), **_p3(distillation_handling=handling))
+    config = _p3() if handling is None else _p3(distillation_handling=handling)
+    trainer = bare_trainer(_shipped(), **config)
     trainer._setup_family()
     assert trainer.loader is not None
 

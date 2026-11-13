@@ -112,13 +112,16 @@ function withDefaults(c: ModelCapabilities, extra: Record<string, unknown>): Mod
 }
 
 const BY_DEFINITION: Record<string, ModelCapabilities> = {
-    // resolve_capabilities(minimax-h3-image-t2i): adapter + guidance, default adapter; one
-    // ordinary per-definition default besides (max_train_steps), as every family has some.
+    // Modelled on minimax-h3-image-t2i's block (adapter + guidance), with default adapter so
+    // the guidance fields start hidden; one ordinary per-definition default besides
+    // (max_train_steps), as every family has some.
     'minimax-h3-image-t2i': withDefaults(caps(descriptor(['adapter', 'contrastive_guidance', 'both', 'none'], 'adapter')), {
         max_train_steps: 2000,
     }),
+    // minimax-h3-image-t2i as it ships: default both, so the guidance fields start shown.
+    'both-default': caps(descriptor(['adapter', 'contrastive_guidance', 'both', 'none'], 'both')),
     // A guidance-distilled model without an adapter.
-    'cg-only': caps(descriptor(['contrastive_guidance', 'none'], 'contrastive_guidance')),
+    'cg-only':caps(descriptor(['contrastive_guidance', 'none'], 'contrastive_guidance')),
     'sdxl_base_1.0': caps(null),
 };
 
@@ -297,6 +300,44 @@ describe('TrainingDynamicConfig: distillation handling', () => {
         const payload = submitted(c);
         expect(payload['distillation_handling']).toBe('none');
         expect(payload['max_train_steps']).toBe(300);
+    });
+
+    // A default handling with guidance (both, or contrastive guidance alone) fills the guidance
+    // fields from the model's defaults; they must be live controls, not just shown ones.
+    for (const [id, handling, scale] of [['both-default', 'both', 2.5], ['cg-only', 'contrastive_guidance', 3.5]] as const) {
+        it(`an untouched form with default ${handling} submits its guidance fields`, () => {
+            const { c, select } = build();
+            select(id);
+            expect(c.form.get('distillation_guidance_scale')?.enabled).toBe(true);
+            expect(c.form.get('distillation_guidance_schedule')?.enabled).toBe(true);
+            const payload = submitted(c);
+            expect(payload['distillation_handling']).toBe(handling);
+            expect(payload['distillation_guidance_scale']).toBe(scale);
+            expect(payload['distillation_guidance_schedule']).toBe('constant');
+        });
+
+        it(`after the Default template, default ${handling} still submits its guidance fields`, () => {
+            const { c, select } = build();
+            select(id);
+            c.onTemplateApplied({ config: {}, isDefault: true, auto: true });
+            const payload = submitted(c);
+            expect(payload['distillation_handling']).toBe(handling);
+            expect(payload['distillation_guidance_scale']).toBe(scale);
+            expect(payload['distillation_guidance_schedule']).toBe('constant');
+        });
+    }
+
+    it("a guidance target from the model's defaults still follows the handling", () => {
+        const { c, select } = build();
+        select('both-default');
+        expect(c.form.get('distillation_guidance_scale')?.value).toBe(2.5);
+        pick(c, 'distillation_handling', 'contrastive_guidance');
+        expect(c.form.get('distillation_guidance_scale')?.value).toBe(3.5);
+        pick(c, 'distillation_handling', 'none');
+        expect(c.form.get('distillation_guidance_scale')?.disabled).toBe(true);
+        pick(c, 'distillation_handling', 'both');
+        expect(c.form.get('distillation_guidance_scale')?.value).toBe(2.5);
+        expect(submitted(c)['distillation_guidance_scale']).toBe(2.5);
     });
 
     it('switching back to the distilled model keeps a valid choice; an invalid one becomes the default', () => {

@@ -14,8 +14,9 @@ run the path the app runs:
 An unset field reaches the trainer as ``fixed_sigmas`` with the 6-value list; an explicit
 ``logit_normal`` reaches it untouched. Nothing loads weights or spawns a process.
 
-The shipped definition's distillation default is its training adapter, so ``setup()`` fetches
-and checks the pinned file. The fetch is stubbed here (no test reaches the network); the
+The shipped definition's distillation default is ``both``: its training adapter plus contrastive
+guidance at the definition's scale for ``both`` (2.5, constant). The adapter is in play, so
+``setup()`` fetches and checks the pinned file. The fetch is stubbed here (no test reaches the network); the
 stub records what ``setup()`` asked for, so the shipped default is still the one exercised.
 """
 
@@ -113,11 +114,13 @@ def test_an_unset_timestep_setting_reaches_the_trainer_as_the_family_default(cli
     assert trainer.config["fixed_sigmas"] == H3_IMAGE_SIGMAS
 
 
-def test_the_shipped_distillation_default_fetches_the_pinned_adapter_at_setup(
+def test_the_shipped_distillation_default_is_both_and_fetches_the_pinned_adapter_at_setup(
     client, definition, adapter_fetches
 ):
     trainer = _through_the_app(client, definition, _job_config())
-    assert trainer.distillation.handling == "adapter"
+    assert trainer.distillation.handling == "both"
+    assert trainer.distillation.guidance_scale == 2.5
+    assert trainer.distillation.guidance_schedule == "constant"
     assert adapter_fetches == [definition.distillation.training_adapter]
     spec = adapter_fetches[0]
     assert spec.repo == "ostris/minimax_h3_training_adapter"

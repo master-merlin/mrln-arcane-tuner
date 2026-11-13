@@ -802,7 +802,7 @@ export const distillationCapabilities = {
                     "both",
                     "none"
                 ],
-                "default_handling": "adapter",
+                "default_handling": "both",
                 "has_training_adapter": true,
                 "guidance_scale_defaults": {
                     "contrastive_guidance": 3.5,
@@ -1021,8 +1021,9 @@ export const distillationCapabilities = {
                 0.5327739119529724,
                 0.23200887441635132
             ],
-            "distillation_handling": "adapter",
-            "distillation_guidance_schedule": "constant"
+            "distillation_handling": "both",
+            "distillation_guidance_schedule": "constant",
+            "distillation_guidance_scale": 2.5
         }
     },
     "sdxl_base_1.0": {

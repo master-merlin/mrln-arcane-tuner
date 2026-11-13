@@ -137,7 +137,7 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
         no other group swapped, batch 1, the 1024 bucket, rank 16, gradient checkpointing on. A
         setting no probe measured is never refused here; the estimator warns about it instead.
         The distillation handling is part of a setting's identity: P3 spilled with ``none`` and with
-        ``adapter`` (the definition's default); ``contrastive_guidance`` and ``both`` were not probed.
+        ``adapter``; ``contrastive_guidance`` and ``both`` (the definition's default) were not probed.
         """
         from app.engine.core.definitions import resolve_distillation
 

@@ -559,6 +559,9 @@ export class TrainingDynamicConfigComponent {
   /** The last guidance target the form seeded itself, so a value the user typed is never replaced. */
   private _seededGuidanceScale: number | null = null;
 
+  /** Re-evaluates the `depends_on` controls' enabled state; set by `buildForm()`. */
+  private _updateDisabledStates: (() => void) | null = null;
+
   // VRAM estimation — owned by VramEstimationService (F-ARCH-11). Exposed as
   // getters so template + component call sites keep using `vramReport()` /
   // `estimate()` unchanged; writes happen inside the service.
@@ -965,6 +968,9 @@ export class TrainingDynamicConfigComponent {
         if (next === current) continue; // nothing to change
 
         control.setValue(next, { emitEvent: false });
+        // The model's guidance target is a seeded value, not a template's: it still follows
+        // the handling (`_seedGuidanceScale`).
+        if (key === 'distillation_guidance_scale' && typeof next === 'number') this._seededGuidanceScale = next;
         patchedAny = true;
       }
       if (this._seedSamplePromptRows(defaults)) patchedAny = true;
@@ -1707,7 +1713,8 @@ export class TrainingDynamicConfigComponent {
       });
     };
 
-    // Run once on load
+    // Run once on load; also after silent writes (emitEvent: false) that change a parent.
+    this._updateDisabledStates = updateDisabledStates;
     updateDisabledStates();
 
     // Sync definition_id to reactive signal for UI updates. Setting the signal
@@ -2356,6 +2363,9 @@ export class TrainingDynamicConfigComponent {
       schedule.setValue(descriptor.default_guidance_schedule, { emitEvent: false });
     }
     this._seedGuidanceScale();
+    // The writes above emit nothing, so a default handling with guidance would leave the
+    // guidance controls disabled (and out of the submitted value) until the next edit.
+    this._updateDisabledStates?.();
   }
 
   /** Seed the guidance target from the current handling's default, unless the user set one. */

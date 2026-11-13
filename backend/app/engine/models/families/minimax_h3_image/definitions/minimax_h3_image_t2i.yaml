@@ -46,7 +46,7 @@ distillation:
     revision: e4e119caa391053286145e48ebbaf0e0c00293d3
     file: minimax_h3_image_training_adapter_v1.safetensors
     sha256: 45a5d60d7dfb008461d9546a6849d8d41bd00fe45849bf2d525a9db5ed68bb60
-  default_handling: adapter
+  default_handling: both
 detected_precision:
   text_encoder: torch.bfloat16
   vae: torch.float32

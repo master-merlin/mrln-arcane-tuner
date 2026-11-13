@@ -13,7 +13,7 @@ import {
  * The mocks are the backend's own output (api-data.ts's generated block, checked against
  * resolve_capabilities by backend/tests/engine/test_distillation_config.py):
  * MiniMax-H3-Image is distilled (a training adapter and contrastive guidance, default
- * `adapter`, guidance scale 3.5); SDXL is not. The spec serves them through its own routes,
+ * `both`, guidance scale 3.5 alone and 2.5 with the adapter); SDXL is not. The spec serves them through its own routes,
  * registered after the boot table's, so Playwright asks them first and they fall back to
  * the boot table for everything else.
  *
@@ -123,7 +123,7 @@ for (const width of [1280, 390]) {
         }) => {
             const handling = page.getByTestId('config-select-distillation_handling');
             await expect(handling).toBeVisible();
-            await expect(handling).toHaveValue('adapter');
+            await expect(handling).toHaveValue('both');
             const offered = await handling.locator('option').evaluateAll((options) =>
                 options.map((o) => (o as HTMLOptionElement).value).filter((v) => v !== ''),
             );
@@ -143,7 +143,7 @@ for (const width of [1280, 390]) {
 
             await selectModel(page, H3);
             await expect(handling).toBeVisible();
-            await expect(handling).toHaveValue('adapter');
+            await expect(handling).toHaveValue('both');
 
             expect(unhandledApi, `unhandled /api calls: ${unhandledApi.join(', ')}`).toEqual([]);
         });
@@ -152,37 +152,53 @@ for (const width of [1280, 390]) {
             const handling = page.getByTestId('config-select-distillation_handling');
             const scale = page.getByTestId('config-input-distillation_guidance_scale');
             const schedule = page.getByTestId('config-select-distillation_guidance_schedule');
-            await expect(scale).toBeHidden();
-            await expect(schedule).toBeHidden();
+            // The default, both, shows them from the start.
+            await expect(scale).toBeVisible();
+            await expect(scale).toHaveValue('2.5');
+            await expect(schedule).toBeVisible();
+            await expect(schedule).toHaveValue('constant');
 
             await handling.selectOption('contrastive_guidance');
             await expect(scale).toBeVisible();
             await expect(scale).toHaveValue('3.5');
             await expect(schedule).toHaveValue('constant');
 
-            await handling.selectOption('both');
-            await expect(scale).toHaveValue('2.5');
-            await expect(schedule).toHaveValue('constant');
-
             await handling.selectOption('none');
             await expect(scale).toBeHidden();
             await expect(schedule).toBeHidden();
+
+            await handling.selectOption('adapter');
+            await expect(scale).toBeHidden();
+            await expect(schedule).toBeHidden();
+
+            await handling.selectOption('both');
+            await expect(scale).toBeVisible();
+            await expect(scale).toHaveValue('2.5');
+            await expect(schedule).toHaveValue('constant');
         });
 
         test('the submitted job carries the chosen values, and none of them for SDXL', async ({ page }) => {
             let config = await submit(page, submitted);
             expect(config['definition_id']).toBe(H3);
-            expect(config['distillation_handling']).toBe('adapter');
-            expect(config).not.toHaveProperty('distillation_guidance_scale');
-            expect(config).not.toHaveProperty('distillation_guidance_schedule');
+            // The untouched form submits the default, both, with its seeded guidance fields.
+            expect(config['distillation_handling']).toBe('both');
+            expect(config['distillation_guidance_scale']).toBe(2.5);
+            expect(config['distillation_guidance_schedule']).toBe('constant');
 
-            await page.getByTestId('config-select-distillation_handling').selectOption('both');
+            await page.getByTestId('config-select-distillation_handling').selectOption('contrastive_guidance');
             await page.getByTestId('config-input-distillation_guidance_scale').fill('3');
             await page.getByTestId('config-select-distillation_guidance_schedule').selectOption('sigma');
             config = await submit(page, submitted);
-            expect(config['distillation_handling']).toBe('both');
+            expect(config['distillation_handling']).toBe('contrastive_guidance');
             expect(config['distillation_guidance_scale']).toBe(3);
             expect(config['distillation_guidance_schedule']).toBe('sigma');
+
+            // The adapter alone carries no guidance fields.
+            await page.getByTestId('config-select-distillation_handling').selectOption('adapter');
+            config = await submit(page, submitted);
+            expect(config['distillation_handling']).toBe('adapter');
+            expect(config).not.toHaveProperty('distillation_guidance_scale');
+            expect(config).not.toHaveProperty('distillation_guidance_schedule');
 
             await selectModel(page, SDXL);
             config = await submit(page, submitted);

@@ -405,6 +405,13 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         # - P3 bf16, 12 of 50 blocks swapped: 51 452 MB, 3.13 s/step. SPILLED: shared GPU
         #   memory rose 21 GiB, 6.6 GiB beyond the pinned swap blocks. The trainer refuses
         #   this setting by name; the estimate alone says it fits.
+        # Those ran with distillation handling none. Re-probed 2026-11-13 with the definition's
+        # default, adapter (the frozen training adapter attached); the estimate still sits
+        # 10-16 % above P1 and P2:
+        # - P1 int8: 35 533 MB, 1.76 s/step. PASS.
+        # - P2 bf16: 66 040 MB, 0.95 s/step. PASS.
+        # - P3 bf16, 12 blocks swapped: 51 739 MB, 3.15 s/step. SPILLED (21.2 GiB shared,
+        #   6.7 GiB beyond the pinned blocks): refused with adapter too.
         #
         # transformer: the vendored MiniMaxH3ImageTransformer2DModel built on the meta device
         # from transformer_diffusers/config.json has 33,125,224,384 parameters

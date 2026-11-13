@@ -143,6 +143,45 @@ def test_the_guidance_target_each_handling_starts_from():
     assert _definition(_block(guidance_scale=4.0)).distillation.default_guidance_scale("both") == 2.8
 
 
+def test_the_guidance_schedule_each_handling_starts_from():
+    """constant unless the block names another one for that guidance handling."""
+    spec = _definition(FULL_BLOCK).distillation
+    assert spec.default_guidance_schedule("contrastive_guidance") == "constant"
+    assert spec.default_guidance_schedule("both") == "constant"
+    assert spec.default_guidance_schedule("adapter") is None
+    spec = _definition(_block(guidance_schedule_defaults={"both": "sigma"})).distillation
+    assert spec.default_guidance_schedule("both") == "sigma"
+    assert spec.default_guidance_schedule("contrastive_guidance") == "constant"
+
+
+@pytest.mark.parametrize(
+    ("schedules", "message"),
+    [
+        ({"both": "linear"}, "guidance_schedule_defaults"),
+        ({"adapter": "sigma"}, "guidance_schedule_defaults"),
+        ({"none": "sigma"}, "guidance_schedule_defaults"),
+    ],
+)
+def test_a_schedule_default_for_a_handling_without_guidance_is_refused(schedules, message):
+    with pytest.raises(ValidationError, match=message):
+        _definition(_block(guidance_schedule_defaults=schedules))
+
+
+def test_a_schedule_default_needs_its_handling_allowed():
+    with pytest.raises(ValidationError, match="guidance_schedule_defaults"):
+        _definition(_block(training_adapter=None, default_handling="contrastive_guidance",
+                           guidance_schedule_defaults={"both": "sigma"}))
+
+
+def test_an_unset_schedule_resolves_to_the_handlings_default():
+    definition = _definition(_block(default_handling="both", guidance_schedule_defaults={"both": "sigma"}))
+    assert resolve_distillation(definition, {}) == ResolvedDistillation("both", 2.5, "sigma")
+    assert resolve_distillation(definition, {"distillation_handling": "contrastive_guidance"}) == (
+        ResolvedDistillation("contrastive_guidance", 3.5, "constant"))
+    assert resolve_distillation(definition, {"distillation_guidance_schedule": "constant"}) == (
+        ResolvedDistillation("both", 2.5, "constant"))
+
+
 def test_every_shipped_definition_without_a_block_loads_as_before():
     """The block is additive: the shipped definitions still load, and the ones that do not
     declare it are not distilled."""
@@ -312,6 +351,7 @@ def test_a_distilled_definition_offers_its_handlings_with_their_defaults():
         "has_training_adapter": True,
         "guidance_scale_defaults": {"contrastive_guidance": 3.5, "both": 2.5},
         "guidance_schedules": ["constant", "sigma"],
+        "guidance_schedule_defaults": {"contrastive_guidance": "constant", "both": "constant"},
         "default_guidance_schedule": "constant",
     }
     assert caps["defaults"]["distillation_handling"] == "adapter"
@@ -323,6 +363,14 @@ def test_a_guidance_default_seeds_its_target():
     caps = resolve_capabilities(_definition(_block(default_handling="both")))
     assert caps["defaults"]["distillation_handling"] == "both"
     assert caps["defaults"]["distillation_guidance_scale"] == 2.5
+
+
+def test_a_guidance_default_seeds_its_schedule():
+    caps = resolve_capabilities(_definition(_block(default_handling="both", guidance_schedule_defaults={"both": "sigma"})))
+    descriptor = caps["capabilities"]["distillation"]
+    assert descriptor["guidance_schedule_defaults"] == {"contrastive_guidance": "constant", "both": "sigma"}
+    assert descriptor["default_guidance_schedule"] == "sigma"
+    assert caps["defaults"]["distillation_guidance_schedule"] == "sigma"
 
 
 def test_a_block_without_an_adapter_offers_no_adapter():

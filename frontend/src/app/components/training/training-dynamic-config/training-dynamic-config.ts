@@ -56,6 +56,8 @@ export interface DistillationDescriptor {
   has_training_adapter: boolean;
   guidance_scale_defaults: Record<string, number | null>;
   guidance_schedules: string[];
+  /** The schedule each guidance handling starts from (absent: `default_guidance_schedule`). */
+  guidance_schedule_defaults?: Record<string, string>;
   default_guidance_schedule: string;
 }
 
@@ -559,6 +561,9 @@ export class TrainingDynamicConfigComponent {
   /** The last guidance target the form seeded itself, so a value the user typed is never replaced. */
   private _seededGuidanceScale: number | null = null;
 
+  /** The last guidance schedule the form seeded itself, so a schedule the user chose is kept. */
+  private _seededGuidanceSchedule: string | null = null;
+
   /** Re-evaluates the `depends_on` controls' enabled state; set by `buildForm()`. */
   private _updateDisabledStates: (() => void) | null = null;
 
@@ -971,6 +976,7 @@ export class TrainingDynamicConfigComponent {
         // The model's guidance target is a seeded value, not a template's: it still follows
         // the handling (`_seedGuidanceScale`).
         if (key === 'distillation_guidance_scale' && typeof next === 'number') this._seededGuidanceScale = next;
+        if (key === 'distillation_guidance_schedule' && typeof next === 'string') this._seededGuidanceSchedule = next;
         patchedAny = true;
       }
       if (this._seedSamplePromptRows(defaults)) patchedAny = true;
@@ -1646,7 +1652,10 @@ export class TrainingDynamicConfigComponent {
     // The guidance target follows the distillation handling it belongs to (unless typed).
     this.form.get('distillation_handling')?.valueChanges.pipe(
       takeUntilDestroyed(this.destroyRef)
-    ).subscribe(() => this._seedGuidanceScale());
+    ).subscribe(() => {
+      this._seedGuidanceScale();
+      this._seedGuidanceSchedule();
+    });
 
     // Auto-set LR when Adafactor relative_step is toggled
     this.form.get('adafactor_relative_step')?.valueChanges.pipe(
@@ -2363,6 +2372,7 @@ export class TrainingDynamicConfigComponent {
       schedule.setValue(descriptor.default_guidance_schedule, { emitEvent: false });
     }
     this._seedGuidanceScale();
+    this._seedGuidanceSchedule();
     // The writes above emit nothing, so a default handling with guidance would leave the
     // guidance controls disabled (and out of the submitted value) until the next edit.
     this._updateDisabledStates?.();
@@ -2381,6 +2391,21 @@ export class TrainingDynamicConfigComponent {
     if (!empty && current !== this._seededGuidanceScale) return; // a template's or job's value
     if (current !== next) scale.setValue(next, { emitEvent: false });
     this._seededGuidanceScale = next;
+  }
+
+  /** Seed the guidance schedule from the current handling's default, unless the user chose one. */
+  private _seedGuidanceSchedule(): void {
+    const descriptor = this.distillation();
+    const schedule = this.form.get('distillation_guidance_schedule');
+    const handling = this.form.get('distillation_handling')?.value;
+    if (!descriptor || !schedule || schedule.dirty) return;
+    const next = descriptor.guidance_schedule_defaults?.[handling];
+    if (!next) return;
+    const current = schedule.value;
+    const empty = current === null || current === undefined || current === '';
+    if (!empty && current !== this._seededGuidanceSchedule) return; // a template's or job's value
+    if (current !== next) schedule.setValue(next, { emitEvent: false });
+    this._seededGuidanceSchedule = next;
   }
 
   /**

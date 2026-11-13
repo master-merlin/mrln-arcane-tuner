@@ -812,7 +812,11 @@ export const distillationCapabilities = {
                     "constant",
                     "sigma"
                 ],
-                "default_guidance_schedule": "constant"
+                "guidance_schedule_defaults": {
+                    "contrastive_guidance": "constant",
+                    "both": "sigma"
+                },
+                "default_guidance_schedule": "sigma"
             }
         },
         "field_visibility": {
@@ -1022,7 +1026,7 @@ export const distillationCapabilities = {
                 0.23200887441635132
             ],
             "distillation_handling": "both",
-            "distillation_guidance_schedule": "constant",
+            "distillation_guidance_schedule": "sigma",
             "distillation_guidance_scale": 2.5
         }
     },

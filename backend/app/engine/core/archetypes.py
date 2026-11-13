@@ -379,13 +379,17 @@ def _distillation_descriptor(definition) -> dict | None:
             h: spec.default_guidance_scale(h) for h in handlings if h in ("contrastive_guidance", "both")
         },
         "guidance_schedules": list(GUIDANCE_SCHEDULES),
-        "default_guidance_schedule": DEFAULT_GUIDANCE_SCHEDULE,
+        "guidance_schedule_defaults": {
+            h: spec.default_guidance_schedule(h) for h in handlings if h in ("contrastive_guidance", "both")
+        },
+        # The default handling's schedule (constant when it has no guidance).
+        "default_guidance_schedule": spec.default_guidance_schedule(spec.default_handling) or DEFAULT_GUIDANCE_SCHEDULE,
     }
 
 
 def _distillation_defaults(descriptor: dict | None) -> dict:
-    """The form defaults of a distilled definition: its default handling and the constant
-    schedule, and the guidance target when the default handling uses guidance."""
+    """The form defaults of a distilled definition: its default handling and that handling's
+    schedule (constant without guidance), and the guidance target when it uses guidance."""
     if descriptor is None:
         return {}
     handling = descriptor["default_handling"]

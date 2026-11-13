@@ -65,6 +65,11 @@ class DistillationSpec(BaseModel):
     )
     training_adapter: TrainingAdapterSpec | None = Field(..., description="The frozen training adapter, or null")
     default_handling: DistillationHandling = Field(..., description="The handling an unset job field means")
+    guidance_schedule_defaults: dict[str, GuidanceSchedule] | None = Field(
+        None,
+        description="The schedule an unset job field means, per guidance handling (contrastive_guidance, "
+        "both); a handling not named uses constant",
+    )
 
     @model_validator(mode="after")
     def _check(self) -> "DistillationSpec":
@@ -81,6 +86,13 @@ class DistillationSpec(BaseModel):
             raise ValueError(
                 f"distillation.default_handling {self.default_handling!r} is not allowed by this block; "
                 f"allowed: {allowed}"
+            )
+        guided = [h for h in allowed if h in ("contrastive_guidance", "both")]
+        stray = sorted(set(self.guidance_schedule_defaults or {}) - set(guided))
+        if stray:
+            raise ValueError(
+                f"distillation.guidance_schedule_defaults names {stray}, which this block does not allow "
+                f"with guidance; allowed: {guided}"
             )
         return self
 
@@ -107,6 +119,13 @@ class DistillationSpec(BaseModel):
             product = Decimal(str(BOTH_GUIDANCE_FACTOR)) * Decimal(str(self.guidance_scale))
             return float(product.quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
         return None
+
+    def default_guidance_schedule(self, handling: str) -> str | None:
+        """The schedule a guidance handling starts from: the block's own for it, else
+        ``constant``; ``None`` for a handling without guidance."""
+        if handling not in ("contrastive_guidance", "both"):
+            return None
+        return (self.guidance_schedule_defaults or {}).get(handling, DEFAULT_GUIDANCE_SCHEDULE)
 
 
 @dataclass(frozen=True)
@@ -166,7 +185,7 @@ def resolve_distillation(definition: Any, config: Mapping[str, Any]) -> Resolved
         )
     schedule = config.get("distillation_guidance_schedule")
     if schedule in (None, ""):
-        schedule = DEFAULT_GUIDANCE_SCHEDULE
+        schedule = spec.default_guidance_schedule(handling)
     if schedule not in GUIDANCE_SCHEDULES:
         raise ValueError(
             f"{def_id}: distillation_guidance_schedule={schedule!r} is not supported; use one of "

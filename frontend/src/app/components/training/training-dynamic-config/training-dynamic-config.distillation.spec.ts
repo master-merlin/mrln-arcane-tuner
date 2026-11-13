@@ -65,10 +65,19 @@ const SCHEMA: SchemaNode = {
 
 const FIELDS = ['distillation_handling', 'distillation_guidance_scale', 'distillation_guidance_schedule'];
 
-function descriptor(handlings: string[], defaultHandling: string): DistillationDescriptor {
+function descriptor(
+    handlings: string[],
+    defaultHandling: string,
+    schedules: Record<string, string> = {},
+): DistillationDescriptor {
     const scales: Record<string, number> = {};
-    if (handlings.includes('contrastive_guidance')) scales['contrastive_guidance'] = 3.5;
-    if (handlings.includes('both')) scales['both'] = 2.5;
+    const scheduleDefaults: Record<string, string> = {};
+    for (const [h, s] of [['contrastive_guidance', 3.5], ['both', 2.5]] as const) {
+        if (handlings.includes(h)) {
+            scales[h] = s;
+            scheduleDefaults[h] = schedules[h] ?? 'constant';
+        }
+    }
     return {
         step: true,
         guidance: handlings.includes('contrastive_guidance'),
@@ -77,7 +86,8 @@ function descriptor(handlings: string[], defaultHandling: string): DistillationD
         has_training_adapter: handlings.includes('adapter'),
         guidance_scale_defaults: scales,
         guidance_schedules: ['constant', 'sigma'],
-        default_guidance_schedule: 'constant',
+        guidance_schedule_defaults: scheduleDefaults,
+        default_guidance_schedule: scheduleDefaults[defaultHandling] ?? 'constant',
     };
 }
 
@@ -86,7 +96,7 @@ function caps(distillation: DistillationDescriptor | null): ModelCapabilities {
     const defaults: Record<string, unknown> = {};
     if (distillation) {
         defaults['distillation_handling'] = distillation.default_handling;
-        defaults['distillation_guidance_schedule'] = 'constant';
+        defaults['distillation_guidance_schedule'] = distillation.default_guidance_schedule;
         const scale = distillation.guidance_scale_defaults[distillation.default_handling];
         if (scale !== undefined) defaults['distillation_guidance_scale'] = scale;
     }
@@ -118,8 +128,8 @@ const BY_DEFINITION: Record<string, ModelCapabilities> = {
     'minimax-h3-image-t2i': withDefaults(caps(descriptor(['adapter', 'contrastive_guidance', 'both', 'none'], 'adapter')), {
         max_train_steps: 2000,
     }),
-    // minimax-h3-image-t2i as it ships: default both, so the guidance fields start shown.
-    'both-default': caps(descriptor(['adapter', 'contrastive_guidance', 'both', 'none'], 'both')),
+    // minimax-h3-image-t2i as it ships: default both (2.5, sigma), so the guidance fields start shown.
+    'both-default': caps(descriptor(['adapter', 'contrastive_guidance', 'both', 'none'], 'both', { both: 'sigma' })),
     // A guidance-distilled model without an adapter.
     'cg-only':caps(descriptor(['contrastive_guidance', 'none'], 'contrastive_guidance')),
     'sdxl_base_1.0': caps(null),
@@ -304,7 +314,10 @@ describe('TrainingDynamicConfig: distillation handling', () => {
 
     // A default handling with guidance (both, or contrastive guidance alone) fills the guidance
     // fields from the model's defaults; they must be live controls, not just shown ones.
-    for (const [id, handling, scale] of [['both-default', 'both', 2.5], ['cg-only', 'contrastive_guidance', 3.5]] as const) {
+    for (const [id, handling, scale, schedule] of [
+        ['both-default', 'both', 2.5, 'sigma'],
+        ['cg-only', 'contrastive_guidance', 3.5, 'constant'],
+    ] as const) {
         it(`an untouched form with default ${handling} submits its guidance fields`, () => {
             const { c, select } = build();
             select(id);
@@ -313,7 +326,7 @@ describe('TrainingDynamicConfig: distillation handling', () => {
             const payload = submitted(c);
             expect(payload['distillation_handling']).toBe(handling);
             expect(payload['distillation_guidance_scale']).toBe(scale);
-            expect(payload['distillation_guidance_schedule']).toBe('constant');
+            expect(payload['distillation_guidance_schedule']).toBe(schedule);
         });
 
         it(`after the Default template, default ${handling} still submits its guidance fields`, () => {
@@ -323,21 +336,33 @@ describe('TrainingDynamicConfig: distillation handling', () => {
             const payload = submitted(c);
             expect(payload['distillation_handling']).toBe(handling);
             expect(payload['distillation_guidance_scale']).toBe(scale);
-            expect(payload['distillation_guidance_schedule']).toBe('constant');
+            expect(payload['distillation_guidance_schedule']).toBe(schedule);
         });
     }
 
-    it("a guidance target from the model's defaults still follows the handling", () => {
+    it("a guidance target and schedule from the model's defaults still follow the handling", () => {
         const { c, select } = build();
         select('both-default');
-        expect(c.form.get('distillation_guidance_scale')?.value).toBe(2.5);
+        const scale = () => c.form.get('distillation_guidance_scale');
+        const schedule = () => c.form.get('distillation_guidance_schedule');
+        expect([scale()?.value, schedule()?.value]).toEqual([2.5, 'sigma']);
         pick(c, 'distillation_handling', 'contrastive_guidance');
-        expect(c.form.get('distillation_guidance_scale')?.value).toBe(3.5);
+        expect([scale()?.value, schedule()?.value]).toEqual([3.5, 'constant']);
         pick(c, 'distillation_handling', 'none');
-        expect(c.form.get('distillation_guidance_scale')?.disabled).toBe(true);
+        expect(scale()?.disabled).toBe(true);
         pick(c, 'distillation_handling', 'both');
-        expect(c.form.get('distillation_guidance_scale')?.value).toBe(2.5);
-        expect(submitted(c)['distillation_guidance_scale']).toBe(2.5);
+        expect([scale()?.value, schedule()?.value]).toEqual([2.5, 'sigma']);
+        const payload = submitted(c);
+        expect([payload['distillation_guidance_scale'], payload['distillation_guidance_schedule']]).toEqual([2.5, 'sigma']);
+    });
+
+    it('a schedule the user chose is kept when the handling changes', () => {
+        const { c, select } = build();
+        select('both-default');
+        pick(c, 'distillation_guidance_schedule', 'constant');
+        pick(c, 'distillation_handling', 'contrastive_guidance');
+        pick(c, 'distillation_handling', 'both');
+        expect(c.form.get('distillation_guidance_schedule')?.value).toBe('constant');
     });
 
     it('switching back to the distilled model keeps a valid choice; an invalid one becomes the default', () => {

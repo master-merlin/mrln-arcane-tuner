@@ -47,6 +47,11 @@ distillation:
     file: minimax_h3_image_training_adapter_v1.safetensors
     sha256: 45a5d60d7dfb008461d9546a6849d8d41bd00fe45849bf2d525a9db5ed68bb60
   default_handling: both
+  # both trains toward 2.5 (0.7 x guidance_scale), weakening toward clean (sigma): in the bf16
+  # guidance sweep the sigma runs drew the trained subject on the plain trigger-word prompt, the
+  # constant runs a generic car; chosen from those images.
+  guidance_schedule_defaults:
+    both: sigma
 detected_precision:
   text_encoder: torch.bfloat16
   vae: torch.float32

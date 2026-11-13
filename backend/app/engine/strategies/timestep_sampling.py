@@ -166,6 +166,108 @@ def validate_fixed_sigmas(values: Any) -> list[float]:
     return out
 
 
+# The run-config keys that parameterize a timestep mode. A definition may state a family default for
+# each as ``timestep.<key>`` in ``architecture_params`` (or as ``<key>`` in its ``defaults:``).
+TIMESTEP_PARAMETERS: tuple[str, ...] = (
+    "logit_normal_mu",
+    "logit_normal_sigma",
+    "mode_scale",
+    "flux_shift_base",
+    "flux_shift_max",
+    "model_shift_std",
+    "timestep_uniform_prob",
+    "radc_start",
+    "radc_end",
+    "radc_width",
+    "radc_res_influence",
+    "fixed_sigmas",
+)
+
+# Older names the sampler still reads for a parameter: a config that carries one has set it.
+_PARAMETER_ALIASES: dict[str, tuple[str, ...]] = {
+    "logit_normal_mu": ("logit_normal_mean",),
+    "logit_normal_sigma": ("logit_normal_std",),
+}
+
+
+def _timestep_value(definition_id: str, source: str, key: str, value: Any) -> Any:
+    if key == "timestep_sampling":
+        if value not in TimestepSampler.SUPPORTED_MODES:
+            raise ValueError(f"{definition_id}: {source} {value!r} is no timestep mode")
+        return value
+    if key == "fixed_sigmas":
+        try:
+            return validate_fixed_sigmas(value)
+        except ValueError as exc:
+            raise ValueError(f"{definition_id}: {source}: {exc}") from None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{definition_id}: {source} {value!r} is no number") from None
+    if number != number:  # NaN
+        raise ValueError(f"{definition_id}: {source} is NaN")
+    return number
+
+
+def family_timestep_defaults(definition) -> dict[str, Any]:
+    """The run-config timestep keys a definition names as its family default.
+
+    Two sources, one value each: the timestep keys of the ``defaults:`` block, and the
+    ``architecture_params`` keys ``timestep.default_mode`` (as ``timestep_sampling``) and
+    ``timestep.<parameter>`` for each of :data:`TIMESTEP_PARAMETERS`. An unknown ``timestep.*`` key,
+    a value that is no mode or number, and the two sources disagreeing on a key are refused. A
+    ``fixed_sigmas`` default mode without a valid list is refused too.
+    """
+    definition_id = getattr(definition, "id", "?")
+    arch = getattr(definition, "architecture_params", None) or {}
+    own = getattr(definition, "defaults", None) or {}
+
+    declared: dict[str, tuple[str, Any]] = {}
+    for name, value in arch.items():
+        if not isinstance(name, str) or not name.startswith("timestep."):
+            continue
+        key = name[len("timestep."):]
+        if key == "default_mode":
+            key = "timestep_sampling"
+        elif key not in TIMESTEP_PARAMETERS:
+            raise ValueError(f"{definition_id}: {name} is no timestep parameter")
+        declared[key] = (name, _timestep_value(definition_id, name, key, value))
+
+    out: dict[str, Any] = {}
+    for key in ("timestep_sampling", *TIMESTEP_PARAMETERS):
+        stated = (f"defaults.{key}", _timestep_value(definition_id, f"defaults.{key}", key, own[key])) \
+            if key in own and own[key] is not None else None
+        from_arch = declared.get(key)
+        if stated and from_arch and stated[1] != from_arch[1]:
+            raise ValueError(
+                f"{definition_id}: {stated[0]} {own[key]!r} disagrees with {from_arch[0]} {from_arch[1]!r}"
+            )
+        chosen = from_arch or stated
+        if chosen:
+            out[key] = chosen[1]
+    if out.get("timestep_sampling") == "fixed_sigmas" and "fixed_sigmas" not in out:
+        raise ValueError(
+            f"{definition_id}: the default mode fixed_sigmas needs timestep.fixed_sigmas: "
+            "fixed_sigmas must be a non-empty list of sigmas in (0, 1]"
+        )
+    return out
+
+
+def apply_family_timestep_defaults(definition, config: dict[str, Any]) -> dict[str, Any]:
+    """Give ``config`` its definition's timestep defaults, in place, and return it.
+
+    The mode is set only when the config names none; each parameter only when the config carries
+    neither it nor an older name for it. A value the config carries is never replaced.
+    """
+    for key, value in family_timestep_defaults(definition).items():
+        if config.get(key) not in (None, "", []):  # an empty list or mode is "not given"
+            continue
+        if any(alias in config for alias in _PARAMETER_ALIASES.get(key, ())):
+            continue
+        config[key] = list(value) if isinstance(value, list) else value
+    return config
+
+
 def _rand(bs: int, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
     """``U(0,1)`` of shape ``[bs]`` on ``device``. With a generator, drawn on its device and moved,
     so the global RNG is untouched; without one, exactly the plain ``torch.rand`` call."""

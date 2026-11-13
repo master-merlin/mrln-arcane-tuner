@@ -134,3 +134,11 @@ def test_install_bat_n_on_an_existing_venv_aborts(tmp_path):
 
 def test_install_bat_n_on_create_venv_creates_none(tmp_path):
     assert_venv_skipped(run_installer(_text(INSTALL_BAT), ".bat", tmp_path, venv_exists=False))
+
+
+def test_install_ps1_n_on_an_existing_venv_aborts(tmp_path):
+    assert_aborted(run_installer(_text(INSTALL_PS1), ".ps1", tmp_path, venv_exists=True))
+
+
+def test_install_ps1_n_on_create_venv_creates_none(tmp_path):
+    assert_venv_skipped(run_installer(_text(INSTALL_PS1), ".ps1", tmp_path, venv_exists=False))

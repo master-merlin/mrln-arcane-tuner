@@ -46,6 +46,8 @@ _LIVE_TEXT_ENCODING_REFUSAL = (
 
 # The distillation handlings memory probe P3 (bf16, 12 of 50 blocks swapped) measured as spilled.
 _P3_MEASURED_HANDLINGS = ("none", "adapter", "both")
+# The refused block-swap settings: P3's 12 blocks, and 25 (more blocks than P3, so at least as slow).
+_SWAPPED_BLOCKS = {"P3": 12, "P3-25": 25}
 
 
 class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
@@ -119,19 +121,29 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
                     f"minimax_h3_image: dataset {ds.get('dataset_name')!r} has masking_enabled=True; "
                     "masked training is not supported for this family. Turn masking off for this dataset"
                 )
-        if self._is_the_spilled_probe_setting(quantization):
+        probe = self._the_refused_probe_setting(quantization)
+        prefix = (
+            f"minimax_h3_image: block_swap_config={cfg.get('block_swap_config')} with quantization="
+            f"{quantization!r} swaps {_SWAPPED_BLOCKS.get(probe)} of the 50 transformer blocks"
+        )
+        settings = ("on a 96 GB card (batch 1, 1024 bucket, rank 16, gradient checkpointing on, "
+                    "distillation handling none, adapter or both)")
+        instead = "Use int8 without block swap (probe P1), or bf16 without it (probe P2)"
+        if probe == "P3":
             raise ValueError(
-                f"minimax_h3_image: block_swap_config={cfg.get('block_swap_config')} with quantization="
-                f"{quantization!r} swaps 12 of the 50 transformer blocks, the setting the memory probe P3 "
-                "measured as spilled on a 96 GB card (batch 1, 1024 bucket, rank 16, gradient checkpointing "
-                "on, distillation handling none, adapter or both): each step took 3.1-4.5 s, more than twice "
-                "as long as the same run without block swap. "
-                "Use int8 without block swap "
-                "(probe P1), or bf16 without it (probe P2)"
+                f"{prefix}, the setting the memory probe P3 measured as spilled {settings}: each step "
+                f"took 3.1-4.5 s, more than twice as long as the same run without block swap. {instead}"
+            )
+        if probe == "P3-25":
+            raise ValueError(
+                f"{prefix} (P3-25): more than the 12 that the memory probe P3 measured {settings} at more "
+                "than twice the step time of the same run without block swap, so it is at least as slow. "
+                "It may also fail to start: it needs about 44 GiB of pinned host memory for the swapped "
+                f"blocks' copies, more than a host may be able to pin. {instead}"
             )
 
-    def _is_the_spilled_probe_setting(self, quantization: str) -> bool:
-        """Whether this run is the setting probe P3 measured as spilled; any other setting is allowed.
+    def _the_refused_probe_setting(self, quantization: str) -> str | None:
+        """The measured setting this run is (``"P3"`` or ``"P3-25"``), or None; any other is allowed.
 
         P3: bf16, 12 of 50 transformer blocks swapped (the pipeline's ``round(count * pct / 100)``),
         no other group swapped, batch 1, the 1024 bucket, rank 16, gradient checkpointing on. A
@@ -139,14 +151,18 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
         The distillation handling is part of a setting's identity: P3 spilled with ``none``,
         ``adapter`` and ``both`` (the definition's default), each by its step time (over twice the
         unswapped P2's); ``contrastive_guidance`` alone was not probed.
+
+        P3-25: the same with 25 of 50 blocks swapped. It swaps more than P3, so with P3's handlings
+        it is at least as slow; its probe (with both) never reached a step, failing to pin the
+        swapped blocks' copies on the probe host, which is that host's limit, not the reason here.
         """
         from app.engine.core.definitions import resolve_distillation
 
         cfg = self.config
         if quantization != "none":
-            return False
+            return None
         if resolve_distillation(self.definition, cfg).handling not in _P3_MEASURED_HANDLINGS:
-            return False
+            return None
         counts = {g["name"]: int(g.get("count") or 0) for g in (getattr(self.definition, "block_topology", None) or [])}
         swapped = {}
         for name, pct in (cfg.get("block_swap_config") or {}).items():
@@ -154,13 +170,18 @@ class MiniMaxH3ImageTrainer(GenericTrainingPipeline):
             if blocks > 0:
                 swapped[name] = blocks
         resolutions = cfg.get("resolutions") or [cfg.get("resolution") or 1024]
-        return (
-            swapped == {"transformer_blocks": 12}
-            and int(cfg.get("train_batch_size") or 1) == 1
+        probe_settings = (
+            int(cfg.get("train_batch_size") or 1) == 1
             and int(cfg.get("network_rank") or 16) == 16
             and bool(cfg.get("gradient_checkpointing", True))
             and 1024 in [int(r) for r in resolutions]
         )
+        if not probe_settings:
+            return None
+        for probe, blocks in _SWAPPED_BLOCKS.items():
+            if swapped == {"transformer_blocks": blocks}:
+                return probe
+        return None
 
     def _create_sampler(self):
         """The 6-step preview sampler when sampling is on (``sample_every_n_steps > 0``)."""

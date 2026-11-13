@@ -38,9 +38,13 @@ handling. P3 still spills by its step time: 3.13 s (none), 3.15 s (adapter) and 
 against 0.97, 0.95 and 1.35 s for P2, over twice each. So P3's setting is refused with ``none``,
 ``adapter`` and ``both``; ``contrastive_guidance`` alone was not probed, so it is allowed.
 
-The same setting with 25 of 50 blocks swapped (``transformer_blocks: 50``) did not reach a step:
-seating the swapped blocks' pinned copies failed (``cudaErrorAlreadyMapped``). It is unmeasured,
-so it is allowed here; the estimator's warning is the only guard.
+P3-25, the same setting with 25 of 50 blocks swapped (``transformer_blocks: 50``) and ``both``,
+never reached a step, twice (labels probe-both-P3-25-1 and -2): seating the swapped blocks' pinned
+host copies failed (``cudaErrorAlreadyMapped``). 25 blocks need 43.76 GiB pinned (30.06 GiB seated).
+That failure is the probe host's, so it is not the reason for the refusal: 25 blocks swap more than
+P3's 12, which ran over twice the unswapped step time with ``none``, ``adapter`` and ``both``, so
+it is at least as slow, and it is refused with those three handlings. ``contrastive_guidance``
+alone was not probed at either count, so it is allowed.
 
 The admission policy: the setting a probe measured as spilled is refused at setup, naming the
 probe; everything else is allowed (an unmeasured setting gets the estimator's warning, never a
@@ -191,6 +195,32 @@ def test_the_shipped_definition_refuses_p3_with_each_handling_p3_measured(handli
 
 
 @pytest.mark.usefixtures("_loaded_registry")
+@pytest.mark.parametrize("handling", [None, "none", "adapter", "both"])  # None: the default, both
+def test_twenty_five_swapped_blocks_are_refused_as_at_least_as_slow_as_p3(handling):
+    """25 blocks swap more than P3's 12, which ran over twice the unswapped step time with these
+    handlings; it may also fail to pin what it needs (P3-25 did, on the probe host). The message
+    states no fixed pinning limit: that one host's ceiling says nothing about another."""
+    swap = {"block_swap_config": {"transformer_blocks": 50}}  # round(50 * 50 / 100) = 25 of 50
+    config = _p3(**swap) if handling is None else _p3(**swap, distillation_handling=handling)
+    trainer = bare_trainer(_shipped(), **config)
+    with pytest.raises(ValueError, match=r"block_swap_config.*P3-25") as refused:
+        trainer._setup_family()
+    message = str(refused.value)
+    assert "at least as slow" in message and "pinned" in message
+    assert "21.4" not in message and "21 GiB" not in message
+    assert getattr(trainer, "loader", None) is None
+
+
+@pytest.mark.usefixtures("_loaded_registry")
+@pytest.mark.parametrize("handling", ["contrastive_guidance"])
+def test_twenty_five_swapped_blocks_with_a_handling_p3_did_not_measure_are_allowed(handling):
+    trainer = bare_trainer(_shipped(), **_p3(block_swap_config={"transformer_blocks": 50},
+                                             distillation_handling=handling))
+    trainer._setup_family()
+    assert trainer.loader is not None
+
+
+@pytest.mark.usefixtures("_loaded_registry")
 @pytest.mark.parametrize("handling", ["contrastive_guidance"])
 def test_p3_with_a_handling_no_probe_measured_is_allowed(handling):
     trainer = bare_trainer(_shipped(), **_p3(distillation_handling=handling))
@@ -205,7 +235,6 @@ def test_p3_with_a_handling_no_probe_measured_is_allowed(handling):
         {"block_swap_config": {}},  # P2
         {"block_swap_config": {"transformer_blocks": 20}},  # 10 blocks: unmeasured
         {"block_swap_config": {"transformer_blocks": 26}},  # 13 blocks: unmeasured
-        {"block_swap_config": {"transformer_blocks": 50}},  # 25 blocks: never reached a step, unmeasured
         {"block_swap_config": {"transformer_blocks": 24, "refiner_blocks": 50}},  # another group too
         {"quantization": "int8", "block_swap_config": {"transformer_blocks": 24}},  # unmeasured
         {"network_rank": 32},

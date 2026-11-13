@@ -35,6 +35,8 @@ import torch
 from PIL import Image
 from torch import Tensor
 
+from app.engine.core.training_adapter import adapter_off as training_adapter_off
+
 if TYPE_CHECKING:
     from app.engine.core.pipeline import GenericTrainingPipeline
 
@@ -346,40 +348,44 @@ class GenericSamplingPipeline(ABC):
             # Wrapping _sample_single in autocast caused bfloat16 precision
             # issues in VAE decode and Euler accumulation.
 
-            for i, prompt_cfg in enumerate(prompts):
-                # Materialise the prompt config as a plain dict
-                cfg = (
-                    prompt_cfg.model_dump()
-                    if hasattr(prompt_cfg, "model_dump")
-                    else dict(prompt_cfg)
-                )
+            # A training adapter (distillation handling) is off for every sample
+            # and back on afterwards, also when sampling raises: a preview shows
+            # the user's LoRA on the plain model, as the saved file will run.
+            with training_adapter_off(model):
+                for i, prompt_cfg in enumerate(prompts):
+                    # Materialise the prompt config as a plain dict
+                    cfg = (
+                        prompt_cfg.model_dump()
+                        if hasattr(prompt_cfg, "model_dump")
+                        else dict(prompt_cfg)
+                    )
 
-                # Expand wildcards
-                raw_prompt = cfg.get("prompt", "")
-                cfg["prompt"] = self._expand_wildcards(raw_prompt)
+                    # Expand wildcards
+                    raw_prompt = cfg.get("prompt", "")
+                    cfg["prompt"] = self._expand_wildcards(raw_prompt)
 
-                artifact = self._sample_single(cfg, step)
+                    artifact = self._sample_single(cfg, step)
 
-                path = self._persist_artifact(
-                    artifact, output_dir, i, displayed_step, final
-                )
-                saved_paths.append(path)
+                    path = self._persist_artifact(
+                        artifact, output_dir, i, displayed_step, final
+                    )
+                    saved_paths.append(path)
 
-                if isinstance(artifact, SampleArtifact):
-                    media_type = "video"
-                elif isinstance(artifact, AudioSampleArtifact):
-                    media_type = "audio"
-                else:
-                    media_type = "image"
-                self._broadcast_sample(
-                    path, displayed_step, i, cfg, raw_prompt, media_type=media_type
-                )
+                    if isinstance(artifact, SampleArtifact):
+                        media_type = "video"
+                    elif isinstance(artifact, AudioSampleArtifact):
+                        media_type = "audio"
+                    else:
+                        media_type = "image"
+                    self._broadcast_sample(
+                        path, displayed_step, i, cfg, raw_prompt, media_type=media_type
+                    )
 
-                # Reclaim between images so a multi-prompt round doesn't let
-                # the caching-allocator pool ratchet up across prompts (the
-                # outer finally only reclaims once, after the last image).
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
+                    # Reclaim between images so a multi-prompt round doesn't let
+                    # the caching-allocator pool ratchet up across prompts (the
+                    # outer finally only reclaims once, after the last image).
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
 
             elapsed = time.perf_counter() - t0
             self.logger.info(

@@ -46,14 +46,14 @@ def _visibility(defn) -> dict:
 def test_flow_timestep_fields_are_every_timestep_field_of_the_schema():
     expected = {
         name for name in BaseTrainingConfig.model_fields
-        if name in {"timestep_sampling", "timestep_uniform_prob", "mode_scale"}
+        if name in {"timestep_sampling", "timestep_uniform_prob", "mode_scale", "fixed_sigmas"}
         or name.startswith(("radc_", "flux_shift_", "model_shift_", "logit_normal_"))
     }
     assert set(FLOW_TIMESTEP_FIELDS) == expected
     # the ones the spec names by hand are all there (a derivation that found none would be vacuous)
     for name in ("timestep_sampling", "timestep_uniform_prob", "mode_scale", "logit_normal_mu",
                  "logit_normal_sigma", "model_shift_std", "flux_shift_base", "flux_shift_max",
-                 "radc_start", "radc_end", "radc_width", "radc_res_influence"):
+                 "radc_start", "radc_end", "radc_width", "radc_res_influence", "fixed_sigmas"):
         assert name in FLOW_TIMESTEP_FIELDS, name
 
 

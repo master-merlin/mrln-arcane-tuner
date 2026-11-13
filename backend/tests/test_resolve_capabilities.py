@@ -50,6 +50,7 @@ ALL_DEFINITION_IDS = [
     "flux3-image-klein-base",
     "moss-image-base",
     "moss-image-sft",
+    "minimax-h3-image-t2i",
     "qwen-image-2512",
     "qwen-image-edit-2509",
     "qwen-image-2.1",
@@ -162,6 +163,10 @@ FAMILY_HAS_VAE_AND_TE = {
         True,
         True,
     ),  # latent_diffusion dense DiT (vendored visual + audio VAEs) + external Qwen3-VL-32B TE (no TE training)
+    "minimax_h3_image": (
+        True,
+        True,
+    ),  # latent_diffusion dense DiT (vendored image VAE) + external Qwen3-VL-32B TE (no TE training)
 }
 
 
@@ -205,6 +210,26 @@ def test_hidream_hides_caching():
     assert fv["cache_text_embeddings"]["supported"] is False
     assert fv["train_text_encoder"]["supported"] is False
     assert r["defaults"]["learning_rate"] == 5e-6
+
+
+MINIMAX_H3_IMAGE_SIGMAS = [1.0, 0.9675236940383911, 0.8875485062599182, 0.75, 0.5327739119529724, 0.23200887441635132]
+
+
+def test_minimax_h3_image_form_defaults_are_the_family_timestep_default():
+    """The Training form seeds what the trainer would set: the 6-step head grid as a
+    ``fixed_sigmas`` draw, derived from ``timestep.*`` (the YAML states it once)."""
+    defn = registry.get_definition("minimax-h3-image-t2i")
+    assert defn is not None
+    r = resolve_capabilities(defn)
+    assert r["defaults"]["timestep_sampling"] == "fixed_sigmas"
+    assert r["defaults"]["fixed_sigmas"] == MINIMAX_H3_IMAGE_SIGMAS
+    assert r["defaults"]["mixed_precision"] == "bf16"
+    fv = r["field_visibility"]
+    assert fv["timestep_sampling"]["supported"] is True
+    assert fv["fixed_sigmas"]["supported"] is True
+    assert fv["num_frames"]["supported"] is False
+    assert fv["train_audio"]["supported"] is False
+    assert fv["sigma_shift_video"]["supported"] is False
 
 
 def test_declared_train_te_matches_ground_truth():

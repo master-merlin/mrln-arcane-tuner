@@ -1231,6 +1231,10 @@ class PipelineDataMixin:
         families decode upfront (the default) so they stay byte-identical.
         """
         captions: list[str] = []
+        # Which items' captions were dropped: a dropped caption can still carry a prefix or a
+        # persistent trigger word, so the text alone cannot tell (contrastive guidance trains
+        # those items at scale 1).
+        caption_dropped: list[bool] = []
         ids: list[str] = []
         cache_dirs: list[str] = []
         batch_paths: list[str] = []
@@ -1269,6 +1273,7 @@ class PipelineDataMixin:
 
             # Caption construction
             is_dropped = random.random() < item["dropout_rate"]
+            caption_dropped.append(is_dropped)
             if is_dropped:
                 cap = ""
             # Expand [triggerword] wildcard inline in caption text
@@ -1301,6 +1306,7 @@ class PipelineDataMixin:
                 torch.stack(images).to(self.device) if images is not None else None
             ),
             "captions": captions,
+            "caption_dropped": caption_dropped,
             "ids": ids,
             "cache_dirs": cache_dirs,
             "paths": batch_paths,

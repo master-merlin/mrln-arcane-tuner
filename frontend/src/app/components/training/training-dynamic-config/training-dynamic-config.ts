@@ -43,6 +43,24 @@ export interface TrainingSegment {
   status: 'success' | 'warning' | 'idle' | null;
 }
 
+/**
+ * `capabilities.distillation` of a distilled definition (backend `_distillation_descriptor`):
+ * the handlings it allows in display order, the default, and the guidance target each guidance
+ * handling starts from.
+ */
+export interface DistillationDescriptor {
+  step: boolean;
+  guidance: boolean;
+  handlings: string[];
+  default_handling: string;
+  has_training_adapter: boolean;
+  guidance_scale_defaults: Record<string, number | null>;
+  guidance_schedules: string[];
+  /** The schedule each guidance handling starts from (absent: `default_guidance_schedule`). */
+  guidance_schedule_defaults?: Record<string, string>;
+  default_guidance_schedule: string;
+}
+
 @Component({
   selector: 'app-training-dynamic-config',
   standalone: true,
@@ -387,7 +405,7 @@ export interface TrainingSegment {
                          <app-dynamic-form-field
                             [style.grid-column]="isFullWidthField(prop.key, group.name) ? '1 / -1' : null"
                             [control]="getControl(prop.key)"
-                            [schema]="prop.schema"
+                            [schema]="fieldSchema(prop)"
                             [fieldKey]="prop.key"
                             [currentBackend]="form.get('backend')?.value || 'local'"
                             [outputDir]="form.get('output_dir')?.value || 'outputs'"
@@ -529,6 +547,25 @@ export class TrainingDynamicConfigComponent {
    *  `num_frames` capability gate (is_video). Drives `video_only` per-dataset
    *  fields in the dataset config. Fail-open (no descriptor → visible). */
   protected isVideoModel = computed(() => !isFieldHidden(this.capabilities(), 'num_frames'));
+
+  /**
+   * The selected definition's distillation descriptor (`capabilities.distillation`, set by
+   * `resolve_capabilities` only for a definition with a `distillation` block), or null for a
+   * model that is not distilled — whose distillation fields `field_visibility` hides.
+   */
+  readonly distillation = computed<DistillationDescriptor | null>(() => {
+    const flags = this.capabilities()?.capabilities as unknown as { distillation?: DistillationDescriptor } | undefined;
+    return flags?.distillation ?? null;
+  });
+
+  /** The last guidance target the form seeded itself, so a value the user typed is never replaced. */
+  private _seededGuidanceScale: number | null = null;
+
+  /** The last guidance schedule the form seeded itself, so a schedule the user chose is kept. */
+  private _seededGuidanceSchedule: string | null = null;
+
+  /** Re-evaluates the `depends_on` controls' enabled state; set by `buildForm()`. */
+  private _updateDisabledStates: (() => void) | null = null;
 
   // VRAM estimation — owned by VramEstimationService (F-ARCH-11). Exposed as
   // getters so template + component call sites keep using `vramReport()` /
@@ -858,6 +895,7 @@ export class TrainingDynamicConfigComponent {
         if (!applyingTemplate && caps?.defaults) {
           this.applyDefinitionDefaults(caps.defaults);
         }
+        this.syncDistillationControls();
       },
       error: () => this.capabilities.set(null),
     });
@@ -883,7 +921,9 @@ export class TrainingDynamicConfigComponent {
    * A control is patched ONLY when ALL of:
    *  (a) we are NOT currently applying a template (template values win — early
    *      return guards the entire operation);
-   *  (b) the key maps to a real, non-array/non-group form control (backend key);
+   *  (b) the key maps to a real, non-group form control (backend key); a list
+   *      control is seeded only when it is a list of primitives
+   *      (`_seedPrimitiveArray`), never an object list such as `datasets`;
    *  (c) the control is pristine (`!control.dirty`) AND its current value still
    *      equals the field's schema default — or, when no schema default exists,
    *      the current value is empty (null / undefined / ''). This conservative
@@ -908,10 +948,14 @@ export class TrainingDynamicConfigComponent {
     let patchedAny = false;
     try {
       for (const key of Object.keys(defaults)) {
-        // (b) Must be a real, primitive backend control. Arrays/groups are
-        // handled by their own machinery and are out of scope for defaults.
+        // (b) Must be a real backend control. A list of primitives is seeded by
+        // its own rule; object lists and groups are out of scope for defaults.
         const control = this.form.get(key);
-        if (!control || control instanceof FormArray || control instanceof FormGroup) continue;
+        if (control instanceof FormArray) {
+          if (this._seedPrimitiveArray(key, control, defaults[key])) patchedAny = true;
+          continue;
+        }
+        if (!control || control instanceof FormGroup) continue;
 
         // (c) Only fill pristine controls that still hold the schema default
         // (or are empty when no schema default is defined). Never overwrite a
@@ -929,6 +973,10 @@ export class TrainingDynamicConfigComponent {
         if (next === current) continue; // nothing to change
 
         control.setValue(next, { emitEvent: false });
+        // The model's guidance target is a seeded value, not a template's: it still follows
+        // the handling (`_seedGuidanceScale`).
+        if (key === 'distillation_guidance_scale' && typeof next === 'number') this._seededGuidanceScale = next;
+        if (key === 'distillation_guidance_schedule' && typeof next === 'string') this._seededGuidanceSchedule = next;
         patchedAny = true;
       }
       if (this._seedSamplePromptRows(defaults)) patchedAny = true;
@@ -942,6 +990,28 @@ export class TrainingDynamicConfigComponent {
       this._updateLoraNamePreview();
       this.vramEstimation.schedule();
     }
+  }
+
+  /**
+   * Seed a list-of-primitives control (e.g. `fixed_sigmas`) from a definition default, by the
+   * same rule as a scalar: only a pristine list that still holds its schema default (an absent
+   * or null schema default counts as the empty list) is replaced, and only by a list of
+   * primitives. Object lists (`datasets`, `sample_prompts`) and a non-list value are ignored.
+   * The rows are swapped without events and without marking anything dirty.
+   */
+  private _seedPrimitiveArray(key: string, control: FormArray, next: unknown): boolean {
+    if (!Array.isArray(next) || !this.isPrimitiveArray(key)) return false;
+    if (next.some((v) => v !== null && typeof v === 'object')) return false;
+    if (control.dirty) return false;
+    const schemaDefault = this._schemaDefaultFor(key);
+    const baseline = Array.isArray(schemaDefault) ? schemaDefault : [];
+    const current = control.value as unknown[];
+    const sameList = (a: unknown[], b: unknown[]) => a.length === b.length && a.every((v, i) => v === b[i]);
+    if (!sameList(current, baseline) || sameList(current, next)) return false;
+
+    control.clear({ emitEvent: false });
+    for (const value of next) control.push(new FormControl(value), { emitEvent: false });
+    return true;
   }
 
   /** The sample-prompt fields a definition's `defaults` seed (field -> defaults key). */
@@ -1186,6 +1256,7 @@ export class TrainingDynamicConfigComponent {
     try {
       if (event.isDefault) {
         this.resetFormToDefaults();
+        this._reapplyModelDefaults();
         // The reset drops the knob dict back to `{}`; the card re-materializes
         // it so the control never holds a partial config.
         this.adaptiveCard?.refreshFromControl();
@@ -1217,6 +1288,28 @@ export class TrainingDynamicConfigComponent {
         }
       }, 1500);
     }
+  }
+
+  /**
+   * "Default" means the current model's default settings, so after the schema reset the
+   * model's own defaults (`capabilities().defaults`) go back in, and the distillation
+   * controls are made valid again. The selector applies Default by itself on load, often
+   * just after those defaults landed; without this the reset wiped them on first load.
+   * The template guard is lifted for this one call only: Default carries no values of its
+   * own that the model's defaults could clobber.
+   */
+  private _reapplyModelDefaults(): void {
+    const defaults = this.capabilities()?.defaults;
+    if (defaults) {
+      const applying = this._isTemplateApplying;
+      this._isTemplateApplying = false;
+      try {
+        this.applyDefinitionDefaults(defaults);
+      } finally {
+        this._isTemplateApplying = applying;
+      }
+    }
+    this.syncDistillationControls();
   }
 
   resetFormToDefaults() {
@@ -1556,6 +1649,14 @@ export class TrainingDynamicConfigComponent {
       }
     });
 
+    // The guidance target follows the distillation handling it belongs to (unless typed).
+    this.form.get('distillation_handling')?.valueChanges.pipe(
+      takeUntilDestroyed(this.destroyRef)
+    ).subscribe(() => {
+      this._seedGuidanceScale();
+      this._seedGuidanceSchedule();
+    });
+
     // Auto-set LR when Adafactor relative_step is toggled
     this.form.get('adafactor_relative_step')?.valueChanges.pipe(
       takeUntilDestroyed(this.destroyRef)
@@ -1621,7 +1722,8 @@ export class TrainingDynamicConfigComponent {
       });
     };
 
-    // Run once on load
+    // Run once on load; also after silent writes (emitEvent: false) that change a parent.
+    this._updateDisabledStates = updateDisabledStates;
     updateDisabledStates();
 
     // Sync definition_id to reactive signal for UI updates. Setting the signal
@@ -1698,7 +1800,8 @@ export class TrainingDynamicConfigComponent {
       'persist_latents', 'persist_embeddings',
       'resume_from_checkpoint', 'use_cached_latents', 'use_cached_embeddings',
       'resolutions', 'bucketing_mode',
-      'timestep_sampling', 'logit_normal_mu', 'logit_normal_sigma',
+      'timestep_sampling', 'fixed_sigmas', 'logit_normal_mu', 'logit_normal_sigma',
+      'distillation_handling', 'distillation_guidance_scale', 'distillation_guidance_schedule',
     ];
     if (groupMap['STRATEGY']) {
       groupMap['STRATEGY'].sort((a, b) => {
@@ -2212,6 +2315,97 @@ export class TrainingDynamicConfigComponent {
 
       return opt;
     }).filter((opt: { value: string, label: string, disabled: boolean }) => !(prop.schema.hide_unsupported && opt.disabled));
+  }
+
+  // --- Distillation handling ---
+
+  /** Display labels of the distillation handlings. */
+  static readonly DISTILLATION_LABELS: Record<string, string> = {
+    adapter: 'Training adapter',
+    contrastive_guidance: 'Contrastive guidance',
+    both: 'Both',
+    none: 'None',
+  };
+
+  private _distillationSchemaCache: { base: SchemaNode; key: string; schema: SchemaNode } | null = null;
+
+  /**
+   * The schema a field renders with. `distillation_handling` offers only the handlings the
+   * selected definition allows (`capabilities.distillation.handlings`), labelled; every other
+   * field renders its own schema. The narrowed schema is cached so the child input keeps one
+   * object while nothing changes.
+   */
+  fieldSchema(prop: SchemaProp): SchemaNode {
+    if (prop.key !== 'distillation_handling') return prop.schema;
+    const descriptor = this.distillation();
+    if (!descriptor) return prop.schema;
+    const key = descriptor.handlings.join(',');
+    const cached = this._distillationSchemaCache;
+    if (cached && cached.base === prop.schema && cached.key === key) return cached.schema;
+    const schema: SchemaNode = {
+      ...prop.schema,
+      enum: [...descriptor.handlings],
+      options_labels: Object.fromEntries(
+        descriptor.handlings.map((h) => [h, TrainingDynamicConfigComponent.DISTILLATION_LABELS[h] ?? h]),
+      ),
+    };
+    this._distillationSchemaCache = { base: prop.schema, key, schema };
+    return schema;
+  }
+
+  /**
+   * Keep the distillation controls valid for the selected definition: a handling it does not
+   * allow (or none yet) becomes its `default_handling`, and the guidance target follows the
+   * handling (3.5 for contrastive guidance, 2.5 with the adapter too, for MiniMax-H3-Image)
+   * unless the user typed one. A definition that is not distilled changes nothing: its fields
+   * are hidden and stripped at submit. Writes never emit events or mark anything dirty.
+   */
+  syncDistillationControls(): void {
+    const descriptor = this.distillation();
+    const handling = this.form.get('distillation_handling');
+    if (!descriptor || !handling) return;
+    if (!descriptor.handlings.includes(handling.value)) {
+      handling.setValue(descriptor.default_handling, { emitEvent: false });
+    }
+    const schedule = this.form.get('distillation_guidance_schedule');
+    if (schedule && !descriptor.guidance_schedules.includes(schedule.value)) {
+      schedule.setValue(descriptor.default_guidance_schedule, { emitEvent: false });
+    }
+    this._seedGuidanceScale();
+    this._seedGuidanceSchedule();
+    // The writes above emit nothing, so a default handling with guidance would leave the
+    // guidance controls disabled (and out of the submitted value) until the next edit.
+    this._updateDisabledStates?.();
+  }
+
+  /** Seed the guidance target from the current handling's default, unless the user set one. */
+  private _seedGuidanceScale(): void {
+    const descriptor = this.distillation();
+    const scale = this.form.get('distillation_guidance_scale');
+    const handling = this.form.get('distillation_handling')?.value;
+    if (!descriptor || !scale || scale.dirty) return;
+    const next = descriptor.guidance_scale_defaults[handling];
+    if (next === undefined || next === null) return;
+    const current = scale.value;
+    const empty = current === null || current === undefined || current === '';
+    if (!empty && current !== this._seededGuidanceScale) return; // a template's or job's value
+    if (current !== next) scale.setValue(next, { emitEvent: false });
+    this._seededGuidanceScale = next;
+  }
+
+  /** Seed the guidance schedule from the current handling's default, unless the user chose one. */
+  private _seedGuidanceSchedule(): void {
+    const descriptor = this.distillation();
+    const schedule = this.form.get('distillation_guidance_schedule');
+    const handling = this.form.get('distillation_handling')?.value;
+    if (!descriptor || !schedule || schedule.dirty) return;
+    const next = descriptor.guidance_schedule_defaults?.[handling];
+    if (!next) return;
+    const current = schedule.value;
+    const empty = current === null || current === undefined || current === '';
+    if (!empty && current !== this._seededGuidanceSchedule) return; // a template's or job's value
+    if (current !== next) schedule.setValue(next, { emitEvent: false });
+    this._seededGuidanceSchedule = next;
   }
 
   /**

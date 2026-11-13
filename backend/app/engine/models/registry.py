@@ -489,6 +489,30 @@ def _derive_block_topology(family: str, arch: dict) -> list[dict]:
             "approx_vram_mb": 240,
         }]
 
+    if family == "minimax_h3_image":
+        # The vendored MiniMaxH3ImageTransformer2DModel keeps 50 main blocks in
+        # ``transformer_blocks`` and 2 refiner blocks NESTED under ``token_refiner.refiner_blocks``
+        # (the checkpoint's native config names them num_layers / token_refiner_num_layers). One
+        # bf16 main block is 1231 MiB, one refiner block (no AdaLN projection) 735 MiB.
+        num_layers = arch.get("transformer.num_layers")
+        num_refiner = arch.get("transformer.token_refiner_num_layers")
+        topology = []
+        if num_layers:
+            topology.append({
+                "name": "transformer_blocks",
+                "attr_path": "transformer_blocks",
+                "count": int(num_layers),
+                "approx_vram_mb": 1231,
+            })
+        if num_layers and num_refiner:
+            topology.append({
+                "name": "token_refiner_blocks",
+                "attr_path": "token_refiner.refiner_blocks",
+                "count": int(num_refiner),
+                "approx_vram_mb": 735,
+            })
+        return topology
+
     if family == "sdxl":
         return [
             {"name": "down_blocks", "attr_path": "down_blocks", "count": 4, "approx_vram_mb": 200},

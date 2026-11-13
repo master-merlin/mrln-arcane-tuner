@@ -102,6 +102,8 @@ class PipelineOptimizationMixin:
 
         # 6c. Targeted layer training (freeze non-selected layers)
         self._configure_targeted_training()
+        # 6d. The training adapter stays frozen whatever the targeting matched.
+        self._refreeze_training_adapter()
 
         # 7. Optimizer, LR scheduler, GradScaler
         max_train_steps = int(self.config.get("max_train_steps", 1000))
@@ -203,6 +205,7 @@ class PipelineOptimizationMixin:
         )
         model = get_peft_model(model, lora_config)
         trainable_backward.plain_conv_adapters(model)  # a quanto conv's adapters as plain convs
+        self._attach_training_adapter(model)
         self._update_primary_model(model)
 
         trainable = sum(p.numel() for p in model.parameters() if p.requires_grad)
@@ -228,6 +231,30 @@ class PipelineOptimizationMixin:
                     self.components[name] = wrapped_te
                     setattr(self, name, wrapped_te)
                     self.logger.info("lora_te_applied", name=name, targets=len(te_targets))
+
+    def _attach_training_adapter(self, model: torch.nn.Module) -> None:
+        """Attach the training adapter ``setup()`` verified (distillation handling ``adapter`` or
+        ``both``) as a second, frozen PEFT adapter beside the user's LoRA. No-op otherwise."""
+        path = getattr(self, "_training_adapter_path", None)
+        if not path:
+            return
+        from app.engine.core import training_adapter
+        from app.engine.factories.quantizers import trainable_backward
+
+        pairs = training_adapter.load_pairs(path, self._training_adapter_key_map)
+        modules = training_adapter.attach(model, pairs)
+        trainable_backward.plain_conv_adapters(model)  # fresh convs are trainable: refreeze below
+        frozen = training_adapter.freeze(model)
+        self.logger.info("training_adapter_applied", path=path, modules=modules, frozen_params=frozen)
+
+    def _refreeze_training_adapter(self) -> None:
+        """Targeted training sets ``requires_grad`` on every LoRA parameter it matches; the
+        training adapter's are frozen again before the optimizer collects its parameters."""
+        from app.engine.core import training_adapter
+
+        model = self._get_primary_model()
+        if training_adapter.has_training_adapter(model):
+            training_adapter.freeze(model)
 
     # ── Gradient Checkpointing ───────────────────────────────────────────
 

@@ -29,6 +29,7 @@ from pydantic import BaseModel, Field
 from safetensors.torch import load_file as st_load
 from typing import Any
 
+from app.engine.core import training_adapter
 from app.engine.utils.safe_save import is_file_lock_error, retry_file_lock, safe_save_file
 
 logger = structlog.get_logger(__name__)
@@ -1029,7 +1030,8 @@ class CheckpointManager:
                             os.remove(os.path.join(comp_subfolder, existing))
                         except OSError:
                             pass  # locked — save_pretrained will overwrite
-                comp.save_pretrained(comp_subfolder)
+                # The training adapter stays out: a resume attaches it from its pinned file.
+                comp.save_pretrained(comp_subfolder, **training_adapter.resumable_save_kwargs(comp))
                 # Record adapter files in manifest
                 for f in os.listdir(comp_subfolder):
                     fpath = os.path.join(comp_subfolder, f)

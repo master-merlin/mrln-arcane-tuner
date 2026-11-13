@@ -466,7 +466,11 @@ def test_sweep_the_zero_origin_control_of_the_late_soundtrack(tmp_path, monkeypa
     assert variation[1] < 1e-4 < variation[0], f"per-window audio variation {variation}"
 
 
-_TIMESTEP_MODES = ["logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc", "model_shift"]
+_TIMESTEP_MODES = [
+    "logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "radc", "model_shift", "fixed_sigmas",
+]
+# The list a fixed_sigmas run carries (the mode refuses to draw without one).
+_MODE_CONFIG = {"fixed_sigmas": {"fixed_sigmas": [0.9, 0.5, 0.1]}}
 
 
 def test_sweep_the_timestep_modes_are_the_schema_list():
@@ -482,7 +486,7 @@ def test_sweep_every_timestep_sampling_mode_trains_and_the_setting_wins(tmp_path
     """Row 33 (re-proven in VERIFY round 3: the test it named never set the
     key). Every mode the schema offers goes through the family's draw in a real
     step; a mode other than the family default changes the draw."""
-    t = _job(tmp_path, monkeypatch, build_tiny_transformer, timestep_sampling=mode)
+    t = _job(tmp_path, monkeypatch, build_tiny_transformer, timestep_sampling=mode, **_MODE_CONFIG.get(mode, {}))
     loss, *_ = seams.train_step(t, list(t.inventory))
     assert torch.isfinite(loss)
     like = torch.zeros(256, 24, 7, 4, 4)

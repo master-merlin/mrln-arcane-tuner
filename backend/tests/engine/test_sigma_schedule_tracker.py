@@ -74,6 +74,7 @@ CLOCKS = [
     ("boogu_image", "BooguImageTrainer", "BooguImageDriver", 0.75),
     ("omnigen2", "OmniGen2Trainer", "OmniGen2Driver", 0.75),
     ("minimax_h3", "MiniMaxH3Trainer", "MiniMaxH3Driver", 0.75),
+    ("minimax_h3_image", "MiniMaxH3ImageTrainer", "MiniMaxH3ImageDriver", 0.75),
     ("wan22", "Wan22Trainer", "Wan22Driver", 250.0),
 ]
 

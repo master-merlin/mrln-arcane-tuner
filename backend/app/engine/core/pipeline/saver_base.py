@@ -20,6 +20,7 @@ from app.engine.utils.lora_metadata import trigger_metadata
 from app.engine.utils.safe_save import safe_save_file
 
 from app.engine.core.interfaces import ModelSaver
+from app.engine.core.training_adapter import USER_ADAPTER
 
 logger = structlog.get_logger(__name__)
 
@@ -91,8 +92,9 @@ class GenericLoRASaver(ModelSaver):
             logger.warning("transformer_not_peft_model")
             return
 
-        # 1. Extract PEFT state dict
-        peft_sd = get_peft_model_state_dict(unet)
+        # 1. Extract PEFT state dict: the user's LoRA only, never a training adapter
+        #    (core/training_adapter.py) that rides beside it.
+        peft_sd = get_peft_model_state_dict(unet, adapter_name=USER_ADAPTER)
 
         # 2. Filter non-LoRA keys, strip prefixes, add diffusion_model.
         final_dict: dict[str, torch.Tensor] = {}
@@ -123,7 +125,7 @@ class GenericLoRASaver(ModelSaver):
         config = components.get("config", {})
         rank = 16
         alpha = 16.0
-        peft_cfg = next(iter(unet.peft_config.values()), None)
+        peft_cfg = unet.peft_config.get(USER_ADAPTER) or next(iter(unet.peft_config.values()), None)
         if peft_cfg:
             rank = int(getattr(peft_cfg, "r", 16))
             alpha = float(getattr(peft_cfg, "lora_alpha", rank))

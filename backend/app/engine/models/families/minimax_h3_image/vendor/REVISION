@@ -1,0 +1,2 @@
+huggingface/diffusers@875373ac7f5856071e345a3e394c74efccc6b9e6 src/diffusers/models/transformers/transformer_minimax_h3_image.py
+huggingface/diffusers@875373ac7f5856071e345a3e394c74efccc6b9e6 src/diffusers/models/autoencoders/autoencoder_kl_minimax_h3_image.py

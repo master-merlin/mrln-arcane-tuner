@@ -458,6 +458,33 @@ def test_family_release_nulls_exactly_its_own_te_attrs(
     )
 
 
+@pytest.mark.parametrize(
+    "family,module_path,class_name",
+    [
+        ("minimax_h3", "app.engine.models.families.minimax_h3.driver", "MiniMaxH3Driver"),
+        ("minimax_h3_image", "app.engine.models.families.minimax_h3_image.driver", "MiniMaxH3ImageDriver"),
+    ],
+)
+def test_h3_release_drops_the_attribute_and_the_component_entry(family, module_path, class_name):
+    """The H3 drivers hold the encoder twice (the attribute ``get_text_encoders()`` reads and
+    their entry in the shared component dict), so they are built through their real
+    ``__init__`` + ``assign_components`` rather than the table above's bare instance."""
+    from app.engine.models.registry import registry
+
+    registry.initialize()
+    definition = next(d for d in registry._definitions.values() if d.family == family)
+    driver = _import_driver_class(module_path, class_name)(definition, torch.device("cpu"))
+    components = {"text_encoder": _RecordingTE(), "tokenizer": object()}
+    driver.assign_components(components)
+    assert driver.get_text_encoders(), f"{family}: get_text_encoders() reported nothing"
+
+    driver.release_text_encoders()
+
+    assert driver.text_encoder is None
+    assert driver.get_text_encoders() == {}
+    assert "text_encoder" not in components, f"{family}: the component dict still holds the encoder"
+
+
 def test_ace_step15_release_preserves_condition_stashes():
     """ace_step15's driver-owned CPU stashes (silence_latent /
     null_condition_emb) must survive release -- forward_pass needs them

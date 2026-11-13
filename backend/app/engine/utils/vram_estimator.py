@@ -392,6 +392,50 @@ _FAMILY_PARAMS: dict[str, dict[str, float]] = {
         "text_encoder": 33.36,
         "vae": 5.21,
     },
+    "minimax_h3_image": {
+        # The definition ships concrete on-disk model_size_mb (MiniMaxAI/MiniMax-H3-Image at
+        # 00dd081e), so this table is the fallback-only path, kept in sync with it. These are
+        # checkpoint sizes, not training peaks.
+        #
+        # Measured peaks (torch allocated; 20-step probes on a 96 GB card, 2026-11-12; batch 1,
+        # the 1024 bucket, rank 16, gradient checkpointing on). The analytic estimate sits 11-17 %
+        # above each, never below (test_vram_estimator_minimax_h3_image):
+        # - P1 int8, no block swap: 35 139 MB, 1.48 s/step. PASS.
+        # - P2 bf16, no block swap: 65 684 MB, 0.97 s/step. PASS.
+        # - P3 bf16, 12 of 50 blocks swapped: 51 452 MB, 3.13 s/step. SPILLED: shared GPU
+        #   memory rose 21 GiB, 6.6 GiB beyond the pinned swap blocks. The trainer refuses
+        #   this setting by name; the estimate alone says it fits.
+        # Those ran with distillation handling none. Re-probed 2026-11-13 with adapter (the
+        # frozen training adapter attached; the definition's default until it became both,
+        # adapter plus contrastive guidance, the same day); the estimate still sits
+        # 10-16 % above P1 and P2:
+        # - P1 int8: 35 533 MB, 1.76 s/step. PASS.
+        # - P2 bf16: 66 040 MB, 0.95 s/step. PASS.
+        # - P3 bf16, 12 blocks swapped: 51 739 MB, 3.15 s/step. SPILLED (21.2 GiB shared,
+        #   6.7 GiB beyond the pinned blocks): refused with adapter too.
+        # And with both, the default (P1 and P2 are peaks of 500-step jobs on those settings):
+        # - P1 int8: 35 547 MB, 1.91 s/step. PASS.
+        # - P2 bf16: 66 055 MB, 1.35 s/step. PASS.
+        # - P3 bf16, 12 blocks swapped: 52 217 MB, 4.54 s/step. SPILLED by its step time
+        #   (over twice P2's); refused with both too.
+        # The "beyond the pinned blocks" above is the host allocator's rounding: it pins every
+        # allocation at a power of two, so 12 blocks seat 14.4 GiB and pin 21.0 GiB. P3's VRAM
+        # did not spill; its steps are slow. The swap credit below counts the seated bytes.
+        #
+        # transformer: the vendored MiniMaxH3ImageTransformer2DModel built on the meta device
+        # from transformer_diffusers/config.json has 33,125,224,384 parameters
+        # (transformer_diffusers/diffusion_pytorch_model.safetensors.index.json total_size
+        # 66,289,356,032 bytes: bf16, with proj_in / time_embedder / pdd_proj_out in fp32).
+        # text_encoder: the same Qwen3-VL-32B as minimax_h3,
+        # text_encoder/model.safetensors.index.json total_size 66,714,780,128 bytes bf16
+        # -> 33.36 B.
+        # vae: AutoencoderKLMiniMaxH3Image built the same way from vae_diffusers/config.json
+        # has 584,228,408 parameters, stored fp32 (vae_diffusers/diffusion_pytorch_model.
+        # safetensors, 2,336,973,400 bytes, no index).
+        "transformer": 33.13,
+        "text_encoder": 33.36,
+        "vae": 0.584,
+    },
 }
 
 # Bytes-per-param for common dtypes

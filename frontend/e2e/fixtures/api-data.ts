@@ -737,3 +737,633 @@ export const jobAdaptiveNone = {
     modules: [] as string[],
     heat: {} as Record<string, number | null>,
 };
+
+/* ════════════════════════════════════════════════════════════════════════
+ * Distillation handling (distillation-handling.spec.ts) fixtures.
+ *
+ * Generated from the backend, never edited by hand: resolve_capabilities for
+ * MiniMax-H3-Image (distilled: a training adapter and contrastive guidance)
+ * and SDXL (not distilled), and the training schema's own properties for the
+ * fields the spec checks. backend/tests/engine/test_distillation_config.py
+ * fails when they drift, and its message carries the block to paste here.
+ * The spec serves these through its own routes (the boot table's flux
+ * fixtures above stay as they are).
+ * ════════════════════════════════════════════════════════════════════════ */
+// ── BEGIN GENERATED: distillation handling (backend/tests/engine/test_distillation_config.py) ──
+export const distillationModels = [
+    {
+        "id": "minimax-h3-image-t2i",
+        "name": "MiniMax-H3-Image (text -> image)",
+        "family": "minimax_h3_image",
+        "architecture_params": {}
+    },
+    {
+        "id": "sdxl_base_1.0",
+        "name": "Stable Diffusion XL Base",
+        "family": "sdxl",
+        "architecture_params": {}
+    }
+];
+export const distillationCapabilities = {
+    "minimax-h3-image-t2i": {
+        "archetype": "latent_diffusion",
+        "capabilities": {
+            "has_vae": true,
+            "has_external_te": true,
+            "latent_cache": true,
+            "te_cache": true,
+            "supports_train_te": false,
+            "supports_te_quantization": true,
+            "supports_block_swap": true,
+            "is_video": false,
+            "has_audio": false,
+            "dual_expert": false,
+            "has_image_encoder": false,
+            "is_audio_family": false,
+            "supports_spatial_resolution": true,
+            "supports_dual_sigma_shift": false,
+            "supports_cfg_augmentation": false,
+            "supports_keyframe_marker": false,
+            "supports_min_snr": false,
+            "supports_noise_offset": true,
+            "supports_flow_timestep_sampling": true,
+            "seed_prompt_defaults": true,
+            "control_inputs": 0,
+            "is_edit": false,
+            "supports_augmentation": true,
+            "supports_masking_variants": true,
+            "supports_distillation_handling": true,
+            "distillation": {
+                "step": true,
+                "guidance": true,
+                "handlings": [
+                    "adapter",
+                    "contrastive_guidance",
+                    "both",
+                    "none"
+                ],
+                "default_handling": "both",
+                "has_training_adapter": true,
+                "guidance_scale_defaults": {
+                    "contrastive_guidance": 3.5,
+                    "both": 2.5
+                },
+                "guidance_schedules": [
+                    "constant",
+                    "sigma"
+                ],
+                "guidance_schedule_defaults": {
+                    "contrastive_guidance": "constant",
+                    "both": "sigma"
+                },
+                "default_guidance_schedule": "sigma"
+            }
+        },
+        "field_visibility": {
+            "cache_latents": {
+                "supported": true
+            },
+            "low_vram": {
+                "supported": true
+            },
+            "cache_text_embeddings": {
+                "supported": true
+            },
+            "unload_text_encoder": {
+                "supported": true
+            },
+            "train_text_encoder": {
+                "supported": false,
+                "reason": "no trainable text encoder for this family"
+            },
+            "te_quantization": {
+                "supported": true
+            },
+            "te_quantization_backend": {
+                "supported": true
+            },
+            "block_swap_config": {
+                "supported": true
+            },
+            "h_flip": {
+                "supported": true
+            },
+            "v_flip": {
+                "supported": true
+            },
+            "masking_enabled": {
+                "supported": true
+            },
+            "control_resolution": {
+                "supported": false,
+                "reason": "control resolution only applies to paired edit models"
+            },
+            "num_frames": {
+                "supported": false,
+                "reason": "image model — no video frames"
+            },
+            "target_fps": {
+                "supported": false,
+                "reason": "image model — no video frames"
+            },
+            "video_mode": {
+                "supported": false,
+                "reason": "image model — no video frames"
+            },
+            "i2v_image_dropout": {
+                "supported": false,
+                "reason": "image model — no video frames"
+            },
+            "first_frame_conditioning_probability": {
+                "supported": false,
+                "reason": "image model — no i2v conditioning"
+            },
+            "keyframe_marker": {
+                "supported": false,
+                "reason": "this model has no keyframe embedding"
+            },
+            "train_audio": {
+                "supported": false,
+                "reason": "this model has no audio modality"
+            },
+            "audio_loss_weight": {
+                "supported": false,
+                "reason": "this model has no audio modality"
+            },
+            "sigma_shift_video": {
+                "supported": false,
+                "reason": "this model has a single flow-matching clock — no per-stream sigma shift"
+            },
+            "sigma_shift_audio": {
+                "supported": false,
+                "reason": "this model has a single flow-matching clock — no per-stream sigma shift"
+            },
+            "cfg_augment_scale": {
+                "supported": false,
+                "reason": "this model does not train on the guidance-rearranged output"
+            },
+            "expert_mode": {
+                "supported": false,
+                "reason": "single-transformer model — no expert routing"
+            },
+            "expert_swap_mode": {
+                "supported": false,
+                "reason": "single-transformer model — no expert routing"
+            },
+            "expert_switch_interval": {
+                "supported": false,
+                "reason": "single-transformer model — no expert routing"
+            },
+            "temporal_coverage": {
+                "supported": false,
+                "reason": "image model — no temporal windows"
+            },
+            "window_overlap": {
+                "supported": false,
+                "reason": "image model — no temporal windows"
+            },
+            "max_windows": {
+                "supported": false,
+                "reason": "image model — no temporal windows"
+            },
+            "frame_stride": {
+                "supported": false,
+                "reason": "image model — no video frames to stride"
+            },
+            "sliding_max_clip_seconds": {
+                "supported": false,
+                "reason": "image model — no temporal windows"
+            },
+            "still_resolutions": {
+                "supported": false,
+                "reason": "image model — no still/video split"
+            },
+            "resolutions": {
+                "supported": true
+            },
+            "bucketing_mode": {
+                "supported": true
+            },
+            "duration_s": {
+                "supported": false,
+                "reason": "this model has no audio-generation modality"
+            },
+            "genre_ratio": {
+                "supported": false,
+                "reason": "this model has no audio-generation modality"
+            },
+            "min_snr_gamma": {
+                "supported": false,
+                "reason": "Min-SNR loss weighting applies to SDXL only"
+            },
+            "noise_offset": {
+                "supported": true
+            },
+            "timestep_sampling": {
+                "supported": true
+            },
+            "fixed_sigmas": {
+                "supported": true
+            },
+            "logit_normal_mu": {
+                "supported": true
+            },
+            "logit_normal_sigma": {
+                "supported": true
+            },
+            "model_shift_std": {
+                "supported": true
+            },
+            "timestep_uniform_prob": {
+                "supported": true
+            },
+            "mode_scale": {
+                "supported": true
+            },
+            "flux_shift_base": {
+                "supported": true
+            },
+            "flux_shift_max": {
+                "supported": true
+            },
+            "radc_start": {
+                "supported": true
+            },
+            "radc_end": {
+                "supported": true
+            },
+            "radc_width": {
+                "supported": true
+            },
+            "radc_res_influence": {
+                "supported": true
+            },
+            "distillation_handling": {
+                "supported": true
+            },
+            "distillation_guidance_scale": {
+                "supported": true
+            },
+            "distillation_guidance_schedule": {
+                "supported": true
+            }
+        },
+        "defaults": {
+            "resolution": 1024,
+            "scheduler": "flow_match",
+            "learning_rate": 0.0001,
+            "mixed_precision": "bf16",
+            "num_inference_steps": 6,
+            "guidance_scale": 1.0,
+            "is_distilled": true,
+            "timestep_sampling": "fixed_sigmas",
+            "fixed_sigmas": [
+                1.0,
+                0.9675236940383911,
+                0.8875485062599182,
+                0.75,
+                0.5327739119529724,
+                0.23200887441635132
+            ],
+            "distillation_handling": "both",
+            "distillation_guidance_schedule": "sigma",
+            "distillation_guidance_scale": 2.5
+        }
+    },
+    "sdxl_base_1.0": {
+        "archetype": "latent_diffusion",
+        "capabilities": {
+            "has_vae": true,
+            "has_external_te": true,
+            "latent_cache": true,
+            "te_cache": true,
+            "supports_train_te": true,
+            "supports_te_quantization": true,
+            "supports_block_swap": true,
+            "is_video": false,
+            "has_audio": false,
+            "dual_expert": false,
+            "has_image_encoder": false,
+            "is_audio_family": false,
+            "supports_spatial_resolution": true,
+            "supports_dual_sigma_shift": false,
+            "supports_cfg_augmentation": false,
+            "supports_keyframe_marker": false,
+            "supports_min_snr": true,
+            "supports_noise_offset": true,
+            "supports_flow_timestep_sampling": false,
+            "seed_prompt_defaults": false,
+            "control_inputs": 0,
+            "is_edit": false,
+            "supports_augmentation": true,
+            "supports_masking_variants": true,
+            "supports_distillation_handling": false
+        },
+        "field_visibility": {
+            "cache_latents": {
+                "supported": true
+            },
+            "low_vram": {
+                "supported": true
+            },
+            "cache_text_embeddings": {
+                "supported": true
+            },
+            "unload_text_encoder": {
+                "supported": true
+            },
+            "train_text_encoder": {
+                "supported": true
+            },
+            "te_quantization": {
+                "supported": true
+            },
+            "te_quantization_backend": {
+                "supported": true
+            },
+            "block_swap_config": {
+                "supported": true
+            },
+            "h_flip": {
+                "supported": true
+            },
+            "v_flip": {
+                "supported": true
+            },
+            "masking_enabled": {
+                "supported": true
+            },
+            "control_resolution": {
+                "supported": false,
+                "reason": "control resolution only applies to paired edit models"
+            },
+            "num_frames": {
+                "supported": false,
+                "reason": "image model — no video frames"
+            },
+            "target_fps": {
+                "supported": false,
+                "reason": "image model — no video frames"
+            },
+            "video_mode": {
+                "supported": false,
+                "reason": "image model — no video frames"
+            },
+            "i2v_image_dropout": {
+                "supported": false,
+                "reason": "image model — no video frames"
+            },
+            "first_frame_conditioning_probability": {
+                "supported": false,
+                "reason": "image model — no i2v conditioning"
+            },
+            "keyframe_marker": {
+                "supported": false,
+                "reason": "this model has no keyframe embedding"
+            },
+            "train_audio": {
+                "supported": false,
+                "reason": "this model has no audio modality"
+            },
+            "audio_loss_weight": {
+                "supported": false,
+                "reason": "this model has no audio modality"
+            },
+            "sigma_shift_video": {
+                "supported": false,
+                "reason": "this model has a single flow-matching clock — no per-stream sigma shift"
+            },
+            "sigma_shift_audio": {
+                "supported": false,
+                "reason": "this model has a single flow-matching clock — no per-stream sigma shift"
+            },
+            "cfg_augment_scale": {
+                "supported": false,
+                "reason": "this model does not train on the guidance-rearranged output"
+            },
+            "expert_mode": {
+                "supported": false,
+                "reason": "single-transformer model — no expert routing"
+            },
+            "expert_swap_mode": {
+                "supported": false,
+                "reason": "single-transformer model — no expert routing"
+            },
+            "expert_switch_interval": {
+                "supported": false,
+                "reason": "single-transformer model — no expert routing"
+            },
+            "temporal_coverage": {
+                "supported": false,
+                "reason": "image model — no temporal windows"
+            },
+            "window_overlap": {
+                "supported": false,
+                "reason": "image model — no temporal windows"
+            },
+            "max_windows": {
+                "supported": false,
+                "reason": "image model — no temporal windows"
+            },
+            "frame_stride": {
+                "supported": false,
+                "reason": "image model — no video frames to stride"
+            },
+            "sliding_max_clip_seconds": {
+                "supported": false,
+                "reason": "image model — no temporal windows"
+            },
+            "still_resolutions": {
+                "supported": false,
+                "reason": "image model — no still/video split"
+            },
+            "resolutions": {
+                "supported": true
+            },
+            "bucketing_mode": {
+                "supported": true
+            },
+            "duration_s": {
+                "supported": false,
+                "reason": "this model has no audio-generation modality"
+            },
+            "genre_ratio": {
+                "supported": false,
+                "reason": "this model has no audio-generation modality"
+            },
+            "min_snr_gamma": {
+                "supported": true
+            },
+            "noise_offset": {
+                "supported": true
+            },
+            "timestep_sampling": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "fixed_sigmas": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "logit_normal_mu": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "logit_normal_sigma": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "model_shift_std": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "timestep_uniform_prob": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "mode_scale": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "flux_shift_base": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "flux_shift_max": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "radc_start": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "radc_end": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "radc_width": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "radc_res_influence": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "distillation_handling": {
+                "supported": false,
+                "reason": "this model is not distilled — it trains without a distillation handling"
+            },
+            "distillation_guidance_scale": {
+                "supported": false,
+                "reason": "this model is not distilled — it trains without a distillation handling"
+            },
+            "distillation_guidance_schedule": {
+                "supported": false,
+                "reason": "this model is not distilled — it trains without a distillation handling"
+            }
+        },
+        "defaults": {
+            "resolution": 1024,
+            "scheduler": "euler_a",
+            "learning_rate": 0.0001,
+            "num_inference_steps": 50,
+            "guidance_scale": 5.0
+        }
+    }
+};
+export const distillationSchemaProperties = {
+    "timestep_sampling": {
+        "default": "logit_normal",
+        "description": "Timestep sampling strategy for training (HiDream-O1 runs flux_shift/model_shift as uniform and ignores radc_res_influence; SDXL hides it)",
+        "enum": [
+            "logit_normal",
+            "uniform",
+            "sigmoid",
+            "cosmap",
+            "mode",
+            "flux_shift",
+            "radc",
+            "model_shift",
+            "fixed_sigmas"
+        ],
+        "group": "STRATEGY",
+        "title": "Timestep Sampling",
+        "type": "string"
+    },
+    "fixed_sigmas": {
+        "anyOf": [
+            {
+                "items": {
+                    "type": "number"
+                },
+                "type": "array"
+            },
+            {
+                "type": "null"
+            }
+        ],
+        "default": null,
+        "depends_on": "timestep_sampling:fixed_sigmas",
+        "description": "The sigmas fixed_sigmas draws from, uniformly (each in (0, 1]; a model distilled to a fixed schedule trains on its levels)",
+        "group": "STRATEGY",
+        "title": "Fixed Sigmas"
+    },
+    "distillation_handling": {
+        "anyOf": [
+            {
+                "enum": [
+                    "adapter",
+                    "contrastive_guidance",
+                    "both",
+                    "none"
+                ],
+                "type": "string"
+            },
+            {
+                "type": "null"
+            }
+        ],
+        "default": null,
+        "description": "How training compensates for a distilled model: a frozen training adapter, contrastive guidance, both, or none (empty = the model's default)",
+        "group": "STRATEGY",
+        "title": "Distillation handling"
+    },
+    "distillation_guidance_scale": {
+        "anyOf": [
+            {
+                "type": "number"
+            },
+            {
+                "type": "null"
+            }
+        ],
+        "default": null,
+        "depends_on": "distillation_handling:contrastive_guidance,both",
+        "description": "Contrastive guidance: the target is u + s*(v - u), u the blank-prompt prediction; 1 trains as without guidance (empty = the model's default)",
+        "group": "STRATEGY",
+        "max": 10.0,
+        "min": 1.0,
+        "step": 0.1,
+        "title": "Guidance target"
+    },
+    "distillation_guidance_schedule": {
+        "anyOf": [
+            {
+                "enum": [
+                    "constant",
+                    "sigma"
+                ],
+                "type": "string"
+            },
+            {
+                "type": "null"
+            }
+        ],
+        "default": null,
+        "depends_on": "distillation_handling:contrastive_guidance,both",
+        "description": "constant: s at every noise level; sigma: 1 + (s - 1) * sigma, weaker toward clean (empty = constant)",
+        "group": "STRATEGY",
+        "title": "Guidance schedule"
+    }
+};
+// ── END GENERATED: distillation handling ──

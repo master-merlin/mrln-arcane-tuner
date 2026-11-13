@@ -17,7 +17,6 @@ exactly this assignment shape.
 
 from __future__ import annotations
 
-import gc
 import hashlib
 import json
 import os
@@ -28,21 +27,10 @@ import torch
 from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.core.text_encoding import TextEncoderOutput
 
+from app.engine.models.families.minimax_h3_shared import text as h3_text
+
 from .driver import MiniMaxH3Driver
 from .settings import H3EffectiveSettings
-
-
-def _host_peak_bytes() -> int | None:
-    """Peak host RSS of this process (the TE loading peak the plan records);
-    ``psutil`` is a pinned dependency, but a missing attribute (non-Windows
-    lacks ``peak_wset``) degrades to the current RSS, never to a raise."""
-    try:
-        import psutil
-
-        info = psutil.Process().memory_info()
-        return int(getattr(info, "peak_wset", None) or info.rss)
-    except Exception:  # noqa: BLE001 — a metric, never a failure
-        return None
 
 
 class MiniMaxH3Trainer(GenericTrainingPipeline):
@@ -331,28 +319,9 @@ class MiniMaxH3Trainer(GenericTrainingPipeline):
         (access violation inside ``Module.to("cpu")``, no Python exception).
         VRAM is freed by dropping EVERY reference — trainer alias, component
         dict, driver attribute + dict — before ``empty_cache()``; pinned by
-        ``test_release_drops_every_reference_to_the_encoder``."""
-        if self._te_unloaded:
-            return
-        weight_bytes = self.driver.text_encoder_weight_bytes()
-        self.components.pop("text_encoder", None)
-        self.driver.release_text_encoders()
-        if not isinstance(getattr(type(self), "text_encoder", None), property):
-            self.text_encoder = None
-        self._te_unloaded = True
-        gc.collect()
-        cuda = torch.cuda.is_available()
-        if cuda:
-            torch.cuda.empty_cache()
-        # Logged AFTER the cleanup: `cuda_allocated_after_bytes` is the number
-        # that says whether dropping the references actually freed the device.
-        self.logger.info(
-            "text_encoder released",
-            weight_bytes=weight_bytes,
-            host_peak_bytes=_host_peak_bytes(),
-            cuda_peak_bytes=torch.cuda.max_memory_allocated() if cuda else None,
-            cuda_allocated_after_bytes=torch.cuda.memory_allocated() if cuda else None,
-        )
+        ``test_release_drops_every_reference_to_the_encoder``. The release
+        itself is shared with the image model (``minimax_h3_shared.text``)."""
+        h3_text.release_text_encoder(self)
 
     # ── Latent-cache fingerprint — the production seam (plan row 2.3) ─────
     #

@@ -285,6 +285,17 @@ class PipelineBaseMixin(BaseTrainer):
         """
         return self.driver.prepare_noise(noise)
 
+    def noise_fraction(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """The noise fraction sigma in ``[0, 1]`` (1 = pure noise) of each of ``timesteps``,
+        on this family's own clock (0-1000, sigma itself, or ``1 - sigma``).
+
+        Contrastive guidance's ``sigma`` schedule reads it. The base pipeline does not know a
+        family's clock, so it raises; ``setup()`` refuses the ``sigma`` schedule for a family
+        that does not implement it (``constant`` needs no sigma)."""
+        raise NotImplementedError(
+            f"{type(self).__name__} does not implement noise_fraction(timesteps): its clock is unknown"
+        )
+
     def compute_loss_weight(self, timesteps: torch.Tensor) -> torch.Tensor | None:
         """Optionally return per-sample loss weights (e.g. Min-SNR gamma).
 
@@ -473,6 +484,48 @@ class PipelineBaseMixin(BaseTrainer):
         self.text_cache: dict[str, torch.Tensor] = {}
         self._te_unloaded = False
         self._setup_family()
+        self._setup_distillation()
+
+    def _setup_distillation(self) -> None:
+        """Resolve the job's distillation handling against the definition, and fetch and
+        verify the training adapter when it is in play, before any weight loads.
+
+        ``run_trainer.py`` awaits ``setup()`` before ``load_model()``, so a handling the
+        definition does not allow, a missing adapter file or a wrong sha256 refuses the job
+        before the transformer or the text encoder loads. ``_apply_peft`` only attaches the
+        file verified here. A definition without a ``distillation`` block resolves to
+        ``none`` and nothing else happens."""
+        from app.engine.core import training_adapter
+        from app.engine.core.definitions import ResolvedDistillation, resolve_distillation
+
+        definition = getattr(self, "definition", None)
+        self.distillation = (
+            resolve_distillation(definition, self.config) if definition is not None
+            else ResolvedDistillation("none", None, None)
+        )
+        if (
+            self.distillation.uses_contrastive_guidance
+            and self.distillation.guidance_schedule == "sigma"
+            and type(self).noise_fraction is PipelineBaseMixin.noise_fraction
+        ):
+            raise ValueError(
+                f"{type(self).__name__}: distillation_guidance_schedule='sigma' needs the family's "
+                "noise_fraction(timesteps), which it does not implement; use the constant schedule"
+            )
+        self._training_adapter_path = None
+        self._training_adapter_key_map = None
+        if self.distillation.uses_adapter:
+            spec = definition.distillation.training_adapter
+            self._training_adapter_key_map = training_adapter.family_key_map(definition)
+            self._training_adapter_path = training_adapter.fetch_verified(spec)
+        if self.distillation.handling != "none":
+            self.logger.info(
+                "distillation_handling",
+                handling=self.distillation.handling,
+                guidance_scale=self.distillation.guidance_scale,
+                guidance_schedule=self.distillation.guidance_schedule,
+                training_adapter=self._training_adapter_path,
+            )
 
     @abstractmethod
     def _setup_family(self) -> None:

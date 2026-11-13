@@ -135,12 +135,20 @@ ARCHETYPES: dict[str, Archetype] = {
 # schema order) so a sub-field added later is gated with the rest, never silently
 # shown to a family that ignores it: the mode itself plus every parameter one of
 # the ``TimestepSampler`` modes reads.
-_FLOW_TIMESTEP_NAMES = frozenset({"timestep_sampling", "timestep_uniform_prob", "mode_scale"})
+_FLOW_TIMESTEP_NAMES = frozenset({"timestep_sampling", "timestep_uniform_prob", "mode_scale", "fixed_sigmas"})
 _FLOW_TIMESTEP_PREFIXES = ("radc_", "flux_shift_", "model_shift_", "logit_normal_")
 FLOW_TIMESTEP_FIELDS: tuple[str, ...] = tuple(
     name
     for name in BaseTrainingConfig.model_fields
     if name in _FLOW_TIMESTEP_NAMES or name.startswith(_FLOW_TIMESTEP_PREFIXES)
+)
+
+# The run-config fields of distillation handling, shown only for a definition that declares a
+# ``distillation`` block (``supports_distillation_handling``, set per definition below).
+DISTILLATION_FIELDS: tuple[str, ...] = (
+    "distillation_handling",
+    "distillation_guidance_scale",
+    "distillation_guidance_schedule",
 )
 
 # Maps a config field -> the capability flag that gates it + a human reason.
@@ -279,6 +287,11 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
         )
         for name in FLOW_TIMESTEP_FIELDS
     ),
+    # ── Distillation handling (a definition's ``distillation`` block) ─────
+    *(
+        (name, "supports_distillation_handling", "this model is not distilled — it trains without a distillation handling")
+        for name in DISTILLATION_FIELDS
+    ),
 ]
 
 
@@ -314,6 +327,77 @@ def _coerce_number(value):
         return float(value)
     except ValueError:
         return value
+
+
+def _timestep_defaults(definition) -> dict:
+    """The form defaults a definition's family timestep default implies.
+
+    A definition names its default draw in ``architecture_params`` as ``timestep.default_mode``
+    (and, for ``fixed_sigmas``, its list as ``timestep.fixed_sigmas``); its trainer applies them
+    to a config that carries no ``timestep_sampling``. The form reads ``defaults``, so the same
+    keys are derived into it here, and a ``defaults`` block that says otherwise is refused: the
+    job default and the form default are one value, never two that can drift apart.
+    """
+    from app.engine.strategies.timestep_sampling import TimestepSampler, validate_fixed_sigmas
+
+    arch_params = getattr(definition, "architecture_params", None) or {}
+    mode = arch_params.get("timestep.default_mode")
+    if mode is None:
+        return {}
+    if mode not in TimestepSampler.SUPPORTED_MODES:
+        raise ValueError(f"{getattr(definition, 'id', '?')}: timestep.default_mode {mode!r} is no timestep mode")
+    derived: dict = {"timestep_sampling": mode}
+    if mode == "fixed_sigmas" or "timestep.fixed_sigmas" in arch_params:
+        derived["fixed_sigmas"] = validate_fixed_sigmas(arch_params.get("timestep.fixed_sigmas"))
+    own = definition.defaults or {}
+    for key, value in derived.items():
+        source = "timestep.default_mode" if key == "timestep_sampling" else "timestep.fixed_sigmas"
+        if key in own and own[key] != value:
+            raise ValueError(
+                f"{getattr(definition, 'id', '?')}: defaults.{key} {own[key]!r} disagrees with {source} {value!r}"
+            )
+    return derived
+
+
+def _distillation_descriptor(definition) -> dict | None:
+    """What the Training form needs to offer a definition's distillation handling, or None
+    for a definition that is not distilled: the handlings it allows (in display order), the
+    default one, the guidance target each guidance handling starts from, and the schedules."""
+    from app.engine.core.definitions import DEFAULT_GUIDANCE_SCHEDULE, GUIDANCE_SCHEDULES, DistillationSpec
+
+    spec = getattr(definition, "distillation", None)
+    if not isinstance(spec, DistillationSpec):
+        return None
+    handlings = spec.allowed_handlings()
+    return {
+        "step": spec.step,
+        "guidance": spec.guidance,
+        "handlings": handlings,
+        "default_handling": spec.default_handling,
+        "has_training_adapter": spec.training_adapter is not None,
+        "guidance_scale_defaults": {
+            h: spec.default_guidance_scale(h) for h in handlings if h in ("contrastive_guidance", "both")
+        },
+        "guidance_schedules": list(GUIDANCE_SCHEDULES),
+        "guidance_schedule_defaults": {
+            h: spec.default_guidance_schedule(h) for h in handlings if h in ("contrastive_guidance", "both")
+        },
+        # The default handling's schedule (constant when it has no guidance).
+        "default_guidance_schedule": spec.default_guidance_schedule(spec.default_handling) or DEFAULT_GUIDANCE_SCHEDULE,
+    }
+
+
+def _distillation_defaults(descriptor: dict | None) -> dict:
+    """The form defaults of a distilled definition: its default handling and that handling's
+    schedule (constant without guidance), and the guidance target when it uses guidance."""
+    if descriptor is None:
+        return {}
+    handling = descriptor["default_handling"]
+    out = {"distillation_handling": handling, "distillation_guidance_schedule": descriptor["default_guidance_schedule"]}
+    scale = descriptor["guidance_scale_defaults"].get(handling)
+    if scale is not None:
+        out["distillation_guidance_scale"] = scale
+    return out
 
 
 def resolve_capabilities(definition) -> dict:
@@ -356,7 +440,17 @@ def resolve_capabilities(definition) -> dict:
     caps["supports_augmentation"] = not is_edit and not is_audio
     caps["supports_masking_variants"] = not is_edit and not is_audio
 
-    merged = {**arch.config_defaults, **(definition.defaults or {})}
+    distillation = _distillation_descriptor(definition)
+    caps["supports_distillation_handling"] = distillation is not None
+    if distillation is not None:
+        caps["distillation"] = distillation
+
+    merged = {
+        **arch.config_defaults,
+        **(definition.defaults or {}),
+        **_timestep_defaults(definition),
+        **_distillation_defaults(distillation),
+    }
     defaults = {k: _coerce_number(v) for k, v in merged.items()}
     return {
         "archetype": arch.id,

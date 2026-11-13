@@ -89,6 +89,15 @@ const timestep = (c: Form) => ({
     mode: value(c, 'timestep_sampling'), mu: value(c, 'logit_normal_mu'), sigma: value(c, 'logit_normal_sigma'),
 });
 
+function submitted(c: Form): Record<string, unknown> {
+    let payload: Record<string, unknown> | undefined;
+    const sub = c.configSubmitted.subscribe((cfg: Record<string, unknown>) => { payload = cfg; });
+    c.onSubmit();
+    sub.unsubscribe();
+    if (!payload) throw new Error('the form did not submit');
+    return payload;
+}
+
 /** Apply a template the way the selector does, then let the 1.5 s template guard lapse. */
 function applyTemplate(c: Form, config: Record<string, unknown>) {
     c.onTemplateApplied({ config, isDefault: false });
@@ -130,6 +139,21 @@ describe('TrainingDynamicConfig: a definition switch re-seeds what it seeded', (
         c.applyDefinitionDefaults(MOSS);
         expect(c.getFormArray('fixed_sigmas').value).toEqual([]);
         expect(timestep(c)).toEqual({ mode: 'logit_normal', mu: 1.09, sigma: 0.95 });
+    });
+
+    it('FLUX.3 -> MOSS submits the re-seeded mu and sigma (their mode-gated controls are enabled again)', () => {
+        const c = build();
+        c.patchFormRecursive(c.form, { datasets: [{ dataset_name: 'foxes' }] });
+        c.applyDefinitionDefaults(FLUX3);
+        // The switch itself is a form change: it re-evaluates the mode-gated controls (mu and
+        // sigma go disabled under uniform) before the new definition's defaults arrive.
+        c.form.get('definition_id')!.setValue('moss-image-base');
+        expect('logit_normal_mu' in submitted(c)).toBe(false); // gated off under uniform
+        c.applyDefinitionDefaults(MOSS);
+        const payload = submitted(c);
+        expect(payload['timestep_sampling']).toBe('logit_normal');
+        expect(payload['logit_normal_mu']).toBe(1.09);
+        expect(payload['logit_normal_sigma']).toBe(0.95);
     });
 
     it('a seeded value marks nothing dirty', () => {

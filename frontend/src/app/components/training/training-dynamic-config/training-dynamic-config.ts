@@ -1011,6 +1011,9 @@ export class TrainingDynamicConfigComponent {
     // Refresh the VRAM estimate / preview once, without re-enabling auto-save
     // (the estimate pipeline only refreshes the estimate, never saves).
     if (patchedAny) {
+      // The writes above emit nothing, so a re-seeded parent (a switch from `uniform` back to
+      // `logit_normal`) would leave its gated controls disabled, and out of the submitted value.
+      this._updateDisabledStates?.();
       this._updateLoraNamePreview();
       this.vramEstimation.schedule();
     }

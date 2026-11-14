@@ -54,6 +54,15 @@ logger = structlog.get_logger(__name__)
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
 
 
+class _TargetLargerThanSource(ValueError):
+    """A crop target wider or taller than its source: a bad request (400).
+
+    Its own type so ``crop_media`` can let exactly this check through as a
+    ``ValueError``; every other failure inside the crop, a ``ValueError`` PIL
+    raises included, stays a ``RuntimeError``.
+    """
+
+
 class Dataset(BaseModel):
     id: str
     name: str
@@ -2366,7 +2375,9 @@ class DatasetManager:
                     return # Already correct
                     
                 if target_w > current_w or target_h > current_h:
-                    raise ValueError("Target dimensions cannot be larger than source.")
+                    raise _TargetLargerThanSource(
+                        "Target dimensions cannot be larger than source."
+                    )
                 
                 # Calculate Crop Box (left, top, right, bottom)
                 if crop_x is not None and crop_y is not None:
@@ -2403,7 +2414,9 @@ class DatasetManager:
                 # Save (Overwrite)
                 # Maintain format if possible, or save as original
                 cropped.save(full_path, quality=95)
-                
+
+        except _TargetLargerThanSource:
+            raise  # the client's request, not a failed crop: the route's 400
         except Exception as e:
              raise RuntimeError(f"Failed to crop image: {e}")
 

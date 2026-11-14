@@ -303,6 +303,72 @@ def test_a_non_finite_loss_is_written_as_null(tmp_path):
     record = json.loads((tmp_path / "validation_metrics.jsonl").read_text(encoding="utf-8"))
     assert record["band_loss"] == [None] * BANDS
     assert record["mean"] is None
+    assert record["image_band_loss"] == [[[None] * BANDS]] * record["images"]
+
+
+# ── Each image's own losses in the record ────────────────────────────────────
+
+# The stub's numbers from the code before per-image losses were kept (one noise draw).
+_BEFORE = {
+    "images": 3,
+    "band_centres": [0.125, 0.375, 0.625, 0.875],
+    "band_loss": [1.0015891393025715, 0.8958168824513754, 0.8101021448771158, 0.7444446484247843],
+    "mean": 0.8629882037639618,
+    "worst_band": 0,
+}
+_TODAYS_FIELDS = {"step", "images", "band_centres", "band_loss", "mean", "worst_band", "seconds"}
+
+
+def _written(tmp_path):
+    return json.loads((tmp_path / "validation_metrics.jsonl").read_text(encoding="utf-8").splitlines()[-1])
+
+
+def test_one_draw_leaves_todays_aggregates_unchanged(tmp_path):
+    _run(_pipeline(tmp_path))
+    record = _written(tmp_path)
+    assert {key: record[key] for key in _BEFORE} == _BEFORE
+
+
+def test_the_record_keeps_each_images_losses_per_draw_and_band(tmp_path):
+    t = _pipeline(tmp_path)
+    _run(t)
+    record = _written(tmp_path)
+    keys = sorted(r["key"] for r in t._validation_split.representatives)
+    assert record["version"] == 2
+    assert record["image_keys"] == keys
+    assert record["noise_draws"] == 1
+    losses = record["image_band_loss"]
+    assert [len(losses), {len(i) for i in losses}, {len(d) for i in losses for d in i}] == [len(keys), {1}, {BANDS}]
+    for band in range(BANDS):
+        mean = sum(image[0][band] for image in losses) / len(losses)
+        assert mean == pytest.approx(record["band_loss"][band], abs=1e-12)
+
+
+def test_the_image_losses_follow_the_key_order_whatever_the_representative_order(tmp_path):
+    t = _pipeline(tmp_path)
+    _run(t)
+    in_order = _written(tmp_path)["image_band_loss"]
+    t._validation_split.representatives.reverse()
+    _run(t, step=1)
+    assert _written(tmp_path)["image_band_loss"] == in_order
+
+
+@pytest.mark.parametrize(
+    ("seed", "expected"), [(42, 42), ("42", 42), (None, None), ("", None), ("not a seed", None)]
+)
+def test_the_record_names_the_seed_the_run_applied(tmp_path, seed, expected):
+    config = {} if seed is None else {"seed": seed}
+    _run(_pipeline(tmp_path, **config))
+    assert _written(tmp_path)["train_seed"] == expected
+
+
+def test_the_event_carries_todays_fields_only(tmp_path):
+    t = _pipeline(tmp_path)
+    _run(t)
+    kind, event = t._log_writer.emit.call_args.args
+    assert kind == "validation"
+    assert set(event) == _TODAYS_FIELDS
+    assert {key: event[key] for key in _BEFORE} == _BEFORE
 
 
 # ── Through the real loop ────────────────────────────────────────────────────

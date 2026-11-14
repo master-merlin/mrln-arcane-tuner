@@ -16,6 +16,7 @@ from typing import Any
 import numpy as np
 import torch
 
+from app.engine.components.checkpoints import _run_seed
 from app.engine.core.pipeline.hessian_estimate import _capture_random_state, _restore_random_state
 from app.engine.core.pipeline.noise_bands import band_centres, timesteps_for_bands
 from app.engine.core.training_adapter import adapter_off as training_adapter_off
@@ -76,7 +77,10 @@ def _band_timesteps(trainer, count: int, prepared: torch.Tensor) -> torch.Tensor
     return known[shape]
 
 
-def _image_band_losses(trainer, representative: dict[str, Any], bands: int, split_seed: int) -> list[float]:
+def _image_band_losses(
+    trainer, representative: dict[str, Any], bands: int, split_seed: int
+) -> list[list[float]]:
+    """One image's losses, ``[draw][band]``."""
     # The original variant, with its caption: no masked draw and no caption dropout.
     _seed_the_streams(split_seed, representative["key"])
     item = {**representative, "has_masked": False, "dropout_rate": 0.0}
@@ -98,20 +102,46 @@ def _image_band_losses(trainer, representative: dict[str, Any], bands: int, spli
             prediction = trainer.forward_pass(noisy_input, timestep, text_emb, batch)
             target = trainer.compute_target(prepared_latents, prepared_noise, timestep)
         losses.append(torch.nn.functional.mse_loss(prediction.float(), target.float()).item())
-    return losses
+    return [losses]
 
 
-def _record(step: int, per_image: list[list[float]], bands: int, seconds: float) -> dict[str, Any]:
-    band_loss = [sum(losses[b] for losses in per_image) / len(per_image) for b in range(bands)]
+# The fields a pass emits over the log stream; the per-image detail goes to the file only.
+_EVENT_FIELDS = ("step", "images", "band_centres", "band_loss", "mean", "worst_band", "seconds")
+
+
+def _finite_or_none(loss: float) -> float | None:
+    return loss if math.isfinite(loss) else None
+
+
+def _record(
+    step: int, per_image: dict[str, list[list[float]]], bands: int, seconds: float, train_seed: int | None
+) -> dict[str, Any]:
+    """The pass's record. ``per_image`` maps each image key to its ``[draw][band]`` losses.
+
+    ``band_loss`` is the mean over images and draws, so with one draw it is today's number.
+    """
+    keys = sorted(per_image)
+    draws = len(per_image[keys[0]])
+    band_loss = [
+        sum(sum(per_image[key][d][b] for d in range(draws)) / draws for key in keys) / len(keys)
+        for b in range(bands)
+    ]
     finite = all(math.isfinite(loss) for loss in band_loss)
     return {
         "step": step,
-        "images": len(per_image),
+        "images": len(keys),
         "band_centres": band_centres(bands).tolist(),
-        "band_loss": [loss if math.isfinite(loss) else None for loss in band_loss],
+        "band_loss": [_finite_or_none(loss) for loss in band_loss],
         "mean": sum(band_loss) / bands if finite else None,
         "worst_band": band_loss.index(max(band_loss)) if finite else None,
         "seconds": round(seconds, 3),
+        "version": 2,
+        "image_keys": keys,
+        "noise_draws": draws,
+        "train_seed": train_seed,
+        "image_band_loss": [
+            [[_finite_or_none(loss) for loss in draw] for draw in per_image[key]] for key in keys
+        ],
     }
 
 
@@ -139,10 +169,10 @@ def run_validation_pass(trainer, split, step: int) -> dict[str, Any]:
             swapped = True
         # A training adapter is off here too, and back on in the context's own finally.
         with torch.no_grad(), training_adapter_off(model):
-            per_image = [
-                _image_band_losses(trainer, representative, bands, split_seed)
+            per_image = {
+                representative["key"]: _image_band_losses(trainer, representative, bands, split_seed)
                 for representative in split.representatives
-            ]
+            }
     finally:
         if swapped:
             ema.restore()
@@ -152,12 +182,12 @@ def run_validation_pass(trainer, split, step: int) -> dict[str, Any]:
             module.training = training
         _restore_random_state(random_state)
 
-    record = _record(step, per_image, bands, time.perf_counter() - started)
+    record = _record(step, per_image, bands, time.perf_counter() - started, _run_seed(trainer.config))
     path = os.path.join(trainer.checkpoint_manager.output_dir, "validation_metrics.jsonl")
     with open(path, "a", encoding="utf-8") as metrics:
         metrics.write(json.dumps(record) + "\n")
     trainer.logger.info("validation_pass", step=step, mean=record["mean"], seconds=record["seconds"])
     log_writer = getattr(trainer, "_log_writer", None)
     if log_writer is not None:
-        log_writer.emit("validation", record)
+        log_writer.emit("validation", {field: record[field] for field in _EVENT_FIELDS})
     return record

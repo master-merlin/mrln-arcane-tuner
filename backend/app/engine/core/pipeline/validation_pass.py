@@ -1,7 +1,8 @@
 """One validation pass: the held-out images at fixed noise, and no trace in the run.
 
 Numbers from different steps and different runs have to be comparable. So a pass uses
-one fixed representative per source image, noise fixed by the split seed and the image,
+one fixed representative per source image, noise fixed by the split seed, the image and
+the draw (``validation_noise_draws`` of them, draw 0 the same whatever the count),
 the family's own hooks for everything else, and plain MSE: a family's loss weighting
 can depend on progress, and would make two passes incomparable.
 """
@@ -32,9 +33,17 @@ def _image_seed(split_seed: int, key: str) -> int:
     return int.from_bytes(digest[:8], "big") >> 1
 
 
-def fixed_noise(split_seed: int, key: str, like: torch.Tensor) -> torch.Tensor:
-    """The noise for one image: the same in every pass and every arm."""
-    generator = torch.Generator(device="cpu").manual_seed(_image_seed(split_seed, key))
+def _draw_seed(split_seed: int, key: str, draw: int) -> int:
+    """Draw 0 is the image's own seed; a later draw hashes the draw in, with a separator no key holds."""
+    if draw == 0:
+        return _image_seed(split_seed, key)
+    digest = hashlib.sha256(f"{split_seed}\0{key}\0{draw}".encode()).digest()
+    return int.from_bytes(digest[:8], "big") >> 1
+
+
+def fixed_noise(split_seed: int, key: str, like: torch.Tensor, draw: int = 0) -> torch.Tensor:
+    """The noise of one draw for one image: the same in every pass and every arm."""
+    generator = torch.Generator(device="cpu").manual_seed(_draw_seed(split_seed, key, draw))
     return torch.randn(like.shape, generator=generator, dtype=like.dtype).to(like.device)
 
 
@@ -78,9 +87,9 @@ def _band_timesteps(trainer, count: int, prepared: torch.Tensor) -> torch.Tensor
 
 
 def _image_band_losses(
-    trainer, representative: dict[str, Any], bands: int, split_seed: int
+    trainer, representative: dict[str, Any], bands: int, split_seed: int, draws: int = 1
 ) -> list[list[float]]:
-    """One image's losses, ``[draw][band]``."""
+    """One image's losses, ``[draw][band]``: latents and text once, then each draw's noise."""
     # The original variant, with its caption: no masked draw and no caption dropout.
     _seed_the_streams(split_seed, representative["key"])
     item = {**representative, "has_masked": False, "dropout_rate": 0.0}
@@ -89,20 +98,23 @@ def _image_band_losses(
     trainer._attach_conditioning(batch, latents)
     text_emb = trainer.encode_text(batch["captions"], trainer.autocast_dtype, batch=batch)
 
-    noise = fixed_noise(split_seed, representative["key"], latents)
     prepared_latents = trainer.prepare_latents_for_training(latents)
-    prepared_noise = trainer.prepare_noise_for_training(noise)
     timesteps = _band_timesteps(trainer, bands, prepared_latents).to(trainer.device)
 
-    losses = []
-    for band in range(bands):
-        timestep = timesteps[band].reshape(1)
-        with torch.autocast("cuda", dtype=trainer.autocast_dtype, enabled=trainer.use_amp):
-            noisy_input = trainer.add_noise(prepared_latents, prepared_noise, timestep)
-            prediction = trainer.forward_pass(noisy_input, timestep, text_emb, batch)
-            target = trainer.compute_target(prepared_latents, prepared_noise, timestep)
-        losses.append(torch.nn.functional.mse_loss(prediction.float(), target.float()).item())
-    return [losses]
+    per_draw = []
+    for draw in range(draws):
+        noise = fixed_noise(split_seed, representative["key"], latents, draw)
+        prepared_noise = trainer.prepare_noise_for_training(noise)
+        losses = []
+        for band in range(bands):
+            timestep = timesteps[band].reshape(1)
+            with torch.autocast("cuda", dtype=trainer.autocast_dtype, enabled=trainer.use_amp):
+                noisy_input = trainer.add_noise(prepared_latents, prepared_noise, timestep)
+                prediction = trainer.forward_pass(noisy_input, timestep, text_emb, batch)
+                target = trainer.compute_target(prepared_latents, prepared_noise, timestep)
+            losses.append(torch.nn.functional.mse_loss(prediction.float(), target.float()).item())
+        per_draw.append(losses)
+    return per_draw
 
 
 # The fields a pass emits over the log stream; the per-image detail goes to the file only.
@@ -150,6 +162,7 @@ def run_validation_pass(trainer, split, step: int) -> dict[str, Any]:
     started = time.perf_counter()
     bands = int(trainer.config.get("validation_timestep_bands", 8))
     split_seed = int(trainer.config.get("validation_split_seed", 0))
+    draws = int(trainer.config.get("validation_noise_draws", 1))
 
     model = trainer._get_primary_model()
     modes = [(module, module.training) for module in model.modules()]
@@ -170,7 +183,7 @@ def run_validation_pass(trainer, split, step: int) -> dict[str, Any]:
         # A training adapter is off here too, and back on in the context's own finally.
         with torch.no_grad(), training_adapter_off(model):
             per_image = {
-                representative["key"]: _image_band_losses(trainer, representative, bands, split_seed)
+                representative["key"]: _image_band_losses(trainer, representative, bands, split_seed, draws)
                 for representative in split.representatives
             }
     finally:

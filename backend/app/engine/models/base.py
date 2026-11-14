@@ -1112,6 +1112,13 @@ class BaseTrainingConfig(BaseModel):
         description="Noise bands per image; a pass runs images × bands forward passes",
         json_schema_extra={"group": "ENGINE", "depends_on": "validation_enabled", "min": 2, "max": 32},
     )
+    validation_noise_draws: int = Field(
+        1,
+        ge=1,
+        le=16,
+        description="Noise draws per image, to measure the measurement's own noise; a pass runs images × bands × draws forward passes",
+        json_schema_extra={"group": "ENGINE", "depends_on": "validation_enabled", "min": 1, "max": 16},
+    )
     low_vram: bool = Field(
         True,
         description="Offload VAE to CPU after caching (disable to keep VAE on GPU for sampling speed)",

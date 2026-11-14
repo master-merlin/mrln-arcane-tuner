@@ -22,6 +22,7 @@ _BOUNDS = (
     ("validation_split_seed", 0, 0, math.inf),
     ("validation_every_n_steps", 500, 1, math.inf),
     ("validation_timestep_bands", 8, 2, 32),
+    ("validation_noise_draws", 1, 1, 16),
 )
 
 Item = dict[str, Any]
@@ -144,6 +145,7 @@ def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
         "hash_threshold_bits": NEAR_IDENTICAL_BITS,
         "every_n_steps": int(config.get("validation_every_n_steps", 500)),
         "timestep_bands": int(config.get("validation_timestep_bands", 8)),
+        "noise_draws": int(config.get("validation_noise_draws", 1)),
     }
     return json.dumps(content, indent=2, ensure_ascii=False)
 
@@ -155,6 +157,9 @@ def same_measurement(earlier: str, content: str) -> bool:
     different holdout doesn't: an image that trained could now be measured. The folder a
     dataset lies in isn't part of it, as a checkpoint can move to a machine where it
     differs; each held-out file's content digest is, so a name can't change its picture.
+    The draw count (``noise_draws``) isn't part of it either: draw 0 is the same noise
+    whatever the count, each pass record names its own count, and a comparison of runs
+    pairs only the draws every run has.
     """
 
     def measured(text: str) -> tuple:

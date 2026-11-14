@@ -303,6 +303,10 @@
         "tip": "Noise bands per image. Placeholder: {validation_timestep_bands}",
         "detail": "The noise range is cut into bands of equal width, and each image is measured at each band's centre. The result is one loss per band, their mean and the worst band.\n\nCompare runs by their numbers per band: a change can help at one noise level and hurt at another."
     },
+    "validation_noise_draws": {
+        "tip": "Noise draws per image, to measure how much the measurement itself varies. Placeholder: {validation_noise_draws}",
+        "detail": "Each held-out image is measured under this many fixed noise draws. Draw 0 is the same noise as with one draw, and every draw is the same in every pass and every run, so runs stay comparable.\n\nMore draws cost time: a pass runs images × bands × draws forward passes, so 8 images, 8 bands and 4 draws are 256. With 2 or more draws, a comparison of runs can tell whether the measurement's own noise is as large as the gap between them."
+    },
     "min_snr_gamma": {
         "tip": "Reduces the contribution of 'easy' (low-noise) timesteps to the loss. SDXL only; hidden for every other family. Placeholder: {min_snr_gamma}",
         "detail": "Min-SNR (Signal-to-Noise Ratio) Gamma weighting rebalances the training loss so that easy timesteps (where the model already performs well) contribute less.\n\nThe formula: `weight = min(SNR, gamma) / SNR`\n\n- **5.0**: Default from the paper. Good balance.\n- **1.0**: Aggressive reweighting — heavily downweights easy timesteps.\n- **20.0**: Mild reweighting — close to uniform.\n\n**Applies to SDXL only.** No other family applies this weighting, so the field is hidden for them and the LoRA file records `ss_min_snr_gamma` only for SDXL.\n\n**When to use:** SDXL epsilon-prediction training. Can improve detail quality."

@@ -362,6 +362,104 @@ def test_the_record_names_the_seed_the_run_applied(tmp_path, seed, expected):
     assert _written(tmp_path)["train_seed"] == expected
 
 
+def _noises_by_image(t):
+    """The noise of every add_noise call, grouped by image and draw (one per band)."""
+    seen = {}
+    add_noise = t.add_noise
+    forward = t.forward_pass
+    current = []
+
+    def spy_noise(latents, noise, timesteps):
+        current.append(noise.clone())
+        return add_noise(latents, noise, timesteps)
+
+    def spy_forward(noisy_input, timesteps, text_emb, batch):
+        seen.setdefault(batch["ids"][0], []).append(current.pop())
+        return forward(noisy_input, timesteps, text_emb, batch)
+
+    t.add_noise = spy_noise
+    t.forward_pass = spy_forward
+    return seen
+
+
+@pytest.mark.parametrize("draws", [2, 3])
+def test_each_image_is_measured_under_each_draw(tmp_path, draws):
+    t = _pipeline(tmp_path, validation_noise_draws=draws)
+    _run(t)
+    record = _written(tmp_path)
+    assert record["noise_draws"] == draws
+    assert {len(image) for image in record["image_band_loss"]} == {draws}
+    assert len(t.forwards) == len(t._validation_split.representatives) * BANDS * draws
+    for band in range(BANDS):
+        mean = sum(sum(d[band] for d in image) / draws for image in record["image_band_loss"]) / record["images"]
+        assert mean == pytest.approx(record["band_loss"][band], abs=1e-12)
+
+
+def test_draw_zero_is_todays_measurement(tmp_path):
+    (tmp_path / "one").mkdir()
+    (tmp_path / "three").mkdir()
+    _run(_pipeline(tmp_path / "one"))
+    _run(_pipeline(tmp_path / "three", validation_noise_draws=3))
+    today = _written(tmp_path / "one")["image_band_loss"]
+    assert [image[0] for image in _written(tmp_path / "three")["image_band_loss"]] == [image[0] for image in today]
+
+
+def test_draw_zeros_noise_is_fixed_noise_and_each_draw_differs(tmp_path):
+    t = _pipeline(tmp_path, validation_noise_draws=3)
+    seen = _noises_by_image(t)
+    _run(t)
+    for representative in t._validation_split.representatives:
+        noises = seen[representative["id"]]
+        per_draw = [noises[d * BANDS] for d in range(3)]
+        for d in range(3):  # one noise per draw, the same at every band
+            assert all(torch.equal(n, per_draw[d]) for n in noises[d * BANDS:(d + 1) * BANDS])
+        like = torch.zeros(1, LATENT)
+        assert torch.equal(per_draw[0], validation_pass.fixed_noise(3, representative["key"], like))
+        assert not torch.equal(per_draw[0], per_draw[1])
+        assert not torch.equal(per_draw[0], per_draw[2])
+        assert not torch.equal(per_draw[1], per_draw[2])
+
+
+def test_the_draws_are_the_same_in_every_pass_and_every_run(tmp_path):
+    first = _pipeline(tmp_path, validation_noise_draws=3)
+    both = _noises_by_image(first)
+    _run(first)
+    torch.rand(4)
+    random.random()
+    _run(first, step=1)
+    other = _pipeline(tmp_path, validation_noise_draws=3, seed=99)
+    c = _noises_by_image(other)
+    _run(other, step=2)
+    per_pass = 3 * BANDS
+    for key, noises in both.items():
+        a, b = noises[:per_pass], noises[per_pass:]
+        assert len(a) == len(b) == len(c[key]) == per_pass
+        assert all(torch.equal(x, y) and torch.equal(x, z) for x, y, z in zip(a, b, c[key], strict=True))
+
+
+def test_a_draw_seed_is_not_another_images_draw_zero():
+    like = torch.zeros(1, LATENT)
+    assert not torch.equal(
+        validation_pass.fixed_noise(3, "ds/a.png", like, draw=1), validation_pass.fixed_noise(3, "ds/a.png:1", like)
+    )
+
+
+def test_latents_and_text_are_produced_once_per_image_whatever_the_draws(tmp_path):
+    t = _pipeline(tmp_path, validation_noise_draws=4)
+    loads = []
+    load = t.latent_manager.load_cached_latents
+
+    def counting(ids, *args, **kwargs):
+        loads.append(ids[0])
+        return load(ids, *args, **kwargs)
+
+    t.latent_manager.load_cached_latents = counting
+    _run(t)
+    images = len(t._validation_split.representatives)
+    assert len(loads) == images == len(set(loads))
+    assert len(t.captions) == images
+
+
 def test_the_event_carries_todays_fields_only(tmp_path):
     t = _pipeline(tmp_path)
     _run(t)

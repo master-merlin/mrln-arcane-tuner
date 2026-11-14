@@ -24,7 +24,7 @@ import dataclasses
 import json
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 from fastapi import HTTPException
@@ -32,7 +32,7 @@ from PIL import Image
 
 import app.core.dataset_manager as dm_mod
 from app.core.dataset import media_helpers, overlay_recipe, thumbnails
-from app.core.dataset_manager import DatasetManager
+from tests.support.crop_fixtures import bare_manager, image
 from tests.support.dir_links import link_dir, link_name_to
 
 TARGET = (16, 16)
@@ -46,28 +46,7 @@ RECIPE_OPS = [{"type": "vignette", "enabled": True, "params": {"amount": 0.3}}]
 
 @pytest.fixture()
 def manager(tmp_path):
-    settings = MagicMock()
-    settings.get_module_settings.return_value = {}
-    default_root = tmp_path / "datasets"
-    default_root.mkdir()
-    with patch("app.core.dataset_manager.get_settings_manager", return_value=settings), \
-         patch.object(DatasetManager, "__init__", lambda self, **kw: None):
-        mgr = DatasetManager()
-    mgr.root_dir = str(tmp_path)
-    mgr.storage_file = str(tmp_path / "dataset_locations.json")
-    mgr.default_root = str(default_root)
-    mgr.settings_manager = settings
-    mgr.datasets = {}
-    mgr._loop = None
-    mgr._db = MagicMock()
-    mgr._dataset_repo = MagicMock()
-    mgr._media_repo = MagicMock()
-    return mgr
-
-
-def _image(path: Path, size: tuple[int, int] = (64, 48), color: str = "blue") -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", size, color).save(path)
+    return bare_manager(tmp_path)
 
 
 def _recipe(path: Path) -> None:
@@ -78,7 +57,7 @@ def _recipe(path: Path) -> None:
 
 def _new_dataset(manager, path: Path | None = None):
     ds = manager.create_dataset("foo", path=None if path is None else str(path))
-    _image(Path(ds.path) / "a.jpg", SOURCE_SIZE, "red")
+    image(Path(ds.path) / "a.jpg", SOURCE_SIZE, "red")
     ds.media_metadata["a.jpg"] = {
         "width": SOURCE_SIZE[0], "height": SOURCE_SIZE[1], "size_bytes": 1,
         "enabled": True, "has_mask": True, "has_overlay": True,
@@ -105,27 +84,27 @@ def _tree(root: Path) -> dict[str, bytes]:
 
 
 def _masks_out(ds: Path, out: Path) -> Path:
-    _image(out / "a.png")
+    image(out / "a.png")
     link_dir(ds / "masks", out)
     return out
 
 
 def _masked_out(ds: Path, out: Path) -> Path:
-    _image(out / "a.jpg")
+    image(out / "a.jpg")
     (out / "a.txt").write_text("outside caption", encoding="utf-8")
     link_dir(ds / "masked", out)
     return out
 
 
 def _thumbnails_out(ds: Path, out: Path) -> Path:
-    _image(out / "256" / "a.webp")
-    _image(out / "a.webp")
+    image(out / "256" / "a.webp")
+    image(out / "a.webp")
     link_dir(ds / ".thumbnails", out)
     return out
 
 
 def _overlays_out(ds: Path, out: Path) -> Path:
-    _image(out / "a.png")
+    image(out / "a.png")
     _recipe(ds / "overlays.json")
     link_dir(ds / "overlays", out)
     return out
@@ -139,7 +118,7 @@ def _overlays_json_out(ds: Path, out: Path) -> Path:
 
 
 def _thumbnail_tmp_out(ds: Path, out: Path) -> Path:
-    _image(out / "victim.webp")
+    image(out / "victim.webp")
     (ds / ".thumbnails" / "256").mkdir(parents=True)
     link_name_to(ds / ".thumbnails" / "256" / "a.webp.tmp", out / "victim.webp")
     return out
@@ -266,11 +245,11 @@ def test_crop_still_deletes_contained_masks_and_regenerates_the_thumbnail(
     ds = Path(dataset.path)
     sidecars = [ds / "masks" / "a.png", ds / "masked" / "a.jpg"]
     for p in sidecars:
-        _image(p)
+        image(p)
     (ds / "masked" / "a.txt").write_text("c", encoding="utf-8")
     sidecars.append(ds / "masked" / "a.txt")
-    _image(ds / ".thumbnails" / "512" / "a.webp")
-    _image(ds / ".thumbnails" / "a.webp")  # legacy flat rendition
+    image(ds / ".thumbnails" / "512" / "a.webp")
+    image(ds / ".thumbnails" / "a.webp")  # legacy flat rendition
 
     assert manager.crop_media("foo", "a.jpg", *TARGET) is True
 
@@ -286,7 +265,7 @@ def test_crop_still_deletes_contained_masks_and_regenerates_the_thumbnail(
 
 def test_crop_still_rerenders_a_contained_overlay(manager, dataset):
     ds = Path(dataset.path)
-    _image(ds / "overlays" / "a.png", SOURCE_SIZE)
+    image(ds / "overlays" / "a.png", SOURCE_SIZE)
     _recipe(ds / "overlays.json")
 
     manager.crop_media("foo", "a.jpg", *TARGET)
@@ -305,11 +284,11 @@ def test_crop_still_rerenders_a_contained_overlay(manager, dataset):
 def test_helpers_keep_their_behaviour_without_targets(tmp_path):
     """The other callers (adjust, upscale, delete) pass no targets."""
     ds = tmp_path / "plain"
-    _image(ds / "a.jpg", SOURCE_SIZE)
-    _image(ds / "masks" / "a.png")
-    _image(ds / "masked" / "a.jpg")
+    image(ds / "a.jpg", SOURCE_SIZE)
+    image(ds / "masks" / "a.png")
+    image(ds / "masked" / "a.jpg")
     (ds / "masked" / "a.txt").write_text("c", encoding="utf-8")
-    _image(ds / "overlays" / "a.png", SOURCE_SIZE)
+    image(ds / "overlays" / "a.png", SOURCE_SIZE)
     _recipe(ds / "overlays.json")
 
     media_helpers.invalidate_mask_files(str(ds), "a", reason="test")
@@ -356,13 +335,13 @@ def linked(manager, tmp_path):
                         (".thumbnails", "_t"), ("overlays", "_o")):
         link_dir(real / name, real / inner)
     ds = _new_dataset(manager, via)
-    _image(via / "masks" / "a.png")
-    _image(via / "masked" / "a.jpg")
+    image(via / "masks" / "a.png")
+    image(via / "masked" / "a.jpg")
     (via / "masked" / "a.txt").write_text("c", encoding="utf-8")
     for edge in thumbnails.ALLOWED_MAX_EDGES:
-        _image(via / ".thumbnails" / str(edge) / "a.webp")
-    _image(via / ".thumbnails" / "a.webp")
-    _image(via / "overlays" / "a.png", SOURCE_SIZE)
+        image(via / ".thumbnails" / str(edge) / "a.webp")
+    image(via / ".thumbnails" / "a.webp")
+    image(via / "overlays" / "a.png", SOURCE_SIZE)
     _recipe(via / "overlays.json")
     return ds, via, real.resolve()
 
@@ -505,7 +484,7 @@ def test_every_temp_file_of_a_crop_comes_from_edit_targets(manager, linked):
     the validated temp path differs from ``<validated destination>.tmp``: a
     writer that derives its own temp sibling is caught here."""
     ds, via, real = linked
-    _image(real / "_tt" / "t.webp")
+    image(real / "_tt" / "t.webp")
     (real / "_tj").mkdir()
     (real / "_tj" / "t.json").write_text("{}", encoding="utf-8")
     link_name_to(via / ".thumbnails" / "256" / "a.webp.tmp", real / "_tt" / "t.webp")

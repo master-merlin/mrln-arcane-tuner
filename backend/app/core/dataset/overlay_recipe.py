@@ -21,6 +21,8 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from app.core.dataset.media_helpers import OVERLAYS_JSON, overlay_png_path
+
 if TYPE_CHECKING:
     from app.core.dataset.edit_targets import EditTargets
 
@@ -28,7 +30,7 @@ logger = structlog.get_logger(__name__)
 
 
 def _overlays_json_path(dataset_path: str) -> str:
-    return os.path.join(dataset_path, "overlays.json")
+    return os.path.join(dataset_path, OVERLAYS_JSON)
 
 
 def read_overlay_recipe(
@@ -84,7 +86,7 @@ def rerender_overlay_from_recipe(
         json_tmp = targets.overlays_json_tmp
     else:
         base_path = os.path.join(dataset_path, relative_path)
-        overlay_path = os.path.join(dataset_path, "overlays", f"{stem}.png")
+        overlay_path = overlay_png_path(dataset_path, relative_path)
         json_path = _overlays_json_path(dataset_path)
         json_tmp = None
 

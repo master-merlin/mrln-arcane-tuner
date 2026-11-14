@@ -27,6 +27,25 @@ logger = structlog.get_logger(__name__)
 #: first — last writer wins, silently.
 _overlays_json_lock = threading.Lock()
 
+#: The overlay recipe map's name inside a dataset.
+OVERLAYS_JSON = "overlays.json"
+
+
+def mask_file_paths(dataset_path: str | Path, stem: str) -> list[str]:
+    """The mask, masked image and masked caption of the media file *stem*."""
+    return [
+        os.path.join(dataset_path, "masks", f"{stem}.png"),
+        os.path.join(dataset_path, "masked", f"{stem}.jpg"),
+        os.path.join(dataset_path, "masked", f"{stem}.txt"),
+    ]
+
+
+def overlay_png_path(dataset_path: str | Path, relative_path: str) -> str:
+    """The rendered overlay of *relative_path*: ``overlays/<basename stem>.png``."""
+    rel = relative_path.replace(os.sep, "/")
+    stem = os.path.splitext(os.path.basename(rel))[0]
+    return os.path.join(dataset_path, "overlays", f"{stem}.png")
+
 
 def write_overlays_json(
     path: str | Path, data: dict[str, Any], *, tmp_path: str | Path | None = None,
@@ -86,8 +105,8 @@ def invalidate_overlay_files(
         overlays_json = targets.overlays_json
         overlays_tmp = targets.overlays_json_tmp
     else:
-        overlay_path = os.path.join(dataset_path, "overlays", f"{stem}.png")
-        overlays_json = os.path.join(dataset_path, "overlays.json")
+        overlay_path = overlay_png_path(dataset_path, relative_path)
+        overlays_json = os.path.join(dataset_path, OVERLAYS_JSON)
         overlays_tmp = None
 
     if os.path.exists(overlay_path):
@@ -134,16 +153,9 @@ def invalidate_mask_files(
         targets: The validated mask files to delete; when given, nothing is
             derived from *dataset_path* and *stem*.
     """
-    if targets is not None:
-        files_to_remove = list(targets)
-    else:
-        masks_dir = os.path.join(dataset_path, "masks")
-        masked_dir = os.path.join(dataset_path, "masked")
-        files_to_remove = [
-            os.path.join(masks_dir, f"{stem}.png"),
-            os.path.join(masked_dir, f"{stem}.jpg"),
-            os.path.join(masked_dir, f"{stem}.txt"),
-        ]
+    files_to_remove = (
+        list(targets) if targets is not None else mask_file_paths(dataset_path, stem)
+    )
 
     for p in files_to_remove:
         if os.path.exists(p):
@@ -193,9 +205,9 @@ def refresh_media_metadata_after_change(
         dataset_path: When provided, the source's thumbnail is invalidated
             and regenerated. Callers that mutate source pixels should
             pass this; metadata-only edits may omit it.
-        targets: The edit's validated paths; when given, the size is read
-            from its source and the thumbnail is invalidated and regenerated
-            through its paths only.
+        targets: The edit's validated paths; when given, the thumbnail is
+            invalidated and regenerated through its paths only (the caller
+            passes its validated source as *full_path*).
     """
     if lookup_key not in metadata:
         return
@@ -203,9 +215,7 @@ def refresh_media_metadata_after_change(
     entry = metadata[lookup_key]
 
     # Always update after any edit
-    entry["size_bytes"] = os.path.getsize(
-        targets.source if targets is not None else full_path
-    )
+    entry["size_bytes"] = os.path.getsize(full_path)
     entry.pop("solid_hash", None)
     entry.pop("quality_score", None)  # re-score on next scan
     entry["has_mask"] = False

@@ -21,6 +21,7 @@ from pathlib import Path
 
 from app.api._path_guard import validate_path_within
 from app.core.dataset import thumbnails
+from app.core.dataset.media_helpers import OVERLAYS_JSON, mask_file_paths, overlay_png_path
 
 
 @dataclass(frozen=True)
@@ -55,26 +56,20 @@ def resolve_edit_targets(dataset_path: str | Path, relative_path: str) -> EditTa
 
     source = contained(root / relative_path)
 
-    mask_stem = os.path.splitext(relative_path)[0]
-    rel = relative_path.replace(os.sep, "/")
-    overlay_stem = os.path.splitext(os.path.basename(rel))[0]
     ds = str(dataset_path)
     dst = thumbnails.thumbnail_path_for(ds, relative_path)
+    mask_stem = os.path.splitext(relative_path)[0]
 
     return EditTargets(
         source=source,
-        mask_files=tuple(contained(p) for p in (
-            root / "masks" / f"{mask_stem}.png",
-            root / "masked" / f"{mask_stem}.jpg",
-            root / "masked" / f"{mask_stem}.txt",
-        )),
+        mask_files=tuple(contained(p) for p in mask_file_paths(ds, mask_stem)),
         thumbnails=tuple(
             contained(p) for p in thumbnails.thumbnail_paths_for(ds, relative_path)
         ),
         thumbnail_dst=contained(dst),
         thumbnail_tmp=contained(dst.with_suffix(dst.suffix + ".tmp")),
         thumbnail_legacy=contained(thumbnails._legacy_path_for(ds, relative_path)),
-        overlays_json=contained(root / "overlays.json"),
-        overlays_json_tmp=contained(root / "overlays.json.tmp"),
-        overlay_png=contained(root / "overlays" / f"{overlay_stem}.png"),
+        overlays_json=contained(root / OVERLAYS_JSON),
+        overlays_json_tmp=contained(root / f"{OVERLAYS_JSON}.tmp"),
+        overlay_png=contained(overlay_png_path(ds, relative_path)),
     )

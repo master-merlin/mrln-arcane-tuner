@@ -15,13 +15,12 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
-from unittest.mock import MagicMock, patch
 
 import pytest
 from fastapi.testclient import TestClient
 from PIL import Image
 
-from app.core.dataset_manager import DatasetManager
+from tests.support.crop_fixtures import assert_no_path_in, bare_manager
 
 SOURCE_SIZE = (40, 30)
 TOO_LARGE = "Target dimensions cannot be larger than source."
@@ -32,21 +31,7 @@ GENERIC_500 = "A critical error occurred. Please check server logs."
 def manager(tmp_path, monkeypatch):
     import app.api.dataset.crop_routes as crop_routes
 
-    settings = MagicMock()
-    settings.get_module_settings.return_value = {}
-    (tmp_path / "datasets").mkdir()
-    with patch("app.core.dataset_manager.get_settings_manager", return_value=settings), \
-         patch.object(DatasetManager, "__init__", lambda self, **kw: None):
-        mgr = DatasetManager()
-    mgr.root_dir = str(tmp_path)
-    mgr.storage_file = str(tmp_path / "dataset_locations.json")
-    mgr.default_root = str(tmp_path / "datasets")
-    mgr.settings_manager = settings
-    mgr.datasets = {}
-    mgr._loop = None
-    mgr._db = MagicMock()
-    mgr._dataset_repo = MagicMock()
-    mgr._media_repo = MagicMock()
+    mgr = bare_manager(tmp_path)
     monkeypatch.setattr(crop_routes, "dataset_manager", mgr)
     return mgr
 
@@ -74,14 +59,6 @@ def _post(client, path: str, w: int, h: int, name: str = "foo"):
     })
 
 
-def _assert_no_path_in(text: str, tmp_path: Path) -> None:
-    unescaped = text.replace("\\\\", "\\").lower()
-    resolved = tmp_path.resolve()
-    for form in {str(tmp_path), str(resolved), tmp_path.as_posix(),
-                 resolved.as_posix(), tmp_path.name}:
-        assert form.lower() not in unescaped, form
-
-
 @pytest.mark.parametrize("w,h", [(41, 30), (40, 31), (80, 60)])
 def test_crop_route_answers_400_for_a_target_larger_than_the_source(
     dataset, client, tmp_path, w, h,
@@ -93,7 +70,7 @@ def test_crop_route_answers_400_for_a_target_larger_than_the_source(
 
     assert resp.status_code == 400
     assert resp.json()["detail"] == TOO_LARGE
-    _assert_no_path_in(resp.text, tmp_path)
+    assert_no_path_in(resp.text, tmp_path)
     assert a.read_bytes() == before
 
 
@@ -133,7 +110,7 @@ def test_a_pil_failure_answers_500_with_the_generic_envelope(
 
     assert resp.status_code == 500
     assert resp.json()["detail"] == GENERIC_500
-    _assert_no_path_in(resp.text, tmp_path)
+    assert_no_path_in(resp.text, tmp_path)
 
 
 def test_an_undecodable_image_is_still_a_500_without_a_path_in_the_body(
@@ -145,7 +122,7 @@ def test_an_undecodable_image_is_still_a_500_without_a_path_in_the_body(
 
     assert resp.status_code == 500
     assert resp.json()["detail"] == GENERIC_500
-    _assert_no_path_in(resp.text, tmp_path)
+    assert_no_path_in(resp.text, tmp_path)
 
 
 def test_unknown_dataset_missing_file_and_audio_keep_their_codes(dataset, client):

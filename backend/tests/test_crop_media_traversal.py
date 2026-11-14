@@ -16,16 +16,15 @@ rooted in ``tmp_path`` with the DB layer mocked out.
 
 from __future__ import annotations
 
-import os
 import sys
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 from fastapi import HTTPException
 from PIL import Image
 
-from app.core.dataset_manager import DatasetManager
+from tests.support.crop_fixtures import assert_no_path_in, bare_manager, image
 from tests.support.dir_links import link_dir
 
 OUTSIDE_SIZE = (64, 48)
@@ -37,41 +36,15 @@ DENIED = "Access denied: path is outside the allowed directory."
 
 
 @pytest.fixture()
-def mock_settings():
-    mock_instance = MagicMock()
-    mock_instance.get_module_settings.return_value = {}
-    mock_instance.update_module_settings = MagicMock()
-    with patch(
-        "app.core.dataset_manager.get_settings_manager", return_value=mock_instance
-    ):
-        yield mock_instance
-
-
-@pytest.fixture()
-def manager(tmp_path, mock_settings):
-    default_root = str(tmp_path / "datasets")
-    os.makedirs(default_root, exist_ok=True)
-
-    with patch.object(DatasetManager, "__init__", lambda self, **kw: None):
-        mgr = DatasetManager()
-
-    mgr.root_dir = str(tmp_path)
-    mgr.storage_file = str(tmp_path / "dataset_locations.json")
-    mgr.default_root = default_root
-    mgr.settings_manager = mock_settings
-    mgr.datasets = {}
-    mgr._loop = None
-    mgr._db = MagicMock()
-    mgr._dataset_repo = MagicMock()
-    mgr._media_repo = MagicMock()
-    return mgr
+def manager(tmp_path):
+    return bare_manager(tmp_path)
 
 
 @pytest.fixture()
 def dataset(manager):
     """Dataset ``foo`` holding a real ``a.jpg`` and its metadata entry."""
     ds = manager.create_dataset("foo")
-    _image(Path(ds.path) / "a.jpg", (40, 30))
+    image(Path(ds.path) / "a.jpg", (40, 30))
     ds.media_metadata["a.jpg"] = {
         "width": 40, "height": 30, "size_bytes": 1, "enabled": True,
     }
@@ -82,7 +55,7 @@ def dataset(manager):
 def outside(dataset):
     """A real image next to (outside) the dataset directory."""
     path = Path(dataset.path).parent / "x.png"
-    _image(path, OUTSIDE_SIZE)
+    image(path, OUTSIDE_SIZE)
     return path
 
 
@@ -93,11 +66,6 @@ def routed(manager, monkeypatch):
 
     monkeypatch.setattr(crop_routes, "dataset_manager", manager)
     return manager
-
-
-def _image(path: Path, size: tuple[int, int], color: str = "red") -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    Image.new("RGB", size, color).save(path)
 
 
 def _snapshot(path: Path) -> tuple[bytes, int]:
@@ -113,15 +81,6 @@ def _assert_refused(manager, rel: str) -> None:
         _crop(manager, rel)
     assert excinfo.value.status_code == 403
     assert excinfo.value.detail == DENIED
-
-
-def _assert_no_path_in(text: str, tmp_path: Path) -> None:
-    """No form of the test tree's location leaks into a response body."""
-    unescaped = text.replace("\\\\", "\\").lower()
-    resolved = tmp_path.resolve()
-    for form in {str(tmp_path), str(resolved), tmp_path.as_posix(),
-                 resolved.as_posix(), tmp_path.name}:
-        assert form.lower() not in unescaped, form
 
 
 # ── The vulnerability ───────────────────────────────────────────────────────
@@ -166,7 +125,7 @@ def test_crop_media_rejects_a_source_link_that_resolves_outside_the_dataset(
 ):
     elsewhere = tmp_path / "elsewhere"
     target = elsewhere / "x.png"
-    _image(target, OUTSIDE_SIZE)
+    image(target, OUTSIDE_SIZE)
     link_dir(Path(dataset.path) / "linked", elsewhere)
     before = _snapshot(target)
 
@@ -221,7 +180,7 @@ def test_crop_route_answers_403_and_does_not_remap_the_refusal(
         })
         assert resp.status_code == 403, (rel, resp.text)
         assert resp.json()["detail"] == DENIED
-        _assert_no_path_in(resp.text, tmp_path)
+        assert_no_path_in(resp.text, tmp_path)
 
     assert _snapshot(outside) == before
 
@@ -244,7 +203,7 @@ def test_crop_route_treats_percent_encoded_dots_as_a_literal_name(
 # ── Positive controls ──────────────────────────────────────────────────────
 
 
-def test_crop_media_still_crops_a_root_level_image(routed, dataset, client):
+def test_crop_media_still_crops_a_root_levelimage(routed, dataset, client):
     a = Path(dataset.path) / "a.jpg"
 
     resp = client.post("/api/datasets/foo/crop", json={
@@ -267,7 +226,7 @@ def test_crop_media_still_crops_a_root_level_image(routed, dataset, client):
 
 def test_crop_media_still_crops_a_nested_image_and_keeps_its_key(manager, dataset):
     nested = Path(dataset.path) / "sub" / "a.jpg"
-    _image(nested, (40, 30))
+    image(nested, (40, 30))
     dataset.media_metadata["sub/a.jpg"] = {
         "width": 40, "height": 30, "size_bytes": 1, "enabled": True,
     }

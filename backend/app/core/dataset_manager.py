@@ -29,6 +29,7 @@ from app.core.dataset.media_types import (
     VIDEO_EXTENSIONS,
 )
 from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
+from app.core.dataset.edit_targets import resolve_edit_targets
 
 from fastapi import HTTPException
 
@@ -2342,7 +2343,10 @@ class DatasetManager:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
 
-        full_path = os.path.join(dataset.path, relative_path)
+        # Before any filesystem call: a path that leaves the dataset is a 403,
+        # whether or not it exists. Every IO below uses the resolved paths.
+        targets = resolve_edit_targets(dataset.path, relative_path)
+        full_path = targets.source
         if not os.path.exists(full_path):
              raise FileNotFoundError(f"File {relative_path} not found.")
 

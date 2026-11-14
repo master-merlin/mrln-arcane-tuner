@@ -59,6 +59,14 @@ detected_precision:
   vae: torch.bfloat16
   unet: torch.bfloat16
 architecture_params:
+  # -- Timestep draw: upstream's own training shift (lognorm + do_shift + dynamic_time_shift v1),
+  #    which is flux_shift with base 0.5 / max 1.15 over p=2 patch tokens (transport
+  #    get_lin_function defaults L180-185: x1=256, y1=0.5, x2=4096, y2=1.15; driver.py
+  #    sample_timesteps, module docstring section 4). The form and every job get it from here
+  #    (timestep_sampling.family_timestep_defaults). --
+  timestep.default_mode: flux_shift
+  timestep.flux_shift_base: 0.5
+  timestep.flux_shift_max: 1.15
   # -- Transformer (checkpoint transformer/config.json, byte-cited; keys
   #    map 1:1 onto the vendored class's __init__ signature) --
   transformer._class_name: OmniGen2Transformer2DModel

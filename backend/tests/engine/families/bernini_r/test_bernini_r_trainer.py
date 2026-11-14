@@ -38,14 +38,19 @@ from app.engine.models.families.bernini_r.trainer import BerniniRTrainer
 
 
 def _bare_trainer(config: dict | None = None) -> BerniniRTrainer:
-    """A ``BerniniRTrainer`` shell with only ``device`` + ``config`` set.
+    """A ``BerniniRTrainer`` shell with ``device``, ``config`` and the real 1.3B definition.
 
     Mirrors ``test_wan22_sample_timesteps_wiring``'s ``object.__new__`` stub:
-    ``sample_timesteps`` reads only ``self.device`` and ``self.config``.
+    ``sample_timesteps`` reads ``self.device``, ``self.config`` and, for a timestep
+    key the config lacks, the definition's family default (``mode`` / 1.29).
     """
+    from app.engine.models.registry import registry
+
+    registry.initialize()
     t = object.__new__(BerniniRTrainer)
     t.device = torch.device("cpu")
     t.config = config if config is not None else {}
+    t.definition = registry.get_definition("bernini-r-1.3b")
     return t
 
 
@@ -102,9 +107,15 @@ def _reference_timesteps(
 
 class TestSampleTimesteps:
     def test_family_defaults_are_upstream_constants(self):
-        """v2v shift = 5.0 (upstream ``shift_config``); mode_scale = 1.29 (SD3)."""
+        """v2v shift = 5.0 (upstream ``shift_config``); mode_scale = 1.29 (SD3), from the definitions."""
+        from app.engine.models.registry import registry
+        from app.engine.strategies.timestep_sampling import family_timestep_defaults
+
         assert BerniniRTrainer.DEFAULT_TIMESTEP_SHIFT == 5.0
-        assert BerniniRTrainer.DEFAULT_MODE_SCALE == 1.29
+        registry.initialize()
+        for did in ("bernini-r-1.3b", "bernini-r-14b"):
+            family = family_timestep_defaults(registry.get_definition(did))
+            assert (family["timestep_sampling"], family["mode_scale"]) == ("mode", 1.29), did
 
     def test_deterministic_formula_pin(self):
         """A fixed-seed draw matches the longhand transform EXACTLY.
@@ -440,6 +451,7 @@ class TestRouterPHighUnderRealBandDistribution:
         t.logger = structlog.get_logger("test")
         t.device = torch.device("cpu")
         t.config = {
+            "timestep_sampling": "mode",  # the shared setup() fills the definition's mode first
             "mode_scale": 1.29,
             "timestep_shift": 5.0,
             "expert_switch_interval": 1,

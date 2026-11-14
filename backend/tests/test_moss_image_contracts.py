@@ -250,14 +250,20 @@ def _driver(definition=None, spy=None):
 
 
 def _bare_trainer(driver, config: dict | None = None, inventory=(), tmp_path: Path | None = None):
-    """A ``MossImageTrainer`` shell around a stubbed driver (no model load, no job)."""
+    """A ``MossImageTrainer`` shell around a stubbed driver (no model load, no job).
+
+    The shell skips the shared ``setup()``, so it applies the family timestep defaults itself, the
+    way ``setup()`` does: a value the config carries is kept.
+    """
     from app.engine.strategies.noise_interpolation import NoiseInterpolation
+    from app.engine.strategies.timestep_sampling import apply_family_timestep_defaults
 
     cls = _load("trainer", "MossImageTrainer")
     trainer = object.__new__(cls)
     components = dict(driver.get_components())
     trainer.config = dict(config or {"mixed_precision": "fp32", "te_quantization": "none",
                                       "cache_text_embeddings": True, "sample_prompts": []})
+    apply_family_timestep_defaults(driver.definition, trainer.config)
     trainer.device = torch.device("cpu")
     trainer.definition = driver.definition
     trainer.driver = driver

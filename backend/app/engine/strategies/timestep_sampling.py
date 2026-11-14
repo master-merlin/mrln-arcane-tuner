@@ -124,9 +124,9 @@ def _radc_center(
         * ``progress ≈ 1, high-res`` → negative shift → more detail focus
         * ``progress ≈ 1, low-res``  → positive shift → structure emphasis
     """
-    start = float(config.get("radc_start", 0.8))
-    end = float(config.get("radc_end", 0.2))
-    res_influence = float(config.get("radc_res_influence", 0.15))
+    start = float(timestep_setting(config, "radc_start"))
+    end = float(timestep_setting(config, "radc_end"))
+    res_influence = float(timestep_setting(config, "radc_res_influence"))
 
     base_center = start + (end - start) * progress
 
@@ -164,6 +164,149 @@ def validate_fixed_sigmas(values: Any) -> list[float]:
             raise ValueError(f"fixed_sigmas values must lie in (0, 1], got {value!r}")
         out.append(sigma)
     return out
+
+
+# The run-config keys that parameterize a timestep mode. A definition may state a family default for
+# each as ``timestep.<key>`` in ``architecture_params`` (or as ``<key>`` in its ``defaults:``).
+TIMESTEP_PARAMETERS: tuple[str, ...] = (
+    "logit_normal_mu",
+    "logit_normal_sigma",
+    "mode_scale",
+    "flux_shift_base",
+    "flux_shift_max",
+    "model_shift_std",
+    "timestep_uniform_prob",
+    "radc_start",
+    "radc_end",
+    "radc_width",
+    "radc_res_influence",
+    "fixed_sigmas",
+)
+
+# Older names the sampler still reads for a parameter: a config that carries one has set it.
+_PARAMETER_ALIASES: dict[str, tuple[str, ...]] = {
+    "logit_normal_mu": ("logit_normal_mean",),
+    "logit_normal_sigma": ("logit_normal_std",),
+}
+
+
+def _timestep_value(definition_id: str, source: str, key: str, value: Any) -> Any:
+    if key == "timestep_sampling":
+        if value not in TimestepSampler.SUPPORTED_MODES:
+            raise ValueError(f"{definition_id}: {source} {value!r} is no timestep mode")
+        return value
+    if key == "fixed_sigmas":
+        try:
+            return validate_fixed_sigmas(value)
+        except ValueError as exc:
+            raise ValueError(f"{definition_id}: {source}: {exc}") from None
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        raise ValueError(f"{definition_id}: {source} {value!r} is no number") from None
+    if number != number:  # NaN
+        raise ValueError(f"{definition_id}: {source} is NaN")
+    return number
+
+
+def family_timestep_defaults(definition) -> dict[str, Any]:
+    """The run-config timestep keys a definition names as its family default.
+
+    Two sources, one value each: the timestep keys of the ``defaults:`` block, and the
+    ``architecture_params`` keys ``timestep.default_mode`` (as ``timestep_sampling``) and
+    ``timestep.<parameter>`` for each of :data:`TIMESTEP_PARAMETERS`. An unknown ``timestep.*`` key,
+    a value that is no mode or number, and the two sources disagreeing on a key are refused. A
+    ``fixed_sigmas`` default mode without a valid list is refused too.
+    """
+    definition_id = getattr(definition, "id", "?")
+    arch = getattr(definition, "architecture_params", None) or {}
+    own = getattr(definition, "defaults", None) or {}
+
+    declared: dict[str, tuple[str, Any]] = {}
+    for name, value in arch.items():
+        if not isinstance(name, str) or not name.startswith("timestep."):
+            continue
+        key = name[len("timestep."):]
+        if key == "default_mode":
+            key = "timestep_sampling"
+        elif key not in TIMESTEP_PARAMETERS:
+            raise ValueError(f"{definition_id}: {name} is no timestep parameter")
+        declared[key] = (name, _timestep_value(definition_id, name, key, value))
+
+    out: dict[str, Any] = {}
+    for key in ("timestep_sampling", *TIMESTEP_PARAMETERS):
+        stated = (f"defaults.{key}", _timestep_value(definition_id, f"defaults.{key}", key, own[key])) \
+            if key in own and own[key] is not None else None
+        from_arch = declared.get(key)
+        if stated and from_arch and stated[1] != from_arch[1]:
+            raise ValueError(
+                f"{definition_id}: {stated[0]} {own[key]!r} disagrees with {from_arch[0]} {from_arch[1]!r}"
+            )
+        chosen = from_arch or stated
+        if chosen:
+            out[key] = chosen[1]
+    if out.get("timestep_sampling") == "fixed_sigmas" and "fixed_sigmas" not in out:
+        raise ValueError(
+            f"{definition_id}: the default mode fixed_sigmas needs timestep.fixed_sigmas: "
+            "fixed_sigmas must be a non-empty list of sigmas in (0, 1]"
+        )
+    return out
+
+
+def apply_family_timestep_defaults(definition, config: dict[str, Any]) -> dict[str, Any]:
+    """Give ``config`` its definition's timestep defaults, in place, and return it.
+
+    The mode is set only when the config names none; each parameter only when the config carries
+    neither it nor an older name for it. ``fixed_sigmas`` is the ``fixed_sigmas`` mode's schedule,
+    not a tuning value, so it is filled only when that is the config's mode. A value the config
+    carries is never replaced.
+    """
+    for key, value in family_timestep_defaults(definition).items():
+        if config.get(key) not in (None, "", []):  # an empty list or mode is "not given"
+            continue
+        if key == "fixed_sigmas" and config.get("timestep_sampling") != "fixed_sigmas":
+            continue
+        if any(alias in config for alias in _PARAMETER_ALIASES.get(key, ())):
+            continue
+        config[key] = list(value) if isinstance(value, list) else value
+    return config
+
+
+# The run-config schema's own defaults for the timestep keys (``BaseTrainingConfig``'s; a test
+# pins the two equal): the value for a config that names none, of a definition that names none.
+TIMESTEP_SCHEMA_DEFAULTS: dict[str, Any] = {
+    "timestep_sampling": "logit_normal",
+    "logit_normal_mu": 0.0,
+    "logit_normal_sigma": 1.0,
+    "mode_scale": 1.5,
+    "flux_shift_base": 0.5,
+    "flux_shift_max": 1.16,
+    "model_shift_std": 1.0,
+    "timestep_uniform_prob": 0.1,
+    "radc_start": 0.8,
+    "radc_end": 0.2,
+    "radc_width": 0.5,
+    "radc_res_influence": 0.15,
+}
+
+
+def timestep_setting(config: dict[str, Any], key: str, definition=None) -> Any:
+    """A timestep key's value: the config's, else the definition's family default, else the schema's.
+
+    The shared ``setup()`` has already put the family default into a job's config; ``definition``
+    serves a caller whose config did not pass through it (a driver called directly). Family code
+    reads a timestep key through this, never with a fallback of its own.
+    """
+    value = config.get(key)
+    if value is not None:
+        return value
+    if definition is not None:
+        family = family_timestep_defaults(definition)
+        if key in family:
+            return family[key]
+    if key not in TIMESTEP_SCHEMA_DEFAULTS:
+        raise KeyError(f"{key} is no timestep setting with a schema default")
+    return TIMESTEP_SCHEMA_DEFAULTS[key]
 
 
 def _rand(bs: int, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
@@ -259,11 +402,11 @@ class TimestepSampler:
             # Accept both naming conventions for backward compat
             mu = float(
                 config.get("logit_normal_mu",
-                           config.get("logit_normal_mean", 0.0))
+                           config.get("logit_normal_mean", TIMESTEP_SCHEMA_DEFAULTS["logit_normal_mu"]))
             )
             sigma = float(
                 config.get("logit_normal_sigma",
-                           config.get("logit_normal_std", 1.0))
+                           config.get("logit_normal_std", TIMESTEP_SCHEMA_DEFAULTS["logit_normal_sigma"]))
             )
             return torch.sigmoid(
                 _randn(bs, device, generator) * sigma + mu
@@ -277,13 +420,13 @@ class TimestepSampler:
             return 1.0 - torch.cos(u * math.pi / 2.0)
 
         if mode == "mode":
-            scale = float(config.get("mode_scale", 1.5))
+            scale = float(timestep_setting(config, "mode_scale"))
             u = _rand(bs, device, generator)
             return 1.0 - u / (scale + (1.0 - scale) * u)
 
         if mode == "flux_shift":
-            base_shift = float(config.get("flux_shift_base", 0.5))
-            max_shift = float(config.get("flux_shift_max", 1.16))
+            base_shift = float(timestep_setting(config, "flux_shift_base"))
+            max_shift = float(timestep_setting(config, "flux_shift_max"))
             seq_len = _patchified_seq_len(
                 latents, int(config.get("flux_shift_patchify_factor", 1))
             )
@@ -311,7 +454,7 @@ class TimestepSampler:
 
         if mode == "radc":
             center = _radc_center(config, progress, latents)
-            width = float(config.get("radc_width", 0.5))
+            width = float(timestep_setting(config, "radc_width"))
             cdf = _radc_cdf(round(center * 1000), round(width * 1000)).to(device)
             u = _rand(bs, device, generator)
             indices = torch.searchsorted(cdf, u)
@@ -327,7 +470,7 @@ class TimestepSampler:
             #   LTX  (dynamic): mu interpolates base_shift→max_shift with seq-len.
             #   WAN  (fixed):   mu = ln(flow_shift)  (seq-len independent).
             #   else (fallback): flux-style mid shift.
-            std = float(config.get("model_shift_std", 1.0))
+            std = float(timestep_setting(config, "model_shift_std"))
             base_shift = config.get("model_shift_base_shift", None)
             max_shift = config.get("model_shift_max_shift", None)
             fixed = config.get("model_shift_fixed", None)
@@ -346,7 +489,7 @@ class TimestepSampler:
             else:
                 mu = (0.5 + 1.16) / 2.0
             t = torch.sigmoid(_randn(bs, device, generator) * std + mu)
-            uniform_prob = float(config.get("timestep_uniform_prob", 0.1))
+            uniform_prob = float(timestep_setting(config, "timestep_uniform_prob"))
             if uniform_prob > 0.0:
                 u_mask = _rand(bs, device, generator) < uniform_prob
                 t = torch.where(u_mask, _rand(bs, device, generator), t)

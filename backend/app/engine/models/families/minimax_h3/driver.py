@@ -391,16 +391,19 @@ class MiniMaxH3Driver(IModelDriver):
         ``t_v = 1 − σ_v`` in ``[0, 1]`` (the audio clock is derived from σ_v
         in the forward pass through ``H3SigmaSchedule`` — never a second draw).
 
-        Family default draw is ``uniform`` — with the definition's shift on top
-        it reproduces the inference grid (diffusion-pipe's recommendation,
-        research §4); a user-set ``timestep_sampling`` wins.
+        Family default draw is ``uniform`` (the definition's ``timestep.default_mode``) — with the
+        definition's shift on top it reproduces the inference grid (diffusion-pipe's
+        recommendation, research §4); a user-set ``timestep_sampling`` wins.
         """
-        from app.engine.strategies.timestep_sampling import TimestepSampler  # noqa: PLC0415
+        from app.engine.strategies.timestep_sampling import (  # noqa: PLC0415
+            TimestepSampler,
+            timestep_setting,
+        )
 
         from .schedule import H3SigmaSchedule, sigma_to_t
         from .settings import resolve_h3_settings
 
-        mode = config.get("timestep_sampling", "uniform")
+        mode = timestep_setting(config, "timestep_sampling", self.definition)
         u = TimestepSampler.sample(
             mode, batch_size, device, config, latents=latents, progress=progress,
         )

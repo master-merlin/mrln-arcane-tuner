@@ -876,6 +876,9 @@ export class TrainingDynamicConfigComponent {
    * model-change-modal / targeted-layers reset flow.
    */
   private _loadFieldCapabilities(definitionId: string): void {
+    // Only the latest request may land: an answer for a definition the user has since switched
+    // away from would set its descriptor and re-seed its defaults over the current one's.
+    const request = ++this._capabilitiesRequest;
     if (!definitionId) {
       this.capabilities.set(null);
       return;
@@ -888,6 +891,7 @@ export class TrainingDynamicConfigComponent {
     const applyingTemplate = this._isTemplateApplying;
     this.modelCapabilitiesService.getCapabilities(definitionId).subscribe({
       next: (caps) => {
+        if (request !== this._capabilitiesRequest) return; // superseded by a later selection
         this.capabilities.set(caps);
         // Fill pristine controls from the definition's per-definition defaults.
         // Skipped entirely when this load was triggered as part of applying a
@@ -897,9 +901,14 @@ export class TrainingDynamicConfigComponent {
         }
         this.syncDistillationControls();
       },
-      error: () => this.capabilities.set(null),
+      error: () => {
+        if (request === this._capabilitiesRequest) this.capabilities.set(null);
+      },
     });
   }
+
+  /** Counts `_loadFieldCapabilities` calls; a response whose number is not the latest is dropped. */
+  private _capabilitiesRequest = 0;
 
   /**
    * Resolve the schema (JSON-Schema) default for a top-level form key, or
@@ -924,11 +933,17 @@ export class TrainingDynamicConfigComponent {
    *  (b) the key maps to a real, non-group form control (backend key); a list
    *      control is seeded only when it is a list of primitives
    *      (`_seedPrimitiveArray`), never an object list such as `datasets`;
-   *  (c) the control is pristine (`!control.dirty`) AND its current value still
-   *      equals the field's schema default — or, when no schema default exists,
-   *      the current value is empty (null / undefined / ''). This conservative
-   *      rule errs toward NOT overwriting: any value that differs from the
-   *      schema default (a template value, or a user edit) is left untouched.
+   *  (c) the control is pristine (`!control.dirty`), no template or job restored
+   *      it (`_restoredKeys`), AND either this seeding still owns it (it holds
+   *      the value a previous seeding wrote, `_seededDefaults`) or its current
+   *      value still equals the field's schema default — or, when no schema
+   *      default exists, the current value is empty (null / undefined / '').
+   *      This conservative rule errs toward NOT overwriting: any value that
+   *      differs (a template value, a user edit, another writer) is left untouched.
+   *
+   * On a definition switch, a control this seeding still owns that the new
+   * `defaults` do not name goes back to its schema default: a value the
+   * previous definition seeded is never left behind as if someone chose it.
    *
    * Patches use `{ emitEvent: false }` and never mark controls dirty (defaults
    * are not user edits). The whole batch is wrapped in the child's
@@ -947,29 +962,47 @@ export class TrainingDynamicConfigComponent {
 
     let patchedAny = false;
     try {
-      for (const key of Object.keys(defaults)) {
+      // The new defaults' keys, then every key a previous seeding still holds (it goes back to the
+      // schema default when the new definition names none).
+      const keys = new Set([...Object.keys(defaults), ...this._seededDefaults.keys()]);
+      for (const key of keys) {
+        const named = Object.prototype.hasOwnProperty.call(defaults, key);
         // (b) Must be a real backend control. A list of primitives is seeded by
         // its own rule; object lists and groups are out of scope for defaults.
         const control = this.form.get(key);
         if (control instanceof FormArray) {
-          if (this._seedPrimitiveArray(key, control, defaults[key])) patchedAny = true;
+          if (this._seedPrimitiveArray(key, control, named ? defaults[key] : undefined)) patchedAny = true;
           continue;
         }
-        if (!control || control instanceof FormGroup) continue;
+        if (!control || control instanceof FormGroup) {
+          this._seededDefaults.delete(key);
+          continue;
+        }
 
-        // (c) Only fill pristine controls that still hold the schema default
-        // (or are empty when no schema default is defined). Never overwrite a
-        // value that differs — that came from the user or an applied template.
-        if (control.dirty) continue;
+        // (c) A restored or edited control, or one another writer changed, is not the seed's.
+        const owned = this._ownsSeed(key, control);
+        if (this._restoredKeys.has(key) || control.dirty) continue;
         const schemaDefault = this._schemaDefaultFor(key);
         const current = control.value;
         const stillSchemaDefault =
           schemaDefault !== undefined
             ? current === schemaDefault
             : current === null || current === undefined || current === '';
-        if (!stillSchemaDefault) continue;
+        if (!owned && !stillSchemaDefault) continue;
+
+        if (!named) {
+          // A seed the new definition does not name: back to the schema default.
+          this._seededDefaults.delete(key);
+          const fallback = schemaDefault !== undefined ? schemaDefault : null;
+          if (current !== fallback) {
+            control.setValue(fallback, { emitEvent: false });
+            patchedAny = true;
+          }
+          continue;
+        }
 
         const next = defaults[key];
+        this._seededDefaults.set(key, next);
         if (next === current) continue; // nothing to change
 
         control.setValue(next, { emitEvent: false });
@@ -987,30 +1020,82 @@ export class TrainingDynamicConfigComponent {
     // Refresh the VRAM estimate / preview once, without re-enabling auto-save
     // (the estimate pipeline only refreshes the estimate, never saves).
     if (patchedAny) {
+      // The writes above emit nothing, so a re-seeded parent (a switch from `uniform` back to
+      // `logit_normal`) would leave its gated controls disabled, and out of the submitted value.
+      this._updateDisabledStates?.();
       this._updateLoraNamePreview();
       this.vramEstimation.schedule();
     }
   }
 
+  /** Top-level keys automatic seeding wrote, with the value it wrote (provenance, LANE-193). A key
+   *  stays owned only while its control is pristine and still holds that value: a user edit (dirty),
+   *  a template/job restore (`_restoredKeys`) or any other writer (a different value) disowns it. */
+  private _seededDefaults = new Map<string, unknown>();
+
+  /** Top-level keys a template or job restore wrote (`patchFormRecursive` on the form). Seeding
+   *  never touches them, first seeding included and even when the restored value equals the schema
+   *  default, until the Default template's reset or a form rebuild hands them back (`_clearSeedRecords`). */
+  private _restoredKeys = new Set<string>();
+
+  private static _sameValue(a: unknown, b: unknown): boolean {
+    if (Array.isArray(a) && Array.isArray(b)) return a.length === b.length && a.every((v, i) => v === b[i]);
+    return a === b;
+  }
+
+  /** Whether automatic seeding still owns `key`; a key it no longer owns leaves the record. */
+  private _ownsSeed(key: string, control: AbstractControl): boolean {
+    if (!this._seededDefaults.has(key)) return false;
+    const owned = !control.dirty && !this._restoredKeys.has(key)
+      && TrainingDynamicConfigComponent._sameValue(control.value, this._seededDefaults.get(key));
+    if (!owned) this._seededDefaults.delete(key);
+    return owned;
+  }
+
+  /** The Default template's reset, and a form rebuild (`buildForm`): every control is the seeding's again. */
+  private _clearSeedRecords(): void {
+    this._seededDefaults.clear();
+    this._restoredKeys.clear();
+  }
+
   /**
    * Seed a list-of-primitives control (e.g. `fixed_sigmas`) from a definition default, by the
-   * same rule as a scalar: only a pristine list that still holds its schema default (an absent
-   * or null schema default counts as the empty list) is replaced, and only by a list of
-   * primitives. Object lists (`datasets`, `sample_prompts`) and a non-list value are ignored.
-   * The rows are swapped without events and without marking anything dirty.
+   * same rule as a scalar: only a pristine, unrestored list that a previous seeding still owns or
+   * that still holds its schema default (an absent or null schema default counts as the empty
+   * list) is replaced, and only by a list of primitives. `next` undefined means the definition
+   * names no list: an owned list goes back to the schema default. Object lists (`datasets`,
+   * `sample_prompts`) and a non-list value are ignored. The rows are swapped without events and
+   * without marking anything dirty.
    */
   private _seedPrimitiveArray(key: string, control: FormArray, next: unknown): boolean {
-    if (!Array.isArray(next) || !this.isPrimitiveArray(key)) return false;
-    if (next.some((v) => v !== null && typeof v === 'object')) return false;
-    if (control.dirty) return false;
+    if (!this.isPrimitiveArray(key)) {
+      this._seededDefaults.delete(key);
+      return false;
+    }
+    if (next !== undefined && (!Array.isArray(next) || next.some((v) => v !== null && typeof v === 'object'))) {
+      return false;
+    }
+    const owned = this._ownsSeed(key, control);
+    if (control.dirty || this._restoredKeys.has(key)) return false;
     const schemaDefault = this._schemaDefaultFor(key);
     const baseline = Array.isArray(schemaDefault) ? schemaDefault : [];
     const current = control.value as unknown[];
-    const sameList = (a: unknown[], b: unknown[]) => a.length === b.length && a.every((v, i) => v === b[i]);
-    if (!sameList(current, baseline) || sameList(current, next)) return false;
+    const sameList = TrainingDynamicConfigComponent._sameValue;
+    if (!owned && !sameList(current, baseline)) return false;
+
+    let target: unknown[];
+    if (next === undefined) {
+      if (!owned) return false;
+      this._seededDefaults.delete(key);
+      target = baseline;
+    } else {
+      target = next as unknown[];
+      this._seededDefaults.set(key, [...target]);
+    }
+    if (sameList(current, target)) return false;
 
     control.clear({ emitEvent: false });
-    for (const value of next) control.push(new FormControl(value), { emitEvent: false });
+    for (const value of target) control.push(new FormControl(value), { emitEvent: false });
     return true;
   }
 
@@ -1255,6 +1340,8 @@ export class TrainingDynamicConfigComponent {
     this._isTemplateApplying = true;
     try {
       if (event.isDefault) {
+        // Default hands every control back to the seeding: no restored or seeded record survives.
+        this._clearSeedRecords();
         this.resetFormToDefaults();
         this._reapplyModelDefaults();
         // The reset drops the knob dict back to `{}`; the card re-materializes
@@ -1374,6 +1461,12 @@ export class TrainingDynamicConfigComponent {
       if (!control) return;
 
       const value = config[key];
+      if (formGroup === this.form) {
+        // A template's or job's value: automatic seeding never takes this control back until the
+        // Default template's reset (`_restoredKeys`).
+        this._restoredKeys.add(key);
+        this._seededDefaults.delete(key);
+      }
 
       if (control instanceof FormArray) {
         while (control.length !== value.length) {
@@ -1605,6 +1698,8 @@ export class TrainingDynamicConfigComponent {
       }
     }
     this.form = this.fb.group(group);
+    // Every provenance record names a control of the form it was made on: a rebuilt form has none.
+    this._clearSeedRecords();
     this.properties.set(properties);
     this.nestedItemPropsMap.set(nestedItemPropsMap);
 

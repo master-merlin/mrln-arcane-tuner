@@ -49,12 +49,19 @@ class _DualDefn:
         "moe.boundary_ratio": 0.875,
     }
     lora_targetable_modules: list[str] = []
-    defaults: dict = {"num_frames": 81}
+    # bernini_r_14b.yaml's own timestep defaults: the family default the trainer reads.
+    defaults: dict = {"num_frames": 81, "timestep_sampling": "mode", "mode_scale": 1.29}
 
 
 def _trainer(config=None, *, step=30, max_steps=60) -> BerniniRTrainer:
+    """A bare trainer with the real 1.3B definition: a timestep key its config lacks is the
+    definition's family default (``mode`` / 1.29), as for every real trainer."""
+    from app.engine.models.registry import registry
+
+    registry.initialize()
     t = object.__new__(BerniniRTrainer)
     t.device = CPU
+    t.definition = registry.get_definition("bernini-r-1.3b")
     t.config = dict(config or {})
     t.logger = _Recorder()
     t.global_step = step
@@ -69,6 +76,10 @@ def _dual(config, *, step=0, max_steps=100) -> BerniniRTrainer:
         max_steps=max_steps,
     )
     t.definition = _DualDefn()
+    # what the shared setup() does before the router is built: the definition's timestep defaults
+    from app.engine.strategies.timestep_sampling import apply_family_timestep_defaults
+
+    apply_family_timestep_defaults(t.definition, t.config)
     t.driver = BerniniRDriver(_DualDefn(), CPU)
     t.expert_mode = "both"
     t._build_router()

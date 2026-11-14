@@ -50,6 +50,10 @@ detected_precision:
   vae: torch.bfloat16
   unet: torch.bfloat16
 architecture_params:
+  # The family's timestep draw: uniform, with the definition's shift on top, reproduces the
+  # inference grid (diffusion-pipe's recommendation, research section 4). The form and every job
+  # get it from here (timestep_sampling.family_timestep_defaults).
+  timestep.default_mode: uniform
   # t2va is TEXT-to-video+audio only — no image conditioning of any kind.
   # mode: t2v (NOT both) so VideoProfile.supports_i2v() is False here, unlike
   # fl2va: with "both", the text-to-video guard at video_contract.py's

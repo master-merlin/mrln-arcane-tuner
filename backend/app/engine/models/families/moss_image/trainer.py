@@ -213,19 +213,14 @@ class MossImageTrainer(GenericTrainingPipeline):
     def sample_timesteps(self, batch_size: int, latents: torch.Tensor | None = None) -> torch.Tensor:
         """The configured mode through the shared ``TimestepSampler``, as ``sigma * 1000``.
 
-        No family shift is applied. With no ``timestep_sampling`` in the config the family default
-        (the YAML's ``timestep.*`` keys: the report's logit-normal) is used, ``setdefault``-style, so
-        a value the config carries is never touched. MOSS patchifies 2x2 before the transformer, so
-        the resolution-aware modes see the real token count (``flux_shift_patchify_factor`` 2).
+        No family shift is applied. The family default (the YAML's ``timestep.*`` keys: the report's
+        logit-normal) is already in the config: the shared ``setup()`` applies it. MOSS patchifies
+        2x2 before the transformer, so the resolution-aware modes see the real token count
+        (``flux_shift_patchify_factor`` 2).
         """
         from app.engine.strategies.timestep_sampling import TimestepSampler  # noqa: PLC0415
 
         cfg = dict(self.config)
-        if "timestep_sampling" not in cfg:
-            arch = getattr(getattr(self, "definition", None), "architecture_params", None) or {}
-            cfg["timestep_sampling"] = arch.get("timestep.default_mode", "logit_normal")
-            cfg.setdefault("logit_normal_mu", float(arch.get("timestep.logit_normal_mu", 1.09)))
-            cfg.setdefault("logit_normal_sigma", float(arch.get("timestep.logit_normal_sigma", 0.95)))
         cfg.setdefault("flux_shift_patchify_factor", 2)
         mode = cfg["timestep_sampling"]
         max_steps = getattr(self, "max_train_steps", 1)

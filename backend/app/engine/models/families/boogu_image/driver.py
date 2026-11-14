@@ -608,9 +608,9 @@ class BooguImageDriver(IModelDriver):
         applies to direct/legacy callers that don't supply it (e.g. Task 4's
         driver-level tests).
         """
-        from app.engine.strategies.timestep_sampling import TimestepSampler
+        from app.engine.strategies.timestep_sampling import TimestepSampler, timestep_setting
 
-        mode = config.get("timestep_sampling", "logit_normal")
+        mode = timestep_setting(config, "timestep_sampling", getattr(self, "definition", None))
         return TimestepSampler.sample(
             mode, batch_size, device, config, latents=latents, progress=progress,
         )

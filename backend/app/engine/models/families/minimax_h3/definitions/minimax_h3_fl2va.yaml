@@ -75,6 +75,8 @@ detected_precision:
   vae: torch.bfloat16
   unet: torch.bfloat16
 architecture_params:
+  # The family's timestep draw (research section 4; see minimax_h3_t2va.yaml).
+  timestep.default_mode: uniform
   # mode: both correctly marks this definition as i2v-capable
   # (VideoProfile.supports_i2v() must be True here — the counterpart fix to
   # t2va's mode: t2v). PR1 MARKER (the name is history; PR1 / LANE-92 shipped

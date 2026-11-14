@@ -201,10 +201,16 @@ class TestExpertRouting:
 
 
 def _band_trainer() -> BerniniRTrainer:
+    """A bare 14B trainer with its real definition, whose family default (``mode`` / 1.29)
+    a config without timestep keys draws from, as for every real trainer."""
     import structlog
 
+    from app.engine.models.registry import registry
+
+    registry.initialize()
     t = object.__new__(BerniniRTrainer)
     t.device = torch.device("cpu")
+    t.definition = registry.get_definition("bernini-r-14b")
     t.config = {}
     t.driver = _dual_driver()
     t.logger = structlog.get_logger("test")
@@ -271,8 +277,12 @@ class TestBandSampling:
         """No driver (bare trainer) → full-range formula (1.3B byte-identical)."""
         import structlog
 
+        from app.engine.models.registry import registry
+
+        registry.initialize()
         t = object.__new__(BerniniRTrainer)
         t.device = torch.device("cpu")
+        t.definition = registry.get_definition("bernini-r-1.3b")
         t.config = {}
         t.logger = structlog.get_logger("t")
         torch.manual_seed(42)

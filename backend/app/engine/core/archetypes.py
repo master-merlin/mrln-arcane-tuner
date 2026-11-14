@@ -332,31 +332,14 @@ def _coerce_number(value):
 def _timestep_defaults(definition) -> dict:
     """The form defaults a definition's family timestep default implies.
 
-    A definition names its default draw in ``architecture_params`` as ``timestep.default_mode``
-    (and, for ``fixed_sigmas``, its list as ``timestep.fixed_sigmas``); its trainer applies them
-    to a config that carries no ``timestep_sampling``. The form reads ``defaults``, so the same
-    keys are derived into it here, and a ``defaults`` block that says otherwise is refused: the
-    job default and the form default are one value, never two that can drift apart.
+    ``family_timestep_defaults`` is the one source: the definition's ``timestep.*`` keys and the
+    timestep keys of its ``defaults`` block, refused when they disagree. Every job gets the same
+    values in the shared ``setup()`` (``apply_family_timestep_defaults``), so the job default and
+    the form default are one value, never two that can drift apart.
     """
-    from app.engine.strategies.timestep_sampling import TimestepSampler, validate_fixed_sigmas
+    from app.engine.strategies.timestep_sampling import family_timestep_defaults
 
-    arch_params = getattr(definition, "architecture_params", None) or {}
-    mode = arch_params.get("timestep.default_mode")
-    if mode is None:
-        return {}
-    if mode not in TimestepSampler.SUPPORTED_MODES:
-        raise ValueError(f"{getattr(definition, 'id', '?')}: timestep.default_mode {mode!r} is no timestep mode")
-    derived: dict = {"timestep_sampling": mode}
-    if mode == "fixed_sigmas" or "timestep.fixed_sigmas" in arch_params:
-        derived["fixed_sigmas"] = validate_fixed_sigmas(arch_params.get("timestep.fixed_sigmas"))
-    own = definition.defaults or {}
-    for key, value in derived.items():
-        source = "timestep.default_mode" if key == "timestep_sampling" else "timestep.fixed_sigmas"
-        if key in own and own[key] != value:
-            raise ValueError(
-                f"{getattr(definition, 'id', '?')}: defaults.{key} {own[key]!r} disagrees with {source} {value!r}"
-            )
-    return derived
+    return family_timestep_defaults(definition)
 
 
 def _distillation_descriptor(definition) -> dict | None:

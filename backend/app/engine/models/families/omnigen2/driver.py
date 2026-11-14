@@ -136,12 +136,6 @@ OMNIGEN2_SYSTEM_PROMPT = (
 # ~L363).
 _DEFAULT_MAX_SEQUENCE_LENGTH = 256
 
-# Upstream training-shift constants (transport ``get_lin_function`` defaults
-# L180-185: x1=256, y1=0.5, x2=4096, y2=1.15). Seeded as flux_shift config
-# defaults in sample_timesteps (module docstring §4).
-_SHIFT_BASE = 0.5
-_SHIFT_MAX = 1.15
-
 # Fingerprint of the system-prompt string, hashed so any future edit to the
 # prompt text changes the fingerprint automatically (lumina2/boogu_image
 # precedent — consumed by the trainer's disk-cache key template identity).
@@ -399,15 +393,18 @@ class OmniGen2Driver(IModelDriver):
         mode is ``flux_shift`` seeded with upstream's own training-shift
         constants (base 0.5 / max 1.15 over p=2 patch tokens), which is
         ALGEBRAICALLY IDENTICAL to upstream's ``lognorm + do_shift +
-        dynamic_time_shift(v1)`` draw. User-set ``timestep_sampling`` /
-        ``flux_shift_*`` config keys win over the seeded defaults.
+        dynamic_time_shift(v1)`` draw. The definition declares them
+        (``timestep.*``); user-set ``timestep_sampling`` / ``flux_shift_*``
+        config keys win over them.
         """
-        from app.engine.strategies.timestep_sampling import TimestepSampler  # noqa: PLC0415
+        from app.engine.strategies.timestep_sampling import (  # noqa: PLC0415
+            TimestepSampler,
+            apply_family_timestep_defaults,
+            timestep_setting,
+        )
 
-        mode = config.get("timestep_sampling", "flux_shift")
-        cfg = dict(config)
-        cfg.setdefault("flux_shift_base", _SHIFT_BASE)
-        cfg.setdefault("flux_shift_max", _SHIFT_MAX)
+        cfg = apply_family_timestep_defaults(self.definition, dict(config))
+        mode = timestep_setting(cfg, "timestep_sampling")
         cfg.setdefault("flux_shift_patchify_factor", 2)
         sigma = TimestepSampler.sample(
             mode, batch_size, device, cfg, latents=latents, progress=progress,

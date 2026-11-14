@@ -55,7 +55,7 @@ import torch.nn.functional as F
 
 from app.engine.components.pixel_latents import PixelPassthroughLatentManager
 from app.engine.core.pipeline import GenericTrainingPipeline
-from app.engine.strategies.timestep_sampling import TimestepSampler
+from app.engine.strategies.timestep_sampling import TimestepSampler, timestep_setting
 
 from .driver import HiDreamO1Driver
 from .loader import HiDreamO1Loader
@@ -119,9 +119,6 @@ MAX_SIGMA: float = 0.9999
 # Modes that shift by the token count of a LATENT grid; hidream_o1 trains on raw
 # pixel patches, so the shift has no defined meaning here -> ``uniform`` (logged).
 _RESOLUTION_SHIFT_MODES: frozenset[str] = frozenset({"flux_shift", "model_shift"})
-# The factory's default when a job config carries no ``radc_res_influence``
-# (``strategies/timestep_sampling.py`` ``_radc_center``).
-_FACTORY_RADC_RES_INFLUENCE: float = 0.15
 
 
 class HiDreamO1Trainer(GenericTrainingPipeline):
@@ -180,7 +177,8 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         receives a copy carrying the effective values.
         """
         log = getattr(self, "logger", logger)
-        configured = str(self.config.get("timestep_sampling", "uniform"))
+        definition = getattr(self, "definition", None)
+        configured = str(timestep_setting(self.config, "timestep_sampling", definition))
         effective = configured
         if configured in _RESOLUTION_SHIFT_MODES:
             effective = "uniform"
@@ -193,7 +191,7 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
                     reason="pixel-space patches carry no latent grid for a resolution shift",
                 )
         cfg = self.config
-        res_influence = float(cfg.get("radc_res_influence", _FACTORY_RADC_RES_INFLUENCE))
+        res_influence = float(timestep_setting(cfg, "radc_res_influence", definition))
         if effective == "radc" and res_influence > 0:
             if not getattr(self, "_hd_res_influence_warned", False):
                 self._hd_res_influence_warned = True

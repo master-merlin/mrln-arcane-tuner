@@ -117,7 +117,15 @@ class ExpertRouter:
         self.boundary_scaled = self.boundary_frac * self.scale
         self.switch_interval = max(1, int(switch_interval))
         self.config: dict[str, Any] = dict(timestep_cfg or {})
-        self.mode: str = str(self.config.get("timestep_sampling", "logit_normal"))
+        # The trainer hands its config after the shared setup() filled the definition's mode; a
+        # config without one never passed through it, so routing on a guessed mode is refused.
+        mode = self.config.get("timestep_sampling")
+        if not mode:
+            raise ValueError(
+                "ExpertRouter needs the job's timestep_sampling (the shared setup() fills the "
+                "definition's default before the router is built)"
+            )
+        self.mode: str = str(mode)
         self.mc_samples = int(mc_samples)
         self._timestep_draw = timestep_draw
         self._reference_latent_shape = (

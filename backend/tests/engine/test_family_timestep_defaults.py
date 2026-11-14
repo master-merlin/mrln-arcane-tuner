@@ -1,4 +1,4 @@
-﻿"""A definition's timestep defaults come from one place, for the form and for the job.
+"""A definition's timestep defaults come from one place, for the form and for the job.
 
 A definition states its family's default draw either in its ``defaults:`` block or as
 ``architecture_params`` ``timestep.*`` keys (``timestep.default_mode`` and one key per mode

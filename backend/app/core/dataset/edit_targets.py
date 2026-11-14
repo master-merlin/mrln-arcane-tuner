@@ -52,7 +52,14 @@ def resolve_edit_targets(dataset_path: str | Path, relative_path: str) -> EditTa
     root = Path(dataset_path)
 
     def contained(p: str | Path) -> Path:
-        return validate_path_within(p, dataset_path)
+        # The whole path must resolve inside (a leaf link pointing out is
+        # refused), but the edit acts on the NAME: its resolved directory plus
+        # its own final component. Deleting or replacing a leaf that is a link
+        # inside the dataset then removes the link, never the other image's
+        # file it points at.
+        p = Path(p)
+        validate_path_within(p, dataset_path)
+        return validate_path_within(p.parent, dataset_path) / p.name
 
     source = contained(root / relative_path)
 

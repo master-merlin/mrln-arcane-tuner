@@ -263,6 +263,26 @@ def test_crop_still_deletes_contained_masks_and_regenerates_the_thumbnail(
     assert dataset.media_metadata["a.jpg"]["has_mask"] is False
 
 
+def test_crop_removes_a_linked_sidecar_name_not_what_it_points_to(manager, dataset):
+    """A sidecar NAME that is a link inside the dataset is removed as a name:
+    the file (or directory) it points at belongs to another image and stays."""
+    ds = Path(dataset.path)
+    image(ds / "masks" / "other.png")
+    mask_link = ds / "masks" / "a.png"
+    mask_target = link_name_to(mask_link, ds / "masks" / "other.png")
+    image(ds / ".thumbnails" / "512" / "other.webp")
+    thumb_link = ds / ".thumbnails" / "512" / "a.webp"
+    thumb_target = link_name_to(thumb_link, ds / ".thumbnails" / "512" / "other.webp")
+
+    assert manager.crop_media("foo", "a.jpg", *TARGET) is True
+
+    for link, target in ((mask_link, mask_target), (thumb_link, thumb_target)):
+        assert not os.path.lexists(link), link
+        assert target.exists(), target
+    assert (ds / "masks" / "other.png").exists()
+    assert (ds / ".thumbnails" / "512" / "other.webp").exists()
+
+
 def test_crop_still_rerenders_a_contained_overlay(manager, dataset):
     ds = Path(dataset.path)
     image(ds / "overlays" / "a.png", SOURCE_SIZE)
@@ -480,9 +500,9 @@ def test_every_io_of_the_overlay_fallback_receives_a_path_from_edit_targets(
 
 
 def test_every_temp_file_of_a_crop_comes_from_edit_targets(manager, linked):
-    """Both temporary siblings are links to elsewhere INSIDE the dataset, so
-    the validated temp path differs from ``<validated destination>.tmp``: a
-    writer that derives its own temp sibling is caught here."""
+    """Both temporary siblings are links to elsewhere INSIDE the dataset. The
+    check follows them (they resolve inside), but the edit acts on the temp
+    NAME in its resolved directory, so what they point at is left alone."""
     ds, via, real = linked
     image(real / "_tt" / "t.webp")
     (real / "_tj").mkdir()
@@ -495,9 +515,11 @@ def test_every_temp_file_of_a_crop_comes_from_edit_targets(manager, linked):
 
     seen = _assert_every_io_from_targets(calls, resolved, via, real)
     t = resolved[0]
-    assert t.thumbnail_tmp != t.thumbnail_dst.with_suffix(t.thumbnail_dst.suffix + ".tmp")
-    assert t.overlays_json_tmp != Path(f"{t.overlays_json}.tmp")
+    assert t.thumbnail_tmp == real / "_t" / "256" / "a.webp.tmp"
+    assert t.overlays_json_tmp == real / "overlays.json.tmp"
     assert t.thumbnail_tmp in seen and t.overlays_json_tmp in seen
+    assert (real / "_tj" / "t.json").read_text(encoding="utf-8") == "{}"
+    assert (real / "_tt").is_dir()
 
 
 def test_the_thumbnail_is_generated_from_the_resolved_source(manager, linked, monkeypatch):

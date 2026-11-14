@@ -31,19 +31,20 @@ def link_dir(link: Path, target: Path) -> None:
         pytest.skip(f"cannot create a directory link here: {e}")
 
 
-def link_name_outside(link: Path, outside_file: Path) -> Path:
-    """Make the file name *link* resolve outside its directory.
+def link_name_to(link: Path, file: Path) -> Path:
+    """Make the file name *link* resolve to *file* or, failing that, near it.
 
-    A file symlink to *outside_file* where the platform allows one. Windows
-    without the symlink privilege gets a junction to *outside_file*'s
-    directory instead: the name still resolves outside, which is what a
-    containment check has to refuse. Returns what the name now points at.
+    A file symlink to *file* where the platform allows one. Windows without
+    the symlink privilege gets a junction to *file*'s directory instead: the
+    name still resolves to a different place than its own, which is what a
+    containment check and a coverage test need. Returns what the name now
+    points at.
     """
     try:
-        os.symlink(outside_file, link)
-        return outside_file
+        os.symlink(file, link)
+        return file
     except (OSError, NotImplementedError):
         if sys.platform != "win32":
             raise
-    link_dir(link, outside_file.parent)
-    return outside_file.parent
+    link_dir(link, file.parent)
+    return file.parent

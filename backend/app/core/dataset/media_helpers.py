@@ -10,9 +10,14 @@ import json
 import os
 import threading
 import time
-from typing import Any
+from collections.abc import Sequence
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
 
 import structlog
+
+if TYPE_CHECKING:
+    from app.core.dataset.edit_targets import EditTargets
 
 logger = structlog.get_logger(__name__)
 
@@ -23,7 +28,9 @@ logger = structlog.get_logger(__name__)
 _overlays_json_lock = threading.Lock()
 
 
-def write_overlays_json(path: str, data: dict[str, Any]) -> None:
+def write_overlays_json(
+    path: str | Path, data: dict[str, Any], *, tmp_path: str | Path | None = None,
+) -> None:
     """Atomically replace an ``overlays.json``.
 
     The recipe map is the whole overlay history for a dataset, rewritten in full
@@ -34,8 +41,12 @@ def write_overlays_json(path: str, data: dict[str, Any]) -> None:
 
     Callers must hold :data:`_overlays_json_lock` across their read AND this
     write; atomicity alone does not make read-modify-write safe.
+
+    *tmp_path* defaults to ``<path>.tmp``; a caller that validated its paths
+    passes the validated one.
     """
-    tmp_path = f"{path}.tmp"
+    if tmp_path is None:
+        tmp_path = f"{path}.tmp"
     try:
         with open(tmp_path, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
@@ -48,7 +59,9 @@ def write_overlays_json(path: str, data: dict[str, Any]) -> None:
         raise
 
 
-def invalidate_overlay_files(dataset_path: str, relative_path: str) -> bool:
+def invalidate_overlay_files(
+    dataset_path: str, relative_path: str, *, targets: EditTargets | None = None,
+) -> bool:
     """Delete an image's overlay (rendered PNG + ``overlays.json`` recipe).
 
     Called after destructive pixel edits (crop, adjustment, upscale): the
@@ -61,12 +74,22 @@ def invalidate_overlay_files(dataset_path: str, relative_path: str) -> bool:
         dataset_path: Absolute path to the dataset directory.
         relative_path: Forward-slash-or-OS-sep relative path of the media file
             (the key used in ``overlays.json``).
+        targets: The edit's validated paths; when given, the overlay PNG,
+            ``overlays.json`` and its temporary sibling come from it.
     """
     rel = relative_path.replace(os.sep, "/")
     stem = os.path.splitext(os.path.basename(rel))[0]
     existed = False
 
-    overlay_path = os.path.join(dataset_path, "overlays", f"{stem}.png")
+    if targets is not None:
+        overlay_path = targets.overlay_png
+        overlays_json = targets.overlays_json
+        overlays_tmp = targets.overlays_json_tmp
+    else:
+        overlay_path = os.path.join(dataset_path, "overlays", f"{stem}.png")
+        overlays_json = os.path.join(dataset_path, "overlays.json")
+        overlays_tmp = None
+
     if os.path.exists(overlay_path):
         try:
             os.remove(overlay_path)
@@ -76,7 +99,6 @@ def invalidate_overlay_files(dataset_path: str, relative_path: str) -> bool:
             logger.warning("overlay_invalidation_failed", stem=stem, error=str(e))
 
     # Drop the recipe entry (keyed by the relative image path).
-    overlays_json = os.path.join(dataset_path, "overlays.json")
     if os.path.exists(overlays_json):
         try:
             with _overlays_json_lock:
@@ -86,14 +108,20 @@ def invalidate_overlay_files(dataset_path: str, relative_path: str) -> bool:
                     data.pop(relative_path, None)
                     data.pop(rel, None)
                     existed = True
-                    write_overlays_json(overlays_json, data)
+                    write_overlays_json(overlays_json, data, tmp_path=overlays_tmp)
         except (OSError, json.JSONDecodeError) as e:
             logger.warning("overlays_json_update_failed", stem=stem, error=str(e))
 
     return existed
 
 
-def invalidate_mask_files(dataset_path: str, stem: str, reason: str = "edit") -> None:
+def invalidate_mask_files(
+    dataset_path: str,
+    stem: str,
+    reason: str = "edit",
+    *,
+    targets: Sequence[str | Path] | None = None,
+) -> None:
     """Delete mask, masked image, and masked caption if they exist.
 
     Called after crop or adjustment operations that change pixel content,
@@ -103,15 +131,19 @@ def invalidate_mask_files(dataset_path: str, stem: str, reason: str = "edit") ->
         dataset_path: Absolute path to the dataset directory.
         stem: File stem (without extension) of the media file.
         reason: Log context — 'crop' or 'adjustment'.
+        targets: The validated mask files to delete; when given, nothing is
+            derived from *dataset_path* and *stem*.
     """
-    masks_dir = os.path.join(dataset_path, "masks")
-    masked_dir = os.path.join(dataset_path, "masked")
-
-    files_to_remove = [
-        os.path.join(masks_dir, f"{stem}.png"),
-        os.path.join(masked_dir, f"{stem}.jpg"),
-        os.path.join(masked_dir, f"{stem}.txt"),
-    ]
+    if targets is not None:
+        files_to_remove = list(targets)
+    else:
+        masks_dir = os.path.join(dataset_path, "masks")
+        masked_dir = os.path.join(dataset_path, "masked")
+        files_to_remove = [
+            os.path.join(masks_dir, f"{stem}.png"),
+            os.path.join(masked_dir, f"{stem}.jpg"),
+            os.path.join(masked_dir, f"{stem}.txt"),
+        ]
 
     for p in files_to_remove:
         if os.path.exists(p):
@@ -137,6 +169,8 @@ def refresh_media_metadata_after_change(
     full_path: str,
     new_dims: tuple[int, int] | None = None,
     dataset_path: str | None = None,
+    *,
+    targets: EditTargets | None = None,
 ) -> None:
     """Refresh lightweight metadata fields after ANY change to a media file.
 
@@ -159,6 +193,9 @@ def refresh_media_metadata_after_change(
         dataset_path: When provided, the source's thumbnail is invalidated
             and regenerated. Callers that mutate source pixels should
             pass this; metadata-only edits may omit it.
+        targets: The edit's validated paths; when given, the size is read
+            from its source and the thumbnail is invalidated and regenerated
+            through its paths only.
     """
     if lookup_key not in metadata:
         return
@@ -166,7 +203,9 @@ def refresh_media_metadata_after_change(
     entry = metadata[lookup_key]
 
     # Always update after any edit
-    entry["size_bytes"] = os.path.getsize(full_path)
+    entry["size_bytes"] = os.path.getsize(
+        targets.source if targets is not None else full_path
+    )
     entry.pop("solid_hash", None)
     entry.pop("quality_score", None)  # re-score on next scan
     entry["has_mask"] = False
@@ -209,5 +248,17 @@ def refresh_media_metadata_after_change(
         # Local import to avoid a circular import path through scan helpers.
         from app.core.dataset import thumbnails
 
-        thumbnails.invalidate_thumbnail(dataset_path, lookup_key)
-        thumbnails.ensure_thumbnail(dataset_path, lookup_key)
+        if targets is None:
+            thumbnails.invalidate_thumbnail(dataset_path, lookup_key)
+            thumbnails.ensure_thumbnail(dataset_path, lookup_key)
+        else:
+            thumbnails.invalidate_thumbnail(
+                dataset_path, lookup_key, targets=targets.thumbnails,
+            )
+            thumbnails.ensure_thumbnail(
+                dataset_path, lookup_key,
+                src_path=targets.source,
+                dst_path=targets.thumbnail_dst,
+                tmp_path=targets.thumbnail_tmp,
+                legacy_path=targets.thumbnail_legacy,
+            )

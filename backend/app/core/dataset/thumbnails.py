@@ -12,6 +12,7 @@ auto-registers with Pillow on import.
 from __future__ import annotations
 
 import os
+from collections.abc import Sequence
 from pathlib import Path
 from typing import NamedTuple
 
@@ -406,26 +407,32 @@ def purge_legacy_layout(dataset_path: str) -> LegacyLayoutOutcome:
 
 
 def generate_thumbnail(
-    src_path: str,
+    src_path: str | Path,
     dst_path: Path,
     max_edge: int = _MAX_EDGE_DEFAULT,
+    *,
+    tmp_path: Path | None = None,
 ) -> bool:
     """Generate a thumbnail at *dst_path* from *src_path*.
 
     Writes to ``<dst>.tmp`` first then atomically renames, so concurrent
     readers never observe a partially written file. Returns ``True`` on
     success, ``False`` if the source could not be decoded (logged).
+
+    *tmp_path* defaults to ``<dst>.tmp``; a caller that validated its paths
+    passes the validated one.
     """
     from PIL import Image
 
     dst_path.parent.mkdir(parents=True, exist_ok=True)
 
     ext = Path(src_path).suffix.lower()
-    tmp_path = dst_path.with_suffix(dst_path.suffix + ".tmp")
+    if tmp_path is None:
+        tmp_path = dst_path.with_suffix(dst_path.suffix + ".tmp")
 
     try:
         if ext in _VIDEO_EXTS:
-            img = _first_video_frame(src_path)
+            img = _first_video_frame(os.fspath(src_path))
             if img is None:
                 return False
         else:
@@ -467,14 +474,27 @@ def _first_video_frame(src_path: str):
 
 
 def ensure_thumbnail(
-    dataset_path: str, rel_path: str, max_edge: int = _MAX_EDGE_DEFAULT,
+    dataset_path: str,
+    rel_path: str,
+    max_edge: int = _MAX_EDGE_DEFAULT,
+    *,
+    src_path: str | Path | None = None,
+    dst_path: Path | None = None,
+    tmp_path: Path | None = None,
+    legacy_path: Path | None = None,
 ) -> Path | None:
     """Return an existing thumbnail or generate one at *max_edge*.
 
     Returns ``None`` when the source is missing or unreadable.
+
+    The keyword paths default to the ones derived from *dataset_path* and
+    *rel_path*; a caller that validated its paths (a crop) passes all four,
+    so nothing here is derived from the client's *rel_path*.
     """
-    src_path = os.path.join(dataset_path, rel_path)
-    dst_path = thumbnail_path_for(dataset_path, rel_path, max_edge)
+    if src_path is None:
+        src_path = os.path.join(dataset_path, rel_path)
+    if dst_path is None:
+        dst_path = thumbnail_path_for(dataset_path, rel_path, max_edge)
 
     if dst_path.exists():
         return dst_path
@@ -482,19 +502,27 @@ def ensure_thumbnail(
         # Before the source exists check, adoption would resurrect a tile for
         # a file the dataset no longer has.
         return None
-    if _adopt_legacy_rendition(dataset_path, rel_path, max_edge, src_path, dst_path):
+    if _adopt_legacy_rendition(
+        dataset_path, rel_path, max_edge, src_path, dst_path, legacy_path=legacy_path,
+    ):
         return dst_path
-    if generate_thumbnail(src_path, dst_path, max_edge):
-        return dst_path
-    return None
+    # The three-argument call stays the default: it is the module seam tests
+    # replace with a ``(src, dst, edge)`` double.
+    generated = (
+        generate_thumbnail(src_path, dst_path, max_edge) if tmp_path is None
+        else generate_thumbnail(src_path, dst_path, max_edge, tmp_path=tmp_path)
+    )
+    return dst_path if generated else None
 
 
 def _adopt_legacy_rendition(
     dataset_path: str,
     rel_path: str,
     max_edge: int,
-    src_path: str,
+    src_path: str | Path,
     dst_path: Path,
+    *,
+    legacy_path: Path | None = None,
 ) -> bool:
     """Move this source's flat-layout rendition into ``<edge>/``. LANE-53.
 
@@ -549,8 +577,10 @@ def _adopt_legacy_rendition(
     each call site that has to remember it.
 
     Returns ``True`` only when *dst_path* now holds the adopted bytes.
+    *legacy_path* defaults to the name composed from *rel_path*.
     """
-    legacy_path = _legacy_path_for(dataset_path, rel_path, max_edge)
+    if legacy_path is None:
+        legacy_path = _legacy_path_for(dataset_path, rel_path, max_edge)
     if dst_path.exists():
         return False
     try:
@@ -607,12 +637,17 @@ def _legacy_rendition_matches_edge(legacy_path: Path, max_edge: int) -> bool:
     return long_edge == max_edge
 
 
-def invalidate_thumbnail(dataset_path: str, rel_path: str) -> None:
+def invalidate_thumbnail(
+    dataset_path: str, rel_path: str, *, targets: Sequence[Path] | None = None,
+) -> None:
     """Delete every rendition of *rel_path*'s thumbnail (best-effort).
 
     All sizes, not just the default one — see :func:`thumbnail_paths_for`.
+    *targets* are the validated renditions of a caller that resolved them.
     """
-    for dst_path in thumbnail_paths_for(dataset_path, rel_path):
+    if targets is None:
+        targets = thumbnail_paths_for(dataset_path, rel_path)
+    for dst_path in targets:
         try:
             dst_path.unlink(missing_ok=True)
         except OSError as e:

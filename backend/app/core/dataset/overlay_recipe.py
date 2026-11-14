@@ -16,8 +16,13 @@ import hashlib
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
+
+if TYPE_CHECKING:
+    from app.core.dataset.edit_targets import EditTargets
 
 logger = structlog.get_logger(__name__)
 
@@ -26,9 +31,14 @@ def _overlays_json_path(dataset_path: str) -> str:
     return os.path.join(dataset_path, "overlays.json")
 
 
-def read_overlay_recipe(dataset_path: str, relative_path: str) -> list[dict] | None:
-    """Return the recipe operations for an image, or None if there is none."""
-    path = _overlays_json_path(dataset_path)
+def read_overlay_recipe(
+    dataset_path: str, relative_path: str, *, overlays_json: str | Path | None = None,
+) -> list[dict] | None:
+    """Return the recipe operations for an image, or None if there is none.
+
+    *overlays_json* defaults to the dataset's ``overlays.json``.
+    """
+    path = overlays_json if overlays_json is not None else _overlays_json_path(dataset_path)
     if not os.path.exists(path):
         return None
     try:
@@ -53,7 +63,7 @@ def _file_sha256(path: str) -> str:
 
 
 def rerender_overlay_from_recipe(
-    dataset_path: str, relative_path: str,
+    dataset_path: str, relative_path: str, *, targets: EditTargets | None = None,
 ) -> tuple[tuple[int, int], str, list[dict]] | None:
     """Re-apply the stored recipe to the CURRENT base image and rewrite the
     overlay PNG.
@@ -61,18 +71,30 @@ def rerender_overlay_from_recipe(
     Returns ``(dimensions, overlay_hash, operations)`` on success, or ``None``
     if the image has no overlay recipe (nothing to do). Raises on render
     failure so the caller can fall back to dropping the stale overlay.
+
+    *targets* are the edit's validated paths; when given, the base image, the
+    overlay PNG, ``overlays.json`` and its temporary sibling come from it.
     """
-    ops = read_overlay_recipe(dataset_path, relative_path)
+    rel = relative_path.replace(os.sep, "/")
+    stem = os.path.splitext(os.path.basename(rel))[0]
+    if targets is not None:
+        base_path = targets.source
+        overlay_path = targets.overlay_png
+        json_path = targets.overlays_json
+        json_tmp = targets.overlays_json_tmp
+    else:
+        base_path = os.path.join(dataset_path, relative_path)
+        overlay_path = os.path.join(dataset_path, "overlays", f"{stem}.png")
+        json_path = _overlays_json_path(dataset_path)
+        json_tmp = None
+
+    ops = read_overlay_recipe(dataset_path, relative_path, overlays_json=json_path)
     if not ops:
         return None
 
     from PIL import Image
 
     from app.core.image_processing.pipeline import PipelineBlock, execute_pipeline
-
-    rel = relative_path.replace(os.sep, "/")
-    stem = os.path.splitext(os.path.basename(rel))[0]
-    base_path = os.path.join(dataset_path, relative_path)
 
     with Image.open(base_path) as img:
         img_rgb = img.convert("RGB")
@@ -87,14 +109,11 @@ def rerender_overlay_from_recipe(
     ]
     result = execute_pipeline(img_rgb, blocks)
 
-    overlays_dir = os.path.join(dataset_path, "overlays")
-    os.makedirs(overlays_dir, exist_ok=True)
-    overlay_path = os.path.join(overlays_dir, f"{stem}.png")
+    os.makedirs(os.path.dirname(overlay_path), exist_ok=True)
     result.save(overlay_path)
 
     # Refresh the recipe's timestamp (operations unchanged — same intent,
     # re-applied to the new pixels).
-    json_path = _overlays_json_path(dataset_path)
     try:
         # Lock across the read AND the write: this rewrites the whole recipe
         # map, so interleaving with another overlay op on the same dataset
@@ -112,7 +131,7 @@ def rerender_overlay_from_recipe(
             if key in data:
                 data[key]["created_at"] = datetime.now(timezone.utc).isoformat()
                 data[key]["overlay_file"] = f"overlays/{stem}.png"
-                write_overlays_json(json_path, data)
+                write_overlays_json(json_path, data, tmp_path=json_tmp)
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("overlays_json_timestamp_failed", stem=stem, error=str(e))
 

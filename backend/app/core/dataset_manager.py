@@ -29,7 +29,7 @@ from app.core.dataset.media_types import (
     VIDEO_EXTENSIONS,
 )
 from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
-from app.core.dataset.edit_targets import resolve_edit_targets
+from app.core.dataset.edit_targets import EditTargets, resolve_edit_targets
 
 from fastapi import HTTPException
 
@@ -318,19 +318,22 @@ class DatasetManager:
             loop,
         )
 
-    def _reconcile_overlay_after_edit(self, dataset: "Dataset", rel_path: str) -> None:
+    def _reconcile_overlay_after_edit(
+        self, dataset: "Dataset", rel_path: str, targets: "EditTargets | None" = None,
+    ) -> None:
         """After a destructive pixel edit, re-apply the image's overlay recipe to
         the new pixels so the non-destructive edit survives — or, if it can't be
         re-rendered, drop the now-stale overlay. No-op when the image has no
         overlay. Assumes ``refresh_media_metadata_after_change`` just cleared the overlay
         metadata fields; on a successful re-render they're re-set + persisted.
+        *targets* (a crop's validated paths) are passed on to both helpers.
         """
         lookup_key = rel_path.replace(os.sep, "/")
         try:
-            result = rerender_overlay_from_recipe(dataset.path, rel_path)
+            result = rerender_overlay_from_recipe(dataset.path, rel_path, targets=targets)
         except Exception as e:  # render is GPU/model-heavy — never fail the edit
             logger.warning("overlay_rerender_failed", file=rel_path, error=str(e))
-            if invalidate_overlay_files(dataset.path, rel_path):
+            if invalidate_overlay_files(dataset.path, rel_path, targets=targets):
                 self._emit_overlay_deleted(dataset, rel_path)
             return
 
@@ -2406,7 +2409,9 @@ class DatasetManager:
 
         # Invalidate mask & masked output — dimensions changed
         stem = os.path.splitext(relative_path)[0]
-        invalidate_mask_files(dataset.path, stem, reason="crop")
+        invalidate_mask_files(
+            dataset.path, stem, reason="crop", targets=targets.mask_files,
+        )
 
         # Update metadata in-place
         lookup_key = relative_path.replace(os.sep, '/')
@@ -2414,11 +2419,12 @@ class DatasetManager:
             dataset.media_metadata, lookup_key, full_path,
             new_dims=(target_w, target_h),
             dataset_path=dataset.path,
+            targets=targets,
         )
         self._persist_media_item(dataset, relative_path)
         # Re-apply the overlay recipe to the cropped pixels (preserving the
         # non-destructive edit) or drop it if it can't be re-rendered.
-        self._reconcile_overlay_after_edit(dataset, relative_path)
+        self._reconcile_overlay_after_edit(dataset, relative_path, targets)
         return True
 
     def apply_adjustments(

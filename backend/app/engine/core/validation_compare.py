@@ -487,7 +487,8 @@ def format_report(report: dict[str, Any]) -> str:
     for run in report["runs"]:
         lines.append(
             f"  {run['arm']}: {run['folder']} (record version {run['version']}, "
-            f"training seed {run['train_seed']}, {run['noise_draws']} draw(s))"
+            f"training seed {'unknown' if run['train_seed'] is None else run['train_seed']}, "
+            f"{run['noise_draws']} draw(s))"
         )
     images = report["images"]
     lines.append(
@@ -498,6 +499,8 @@ def format_report(report: dict[str, Any]) -> str:
     lines.append(f"Noise floor: {_plain(floor and floor['overall'])}")
     for arm, arm_floor in report["arm_floors"].items():
         lines.append(f"  arm {arm}: {_plain(arm_floor and arm_floor['overall'])}")
+    if report["reasons"]:
+        lines.append("No verdict, because:")
     for reason in report["reasons"]:
         lines.append(f"  {reason}")
     for pair in report["pairs"]:
@@ -513,7 +516,10 @@ def format_report(report: dict[str, Any]) -> str:
                 text += f"  draws sd {spread['sd']:.5f} (min {_f(spread['min'])}, max {_f(spread['max'])})"
                 if spread["as_large_as_gap"]:
                     text += "  measurement noise alone is as large as the gap"
-            lines.append(text + f"  -> {row['verdict']}")
+            verdict = row["verdict"]
+            if verdict.startswith("no verdict: "):
+                verdict = "no verdict (reasons above)"  # the full reason is in the JSON
+            lines.append(text + f"  -> {verdict}")
     lines.append("")
     lines.extend(report["notes"])
     return "\n".join(lines) + "\n"

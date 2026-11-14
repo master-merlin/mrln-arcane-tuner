@@ -444,6 +444,18 @@ def test_the_text_report_names_each_pair_and_verdict(tmp_path):
     assert vc.FLOOR_CAVEAT in text
 
 
+def test_the_text_states_each_no_verdict_reason_once(tmp_path):
+    runs = _runs(tmp_path, {
+        "a": ("A", [_v1(0, [1.1, 0.5])]), "b": ("B", [_v1(0, [1.0, 0.4])]), "c": ("C", [_v1(0, [1.2, 0.6])]),
+    })
+    report = vc.compare(runs)
+    text = vc.format_report(report)
+    for reason in report["reasons"]:
+        assert text.count(reason) == 1
+    assert text.count("no verdict (reasons above)") == 3 * (1 + len(CENTRES))
+    assert "training seed unknown" in text
+
+
 # ── One rule, and a light module ─────────────────────────────────────────────
 
 

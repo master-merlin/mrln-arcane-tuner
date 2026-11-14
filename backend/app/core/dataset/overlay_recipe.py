@@ -21,6 +21,7 @@ from typing import TYPE_CHECKING
 
 import structlog
 
+from app.core.dataset.fresh_write import replace_with_fresh_file
 from app.core.dataset.media_helpers import OVERLAYS_JSON, overlay_png_path
 
 if TYPE_CHECKING:
@@ -75,7 +76,7 @@ def rerender_overlay_from_recipe(
     failure so the caller can fall back to dropping the stale overlay.
 
     *targets* are the edit's validated paths; when given, the base image, the
-    overlay PNG, ``overlays.json`` and its temporary sibling come from it.
+    overlay PNG and ``overlays.json`` come from it.
     """
     rel = relative_path.replace(os.sep, "/")
     stem = os.path.splitext(os.path.basename(rel))[0]
@@ -83,12 +84,10 @@ def rerender_overlay_from_recipe(
         base_path = targets.source
         overlay_path = targets.overlay_png
         json_path = targets.overlays_json
-        json_tmp = targets.overlays_json_tmp
     else:
         base_path = os.path.join(dataset_path, relative_path)
         overlay_path = overlay_png_path(dataset_path, relative_path)
         json_path = _overlays_json_path(dataset_path)
-        json_tmp = None
 
     ops = read_overlay_recipe(dataset_path, relative_path, overlays_json=json_path)
     if not ops:
@@ -112,7 +111,10 @@ def rerender_overlay_from_recipe(
     result = execute_pipeline(img_rgb, blocks)
 
     os.makedirs(os.path.dirname(overlay_path), exist_ok=True)
-    result.save(overlay_path)
+    # A fresh file moved onto the name: a link at overlays/<stem>.png is
+    # replaced, never written through.
+    with replace_with_fresh_file(overlay_path) as f:
+        result.save(f, format="PNG")
 
     # Refresh the recipe's timestamp (operations unchanged — same intent,
     # re-applied to the new pixels).
@@ -133,7 +135,7 @@ def rerender_overlay_from_recipe(
             if key in data:
                 data[key]["created_at"] = datetime.now(timezone.utc).isoformat()
                 data[key]["overlay_file"] = f"overlays/{stem}.png"
-                write_overlays_json(json_path, data, tmp_path=json_tmp)
+                write_overlays_json(json_path, data)
     except (OSError, json.JSONDecodeError) as e:
         logger.warning("overlays_json_timestamp_failed", stem=stem, error=str(e))
 

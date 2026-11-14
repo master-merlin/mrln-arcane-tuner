@@ -30,6 +30,7 @@ from app.core.dataset.media_types import (
 )
 from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
 from app.core.dataset.edit_targets import EditTargets, resolve_edit_targets
+from app.core.dataset.fresh_write import replace_with_fresh_file
 
 from fastapi import HTTPException
 
@@ -2410,10 +2411,18 @@ class DatasetManager:
                 
                 # Perform Crop
                 cropped = img.crop((left, top, right, bottom))
-                
-                # Save (Overwrite)
-                # Maintain format if possible, or save as original
-                cropped.save(full_path, quality=95)
+                cropped.load()
+
+            # Save (Overwrite) in the format the extension names, as a path
+            # save would, through a fresh file moved onto the name: a link at
+            # the source name is replaced, never written through. After the
+            # source is closed: Windows refuses to replace an open file.
+            ext = os.path.splitext(full_path)[1].lower()
+            fmt = Image.registered_extensions().get(ext)
+            if fmt is None:
+                raise ValueError(f"unknown file extension: {ext}")
+            with replace_with_fresh_file(full_path) as f:
+                cropped.save(f, format=fmt, quality=95)
 
         except _TargetLargerThanSource:
             raise  # the client's request, not a failed crop: the route's 400

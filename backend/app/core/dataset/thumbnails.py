@@ -18,6 +18,7 @@ from typing import NamedTuple
 
 import structlog
 
+from app.core.dataset.fresh_write import replace_with_fresh_file
 from app.core.dataset.media_types import MULTIMEDIA_EXTENSIONS, VIDEO_EXTENSIONS
 
 logger = structlog.get_logger(__name__)
@@ -410,25 +411,19 @@ def generate_thumbnail(
     src_path: str | Path,
     dst_path: Path,
     max_edge: int = _MAX_EDGE_DEFAULT,
-    *,
-    tmp_path: Path | None = None,
 ) -> bool:
     """Generate a thumbnail at *dst_path* from *src_path*.
 
-    Writes to ``<dst>.tmp`` first then atomically renames, so concurrent
-    readers never observe a partially written file. Returns ``True`` on
-    success, ``False`` if the source could not be decoded (logged).
-
-    *tmp_path* defaults to ``<dst>.tmp``; a caller that validated its paths
-    passes the validated one.
+    Writes a fresh temp file beside *dst_path* and moves it onto the name, so
+    concurrent readers never observe a partially written file and a link at
+    *dst_path* (or a planted ``.tmp``) is never written through. Returns
+    ``True`` on success, ``False`` if the source could not be decoded (logged).
     """
     from PIL import Image
 
     dst_path.parent.mkdir(parents=True, exist_ok=True)
 
     ext = Path(src_path).suffix.lower()
-    if tmp_path is None:
-        tmp_path = dst_path.with_suffix(dst_path.suffix + ".tmp")
 
     try:
         if ext in _VIDEO_EXTS:
@@ -440,17 +435,11 @@ def generate_thumbnail(
                 img = opened.convert("RGB").copy()
 
         img.thumbnail((max_edge, max_edge))
-        img.save(tmp_path, "WEBP", quality=_WEBP_QUALITY)
-        os.replace(tmp_path, dst_path)
+        with replace_with_fresh_file(dst_path) as f:  # removes its temp on failure
+            img.save(f, "WEBP", quality=_WEBP_QUALITY)
         return True
     except Exception as e:  # noqa: BLE001
         logger.warning("thumbnail_generation_failed", path=src_path, error=str(e))
-        # Best-effort cleanup of orphan temp file
-        try:
-            if tmp_path.exists():
-                tmp_path.unlink()
-        except OSError:
-            pass
         return False
 
 
@@ -480,7 +469,6 @@ def ensure_thumbnail(
     *,
     src_path: str | Path | None = None,
     dst_path: Path | None = None,
-    tmp_path: Path | None = None,
     legacy_path: Path | None = None,
 ) -> Path | None:
     """Return an existing thumbnail or generate one at *max_edge*.
@@ -488,7 +476,7 @@ def ensure_thumbnail(
     Returns ``None`` when the source is missing or unreadable.
 
     The keyword paths default to the ones derived from *dataset_path* and
-    *rel_path*; a caller that validated its paths (a crop) passes all four,
+    *rel_path*; a caller that validated its paths (a crop) passes all three,
     so nothing here is derived from the client's *rel_path*.
     """
     if src_path is None:
@@ -506,13 +494,9 @@ def ensure_thumbnail(
         dataset_path, rel_path, max_edge, src_path, dst_path, legacy_path=legacy_path,
     ):
         return dst_path
-    # The three-argument call stays the default: it is the module seam tests
-    # replace with a ``(src, dst, edge)`` double.
-    generated = (
-        generate_thumbnail(src_path, dst_path, max_edge) if tmp_path is None
-        else generate_thumbnail(src_path, dst_path, max_edge, tmp_path=tmp_path)
-    )
-    return dst_path if generated else None
+    if generate_thumbnail(src_path, dst_path, max_edge):
+        return dst_path
+    return None
 
 
 def _adopt_legacy_rendition(

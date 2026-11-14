@@ -2,9 +2,8 @@
 ones used.
 
 Cropping ``a.jpg`` also deletes ``masks/a.png``, ``masked/a.jpg`` and
-``masked/a.txt``, rewrites every thumbnail rendition (through a ``.tmp``
-sibling), and re-renders or drops the overlay (``overlays/a.png``,
-``overlays.json`` through ``overlays.json.tmp``). A valid ``a.jpg`` whose
+``masked/a.txt``, rewrites the thumbnail renditions, and re-renders or drops
+the overlay (``overlays/a.png``, ``overlays.json``). A valid ``a.jpg`` whose
 sidecar directory or file is a link out of the dataset used to delete or write
 outside it. ``resolve_edit_targets`` now resolves every one of those paths
 before any filesystem call, so a sidecar that leaves the root refuses the
@@ -138,6 +137,10 @@ SIDECAR_LINKS = {
     "thumbnails": _thumbnails_out,
     "overlays": _overlays_out,
     "overlays_json": _overlays_json_out,
+}
+# A ``.tmp`` name is never opened (every write goes to a fresh temp file), so
+# one linked outside is no refusal: the crop runs and leaves it alone.
+TEMP_LINKS = {
     "thumbnail_tmp": _thumbnail_tmp_out,
     "overlays_json_tmp": _overlays_json_tmp_out,
 }
@@ -186,16 +189,24 @@ def test_crop_with_overlays_json_linked_outside_is_refused_and_leaves_it(
     _assert_refused_and_outside_unchanged(manager, dataset, tmp_path, "overlays_json")
 
 
-def test_crop_with_a_thumbnail_tmp_linked_outside_is_refused_and_writes_nothing(
-    manager, dataset, tmp_path,
+@pytest.mark.parametrize("kind", sorted(TEMP_LINKS))
+def test_crop_with_a_temp_name_linked_outside_writes_nothing_through_it(
+    manager, dataset, tmp_path, kind,
 ):
-    _assert_refused_and_outside_unchanged(manager, dataset, tmp_path, "thumbnail_tmp")
+    ds = Path(dataset.path)
+    image(ds / "overlays" / "a.png", SOURCE_SIZE)
+    out = TEMP_LINKS[kind](ds, tmp_path / f"outside_{kind}")
+    _recipe(ds / "overlays.json")
+    before = _tree(out)
+    assert before, "the outside directory must hold real files"
 
+    assert manager.crop_media("foo", "a.jpg", *TARGET) is True
 
-def test_crop_with_an_overlays_json_tmp_linked_outside_is_refused_and_writes_nothing(
-    manager, dataset, tmp_path,
-):
-    _assert_refused_and_outside_unchanged(manager, dataset, tmp_path, "overlays_json_tmp")
+    assert _tree(out) == before
+    with Image.open(thumbnails.thumbnail_path_for(str(ds), "a.jpg")) as im:
+        assert im.size == TARGET
+    data = json.loads((ds / "overlays.json").read_text(encoding="utf-8"))
+    assert data["a.jpg"]["created_at"] != "x"
 
 
 @pytest.mark.parametrize("kind", sorted(SIDECAR_LINKS))
@@ -283,6 +294,89 @@ def test_crop_removes_a_linked_sidecar_name_not_what_it_points_to(manager, datas
     assert (ds / ".thumbnails" / "512" / "other.webp").exists()
 
 
+# ── No write goes through an existing name ─────────────────────────────────
+# Each output of a crop is a NAME that may already exist as a file link (a
+# symlink, or a hard link, which no path check can see) to another file of
+# the dataset. Every output is written to a freshly created temp file and
+# moved onto its name, so the linked-to file keeps its bytes and the output
+# ends up a regular file of its own.
+
+
+def _make_link(how: str, name: Path, victim: Path) -> None:
+    name.parent.mkdir(parents=True, exist_ok=True)
+    if how == "hardlink":
+        os.link(victim, name)
+        return
+    try:
+        os.symlink(victim, name)
+    except (OSError, NotImplementedError) as e:
+        pytest.skip(f"this OS refuses a file symlink here: {e}")
+
+
+def _victim_text(ds: Path) -> Path:
+    victim = ds / "notes.txt"
+    victim.write_text("unrelated dataset file", encoding="utf-8")
+    return victim
+
+
+def _victim_image(ds: Path) -> Path:
+    victim = ds / "b.jpg"
+    image(victim, SOURCE_SIZE, "green")
+    return victim
+
+
+def _victim_recipe(ds: Path) -> Path:
+    victim = ds / "recipe_copy.json"
+    _recipe(victim)
+    return victim
+
+
+# name of the output -> (its path, the victim it is linked to)
+WRITE_TARGETS = {
+    "source": (lambda ds: ds / "a.jpg", _victim_image),
+    "thumbnail_tmp": (lambda ds: ds / ".thumbnails" / "256" / "a.webp.tmp", _victim_text),
+    "thumbnail": (lambda ds: ds / ".thumbnails" / "256" / "a.webp", _victim_image),
+    "overlay_png": (lambda ds: ds / "overlays" / "a.png", _victim_image),
+    "overlays_json": (lambda ds: ds / "overlays.json", _victim_recipe),
+    "overlays_json_tmp": (lambda ds: ds / "overlays.json.tmp", _victim_text),
+}
+
+
+def _is_own_regular_file(p: Path) -> bool:
+    return p.is_file() and not p.is_symlink() and os.stat(p).st_nlink == 1
+
+
+@pytest.mark.parametrize("how", ["symlink", "hardlink"])
+@pytest.mark.parametrize("target", sorted(WRITE_TARGETS))
+def test_a_crop_never_writes_through_an_existing_name(manager, dataset, how, target):
+    ds = Path(dataset.path)
+    if target != "overlay_png":
+        image(ds / "overlays" / "a.png", SOURCE_SIZE)
+    if target != "overlays_json":
+        _recipe(ds / "overlays.json")
+    name_of, make_victim = WRITE_TARGETS[target]
+    name = name_of(ds)
+    if target == "source":
+        name.unlink()  # the fixture's a.jpg; the link takes its name
+    victim = make_victim(ds)
+    _make_link(how, name, victim)
+    before = victim.read_bytes()
+
+    assert manager.crop_media("foo", "a.jpg", *TARGET) is True
+
+    assert victim.read_bytes() == before, f"{target}: wrote through the {how}"
+    for output in (ds / "a.jpg", ds / ".thumbnails" / "256" / "a.webp",
+                   ds / "overlays" / "a.png", ds / "overlays.json"):
+        assert _is_own_regular_file(output), output
+    for output in (ds / "a.jpg", ds / ".thumbnails" / "256" / "a.webp", ds / "overlays" / "a.png"):
+        with Image.open(output) as im:
+            assert im.size == TARGET, output
+    data = json.loads((ds / "overlays.json").read_text(encoding="utf-8"))
+    assert data["a.jpg"]["operations"] == RECIPE_OPS
+    assert data["a.jpg"]["created_at"] != "x"
+    assert not [p.name for p in ds.rglob("*.tmp") if p != name]
+
+
 def test_crop_still_rerenders_a_contained_overlay(manager, dataset):
     ds = Path(dataset.path)
     image(ds / "overlays" / "a.png", SOURCE_SIZE)
@@ -295,7 +389,7 @@ def test_crop_still_rerenders_a_contained_overlay(manager, dataset):
     data = json.loads((ds / "overlays.json").read_text(encoding="utf-8"))
     assert data["a.jpg"]["operations"] == RECIPE_OPS
     assert data["a.jpg"]["created_at"] != "x"
-    assert not (ds / "overlays.json.tmp").exists()
+    assert not list(ds.rglob("*.tmp"))
     meta = dataset.media_metadata["a.jpg"]
     assert meta["has_overlay"] is True
     assert meta["overlay_dimensions"] == list(TARGET)
@@ -331,11 +425,10 @@ def test_helpers_keep_their_behaviour_without_targets(tmp_path):
     assert media_helpers.invalidate_overlay_files(str(ds), "a.jpg") is True
     assert not (ds / "overlays" / "a.png").exists()
     assert json.loads((ds / "overlays.json").read_text(encoding="utf-8")) == {}
-    assert not (ds / "overlays.json.tmp").exists()
 
     media_helpers.write_overlays_json(str(ds / "overlays.json"), {"k": 1})
     assert json.loads((ds / "overlays.json").read_text(encoding="utf-8")) == {"k": 1}
-    assert not (ds / "overlays.json.tmp").exists()
+    assert not list(ds.rglob("*.tmp"))
 
 
 # ── Coverage: every IO receives a path from EditTargets ─────────────────────
@@ -439,7 +532,18 @@ def _members(targets) -> set[Path]:
     return out
 
 
+def _fresh_temp_of(p: Path, members: set[Path]) -> Path | None:
+    """The member *p* is a fresh temp file of (``<name>.<random>.tmp`` beside it)."""
+    for m in members:
+        if p.parent == m.parent and p.name.startswith(f"{m.name}.") and p.suffix == ".tmp":
+            return m
+    return None
+
+
 def _assert_every_io_from_targets(calls, resolved, via: Path, real: Path) -> set[Path]:
+    """Every recorded path under the dataset is a member, a member's directory
+    (for creating it), or a fresh temp file beside a member. Returns the
+    members reached, a fresh temp counting for its member."""
     assert len(resolved) == 1
     members = _members(resolved[0])
     parents = {m.parent for m in members}
@@ -449,12 +553,23 @@ def _assert_every_io_from_targets(calls, resolved, via: Path, real: Path) -> set
         p = Path(arg)
         if not (p.is_relative_to(via) or p.is_relative_to(real)):
             continue
-        seen.add(p)
         if p in members or (op in _DIR_OPS and p in parents):
+            seen.add(p)
+            continue
+        if (owner := _fresh_temp_of(p, members)) is not None:
+            seen.add(owner)
             continue
         stray.append((op, str(arg)))
     assert not stray, f"IO on a path not returned by resolve_edit_targets: {stray}"
     return seen
+
+
+def _fresh_temps(calls, real: Path) -> set[Path]:
+    """The members a fresh temp file was moved onto (``os.replace`` src -> dst)."""
+    return {
+        Path(dst) for (op, src), (_, dst) in zip(calls, calls[1:])
+        if op == "replace" and Path(src).suffix == ".tmp" and Path(dst).is_relative_to(real)
+    }
 
 
 def test_every_io_of_a_crop_receives_a_path_from_edit_targets(manager, linked):
@@ -465,10 +580,11 @@ def test_every_io_of_a_crop_receives_a_path_from_edit_targets(manager, linked):
 
     seen = _assert_every_io_from_targets(calls, resolved, via, real)
     t = resolved[0]
-    # Positive control: every branch really ran through the recorded calls.
-    for expected in (t.source, *t.mask_files, t.thumbnail_dst, t.thumbnail_tmp,
-                     t.overlays_json, t.overlays_json_tmp, t.overlay_png):
+    # Positive control: every branch really ran through the recorded calls,
+    # and every output was written as a fresh file moved onto its name.
+    for expected in (t.source, *t.mask_files, t.thumbnail_dst, t.overlays_json, t.overlay_png):
         assert expected in seen, expected
+    assert _fresh_temps(calls, real) == {t.source, t.thumbnail_dst, t.overlays_json, t.overlay_png}
     # Every member went through the guard: none is still the joined string.
     unresolved = [m for m in _members(t) if m.is_relative_to(via)]
     assert not unresolved, unresolved
@@ -494,15 +610,15 @@ def test_every_io_of_the_overlay_fallback_receives_a_path_from_edit_targets(
 
     seen = _assert_every_io_from_targets(calls, resolved, via, real)
     t = resolved[0]
-    assert t.overlay_png in seen and t.overlays_json_tmp in seen
+    assert t.overlay_png in seen and t.overlays_json in _fresh_temps(calls, real)
     assert not (real / "_o" / "a.png").exists()
     assert json.loads((real / "overlays.json").read_text(encoding="utf-8")) == {}
 
 
 def test_every_temp_file_of_a_crop_comes_from_edit_targets(manager, linked):
-    """Both temporary siblings are links to elsewhere INSIDE the dataset. The
-    check follows them (they resolve inside), but the edit acts on the temp
-    NAME in its resolved directory, so what they point at is left alone."""
+    """The old fixed temp names exist as links to elsewhere INSIDE the
+    dataset. No write goes near them: every temp file is a fresh one beside
+    its validated output, and what the old names point at is left alone."""
     ds, via, real = linked
     image(real / "_tt" / "t.webp")
     (real / "_tj").mkdir()
@@ -513,13 +629,11 @@ def test_every_temp_file_of_a_crop_comes_from_edit_targets(manager, linked):
     with _record_io() as (calls, resolved):
         manager.crop_media("foo", "a.jpg", *TARGET)
 
-    seen = _assert_every_io_from_targets(calls, resolved, via, real)
-    t = resolved[0]
-    assert t.thumbnail_tmp == real / "_t" / "256" / "a.webp.tmp"
-    assert t.overlays_json_tmp == real / "overlays.json.tmp"
-    assert t.thumbnail_tmp in seen and t.overlays_json_tmp in seen
+    _assert_every_io_from_targets(calls, resolved, via, real)
+    touched = {Path(a).name for _, a in calls}
+    assert "a.webp.tmp" not in touched and "overlays.json.tmp" not in touched
     assert (real / "_tj" / "t.json").read_text(encoding="utf-8") == "{}"
-    assert (real / "_tt").is_dir()
+    assert (real / "_tt" / "t.webp").is_file()
 
 
 def test_the_thumbnail_is_generated_from_the_resolved_source(manager, linked, monkeypatch):

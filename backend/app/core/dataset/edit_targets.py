@@ -8,9 +8,9 @@ edit with the guard's 403, so a refusal always comes before a mutation.
 
 The returned paths are the ones the edit must use. Re-deriving a location
 with ``os.path.join`` after the check would make the check decorative: the
-joined string is not the one that was validated. Temporary siblings are
-members too, because an existing ``.tmp`` link can leave the root while its
-destination stays inside.
+joined string is not the one that was validated. Every write goes to a fresh
+temp file moved onto its name (``fresh_write``), so no fixed ``.tmp`` name is
+ever opened and none needs a place here.
 """
 
 from __future__ import annotations
@@ -33,13 +33,11 @@ class EditTargets:
     mask_files: tuple[Path, ...]
     #: Every thumbnail rendition to unlink, current and legacy layout.
     thumbnails: tuple[Path, ...]
-    #: The default-size rendition regenerated after the edit, its temporary
-    #: sibling, and the legacy flat name the regeneration may adopt from.
+    #: The default-size rendition regenerated after the edit, and the legacy
+    #: flat name the regeneration may adopt from.
     thumbnail_dst: Path
-    thumbnail_tmp: Path
     thumbnail_legacy: Path
     overlays_json: Path
-    overlays_json_tmp: Path
     overlay_png: Path
 
 
@@ -64,7 +62,6 @@ def resolve_edit_targets(dataset_path: str | Path, relative_path: str) -> EditTa
     source = contained(root / relative_path)
 
     ds = str(dataset_path)
-    dst = thumbnails.thumbnail_path_for(ds, relative_path)
     mask_stem = os.path.splitext(relative_path)[0]
 
     return EditTargets(
@@ -73,10 +70,8 @@ def resolve_edit_targets(dataset_path: str | Path, relative_path: str) -> EditTa
         thumbnails=tuple(
             contained(p) for p in thumbnails.thumbnail_paths_for(ds, relative_path)
         ),
-        thumbnail_dst=contained(dst),
-        thumbnail_tmp=contained(dst.with_suffix(dst.suffix + ".tmp")),
+        thumbnail_dst=contained(thumbnails.thumbnail_path_for(ds, relative_path)),
         thumbnail_legacy=contained(thumbnails._legacy_path_for(ds, relative_path)),
         overlays_json=contained(root / OVERLAYS_JSON),
-        overlays_json_tmp=contained(root / f"{OVERLAYS_JSON}.tmp"),
         overlay_png=contained(overlay_png_path(ds, relative_path)),
     )

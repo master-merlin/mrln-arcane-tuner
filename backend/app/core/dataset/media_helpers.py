@@ -16,6 +16,8 @@ from typing import TYPE_CHECKING, Any
 
 import structlog
 
+from app.core.dataset.fresh_write import replace_with_fresh_file
+
 if TYPE_CHECKING:
     from app.core.dataset.edit_targets import EditTargets
 
@@ -47,35 +49,21 @@ def overlay_png_path(dataset_path: str | Path, relative_path: str) -> str:
     return os.path.join(dataset_path, "overlays", f"{stem}.png")
 
 
-def write_overlays_json(
-    path: str | Path, data: dict[str, Any], *, tmp_path: str | Path | None = None,
-) -> None:
+def write_overlays_json(path: str | Path, data: dict[str, Any]) -> None:
     """Atomically replace an ``overlays.json``.
 
     The recipe map is the whole overlay history for a dataset, rewritten in full
     on every single-image change. A plain ``open(path, "w")`` truncates it
     before the new bytes land, so an interrupted write leaves a truncated file
     that the next reader fails to parse — losing every recipe, not just the one
-    being edited. Same tmp+replace pattern as ``settings_manager``.
+    being edited. Written through a fresh temp file moved onto *path*, so a link
+    at *path* or at a ``.tmp`` name is never written through.
 
     Callers must hold :data:`_overlays_json_lock` across their read AND this
     write; atomicity alone does not make read-modify-write safe.
-
-    *tmp_path* defaults to ``<path>.tmp``; a caller that validated its paths
-    passes the validated one.
     """
-    if tmp_path is None:
-        tmp_path = f"{path}.tmp"
-    try:
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, indent=2, ensure_ascii=False)
-        os.replace(tmp_path, path)
-    except OSError:
-        try:
-            os.remove(tmp_path)
-        except OSError:
-            pass
-        raise
+    with replace_with_fresh_file(path) as f:
+        f.write(json.dumps(data, indent=2, ensure_ascii=False).encode("utf-8"))
 
 
 def invalidate_overlay_files(
@@ -93,8 +81,8 @@ def invalidate_overlay_files(
         dataset_path: Absolute path to the dataset directory.
         relative_path: Forward-slash-or-OS-sep relative path of the media file
             (the key used in ``overlays.json``).
-        targets: The edit's validated paths; when given, the overlay PNG,
-            ``overlays.json`` and its temporary sibling come from it.
+        targets: The edit's validated paths; when given, the overlay PNG and
+            ``overlays.json`` come from it.
     """
     rel = relative_path.replace(os.sep, "/")
     stem = os.path.splitext(os.path.basename(rel))[0]
@@ -103,11 +91,9 @@ def invalidate_overlay_files(
     if targets is not None:
         overlay_path = targets.overlay_png
         overlays_json = targets.overlays_json
-        overlays_tmp = targets.overlays_json_tmp
     else:
         overlay_path = overlay_png_path(dataset_path, relative_path)
         overlays_json = os.path.join(dataset_path, OVERLAYS_JSON)
-        overlays_tmp = None
 
     if os.path.exists(overlay_path):
         try:
@@ -127,7 +113,7 @@ def invalidate_overlay_files(
                     data.pop(relative_path, None)
                     data.pop(rel, None)
                     existed = True
-                    write_overlays_json(overlays_json, data, tmp_path=overlays_tmp)
+                    write_overlays_json(overlays_json, data)
         except (OSError, json.JSONDecodeError) as e:
             logger.warning("overlays_json_update_failed", stem=stem, error=str(e))
 
@@ -269,6 +255,5 @@ def refresh_media_metadata_after_change(
                 dataset_path, lookup_key,
                 src_path=targets.source,
                 dst_path=targets.thumbnail_dst,
-                tmp_path=targets.thumbnail_tmp,
                 legacy_path=targets.thumbnail_legacy,
             )

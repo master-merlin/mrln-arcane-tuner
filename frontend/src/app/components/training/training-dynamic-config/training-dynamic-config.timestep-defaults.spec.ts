@@ -250,3 +250,27 @@ describe('TrainingDynamicConfig: a switch never replaces a value that is not its
         expect(timestep(c)).toEqual({ mode: 'logit_normal', mu: 0.0, sigma: 1.0 });
     });
 });
+
+describe('TrainingDynamicConfig: a rebuilt form keeps no record of the form it replaced', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    // A schema reload (a project switch) rebuilds every control without destroying the component.
+    it('a template restore, then a rebuild, then MOSS gives 1.09 / 0.95', () => {
+        const c = build();
+        applyTemplate(c, { timestep_sampling: 'logit_normal', logit_normal_mu: 0.0, logit_normal_sigma: 1.0 });
+        c.buildForm();
+        c.applyDefinitionDefaults(MOSS);
+        expect(timestep(c)).toEqual({ mode: 'logit_normal', mu: 1.09, sigma: 0.95 });
+    });
+
+    it('a seeded list, then a rebuild, then a restore of the same list keeps it on a switch to MOSS', () => {
+        const c = build();
+        c.applyDefinitionDefaults(H3_IMAGE);
+        c.buildForm();
+        applyTemplate(c, { timestep_sampling: 'fixed_sigmas', fixed_sigmas: [1.0, 0.75, 0.25] });
+        c.applyDefinitionDefaults(MOSS);
+        expect(c.getFormArray('fixed_sigmas').value).toEqual([1.0, 0.75, 0.25]);
+        expect(value(c, 'timestep_sampling')).toBe('fixed_sigmas');
+    });
+});

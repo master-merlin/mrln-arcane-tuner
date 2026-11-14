@@ -1035,7 +1035,7 @@ export class TrainingDynamicConfigComponent {
 
   /** Top-level keys a template or job restore wrote (`patchFormRecursive` on the form). Seeding
    *  never touches them, first seeding included and even when the restored value equals the schema
-   *  default, until the Default template's reset hands them back (`_clearSeedRecords`). */
+   *  default, until the Default template's reset or a form rebuild hands them back (`_clearSeedRecords`). */
   private _restoredKeys = new Set<string>();
 
   private static _sameValue(a: unknown, b: unknown): boolean {
@@ -1052,7 +1052,7 @@ export class TrainingDynamicConfigComponent {
     return owned;
   }
 
-  /** The Default template's reset: every control is the seeding's again. */
+  /** The Default template's reset, and a form rebuild (`buildForm`): every control is the seeding's again. */
   private _clearSeedRecords(): void {
     this._seededDefaults.clear();
     this._restoredKeys.clear();
@@ -1698,6 +1698,8 @@ export class TrainingDynamicConfigComponent {
       }
     }
     this.form = this.fb.group(group);
+    // Every provenance record names a control of the form it was made on: a rebuilt form has none.
+    this._clearSeedRecords();
     this.properties.set(properties);
     this.nestedItemPropsMap.set(nestedItemPropsMap);
 

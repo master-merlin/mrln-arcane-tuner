@@ -16,19 +16,32 @@ import hashlib
 import json
 import os
 from datetime import datetime, timezone
+from pathlib import Path
+from typing import TYPE_CHECKING
 
 import structlog
+
+from app.core.dataset.fresh_write import replace_with_fresh_file
+from app.core.dataset.media_helpers import OVERLAYS_JSON, overlay_png_path
+
+if TYPE_CHECKING:
+    from app.core.dataset.edit_targets import EditTargets
 
 logger = structlog.get_logger(__name__)
 
 
 def _overlays_json_path(dataset_path: str) -> str:
-    return os.path.join(dataset_path, "overlays.json")
+    return os.path.join(dataset_path, OVERLAYS_JSON)
 
 
-def read_overlay_recipe(dataset_path: str, relative_path: str) -> list[dict] | None:
-    """Return the recipe operations for an image, or None if there is none."""
-    path = _overlays_json_path(dataset_path)
+def read_overlay_recipe(
+    dataset_path: str, relative_path: str, *, overlays_json: str | Path | None = None,
+) -> list[dict] | None:
+    """Return the recipe operations for an image, or None if there is none.
+
+    *overlays_json* defaults to the dataset's ``overlays.json``.
+    """
+    path = overlays_json if overlays_json is not None else _overlays_json_path(dataset_path)
     if not os.path.exists(path):
         return None
     try:
@@ -53,7 +66,7 @@ def _file_sha256(path: str) -> str:
 
 
 def rerender_overlay_from_recipe(
-    dataset_path: str, relative_path: str,
+    dataset_path: str, relative_path: str, *, targets: EditTargets | None = None,
 ) -> tuple[tuple[int, int], str, list[dict]] | None:
     """Re-apply the stored recipe to the CURRENT base image and rewrite the
     overlay PNG.
@@ -61,18 +74,28 @@ def rerender_overlay_from_recipe(
     Returns ``(dimensions, overlay_hash, operations)`` on success, or ``None``
     if the image has no overlay recipe (nothing to do). Raises on render
     failure so the caller can fall back to dropping the stale overlay.
+
+    *targets* are the edit's validated paths; when given, the base image, the
+    overlay PNG and ``overlays.json`` come from it.
     """
-    ops = read_overlay_recipe(dataset_path, relative_path)
+    rel = relative_path.replace(os.sep, "/")
+    stem = os.path.splitext(os.path.basename(rel))[0]
+    if targets is not None:
+        base_path = targets.source
+        overlay_path = targets.overlay_png
+        json_path = targets.overlays_json
+    else:
+        base_path = os.path.join(dataset_path, relative_path)
+        overlay_path = overlay_png_path(dataset_path, relative_path)
+        json_path = _overlays_json_path(dataset_path)
+
+    ops = read_overlay_recipe(dataset_path, relative_path, overlays_json=json_path)
     if not ops:
         return None
 
     from PIL import Image
 
     from app.core.image_processing.pipeline import PipelineBlock, execute_pipeline
-
-    rel = relative_path.replace(os.sep, "/")
-    stem = os.path.splitext(os.path.basename(rel))[0]
-    base_path = os.path.join(dataset_path, relative_path)
 
     with Image.open(base_path) as img:
         img_rgb = img.convert("RGB")
@@ -87,14 +110,14 @@ def rerender_overlay_from_recipe(
     ]
     result = execute_pipeline(img_rgb, blocks)
 
-    overlays_dir = os.path.join(dataset_path, "overlays")
-    os.makedirs(overlays_dir, exist_ok=True)
-    overlay_path = os.path.join(overlays_dir, f"{stem}.png")
-    result.save(overlay_path)
+    os.makedirs(os.path.dirname(overlay_path), exist_ok=True)
+    # A fresh file moved onto the name: a link at overlays/<stem>.png is
+    # replaced, never written through.
+    with replace_with_fresh_file(overlay_path) as f:
+        result.save(f, format="PNG")
 
     # Refresh the recipe's timestamp (operations unchanged — same intent,
     # re-applied to the new pixels).
-    json_path = _overlays_json_path(dataset_path)
     try:
         # Lock across the read AND the write: this rewrites the whole recipe
         # map, so interleaving with another overlay op on the same dataset

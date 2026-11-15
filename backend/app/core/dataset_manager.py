@@ -29,6 +29,8 @@ from app.core.dataset.media_types import (
     VIDEO_EXTENSIONS,
 )
 from app.core.dataset.overlay_recipe import rerender_overlay_from_recipe
+from app.core.dataset.edit_targets import EditTargets, resolve_edit_targets
+from app.core.dataset.fresh_write import replace_with_fresh_file
 
 from fastapi import HTTPException
 
@@ -51,6 +53,15 @@ logger = structlog.get_logger(__name__)
 # ``set_dataset_version`` to validate manual version-override input
 # from the version-edit modal — no pre-release suffix, no ``v`` prefix.
 _SEMVER_RE = re.compile(r"^\d+\.\d+\.\d+$")
+
+
+class _TargetLargerThanSource(ValueError):
+    """A crop target wider or taller than its source: a bad request (400).
+
+    Its own type so ``crop_media`` can let exactly this check through as a
+    ``ValueError``; every other failure inside the crop, a ``ValueError`` PIL
+    raises included, stays a ``RuntimeError``.
+    """
 
 
 class Dataset(BaseModel):
@@ -317,19 +328,22 @@ class DatasetManager:
             loop,
         )
 
-    def _reconcile_overlay_after_edit(self, dataset: "Dataset", rel_path: str) -> None:
+    def _reconcile_overlay_after_edit(
+        self, dataset: "Dataset", rel_path: str, targets: "EditTargets | None" = None,
+    ) -> None:
         """After a destructive pixel edit, re-apply the image's overlay recipe to
         the new pixels so the non-destructive edit survives — or, if it can't be
         re-rendered, drop the now-stale overlay. No-op when the image has no
         overlay. Assumes ``refresh_media_metadata_after_change`` just cleared the overlay
         metadata fields; on a successful re-render they're re-set + persisted.
+        *targets* (a crop's validated paths) are passed on to both helpers.
         """
         lookup_key = rel_path.replace(os.sep, "/")
         try:
-            result = rerender_overlay_from_recipe(dataset.path, rel_path)
+            result = rerender_overlay_from_recipe(dataset.path, rel_path, targets=targets)
         except Exception as e:  # render is GPU/model-heavy — never fail the edit
             logger.warning("overlay_rerender_failed", file=rel_path, error=str(e))
-            if invalidate_overlay_files(dataset.path, rel_path):
+            if invalidate_overlay_files(dataset.path, rel_path, targets=targets):
                 self._emit_overlay_deleted(dataset, rel_path)
             return
 
@@ -2342,7 +2356,10 @@ class DatasetManager:
             raise ValueError(f"Dataset '{name}' not found.")
         dataset = self.datasets[name]
 
-        full_path = os.path.join(dataset.path, relative_path)
+        # Before any filesystem call: a path that leaves the dataset is a 403,
+        # whether or not it exists. Every IO below uses the resolved paths.
+        targets = resolve_edit_targets(dataset.path, relative_path)
+        full_path = targets.source
         if not os.path.exists(full_path):
              raise FileNotFoundError(f"File {relative_path} not found.")
 
@@ -2359,7 +2376,9 @@ class DatasetManager:
                     return # Already correct
                     
                 if target_w > current_w or target_h > current_h:
-                    raise ValueError("Target dimensions cannot be larger than source.")
+                    raise _TargetLargerThanSource(
+                        "Target dimensions cannot be larger than source."
+                    )
                 
                 # Calculate Crop Box (left, top, right, bottom)
                 if crop_x is not None and crop_y is not None:
@@ -2392,17 +2411,29 @@ class DatasetManager:
                 
                 # Perform Crop
                 cropped = img.crop((left, top, right, bottom))
-                
-                # Save (Overwrite)
-                # Maintain format if possible, or save as original
-                cropped.save(full_path, quality=95)
-                
+                cropped.load()
+
+            # Save (Overwrite) in the format the extension names, as a path
+            # save would, through a fresh file moved onto the name: a link at
+            # the source name is replaced, never written through. After the
+            # source is closed: Windows refuses to replace an open file.
+            ext = os.path.splitext(full_path)[1].lower()
+            fmt = Image.registered_extensions().get(ext)
+            if fmt is None:
+                raise ValueError(f"unknown file extension: {ext}")
+            with replace_with_fresh_file(full_path) as f:
+                cropped.save(f, format=fmt, quality=95)
+
+        except _TargetLargerThanSource:
+            raise  # the client's request, not a failed crop: the route's 400
         except Exception as e:
              raise RuntimeError(f"Failed to crop image: {e}")
 
         # Invalidate mask & masked output — dimensions changed
         stem = os.path.splitext(relative_path)[0]
-        invalidate_mask_files(dataset.path, stem, reason="crop")
+        invalidate_mask_files(
+            dataset.path, stem, reason="crop", targets=targets.mask_files,
+        )
 
         # Update metadata in-place
         lookup_key = relative_path.replace(os.sep, '/')
@@ -2410,11 +2441,12 @@ class DatasetManager:
             dataset.media_metadata, lookup_key, full_path,
             new_dims=(target_w, target_h),
             dataset_path=dataset.path,
+            targets=targets,
         )
         self._persist_media_item(dataset, relative_path)
         # Re-apply the overlay recipe to the cropped pixels (preserving the
         # non-destructive edit) or drop it if it can't be re-rendered.
-        self._reconcile_overlay_after_edit(dataset, relative_path)
+        self._reconcile_overlay_after_edit(dataset, relative_path, targets)
         return True
 
     def apply_adjustments(

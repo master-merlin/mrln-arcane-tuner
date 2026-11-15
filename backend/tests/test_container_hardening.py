@@ -767,7 +767,9 @@ esac
 if [ "$1" = "-m" ] && [ "$2" = "uvicorn" ]; then
   n=0
   [ -f "$STUB_RECORD" ] && n=$(wc -l < "$STUB_RECORD")
-  echo "restart=${MRLN_RESTART:-unset} supervised=${MRLN_SUPERVISED:-unset} numba=${NUMBA_CACHE_DIR:-unset} ppid=$PPID argv=$*" >> "$STUB_RECORD"
+  # One line per run, its fields split by tabs so a path with a space stays whole;
+  # read through _Supervised.field. argv stays the last field.
+  printf 'restart=%s\tsupervised=%s\tnumba=%s\tsettings=%s\tppid=%s\targv=%s\n' "${MRLN_RESTART:-unset}" "${MRLN_SUPERVISED:-unset}" "${NUMBA_CACHE_DIR:-unset}" "${MRLN_SETTINGS_PATH:-unset}" "$PPID" "$*" >> "$STUB_RECORD"
   code=$(echo "$STUB_CODES" | cut -d, -f$((n + 1)))
   if [ "$code" = "wait" ]; then
     trap 'echo term >> "$STUB_TERM_MARK"; exit 0' TERM
@@ -806,8 +808,12 @@ class _Supervised:
         (shim / "python").write_text(_STUB_PYTHON, encoding="utf-8")
         for f in shim.iterdir():
             f.chmod(0o755)
-        (tmp / "data").mkdir()
-        (tmp / "app" / "backend").mkdir(parents=True)
+        # The data and app dirs under a folder with a space on every machine, not only
+        # where TEMP has one: every path the script builds from them then carries it.
+        data = tmp / "sp ace" / "data"
+        app = tmp / "sp ace" / "app"
+        data.mkdir(parents=True)
+        (app / "backend").mkdir(parents=True)
         self.record = tmp / "uvicorn_runs.txt"
         self.resolver_log = tmp / "resolver_calls.txt"
         self.term_mark = tmp / "term.txt"
@@ -823,8 +829,8 @@ class _Supervised:
         self.check_log = tmp / "check_calls.txt"
         env["STUB_CHECK_LOG"] = self.check_log.as_posix()
         env["PATH"] = os.pathsep.join([str(shim), *_bash_tool_dirs(self.bash)])
-        env["MRLN_DATA_DIR"] = str(tmp / "data")
-        env["MRLN_APP_DIR"] = (tmp / "app").as_posix()
+        env["MRLN_DATA_DIR"] = str(data)
+        env["MRLN_APP_DIR"] = app.as_posix()
         env["STUB_RECORD"] = self.record.as_posix()
         env["STUB_RESOLVER_LOG"] = self.resolver_log.as_posix()
         env["STUB_TERM_MARK"] = self.term_mark.as_posix()
@@ -850,6 +856,19 @@ class _Supervised:
         if not self.record.exists():
             return []
         return self.record.read_text(encoding="utf-8").splitlines()
+
+    # The stub's record fields, in the order it writes them.
+    _FIELDS = ("restart", "supervised", "numba", "settings", "ppid", "argv")
+
+    @staticmethod
+    def field(run: str, name: str) -> str:
+        """One field of a server run's record line; a value may hold spaces (and argv, the
+        last field, tabs too)."""
+        fields = _Supervised._FIELDS
+        values = dict(part.partition("=")[::2] for part in run.split("\t", len(fields) - 1))
+        if name not in values:
+            raise AssertionError(f"no {name}= in the server's record: {run!r}")
+        return values[name]
 
     def resolver_calls(self) -> int:
         return len(self.resolver_log.read_text(encoding="utf-8").split()) \
@@ -878,8 +897,9 @@ class TestEntrypointRelaunchesOnTheSentinel:
 
         runs = sup.runs()
         assert len(runs) == 2, (runs, out)
-        assert "restart=unset" in runs[0] and "supervised=1" in runs[0]
-        assert "restart=1" in runs[1] and "supervised=1" in runs[1]
+        field = _Supervised.field
+        assert (field(runs[0], "restart"), field(runs[0], "supervised")) == ("unset", "1"), runs[0]
+        assert (field(runs[1], "restart"), field(runs[1], "supervised")) == ("1", "1"), runs[1]
         assert sup.resolver_calls() == 2, "the port is resolved before EVERY launch"
         assert code == 0, (code, out)
         assert "restart requested" in out
@@ -915,7 +935,8 @@ class TestEntrypointRelaunchesOnTheSentinel:
         # The stub recorded its parent's (msys) pid: the loop shell. Signalled
         # from a sibling bash because Python's send_signal on Windows is
         # TerminateProcess, which no trap can see.
-        ppid = re.search(r"ppid=(\d+)", sup.runs()[0]).group(1)
+        ppid = sup.field(sup.runs()[0], "ppid")
+        assert ppid.isdigit(), sup.runs()[0]
         subprocess.run([sup.bash, "-c", f"kill -TERM {ppid}"], timeout=30, check=True)
 
         out, _ = proc.communicate(timeout=60)
@@ -927,7 +948,7 @@ class TestEntrypointRelaunchesOnTheSentinel:
 def _baked_stack(tmp: Path, *, real: bool) -> Path:
     """/opt/torch-stack as the Dockerfile bakes it: torch_stack.py and its cfg."""
     stack = tmp / "torch-stack"
-    stack.mkdir()
+    stack.mkdir(parents=True)
     for name in ("torch_stack.py", "torch-stack.cfg"):
         if real:
             shutil.copyfile(REPO_ROOT / "backend" / name, stack / name)
@@ -1057,9 +1078,8 @@ class TestNumbaHasAWritableCacheLocation:
 
         runs = sup.runs()
         assert runs, ("the server stub never started", out)
-        cache = re.search(r"numba=(\S+)", runs[0])
-        assert cache is not None, (runs[0], out)
-        assert cache.group(1) != "unset", (
+        cache = sup.field(runs[0], "numba")
+        assert cache != "unset", (
             "NUMBA_CACHE_DIR never reached the server; numba is back to "
             f"depending on HOME alone. {runs[0]}"
         )
@@ -1069,7 +1089,7 @@ class TestNumbaHasAWritableCacheLocation:
         # re-derived one — on Windows the two differ by separator alone, which
         # would fail the assertion for a reason the container never has.
         data = sup.env["MRLN_DATA_DIR"]
-        assert cache.group(1).startswith(data), (cache.group(1), data, out)
+        assert cache.startswith(data), (cache, data, out)
         assert code == 0, (code, out)
 
     @requires_bash
@@ -1081,8 +1101,28 @@ class TestNumbaHasAWritableCacheLocation:
 
         runs = sup.runs()
         assert runs, ("the server stub never started", out)
-        cache = Path(re.search(r"numba=(\S+)", runs[0]).group(1))
+        cache = Path(sup.field(runs[0], "numba"))
         assert cache.is_dir(), (f"{cache} was exported but never created", out)
+
+    @requires_bash
+    def test_the_entrypoint_starts_from_folders_whose_names_have_a_space(self, tmp_path):
+        """The data, app and baked stack dirs each under a folder with a space: the server
+        starts once and is handed both paths built from the data dir whole."""
+        sup = _Supervised(tmp_path)
+        stack = _baked_stack(tmp_path / "st ack", real=False)
+        sup.with_torch_set("cu132", stack)
+        code, out = sup.run("0")
+
+        runs = sup.runs()
+        assert code == 0 and len(runs) == 1, (code, runs, out)
+        calls = sup.check_calls()
+        assert len(calls) == 1 and calls[0].startswith(sup.env["MRLN_TORCH_STACK_DIR"]), (calls, out)
+        data = sup.env["MRLN_DATA_DIR"]
+        assert " " in data and " " in sup.env["MRLN_APP_DIR"] and " " in str(stack)
+        numba = sup.field(runs[0], "numba")
+        assert numba == f"{data}/.numba-cache", (runs[0], out)
+        assert Path(numba).is_dir(), (f"{numba} was exported but never created", out)
+        assert sup.field(runs[0], "settings") == f"{data}/settings.json", (runs[0], out)
 
     @requires_bash
     def test_an_operator_set_numba_cache_dir_is_respected(self, tmp_path):
@@ -1102,7 +1142,7 @@ class TestNumbaHasAWritableCacheLocation:
 
         runs = sup.runs()
         assert runs, ("the server stub never started", out)
-        assert f"numba={chosen.as_posix()}" in runs[0], (runs[0], out)
+        assert sup.field(runs[0], "numba") == chosen.as_posix(), (runs[0], out)
         assert chosen.is_dir(), (
             "the operator's cache directory was passed through but never "
             f"created: {chosen}",
@@ -1494,6 +1534,11 @@ def _crlf_hint(script: Path) -> str:
     )
 
 
+def _listed_paths(listing: str) -> list[Path]:
+    """The paths of a `git ls-files -z` listing: NUL-separated, so a name with a space stays whole."""
+    return [REPO_ROOT / name for name in listing.split("\0") if name]
+
+
 class TestTheShippedShellScriptsParse:
     """The `.sh` counterpart to the tracked-`.ps1` parse check.
 
@@ -1521,12 +1566,19 @@ class TestTheShippedShellScriptsParse:
 
     def _tracked_shell_scripts(self) -> list[Path]:
         proc = subprocess.run(
-            ["git", "ls-files", "*.sh"],
+            ["git", "ls-files", "-z", "*.sh"],
             cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=60,
         )
         if proc.returncode != 0:
             pytest.skip("not a git checkout")
-        return [REPO_ROOT / line for line in proc.stdout.split() if line]
+        return _listed_paths(proc.stdout)
+
+    def test_a_tracked_script_whose_name_has_a_space_is_listed_whole(self):
+        listing = "entrypoint.sh\0scripts/my tool.sh\0backend/install-deps.sh\0"
+        assert _listed_paths(listing) == [
+            REPO_ROOT / "entrypoint.sh", REPO_ROOT / "scripts" / "my tool.sh",
+            REPO_ROOT / "backend" / "install-deps.sh",
+        ]
 
     def test_no_tracked_shell_script_has_crlf_line_endings(self):
         """The CAUSE, checked in bytes — deterministic, no shell involved.

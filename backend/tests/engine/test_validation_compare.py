@@ -251,6 +251,10 @@ def _split_with(representatives):
     _split_with([]),  # no held-out image described
     _split_with([{"key": key} for key in KEYS]),  # keys only: no caption or size
     _split_with([{"key": key, "caption": "", "target_w": 64, "target_h": 64} for key in KEYS[:-1]]),  # one missing
+    # every image described, but no content digest: a name could stand for another picture
+    _split_with([{"key": key, "caption": "", "target_w": 64, "target_h": 64} for key in KEYS]),
+    _split_with([{"key": key, "caption": "", "target_w": 64, "target_h": 64, "sha256": None} for key in KEYS]),
+    _split_with([{"key": key, "caption": "", "target_w": 64, "target_h": 64, "sha256": ""} for key in KEYS]),
 ])
 def test_a_split_file_that_is_not_a_split_is_unreadable(tmp_path, text):
     a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))])

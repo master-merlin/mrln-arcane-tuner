@@ -171,9 +171,11 @@ def _not_a_split(split: Any) -> str | None:
         and isinstance(item.get("key"), str)
         and "caption" in item
         and all(_integer(item.get(size)) for size in ("target_w", "target_h"))
+        and isinstance(item.get("sha256"), str)
+        and item["sha256"] != ""
         for item in representatives
     ):
-        return "the held-out images lack their keys, captions or sizes"
+        return "the held-out images lack their keys, captions, sizes or content digests"
     if sorted(item["key"] for item in representatives) != sorted(holdout):
         return "its held-out images aren't its held-out keys"
     if not _integer(split.get("split_seed")):

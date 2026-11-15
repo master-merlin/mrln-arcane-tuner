@@ -320,6 +320,17 @@ def _rand(bs: int, device: torch.device, generator: torch.Generator | None) -> t
     return torch.rand((bs,), device=generator.device, generator=generator).to(device)
 
 
+def _mix_uniform(t: torch.Tensor, share: float, device: torch.device,
+                 generator: torch.Generator | None) -> torch.Tensor:
+    """Replace a ``share`` of ``t`` with ``U(0,1)`` draws. At 0 nothing is drawn, so the random
+    stream is consumed exactly as without it."""
+    if share <= 0.0:
+        return t
+    bs = t.shape[0]
+    u_mask = _rand(bs, device, generator) < share
+    return torch.where(u_mask, _rand(bs, device, generator), t)
+
+
 def _randn(bs: int, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
     """``N(0,1)`` counterpart of :func:`_rand`."""
     if generator is None:
@@ -467,13 +478,8 @@ class TimestepSampler:
             # only for sample_scaled's own clamp.
             indices = indices.clamp(max=cdf.shape[0] - 1)
             t = (indices.float() + 1) / 1000.0
-            # A share of U(0, 1) on the same noise scale. At 0 (the default) nothing more is
-            # drawn, so the stream is consumed exactly as before.
-            share = float(timestep_setting(config, "radc_uniform_prob"))
-            if share > 0.0:
-                u_mask = _rand(bs, device, generator) < share
-                t = torch.where(u_mask, _rand(bs, device, generator), t)
-            return t
+            # A share of U(0, 1) on the same noise scale (default 0: off).
+            return _mix_uniform(t, float(timestep_setting(config, "radc_uniform_prob")), device, generator)
 
         if mode == "model_shift":
             # Inference-matched flow-match shift, in additive logit space.
@@ -499,11 +505,7 @@ class TimestepSampler:
             else:
                 mu = (0.5 + 1.16) / 2.0
             t = torch.sigmoid(_randn(bs, device, generator) * std + mu)
-            uniform_prob = float(timestep_setting(config, "timestep_uniform_prob"))
-            if uniform_prob > 0.0:
-                u_mask = _rand(bs, device, generator) < uniform_prob
-                t = torch.where(u_mask, _rand(bs, device, generator), t)
-            return t
+            return _mix_uniform(t, float(timestep_setting(config, "timestep_uniform_prob")), device, generator)
 
         # Unknown → fallback with warning
         logger.warning("unknown_timestep_mode", mode=mode, fallback="uniform")

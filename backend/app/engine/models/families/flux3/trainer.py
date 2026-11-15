@@ -233,5 +233,5 @@ class Flux3Trainer(GenericTrainingPipeline):
                                     reason="flux3 applies its fixed 6.93 shift; a second shift is refused")
                 self._flux3_mode_warned = True
             mode = "uniform"
-        base =TimestepSampler.sample(mode, batch_size, self.device, self.config, progress=progress)
+        base = TimestepSampler.sample(mode, batch_size, self.device, self.config, progress=progress)
         return (fixed_shift(base, self._flow_shift()) * 1000.0).clamp(0.0, 1000.0)

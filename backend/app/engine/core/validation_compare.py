@@ -167,9 +167,15 @@ def _not_a_split(split: Any) -> str | None:
         return "no list of held-out keys"
     representatives = split.get("representatives")
     if not isinstance(representatives, list) or not all(
-        isinstance(item, dict) and isinstance(item.get("key"), str) for item in representatives
+        isinstance(item, dict)
+        and isinstance(item.get("key"), str)
+        and "caption" in item
+        and all(_integer(item.get(size)) for size in ("target_w", "target_h"))
+        for item in representatives
     ):
-        return "no list of held-out images with their keys"
+        return "the held-out images lack their keys, captions or sizes"
+    if sorted(item["key"] for item in representatives) != sorted(holdout):
+        return "its held-out images aren't its held-out keys"
     if not _integer(split.get("split_seed")):
         return "no integer split seed"
     model = split.get("model")

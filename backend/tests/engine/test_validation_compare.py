@@ -16,7 +16,10 @@ KEYS = [f"ds/img{i}.png" for i in range(6)]
 def _split(**changes):
     content = {
         "holdout": KEYS,
-        "representatives": [{"key": key, "path": f"/data/{key}", "sha256": key} for key in KEYS],
+        "representatives": [
+            {"key": key, "path": f"/data/{key}", "caption": "", "target_w": 64, "target_h": 64, "sha256": key}
+            for key in KEYS
+        ],
         "split_seed": 0,
         "global_triggerword": "",
         "noise_draws": 1,
@@ -238,8 +241,17 @@ def test_a_non_finite_loss_in_a_shared_draw_is_unreadable(tmp_path):
         vc.compare([("A", a), ("B", b)])
 
 
-@pytest.mark.parametrize("text", ["{}", "[]", '{"holdout": "x", "representatives": []}',
-                                  '{"holdout": ["k"], "representatives": [{}], "split_seed": 0}'])
+def _split_with(representatives):
+    return _split(representatives=representatives)
+
+
+@pytest.mark.parametrize("text", [
+    "{}", "[]", '{"holdout": "x", "representatives": []}',
+    '{"holdout": ["k"], "representatives": [{}], "split_seed": 0}',
+    _split_with([]),  # no held-out image described
+    _split_with([{"key": key} for key in KEYS]),  # keys only: no caption or size
+    _split_with([{"key": key, "caption": "", "target_w": 64, "target_h": 64} for key in KEYS[:-1]]),  # one missing
+])
 def test_a_split_file_that_is_not_a_split_is_unreadable(tmp_path, text):
     a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))])
     b = _write(tmp_path / "b", [_v2(0, _losses([1, 1]))], split=text)

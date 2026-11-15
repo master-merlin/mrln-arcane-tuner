@@ -15,7 +15,7 @@ from app.engine.core import validation_compare as vc  # noqa: E402
 
 CENTRES = [0.25, 0.75]
 KEYS = [f"ds/img{i}.png" for i in range(6)]
-SPLIT = json.dumps({"holdout": KEYS, "representatives": [{"key": k, "sha256": k} for k in KEYS],
+SPLIT = json.dumps({"holdout": KEYS, "representatives": [{"key": k, "caption": "", "target_w": 64, "target_h": 64, "sha256": k} for k in KEYS],
                     "split_seed": 0, "global_triggerword": ""})
 
 

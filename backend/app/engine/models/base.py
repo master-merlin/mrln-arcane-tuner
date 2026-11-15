@@ -575,7 +575,7 @@ class BaseTrainingConfig(BaseModel):
     )
     radc_start: float = Field(
         0.8,
-        description="Noise focus at training start (1.0=high noise, 0.0=clean)",
+        description="Noise focus at training start, on the model's own noise scale (1.0=pure noise, 0.0=clean)",
         json_schema_extra={
             "group": "STRATEGY",
             "depends_on": "timestep_sampling:radc",
@@ -586,7 +586,7 @@ class BaseTrainingConfig(BaseModel):
     )
     radc_end: float = Field(
         0.2,
-        description="Noise focus at training end (detail refinement)",
+        description="Noise focus at training end, on the model's own noise scale (low = detail refinement)",
         json_schema_extra={
             "group": "STRATEGY",
             "depends_on": "timestep_sampling:radc",

@@ -65,6 +65,38 @@ def test_guide_strategy_block_carries_hidream_bounds():
     assert "HiDream-O1" in line and "radc_res_influence" in line
 
 
+def _radc_section() -> str:
+    return _guide_block("Timestep sampling — Resolution-Aware Dynamic Curriculum (RADC)")
+
+
+def test_radc_help_names_the_models_noise_scale():
+    for name in ("radc_start", "radc_end"):
+        assert "model's own noise scale" in _desc(name), name
+        assert "noise scale" in HELP[name]["tip"] and "model's own noise scale" in HELP[name]["detail"], name
+
+
+def test_config_help_radc_entries_name_the_noise_scale():
+    entry = HELP["radc_uniform_prob"]
+    assert entry["tip"].strip() and "uniform" in entry["tip"].lower()
+    assert "noise scale" in entry["detail"]
+    assert "radc_uniform_prob" in _desc("radc_uniform_prob") or "uniform" in _desc("radc_uniform_prob").lower()
+
+
+def test_guide_radc_section_states_the_changed_focus():
+    section = " ".join(_radc_section().split())
+    assert "model's own noise scale" in section
+    for family in ("FLUX.3", "Bernini-R", "MiniMax-H3", "Boogu-Image", "Ideogram 4", "FLUX.2"):
+        assert family in section, family
+    assert "0.98" in section and "0.75" in section, "the guide must give FLUX.3's old effective range"
+    assert "no longer weights the loss" in section
+
+
+def test_guide_lists_radc_uniform_prob():
+    assert "`radc_uniform_prob`" in _radc_section()
+    block = _guide_block("Training Dynamics")
+    assert any("`radc_uniform_prob`" in line for line in block.splitlines()), "the field reference was not regenerated"
+
+
 def test_guide_lists_no_expert_family_as_progressless():
     # WAN 2.2 and Bernini-R both follow the curriculum, so the Limits paragraph is gone.
     assert "**Limits.**" not in GUIDE

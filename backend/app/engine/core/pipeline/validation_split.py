@@ -128,8 +128,13 @@ def _content_digest(path: str) -> str:
         return hashlib.file_digest(image, "sha256").hexdigest()
 
 
-def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
-    """The text of ``validation_split.json``: the split and the settings that made it."""
+def split_file_content(split: ValidationSplit, config: dict[str, Any], model: str | None = None) -> str:
+    """The text of ``validation_split.json``: the split and the settings that made it.
+
+    ``model`` is the definition the run trains: a comparison of runs refuses two models, whose
+    losses aren't on one scale. ``same_measurement`` leaves it out, so a resume of a run whose
+    split file predates it is still accepted.
+    """
     representative_fields = ("key", "path", "caption", "prefix", "target_w", "target_h")
     content = {
         "holdout": split.holdout_keys,
@@ -149,6 +154,7 @@ def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
         "every_n_steps": int(config.get("validation_every_n_steps", 500)),
         "timestep_bands": int(config.get("validation_timestep_bands", 8)),
         "noise_draws": int(config.get("validation_noise_draws", 1)),
+        "model": model,
     }
     return json.dumps(content, indent=2, ensure_ascii=False)
 

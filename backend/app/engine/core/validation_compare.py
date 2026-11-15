@@ -147,15 +147,35 @@ def _check_record(path: Path, line: int, record: Any) -> dict[str, Any]:
     return record
 
 
-def _check_finite(run: Run, step: int) -> None:
-    """Every loss the comparison uses at ``step`` is a finite number."""
+def _check_finite(run: Run, step: int, draws: int) -> None:
+    """Every loss the comparison uses at ``step`` (its first ``draws`` draws) is a finite number."""
     record = run.records[step]
     if _version(record) == 2:
-        losses = [loss for image in record["image_band_loss"] for draw in image for loss in draw]
+        losses = [loss for image in record["image_band_loss"] for draw in image[:draws] for loss in draw]
     else:
         losses = record["band_loss"]
     if not all(_number(loss) for loss in losses):
         raise Unreadable(f"{run.metrics_path}: step {step} has a non-finite loss; compare at another --step")
+
+
+def _not_a_split(split: Any) -> str | None:
+    """Why a parsed split file isn't one, or None: the fields every writer has put in it."""
+    if not isinstance(split, dict):
+        return "not a JSON object"
+    holdout = split.get("holdout")
+    if not isinstance(holdout, list) or not holdout or not all(isinstance(key, str) for key in holdout):
+        return "no list of held-out keys"
+    representatives = split.get("representatives")
+    if not isinstance(representatives, list) or not all(
+        isinstance(item, dict) and isinstance(item.get("key"), str) for item in representatives
+    ):
+        return "no list of held-out images with their keys"
+    if not _integer(split.get("split_seed")):
+        return "no integer split seed"
+    model = split.get("model")
+    if model is not None and not isinstance(model, str):
+        return "model is neither a name nor null"
+    return None
 
 
 def load_run(arm: str, folder: str | Path) -> Run:
@@ -163,9 +183,11 @@ def load_run(arm: str, folder: str | Path) -> Run:
     folder = Path(folder).resolve()
     run = Run(arm=arm, folder=folder, split_text=_read(folder / SPLIT_FILE))
     try:
-        json.loads(run.split_text)
+        split = json.loads(run.split_text)
     except json.JSONDecodeError as exc:
         raise Unreadable(f"{folder / SPLIT_FILE}: {exc}") from None
+    if why := _not_a_split(split):
+        raise Unreadable(f"{folder / SPLIT_FILE} is not a validation split file: {why}")
 
     path = run.metrics_path
     last: int | None = None
@@ -262,6 +284,25 @@ def _verdict(gap: float, interval: list[float] | None, floor: float | None, reas
         return "no verdict: " + "; ".join(reasons)
     excludes_zero = interval[0] > 0 or interval[1] < 0
     return BEATS if excludes_zero and abs(gap) > floor else WITHIN
+
+
+def _check_models(runs: list[Run]) -> list[str]:
+    """Refuse runs of two recorded models: their losses are on other scales, or of other targets.
+    -> a note for each run whose split file names no model (written before models were recorded)."""
+    named = [(run, json.loads(run.split_text).get("model")) for run in runs]
+    known = [(run, model) for run, model in named if model is not None]
+    for run, model in known[1:]:
+        if model != known[0][1]:
+            raise Refusal(
+                f"{known[0][0].folder / SPLIT_FILE} measures model {known[0][1]} and {run.folder / SPLIT_FILE} "
+                f"model {model}: different models' losses are not on one scale."
+            )
+    return [
+        f"{run.folder / SPLIT_FILE} doesn't record its model (written before models were recorded): "
+        "make sure every run trains the same model."
+        for run, model in named
+        if model is None
+    ]
 
 
 def _check_comparable(runs: list[Run], step: int) -> None:
@@ -364,8 +405,7 @@ def compare(
         if step not in run.records:
             raise Refusal(f"{run.metrics_path}: no record at step {step}.")
     _check_comparable(loaded, step)
-    for run in loaded:
-        _check_finite(run, step)
+    notes = _check_models(loaded)
 
     arms: dict[str, list[Run]] = {}
     for run in loaded:
@@ -375,11 +415,12 @@ def compare(
     bands = len(centres)
     legacy_runs = [run for run in loaded if _version(run.records[step]) == 1]
     legacy = bool(legacy_runs)
-    notes: list[str] = []
+    shared_draws = 1 if legacy else min(record["noise_draws"] for record in records)
+    for run in loaded:
+        _check_finite(run, step, shared_draws)
     interval_reasons: list[str] = []
 
     if legacy:
-        shared_draws = 1
         images = None
         interval_reasons = [
             f"no interval: {run.name} has no per-image losses (recorded before per-image losses were kept)"
@@ -390,7 +431,6 @@ def compare(
             # One aggregate observation per run, as a single "image" row.
             return [[_mean(list(column)) for column in zip(*(_aggregate(r.records[step]) for r in group), strict=True)]]
     else:
-        shared_draws = min(record["noise_draws"] for record in records)
         images = len(records[0]["image_keys"])
         draws = list(range(shared_draws))
         if images < MIN_IMAGES:

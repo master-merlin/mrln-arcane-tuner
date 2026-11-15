@@ -380,8 +380,11 @@ before per-image losses were kept) it gets **no verdict**, with the reason.
 `--json <file>` also writes the report as JSON.
 
 The comparison refuses runs that don't measure the same thing: other held-out
-images, other noise bands, one folder given twice, two runs of one setting with
-the same seed, or a history whose steps repeat or go back. A resume continues in
+images, other noise bands, other models (each split file names the model its run
+trains; an older one that doesn't gets a note in the report), one folder given
+twice, two runs of one setting with the same seed, or a history whose steps
+repeat or go back. A loss a pass couldn't compute (written as null) makes only
+that step unusable: compare at another `--step`. A resume continues in
 the same output folder and appends to its history, so a resume from an earlier
 checkpoint repeats steps: resume into a fresh output folder when you mean to
 compare runs (a new job under another LoRA name, resuming from the checkpoint).

@@ -212,6 +212,61 @@ def test_a_non_finite_loss_at_the_compared_step_is_unreadable(tmp_path):
         vc.compare([("A", a), ("B", b)], step=500)
 
 
+def _null_in_draw_1():
+    """Two draws per image; the pass wrote image 0's draw-1 loss in band 0 as null."""
+    record = _v2(0, _losses([1, 1], draws=2))
+    record["image_band_loss"][0][1][0] = None
+    return record
+
+
+def test_a_non_finite_loss_in_an_unused_draw_still_compares(tmp_path):
+    a = _write(tmp_path / "a", [_v2(0, _losses([2, 2]))])  # one draw: draw 1 isn't shared
+    b = _write(tmp_path / "b", [_null_in_draw_1()])
+    assert _overall(vc.compare([("A", a), ("B", b)]))["gap"] == pytest.approx(1.0)
+
+
+def test_a_non_finite_loss_in_an_unused_draw_still_compares_with_older_records(tmp_path):
+    a = _write(tmp_path / "a", [_v1(0, [2, 2])])
+    b = _write(tmp_path / "b", [_null_in_draw_1()])
+    vc.compare([("A", a), ("B", b)])
+
+
+def test_a_non_finite_loss_in_a_shared_draw_is_unreadable(tmp_path):
+    a = _write(tmp_path / "a", [_v2(0, _losses([2, 2], draws=2))])
+    b = _write(tmp_path / "b", [_null_in_draw_1()])
+    with pytest.raises(vc.Unreadable, match="step 0 has a non-finite loss"):
+        vc.compare([("A", a), ("B", b)])
+
+
+@pytest.mark.parametrize("text", ["{}", "[]", '{"holdout": "x", "representatives": []}',
+                                  '{"holdout": ["k"], "representatives": [{}], "split_seed": 0}'])
+def test_a_split_file_that_is_not_a_split_is_unreadable(tmp_path, text):
+    a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))])
+    b = _write(tmp_path / "b", [_v2(0, _losses([1, 1]))], split=text)
+    with pytest.raises(vc.Unreadable, match=r"b[\\/]validation_split.json"):
+        vc.compare([("A", a), ("B", b)])
+
+
+def test_runs_of_different_models_are_refused(tmp_path):
+    a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))], split=_split(model="family-a"))
+    b = _write(tmp_path / "b", [_v2(0, _losses([1, 1]))], split=_split(model="family-b"))
+    with pytest.raises(vc.Refusal, match="family-a.*family-b"):
+        vc.compare([("A", a), ("B", b)])
+
+
+def test_a_run_whose_model_isnt_recorded_compares_with_a_note(tmp_path):
+    a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))], split=_split(model="family-a"))
+    b = _write(tmp_path / "b", [_v2(0, _losses([1, 1]))])
+    report = vc.compare([("A", a), ("B", b)])
+    assert any("doesn't record its model" in note and str(b) in note for note in report["notes"])
+
+
+def test_runs_of_one_recorded_model_get_no_model_note(tmp_path):
+    a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))], split=_split(model="family-a"))
+    b = _write(tmp_path / "b", [_v2(0, _losses([1, 1]))], split=_split(model="family-a"))
+    assert not any("model" in note for note in vc.compare([("A", a), ("B", b)])["notes"])
+
+
 @pytest.mark.parametrize("version", [3, "2", 0])
 def test_a_record_of_an_unknown_version_is_unreadable(tmp_path, version):
     a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))])

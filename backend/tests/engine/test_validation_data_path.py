@@ -219,6 +219,7 @@ def test_the_split_file_records_the_split(monkeypatch, tmp_path):
     assert written["every_n_steps"] == 100
     assert written["timestep_bands"] == 4
     assert written["noise_draws"] == 1
+    assert written["model"] == DEFINITION_ID
     assert written["groups"] == t._validation_split.groups
     assert [r["key"] for r in written["representatives"]] == written["holdout"]
     assert {"path", "caption", "target_w", "target_h"} <= set(written["representatives"][0])

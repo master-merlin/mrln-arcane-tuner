@@ -9,7 +9,8 @@
   stale file.
 - Timesteps: a base sample from the configured mode through the FIXED shift
   ``t' = a*t / (1 + (a-1)*t)``, ``a = 6.93`` (the checkpoint's schedule; the ``flux2`` resolution-
-  dependent ``flux_shift`` is not inherited), returned in the pipeline's ``[0, 1000]`` scale.
+  dependent ``flux_shift`` is not inherited), returned in the pipeline's ``[0, 1000]`` scale. radc
+  is the exception: its draw is the noise level itself, so it gets no shift.
 - Target: the pipeline default ``noise - x0`` (flow matching, 1 = noise).
 """
 
@@ -30,6 +31,8 @@ DEFAULT_FLOW_SHIFT = 6.93
 # Base modes that already carry their own (resolution-dependent) shift: stacking 6.93 on them would
 # shift twice, so they fall back to a uniform base sample (reference default weighting "none").
 _SELF_SHIFTED_MODES = ("flux_shift", "model_shift")
+# The driver packs 2x2 latent cells into one token; radc's resolution term counts tokens.
+PATCHIFY_FACTOR = 2
 
 
 def fixed_shift(t: torch.Tensor, shift: float = DEFAULT_FLOW_SHIFT) -> torch.Tensor:
@@ -200,18 +203,35 @@ class Flux3Trainer(GenericTrainingPipeline):
         arch = getattr(getattr(self, "definition", None), "architecture_params", None) or {}
         return float(arch.get("scheduler.shift", DEFAULT_FLOW_SHIFT))
 
+    def _sampler_config(self) -> dict[str, Any]:
+        """The job's config with the 2x2 patchify factor, unless the job names one (never rewritten)."""
+        if "flux_shift_patchify_factor" in self.config:
+            return self.config
+        return {**self.config, "flux_shift_patchify_factor": PATCHIFY_FACTOR}
+
     def sample_timesteps(self, batch_size: int, latents: torch.Tensor | None = None) -> torch.Tensor:
-        """Base sample of the configured mode -> fixed 6.93 shift -> ``[0, 1000]`` (resolution-free)."""
-        from app.engine.strategies.timestep_sampling import TimestepSampler, timestep_setting
+        """Base sample of the configured mode -> fixed 6.93 shift -> ``[0, 1000]`` (resolution-free).
+
+        A mode whose draw is the noise level itself (radc) gets no shift: it is returned as drawn,
+        with the latents and the patchify factor its resolution term reads.
+        """
+        from app.engine.strategies.timestep_sampling import (
+            TimestepSampler,
+            sets_noise_level_itself,
+            timestep_setting,
+        )
 
         mode = timestep_setting(self.config, "timestep_sampling", getattr(self, "definition", None))
+        max_steps = getattr(self, "max_train_steps", 1)
+        progress = getattr(self, "global_step", 0) / max(max_steps, 1)
+        if sets_noise_level_itself(mode):
+            return TimestepSampler.sample_scaled(mode, batch_size, self.device, self._sampler_config(),
+                                                 latents=latents, progress=progress)
         if mode in _SELF_SHIFTED_MODES:
             if not getattr(self, "_flux3_mode_warned", False):
                 self.logger.warning("flux3_timestep_mode_replaced", configured=mode, used="uniform",
                                     reason="flux3 applies its fixed 6.93 shift; a second shift is refused")
                 self._flux3_mode_warned = True
             mode = "uniform"
-        max_steps = getattr(self, "max_train_steps", 1)
-        progress = getattr(self, "global_step", 0) / max(max_steps, 1)
-        base = TimestepSampler.sample(mode, batch_size, self.device, self.config, progress=progress)
+        base =TimestepSampler.sample(mode, batch_size, self.device, self.config, progress=progress)
         return (fixed_shift(base, self._flow_shift()) * 1000.0).clamp(0.0, 1000.0)

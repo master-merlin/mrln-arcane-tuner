@@ -340,7 +340,6 @@ _RED_TODAY_FOCUS: dict[str, str] = {
     "flux2/flux2-dev": _TWICE,
     "flux2/flux2-klein-base-4b": _TWICE,
     "flux2/flux2-klein-base-9b": _TWICE,
-    "flux3/flux3-image-klein-base": _SHIFTED,
     "ideogram4/ideogram4-fp8": _REVERSED,
     "minimax_h3/minimax-h3-fl2va": _SHIFTED,
     "minimax_h3/minimax-h3-ref2va": _SHIFTED,
@@ -348,7 +347,6 @@ _RED_TODAY_FOCUS: dict[str, str] = {
 }
 _RED_TODAY_RESOLUTION: dict[str, str] = {
     **_RED_TODAY_FOCUS,
-    "flux3/flux3-image-klein-base": _SHIFTED + "; the draw is given no latents",
     "ace_step15/ace-step-1.5": _NO_TERM,
     "ace_step15/ace-step-1.5-xl-base": _NO_TERM,
 }

@@ -110,7 +110,7 @@ def _check_record(path: Path, line: int, record: Any) -> dict[str, Any]:
     if not isinstance(centres, list) or not centres or not all(_number(c) for c in centres):
         raise invalid("no band centres")
     bands = len(centres)
-    if record.get("version", 1) == 2:
+    if _version(record) == 2:
         keys = record.get("image_keys")
         draws = record.get("noise_draws")
         losses = record.get("image_band_loss")
@@ -365,7 +365,7 @@ def compare(
 
         def values(group: list[Run]) -> list[list[float]]:
             # One aggregate observation per run, as a single "image" row.
-            return [[_mean([_aggregate(r.records[step])[b] for r in group]) for b in range(bands)]]
+            return [[_mean(list(column)) for column in zip(*(_aggregate(r.records[step]) for r in group), strict=True)]]
     else:
         shared_draws = min(record["noise_draws"] for record in records)
         images = len(records[0]["image_keys"])

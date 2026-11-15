@@ -28,17 +28,19 @@ def is_due(step: int, every: int, max_steps: int) -> bool:
     return step % every == 0 or step == max_steps - 1
 
 
+def _hash_seed(text: str) -> int:
+    return int.from_bytes(hashlib.sha256(text.encode()).digest()[:8], "big") >> 1
+
+
 def _image_seed(split_seed: int, key: str) -> int:
-    digest = hashlib.sha256(f"{split_seed}:{key}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") >> 1
+    return _hash_seed(f"{split_seed}:{key}")
 
 
 def _draw_seed(split_seed: int, key: str, draw: int) -> int:
     """Draw 0 is the image's own seed; a later draw hashes the draw in, with a separator no key holds."""
     if draw == 0:
         return _image_seed(split_seed, key)
-    digest = hashlib.sha256(f"{split_seed}\0{key}\0{draw}".encode()).digest()
-    return int.from_bytes(digest[:8], "big") >> 1
+    return _hash_seed(f"{split_seed}\0{key}\0{draw}")
 
 
 def fixed_noise(split_seed: int, key: str, like: torch.Tensor, draw: int = 0) -> torch.Tensor:

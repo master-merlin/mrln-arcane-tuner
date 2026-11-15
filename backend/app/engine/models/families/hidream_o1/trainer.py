@@ -374,9 +374,10 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
 
         The base MSE would be 0 because ``compute_target`` returns
         ``x0_pred.detach()``.  Instead, call ``compute_loss(batch)`` which
-        runs the full recipe and returns a scalar loss with a grad_fn.
+        runs the full recipe and returns a scalar loss with a grad_fn, at the step's own sigma
+        draw (``timesteps``, the one the sigma statistics record).
         """
-        loss = self.compute_loss(batch)
+        loss = self.compute_loss(batch, sigma=timesteps)
         return loss / grad_accum
 
     # ── LoRA injection (overrides peft path) ─────────────────────────────
@@ -575,7 +576,7 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         # module docstring.
         return x0_pred.float().detach()
 
-    def compute_loss(self, batch: dict[str, Any]) -> torch.Tensor:
+    def compute_loss(self, batch: dict[str, Any], sigma: torch.Tensor | None = None) -> torch.Tensor:
         """One training-step loss computation per Saganaki22's recipe.
 
         This is the canonical recipe entry-point.  It is called by the
@@ -588,6 +589,7 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
             batch: ``{"pixel_values": Tensor[B, 3, H, W], "caption": list[str]}``.
                    Alternatively ``{"images": Tensor, "captions": list[str]}``
                    (the key names used by the base pipeline's ``_get_batch``).
+            sigma: the step's draw (from :meth:`sample_timesteps`); without one, this draws it.
 
         Returns:
             Scalar loss tensor with ``grad_fn`` set, clamped to ``MAX_LOSS``.
@@ -628,7 +630,9 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         )
 
         # Sigma + noise injection
-        sigma = self.sample_timesteps(patches.shape[0]).to(dtype=dtype)
+        if sigma is None:
+            sigma = self.sample_timesteps(patches.shape[0])
+        sigma = sigma.to(device=patches.device, dtype=dtype)
         sigma_view = sigma.view(-1, 1, 1)
         noise = torch.randn_like(patches)
         scaled_noise = noise * NOISE_SCALE

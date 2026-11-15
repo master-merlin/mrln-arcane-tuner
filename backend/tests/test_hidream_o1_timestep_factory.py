@@ -249,6 +249,17 @@ def test_the_shared_step_draw_is_the_sigma_the_model_sees():
     assert torch.allclose(1.0 - model.timesteps[-1], drawn)
 
 
+def test_the_backpropagated_loss_trains_on_the_step_draw():
+    """The step's loss (``_compute_step_loss`` -> ``compute_loss``) runs at the sigma the step drew and
+    recorded, never at a second draw: the sigma statistics describe what was trained."""
+    trainer, model, batch, ts = _setup(timestep_sampling="uniform")
+    drawn = torch.full((BATCH,), 0.4)
+    trainer.sample_timesteps = lambda *a, **k: pytest.fail("the step's loss drew a second sigma")
+    with patch(TEXT_SAMPLE_TARGET, return_value=ts):
+        trainer._compute_step_loss(None, None, drawn, batch, 1)
+    assert torch.allclose(1.0 - model.timesteps[-1], drawn)
+
+
 def test_hidream_o1_sample_timesteps_returns_the_sigma_and_its_noise_fraction_is_itself():
     from app.engine.models.families.hidream_o1.trainer import MAX_SIGMA, T_EPS
 

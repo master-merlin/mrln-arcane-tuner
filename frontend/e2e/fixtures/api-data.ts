@@ -1437,6 +1437,7 @@ export const timestepCapabilities = {
             "supports_min_snr": false,
             "supports_noise_offset": true,
             "supports_flow_timestep_sampling": true,
+            "supports_radc_resolution": true,
             "seed_prompt_defaults": true,
             "control_inputs": 0,
             "is_edit": false,
@@ -1621,6 +1622,9 @@ export const timestepCapabilities = {
                 "supported": true
             },
             "radc_res_influence": {
+                "supported": true
+            },
+            "radc_uniform_prob": {
                 "supported": true
             },
             "distillation_handling": {
@@ -1670,6 +1674,7 @@ export const timestepCapabilities = {
             "supports_min_snr": false,
             "supports_noise_offset": true,
             "supports_flow_timestep_sampling": true,
+            "supports_radc_resolution": true,
             "seed_prompt_defaults": true,
             "control_inputs": 0,
             "is_edit": false,
@@ -1856,6 +1861,9 @@ export const timestepCapabilities = {
             "radc_res_influence": {
                 "supported": true
             },
+            "radc_uniform_prob": {
+                "supported": true
+            },
             "distillation_handling": {
                 "supported": false,
                 "reason": "this model is not distilled — it trains without a distillation handling"
@@ -1903,6 +1911,7 @@ export const timestepCapabilities = {
             "supports_min_snr": false,
             "supports_noise_offset": true,
             "supports_flow_timestep_sampling": true,
+            "supports_radc_resolution": true,
             "seed_prompt_defaults": false,
             "control_inputs": 0,
             "is_edit": false,
@@ -2087,6 +2096,9 @@ export const timestepCapabilities = {
                 "supported": true
             },
             "radc_res_influence": {
+                "supported": true
+            },
+            "radc_uniform_prob": {
                 "supported": true
             },
             "distillation_handling": {
@@ -2132,6 +2144,7 @@ export const timestepCapabilities = {
             "supports_min_snr": false,
             "supports_noise_offset": true,
             "supports_flow_timestep_sampling": true,
+            "supports_radc_resolution": true,
             "seed_prompt_defaults": false,
             "control_inputs": 0,
             "is_edit": false,
@@ -2316,6 +2329,9 @@ export const timestepCapabilities = {
                 "supported": true
             },
             "radc_res_influence": {
+                "supported": true
+            },
+            "radc_uniform_prob": {
                 "supported": true
             },
             "distillation_handling": {

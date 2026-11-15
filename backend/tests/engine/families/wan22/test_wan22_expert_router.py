@@ -344,3 +344,51 @@ def test_a_resumed_router_decides_the_next_step_as_the_running_one():
     b.load_state_dict(a.state_dict())
     assert b._block_u == a._block_u and b._last_shape == a._last_shape == (1, 16, 1, 64, 64)
     assert b.expert_for_batch(SMALL) == a.expert_for_batch(SMALL) == LOW
+
+
+class _Wan22Defn:
+    architecture_params = {"mode": "t2v", "te.max_length": 512, "moe.boundary_ratio": 0.875}
+    lora_targetable_modules: list[str] = []
+    defaults: dict = {"num_frames": 81}
+
+
+class _BerniniDefn:
+    architecture_params = {"mode": "t2v", "dual_expert": True, "switch_dit_boundary": 0.875}
+    lora_targetable_modules: list[str] = []
+
+
+def _wan22_driver():
+    from app.engine.models.families.wan22.driver import Wan22Driver
+
+    return Wan22Driver(_Wan22Defn(), CPU)
+
+
+def _bernini_driver():
+    from app.engine.models.families.bernini_r.driver import BerniniRDriver
+
+    return BerniniRDriver(_BerniniDefn(), CPU)
+
+
+@pytest.mark.parametrize("make_driver", [_wan22_driver, _bernini_driver], ids=["wan22", "bernini_r"])
+def test_a_batch_corrected_expert_holds_for_its_switch_interval(make_driver):
+    """The reference predicts LOW, every batch is LARGE (HIGH). The step's first batch corrects the
+    expert once; the boundaries inside the interval must not restore the prediction, so swap mode
+    moves the experts once, not twice per step."""
+    driver = make_driver()
+    driver.set_router(_shape_router(switch_interval=4))
+    driver.configure_swap_mode("swap")
+    assert driver.active_expert == LOW, "the reference shape must predict LOW for this check"
+    swaps: list[str] = []
+
+    def swap_to(expert):
+        swaps.append(expert)
+        driver._active_expert = expert
+
+    driver._swap_to = swap_to
+    latents = torch.zeros(LARGE)
+    for step in range(12):
+        if step:
+            driver.on_optimizer_step(step - 1)
+        driver.route_for_batch(latents)
+        assert driver.active_expert == HIGH, step
+    assert swaps == [HIGH], f"swaps over 12 steps of one resolution: {swaps}"

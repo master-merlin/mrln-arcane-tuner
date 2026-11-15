@@ -259,11 +259,9 @@ class ExpertRouter:
         """
         if block_index in self._block_decisions:
             return self._block_decisions[block_index]
-        if (
-            self._progress_provider is not None
-            and self.pinned_expert is None
-            and block_index > 0  # block 0 was just estimated by __init__
-        ):
+        if self.pinned_expert is None and block_index > 0:  # block 0 was just estimated by __init__
+            # At the current progress and the last batch's shape (cached: a mode that reads
+            # neither estimates once per shape), so the prediction is what that batch would decide.
             self.p_high = self._estimate_p_high()
         u = self._block_u.get(block_index)
         if u is None:
@@ -308,6 +306,8 @@ class ExpertRouter:
         if latent_shape is not None and u is not None:
             self._last_shape = (1, *(int(d) for d in tuple(latent_shape)[1:]))
             self._active_expert = HIGH if u < self._p_high_at(self._last_shape) else LOW
+            # The block's later boundaries predict what this batch decided, never the older guess.
+            self._block_decisions[self._current_block] = self._active_expert
         self._step_expert = self._active_expert
         return self._active_expert
 

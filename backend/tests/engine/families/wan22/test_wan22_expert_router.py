@@ -283,3 +283,64 @@ def test_timestep_draw_overrides_the_estimate_when_supplied():
     assert calls == [1000]
     # All draws are >= boundary → p_high clamps to the "never 1.0" guard.
     assert router.p_high == pytest.approx(1.0 - 1e-6)
+
+
+# ── The batch's own latent shape decides the step's expert ──────────────────
+
+SMALL, LARGE, REFERENCE = (4, 16, 1, 8, 8), (4, 16, 1, 64, 64), (1, 16, 1, 32, 32)
+
+
+def _shape_router(**kwargs) -> ExpertRouter:
+    """p_high is 1 for a latent wider than the reference, 0 below it: the shape alone decides."""
+    def draw(n: int, latents=None) -> torch.Tensor:
+        wide = latents is not None and latents.shape[-1] > REFERENCE[-1]
+        return torch.full((n,), 999.0 if wide else 0.0)
+
+    return ExpertRouter(boundary=0.875, timestep_cfg={"timestep_sampling": "radc"}, seed=0,
+                        mc_samples=64, timestep_draw=draw, reference_latent_shape=REFERENCE, **kwargs)
+
+
+def test_the_batch_shape_decides_the_expert_not_the_reference():
+    router = _shape_router()
+    for step in range(20):
+        router.choose_expert(step)
+        assert router.expert_for_batch(LARGE if step % 2 else SMALL) == (HIGH if step % 2 else LOW), step
+
+
+def test_the_step_keeps_its_first_batch_expert():
+    router = _shape_router()
+    router.choose_expert(1)
+    first = router.expert_for_batch(LARGE)
+    assert [router.expert_for_batch(s) for s in (SMALL, LARGE, None)] == [first] * 3
+    router.choose_expert(2)
+    assert router.expert_for_batch(SMALL) == LOW
+
+
+def test_each_shape_trains_high_at_its_own_p_high():
+    """A uniform per block against p_high at the batch's shape: the high share per shape is that
+    shape's p_high, whatever the other shapes in the run."""
+    cfg = {"timestep_sampling": "flux_shift"}
+    router = ExpertRouter(boundary=0.875, timestep_cfg=cfg, seed=4, mc_samples=50_000)
+    small, large = (1, 16, 1, 8, 8), (1, 16, 1, 128, 128)
+    want = {s: router.estimate_p_high(latent_shape=s) for s in (small, large)}
+    assert want[large] - want[small] > 0.1, want
+    highs = {small: 0, large: 0}
+    n = 4000
+    for step in range(2 * n):
+        router.choose_expert(step)
+        shape = large if step % 2 else small
+        highs[shape] += router.expert_for_batch(shape) == HIGH
+    for shape in (small, large):
+        assert abs(highs[shape] / n - want[shape]) < 0.03, (shape, highs[shape] / n, want[shape])
+
+
+def test_a_resumed_router_decides_the_next_step_as_the_running_one():
+    a = _shape_router()
+    for step in range(5):
+        a.choose_expert(step)
+        a.expert_for_batch(LARGE)
+    a.choose_expert(5)
+    b = _shape_router()
+    b.load_state_dict(a.state_dict())
+    assert b._block_u == a._block_u and b._last_shape == a._last_shape == (1, 16, 1, 64, 64)
+    assert b.expert_for_batch(SMALL) == a.expert_for_batch(SMALL) == LOW

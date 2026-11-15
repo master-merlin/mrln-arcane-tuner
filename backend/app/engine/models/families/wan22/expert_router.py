@@ -85,11 +85,11 @@ class ExpertRouter:
             reference latent the p_high estimate is drawn at, for a
             resolution-aware mode (``flux_shift``, ``model_shift``, ``radc``
             with ``radc_res_influence > 0``). ``None`` = no latent (wan22, in
-            every mode but ``radc``). The estimate is therefore a switch-scheduling hint at ONE
-            resolution: a mixed-resolution bucket batch inside a switch
-            interval is NOT followed (every sample still trains on the timestep
-            its own band draw produced), so this value never decides a
-            correctness property, only how often each expert is stepped.
+            every mode but ``radc``). It serves only the step-boundary
+            prediction until the first batch is seen; each step's expert is
+            then decided for its own batch's latent shape
+            (:meth:`expert_for_batch`), and the prediction follows the last
+            batch's shape.
         progress_provider: Optional callable returning the current training
             progress in ``[0, 1]``. When given, ``p_high`` is re-estimated at
             every NEW switch-interval block from it (a progress-dependent mode
@@ -147,8 +147,17 @@ class ExpertRouter:
         self._seed = int(seed)
         self._step_rng = torch.Generator(device="cpu").manual_seed(self._seed)
 
-        # Per-interval-block decision cache: block_index -> "high"|"low".
+        # Per-interval-block decision cache: block_index -> "high"|"low", and the block's
+        # uniform draw the decision compares with p_high (kept: a step re-decides it for its
+        # own batch's latent shape, see :meth:`expert_for_batch`).
         self._block_decisions: dict[int, str] = {}
+        self._block_u: dict[int, float] = {}
+        self._current_block = 0
+        # The expert the current optimizer step trains, fixed at its first batch.
+        self._step_expert: str | None = None
+        # The latent shape of the last batch drawn for: the step-boundary prediction's shape.
+        self._last_shape: tuple[int, ...] | None = None
+        self._p_cache: dict[tuple[float, tuple[int, ...] | None], float] = {}
 
         if self.pinned_expert is not None:
             # Single-expert: no switching, no MC estimate. p_high is degenerate
@@ -186,8 +195,18 @@ class ExpertRouter:
         whose ACTUAL per-step timesteps come from its own transform (see the
         constructor docstring).
         """
+        return self._p_high_at(self._last_shape)
+
+    def _p_high_at(self, shape: tuple[int, ...] | None) -> float:
+        """:meth:`estimate_p_high` at the current progress and ``shape`` (the reference when
+        ``None``), cached: the estimate is a pure function of the two."""
         progress = 0.0 if self._progress_provider is None else float(self._progress_provider())
-        return self.estimate_p_high(progress=progress)
+        key = (progress, shape)
+        if key not in self._p_cache:
+            if len(self._p_cache) >= 64:
+                self._p_cache.clear()
+            self._p_cache[key] = self.estimate_p_high(progress=progress, latent_shape=shape)
+        return self._p_cache[key]
 
     def estimate_p_high(
         self, progress: float = 0.0, latent_shape: Sequence[int] | None = None
@@ -246,7 +265,10 @@ class ExpertRouter:
             and block_index > 0  # block 0 was just estimated by __init__
         ):
             self.p_high = self._estimate_p_high()
-        u = torch.rand((), generator=self._step_rng).item()
+        u = self._block_u.get(block_index)
+        if u is None:
+            u = torch.rand((), generator=self._step_rng).item()
+            self._block_u[block_index] = u
         decision = HIGH if u < self.p_high else LOW
         self._block_decisions[block_index] = decision
         return decision
@@ -263,9 +285,31 @@ class ExpertRouter:
             self._active_expert = self.pinned_expert
             return self.pinned_expert
         block_index = int(optimizer_step) // self.switch_interval
+        self._current_block = block_index
+        self._step_expert = None
         decision = self._decide_block(block_index)
         self._active_expert = decision
         return decision
+
+    def expert_for_batch(self, latent_shape: Sequence[int] | None) -> str:
+        """The expert the current optimizer step trains, for the batch it draws for.
+
+        :meth:`choose_expert` predicts it at the step boundary, before the batch exists. The
+        step's first batch decides it: the block's uniform draw against ``p_high`` for that
+        batch's latent shape, so each batch's high share is ``p_high`` at its own resolution
+        and the conditional draws compose to the configured distribution at that resolution.
+        Fixed for the rest of the step, so gradients never mix experts.
+        """
+        if self.pinned_expert is not None:
+            return self.pinned_expert
+        if self._step_expert is not None:
+            return self._step_expert
+        u = self._block_u.get(self._current_block)
+        if latent_shape is not None and u is not None:
+            self._last_shape = (1, *(int(d) for d in tuple(latent_shape)[1:]))
+            self._active_expert = HIGH if u < self._p_high_at(self._last_shape) else LOW
+        self._step_expert = self._active_expert
+        return self._active_expert
 
     @property
     def active_expert(self) -> str:
@@ -352,6 +396,8 @@ class ExpertRouter:
             "pinned_expert": self.pinned_expert,
             "rng_state": self._step_rng.get_state(),
             "block_decisions": dict(self._block_decisions),
+            "block_u": dict(self._block_u),
+            "last_shape": self._last_shape,
         }
 
     def load_state_dict(self, state: dict[str, Any]) -> None:
@@ -365,6 +411,14 @@ class ExpertRouter:
         self._block_decisions = {
             int(k): str(v) for k, v in state.get("block_decisions", {}).items()
         }
+        # A state saved before the per-batch decision carries no uniforms: its decided blocks
+        # keep their decision, the next undecided block draws one.
+        self._block_u = {int(k): float(v) for k, v in state.get("block_u", {}).items()}
+        last = state.get("last_shape")
+        self._last_shape = tuple(int(d) for d in last) if last else None
+        # The next step belongs to the last block decided (the one ``active_expert`` names).
+        self._current_block = max(self._block_decisions, default=0)
+        self._step_expert = None
         rng_state = state.get("rng_state")
         if rng_state is not None:
             self._step_rng.set_state(rng_state)

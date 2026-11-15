@@ -51,6 +51,7 @@ INFLUENCE = 0.2
 # tokens (16x16 cells) and at least 4096 (256x256 cells), whatever the family's own factor.
 SMALL_GRID, LARGE_GRID = 16, 256
 A3_CALLS = 64
+ROUTED_STEPS, ROUTED_CALLS = 512, 8  # a dual-expert run: 512 optimizer steps of 8 draws
 
 
 @dataclass
@@ -147,26 +148,38 @@ def _router(trainer, defn):
     return router
 
 
-def _mix(trainer, defn, latents, progress: float, router_shape=None) -> list[tuple[torch.Tensor, float]]:
-    """``(draws, share)`` per expert: one group for a single model, both experts for a dual one,
-    mixed by the router's ``p_high`` for the SAME latents the draw gets."""
+def _routed(trainer, router, latents, progress: float) -> torch.Tensor:
+    """A dual-expert run as training drives it: per optimizer step the driver's
+    ``on_optimizer_step`` picks the expert, then the step's draws go through ``sample_timesteps``
+    with the batch's latents. The router's per-block uniform is stratified, ``(i + 0.5) / n``,
+    so the share of high steps is the production rule's own probability within ``1 / n``."""
+    trainer.global_step = round(progress * STEPS)
+    draws = []
+    with torch.random.fork_rng(devices=[]):
+        torch.manual_seed(0)
+        for i in range(ROUTED_STEPS):
+            block = i
+            router.__dict__.setdefault("_block_u", {})[block] = (i + 0.5) / ROUTED_STEPS
+            router._block_decisions.pop(block, None)
+            trainer.driver.on_optimizer_step(block * router.switch_interval - 1)
+            draws += [trainer.sample_timesteps(BATCH, latents).detach().float().reshape(-1)
+                      for _ in range(ROUTED_CALLS)]
+    return torch.cat(draws)
+
+
+def _mix(trainer, defn, latents, progress: float) -> list[tuple[torch.Tensor, float]]:
+    """``(draws, share)``: the single model's draws, or a dual-expert run's routed draws."""
     router = _router(trainer, defn)
     if router is None:
         return [(_draw(trainer, latents, progress), 1.0)]
-    shape = tuple(latents.shape) if router_shape is None else router_shape
-    p_high = router.estimate_p_high(progress=progress, latent_shape=shape)
-    groups = []
-    for expert, share in (("high", p_high), ("low", 1.0 - p_high)):
-        trainer.driver._set_active(expert)
-        groups.append((_draw(trainer, latents, progress), share))
-    return groups
+    return [(_routed(trainer, router, latents, progress), 1.0)]
 
 
-def _trained(trainer, defn, latents, progress: float, router_shape=None) -> tuple[torch.Tensor, torch.Tensor]:
+def _trained(trainer, defn, latents, progress: float) -> tuple[torch.Tensor, torch.Tensor]:
     """The trained distribution: noise fractions and their weights (draw share x loss weight)."""
     reference = _reference(defn)
     fractions, weights = [], []
-    for draws, share in _mix(trainer, defn, latents, progress, router_shape):
+    for draws, share in _mix(trainer, defn, latents, progress):
         loss_weight = trainer.compute_loss_weight(draws)
         w = torch.ones_like(draws) if loss_weight is None else loss_weight.detach().float().reshape(-1)
         fractions.append(noise_fraction_of(trainer, draws, reference))
@@ -247,7 +260,7 @@ def _focus_problems(defn) -> list[tuple[str, str]]:
     return problems
 
 
-def _resolution_problems(defn, router_shape=None, progresses=(0.5, 1.0)) -> list[tuple[str, str]]:
+def _resolution_problems(defn, progresses=(0.5, 1.0)) -> list[tuple[str, str]]:
     problems: list[tuple[str, str]] = []
     declared = bool(_caps(defn).get("supports_radc_resolution", True))
     trainer = _build(defn, **_radc(INFLUENCE))
@@ -257,7 +270,7 @@ def _resolution_problems(defn, router_shape=None, progresses=(0.5, 1.0)) -> list
             expected = _set_centre(progress) + (sign * INFLUENCE * progress if declared else 0.0)
             where = f"{grid}x{grid} cells at progress {progress}"
             with _asked_centres() as asked:
-                fractions, weights = _trained(trainer, defn, latents, progress, router_shape)
+                fractions, weights = _trained(trainer, defn, latents, progress)
             if not asked:
                 problems.append(("A2", f"{where}: the draw never asked for a radc curve"))
             elif any(abs(c - expected) > CENTRE_TOLERANCE for c in asked):
@@ -547,18 +560,20 @@ def test_an_undrawable_family_fails_by_name(monkeypatch):
     assert len(failures) == 1 and failures[0].startswith(f"{_name(defn)} (undrawable)"), failures
 
 
-def test_dual_expert_mix_uses_the_draws_latents():
-    """The router's ``p_high`` is computed for the draw's own latents; mixed by the router's
-    reference shape instead, the resolution check must go red (the mix is not vacuous)."""
+def _dual_offering():
     dual = [d for d in _definitions()
             if _caps(d).get("dual_expert") and _caps(d).get("supports_flow_timestep_sampling", True)]
     assert dual, "no dual-expert definition offers radc: this check would be vacuous"
-    failures = []
-    for defn in dual:
-        router = _router(_build(defn, **_radc(INFLUENCE)), defn)
-        reference = tuple(router._reference_latent_shape)
-        if _resolution_problems(defn, progresses=(0.5,)):
-            failures.append(f"{_name(defn)}: the mix by the draw's latents fails the resolution check")
-        if not _resolution_problems(defn, router_shape=reference, progresses=(0.5,)):
-            failures.append(f"{_name(defn)}: a mix by the reference shape {reference} is not reported")
+    return dual
+
+
+def test_positive_control_routing_by_the_reference_shape_is_reported(monkeypatch):
+    """Live routing decides each step's expert for the latents of the batch it draws for. A router
+    that decides by its reference shape (the step-boundary prediction) instead trains a batch of
+    another size off its focus, and the resolution check must report it."""
+    from app.engine.models.families.wan22.expert_router import ExpertRouter
+
+    monkeypatch.setattr(ExpertRouter, "expert_for_batch", lambda self, latent_shape: self.active_expert)
+    failures = [f"{_name(d)}: routing by the reference shape is not reported"
+                for d in _dual_offering() if not _resolution_problems(d, progresses=(0.5,))]
     assert not failures, "\n".join(failures)

@@ -55,6 +55,12 @@ def _trainer(config=None, *, expert_mode="both", step=0, max_steps=100) -> Wan22
     return t
 
 
+def _force(t: Wan22Trainer, expert: str) -> None:
+    """Train ``expert`` for the current step, whatever the router would decide for the batch."""
+    t.driver._set_active(expert)
+    t.expert_router._step_expert = expert
+
+
 def _radc(**extra) -> dict:
     return {"timestep_sampling": "radc", **extra}
 
@@ -82,7 +88,7 @@ def _p_high_after_step(t: Wan22Trainer, step: int) -> float:
 )
 def test_radc_mean_noise_falls_with_progress_and_stays_in_the_expert_range(expert_mode, active):
     t = _trainer(_radc(), expert_mode=expert_mode)
-    t.driver._set_active(active)
+    _force(t, active)
 
     early, late = _draws(t, 10), _draws(t, 90)
 
@@ -192,7 +198,7 @@ BEFORE_P_HIGH = {"logit_normal": 0.025439999997615814, "flux_shift": 0.133110001
 )
 def test_other_modes_keep_their_draws_and_p_high(mode, expert_mode, active):
     t = _trainer({"timestep_sampling": mode}, expert_mode=expert_mode, step=50)
-    t.driver._set_active(active)
+    _force(t, active)
 
     got = _draws(t, 50, n=4, seed=123)
 

@@ -269,6 +269,7 @@ class BerniniRTrainer(
             and getattr(driver, "is_dual", False)
             and getattr(driver, "router", None) is not None
         ):
+            driver.route_for_batch(latents)
             return self._sample_band(
                 driver.active_expert, batch_size, latents=latents, progress=progress
             )

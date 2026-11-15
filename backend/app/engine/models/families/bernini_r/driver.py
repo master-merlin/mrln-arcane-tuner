@@ -215,13 +215,22 @@ class BerniniRDriver(WanDriverBase):
         """
         if self.router is None:
             return
-        next_expert = self.router.choose_expert(optimizer_step + 1)
-        if next_expert == self._active_expert:
+        self._activate(self.router.choose_expert(optimizer_step + 1))
+
+    def route_for_batch(self, latents: torch.Tensor | None) -> None:
+        """Train the expert the router decides for this batch's latent shape (mirrors
+        :meth:`Wan22Driver.route_for_batch`). Called before the forward."""
+        if self.router is None:
+            return
+        self._activate(self.router.expert_for_batch(None if latents is None else latents.shape))
+
+    def _activate(self, expert: str) -> None:
+        if expert == self._active_expert:
             return
         if self.swap_mode == "swap":
-            self._swap_to(next_expert)
+            self._swap_to(expert)
         else:
-            self._set_active(next_expert)
+            self._set_active(expert)
 
     def _swap_to(self, expert: str) -> None:
         """Move ``expert`` onto ``self.device`` and the other onto CPU."""

@@ -203,9 +203,27 @@ class Wan22Driver(WanDriverBase):
         """
         if self.router is None:
             return super().sample_timesteps(batch_size, device, config, latents)
+        self.route_for_batch(latents)
         return self.router.sample_timesteps_for(
             self._active_expert, batch_size, device, config, latents, progress=progress
         )
+
+    def route_for_batch(self, latents: torch.Tensor | None) -> None:
+        """Train the expert the router decides for this batch's latent shape (the step's first
+        batch decides; see :meth:`ExpertRouter.expert_for_batch`), switching to it if the
+        step-boundary prediction differs. Called before the forward, which reads the
+        primary model."""
+        if self.router is None:
+            return
+        self._activate(self.router.expert_for_batch(None if latents is None else latents.shape))
+
+    def _activate(self, expert: str) -> None:
+        if expert == self._active_expert:
+            return
+        if self.swap_mode == "swap":
+            self._swap_to(expert)
+        else:
+            self._set_active(expert)
 
     # ── Optimizer-step hook (advance the router, swap for the NEXT step) ──
 
@@ -219,13 +237,7 @@ class Wan22Driver(WanDriverBase):
         """
         if self.router is None:
             return
-        next_expert = self.router.choose_expert(optimizer_step + 1)
-        if next_expert == self._active_expert:
-            return
-        if self.swap_mode == "swap":
-            self._swap_to(next_expert)
-        else:
-            self._set_active(next_expert)
+        self._activate(self.router.choose_expert(optimizer_step + 1))
 
     # ── VRAM swap helper (state transitions unit-tested with fakes) ───────
 

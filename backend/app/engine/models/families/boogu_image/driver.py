@@ -607,13 +607,20 @@ class BooguImageDriver(IModelDriver):
         (Task 5) computes and passes this; the default ``0.0`` here only
         applies to direct/legacy callers that don't supply it (e.g. Task 4's
         driver-level tests).
+
+        The shared sampler draws a NOISE fraction (1 = pure noise); Boogu's ``t``
+        counts the CLEAN fraction (``x_t = (1-t)*noise + t*x0``), so the draw is
+        returned as ``1 - sigma`` (omnigen2's convention). Without it every mode
+        leaned to the opposite side its help names, and radc's curriculum ran
+        backwards.
         """
         from app.engine.strategies.timestep_sampling import TimestepSampler, timestep_setting
 
         mode = timestep_setting(config, "timestep_sampling", getattr(self, "definition", None))
-        return TimestepSampler.sample(
+        sigma = TimestepSampler.sample(
             mode, batch_size, device, config, latents=latents, progress=progress,
         )
+        return 1.0 - sigma
 
     def add_noise(
         self,

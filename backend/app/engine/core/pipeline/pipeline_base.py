@@ -28,8 +28,9 @@ logger = structlog.get_logger(__name__)
 class PipelineBaseMixin(BaseTrainer):
     """Abstract hooks + component wiring for the training pipeline."""
 
-    # True for a family whose ``t`` is in ``[0, 1]`` with ``t = 1`` clean, so the sigma
-    # histogram records ``1 - t`` and reports the noise fraction, as the others do.
+    # True for a family whose ``t`` counts the clean fraction (``t`` at the top of its clock is
+    # clean), so the sigma histogram records ``1 - t / scale`` and reports the noise fraction, as
+    # the others do. ``scale`` is the upper end of ``validation_timestep_domain`` (1 when none).
     timesteps_count_clean_fraction: bool = False
 
     # The timesteps add_noise takes, for the validation pass's noise bands; None when

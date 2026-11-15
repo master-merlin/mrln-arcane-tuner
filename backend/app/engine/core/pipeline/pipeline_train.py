@@ -199,6 +199,20 @@ class PipelineTrainMixin:
             noise = noise + noise_offset
         return noise
 
+    def _sigma_fraction(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """The noise fraction (0 clean, 1 noise) of ``timesteps`` on this family's clock.
+
+        ``t / 1000`` on the shared clock; ``1 - t / scale`` for a family whose ``t`` counts the
+        clean fraction, ``scale`` the upper end of its ``validation_timestep_domain`` (1 when it
+        declares none). getattr: a trainer built on this mixin alone has neither attribute.
+        """
+        t = timesteps.detach().float()
+        if not getattr(self, "timesteps_count_clean_fraction", False):
+            return t / 1000.0
+        domain = getattr(self, "validation_timestep_domain", None)
+        scale = float(domain[1]) if domain else 1.0
+        return 1.0 - t / scale
+
     def forward_loss_step(
         self,
         latents: torch.Tensor,
@@ -227,11 +241,7 @@ class PipelineTrainMixin:
         try:
             tracker = getattr(self, "_sigma_tracker", None)
             if tracker is not None:
-                # getattr: a trainer built on this mixin alone has no such attribute.
-                if getattr(self, "timesteps_count_clean_fraction", False):
-                    tracker.update(1.0 - timesteps, scale=1.0)
-                else:
-                    tracker.update(timesteps)
+                tracker.update(self._sigma_fraction(timesteps), scale=1.0)
         except Exception:  # noqa: BLE001
             pass
 

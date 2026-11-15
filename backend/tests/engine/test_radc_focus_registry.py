@@ -327,17 +327,12 @@ def _coverage_failures(definitions, outcome) -> list[str]:
 # ── The registry-wide tests ──────────────────────────────────────────────────
 
 # Red on main; each later change removes its entries, and the list goes with the last one.
-_REVERSED = "the sampler's noise fraction is used as a clean fraction"
 _TWICE = "the loss is weighted by the curve the draw already follows"
 _NO_TERM = "3D latents: the resolution term can never act, and nothing declares it"
 _RED_TODAY_FOCUS: dict[str, str] = {
-    "boogu_image/boogu-image-base": _REVERSED,
-    "boogu_image/boogu-image-edit": _REVERSED,
-    "boogu_image/boogu-image-turbo": _REVERSED,
     "flux2/flux2-dev": _TWICE,
     "flux2/flux2-klein-base-4b": _TWICE,
     "flux2/flux2-klein-base-9b": _TWICE,
-    "ideogram4/ideogram4-fp8": _REVERSED,
 }
 _RED_TODAY_RESOLUTION: dict[str, str] = {
     **_RED_TODAY_FOCUS,

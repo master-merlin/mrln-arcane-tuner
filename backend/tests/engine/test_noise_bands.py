@@ -2,7 +2,7 @@
 import pytest
 import torch
 
-from app.engine.core.pipeline.noise_bands import band_centres, timesteps_for_bands
+from app.engine.core.pipeline.noise_bands import band_centres, noise_fraction_of, timesteps_for_bands
 
 
 class _Family:
@@ -140,3 +140,45 @@ def test_the_base_trainer_declares_the_thousand_clock():
     from app.engine.core.pipeline.pipeline_base import PipelineBaseMixin
 
     assert PipelineBaseMixin.validation_timestep_domain == (0.0, 1000.0)
+
+
+# ── noise_fraction_of: the fraction of many timesteps at once ──
+
+
+def test_noise_fraction_of_reads_each_timestep_through_add_noise():
+    reversed_clock = _Family(lambda t: 1.0 - t / 1000.0)
+    fractions = noise_fraction_of(reversed_clock, torch.tensor([0.0, 250.0, 700.0, 1000.0]))
+    assert torch.allclose(fractions, torch.tensor([1.0, 0.75, 0.3, 0.0]))
+
+
+def test_noise_fraction_of_takes_the_largest_value_of_an_item_with_a_clean_frame():
+    class _PinsFirstFrame(_Family):
+        def add_noise(self, latents, noise, timesteps):
+            noisy = super().add_noise(latents, noise, timesteps)
+            noisy[:, :, 0] = latents[:, :, 0]  # frame 0 stays clean
+            return noisy
+
+    like = torch.zeros(1, 4, 3, 2, 2)
+    fractions = noise_fraction_of(_PinsFirstFrame(lambda t: t / 1000.0), torch.tensor([400.0, 900.0]), like)
+    assert torch.allclose(fractions, torch.tensor([0.4, 0.9]))
+
+
+def test_noise_fraction_of_covers_more_timesteps_than_one_chunk():
+    timesteps = torch.arange(0, 3000, dtype=torch.float32) / 3.0
+    fractions = noise_fraction_of(_Family(lambda t: t / 1000.0), timesteps)
+    assert fractions.shape == (3000,)
+    assert torch.allclose(fractions, timesteps / 1000.0)
+
+
+def test_a_family_whose_add_noise_never_runs_answers_through_noise_fraction():
+    class _OwnNoise(_Family):
+        validation_timestep_domain = None
+
+        def add_noise(self, latents, noise, timesteps):
+            raise AssertionError("this family's add_noise never runs")
+
+        def noise_fraction(self, timesteps):
+            return timesteps.float()
+
+    sigmas = torch.tensor([0.1, 0.6, 0.95])
+    assert torch.equal(noise_fraction_of(_OwnNoise(lambda t: t), sigmas), sigmas)

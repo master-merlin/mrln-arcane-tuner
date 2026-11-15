@@ -27,6 +27,7 @@ import pytest
 
 from app.core.self_update import SelfUpdateService
 from tests.support.bash_probe import bash_skip_reason, find_bash
+from tests.support.pip_env import find_links_value
 
 
 def _make_service() -> SelfUpdateService:
@@ -304,6 +305,8 @@ IMAGE = "mastermerlin/mrln-arcane-tuner"
 FIXTURE = "stackneedy"
 STACK = ("torch", "torchvision", "torchaudio", "torchao")
 _TIMEOUT_S = 600
+# What pip prints for a find-links location it cannot use (a path cut at a space is two).
+_IGNORED_LOCATION = re.compile(r"Location '[^']*' is ignored")
 
 # One worker holds the sandbox, so the control (which replaces its torch) runs after the rest.
 in_sandbox = pytest.mark.xdist_group("install_deps_sandbox")
@@ -365,7 +368,9 @@ def _installed(python: Path) -> dict[str, str]:
 @pytest.fixture(scope="module")
 def sandbox(tmp_path_factory):
     """A venv holding the stub cu132 stack, and a find-links dir of every wheel."""
-    root = tmp_path_factory.mktemp("install_deps")
+    # A space in the folder name on every machine, not only where TEMP has one: every path
+    # the script is handed (requirements, interpreter, TMPDIR, wheel dir) then carries it.
+    root = tmp_path_factory.mktemp("install deps")
     wheels = root / "wheels"
     wheels.mkdir()
     stack = _cu132()
@@ -404,7 +409,7 @@ def _run(sandbox, script: Path, *, torch_set: str | None = None,
     env["PATH"] = os.pathsep.join([scripts, *_bash_tool_dirs(bash), env.get("PATH", "")])
     env["VIRTUAL_ENV"] = str(sandbox["venv"])
     env["PIP_NO_INDEX"] = "1"
-    env["PIP_FIND_LINKS"] = str(sandbox["wheels"])
+    env["PIP_FIND_LINKS"] = find_links_value(sandbox["wheels"])
     env["PIP_DISABLE_PIP_VERSION_CHECK"] = "1"
     tmp = sandbox["root"] / "tmp"
     tmp.mkdir(exist_ok=True)
@@ -412,10 +417,38 @@ def _run(sandbox, script: Path, *, torch_set: str | None = None,
     if torch_set:
         env["MRLN_TORCH_SET"] = torch_set
     env.update(extra_env or {})
-    return subprocess.run(
+    proc = subprocess.run(
         [bash, str(script), str(sandbox["req"])],
         cwd=sandbox["root"], env=env, capture_output=True, text=True, timeout=_TIMEOUT_S,
     )
+    # A wheel dir pip never saw also makes the install fail: that must not pass as the
+    # failure a test expects.
+    assert not _IGNORED_LOCATION.search(proc.stderr), f"pip ignored a find-links location:\n{proc.stderr}"
+    return proc
+
+
+def test_a_find_links_dir_with_a_space_reaches_pip_whole(tmp_path):
+    """pip splits PIP_FIND_LINKS at whitespace; the helper's value must still be one location."""
+    wheels = tmp_path / "wh eels"
+    wheels.mkdir()
+    _wheel(wheels, "spacepkg", "1.0")
+    out = tmp_path / "out"
+    env = {k: v for k, v in os.environ.items() if not k.startswith("PIP_")}
+    env.update(PIP_NO_INDEX="1", PIP_FIND_LINKS=find_links_value(wheels), PIP_DISABLE_PIP_VERSION_CHECK="1")
+    proc = subprocess.run(
+        [sys.executable, "-m", "pip", "download", "--no-deps", "-d", str(out), "spacepkg==1.0"],
+        env=env, capture_output=True, text=True, timeout=_TIMEOUT_S,
+    )
+    output = proc.stdout + proc.stderr
+    assert proc.returncode == 0, output
+    assert (out / "spacepkg-1.0-py3-none-any.whl").is_file(), output
+    assert not _IGNORED_LOCATION.search(output), output
+
+
+@in_sandbox
+def test_the_install_deps_sandbox_lives_under_a_folder_with_a_space(sandbox):
+    for key in ("root", "wheels", "python", "req"):
+        assert " " in str(sandbox[key]), f"{key} has no space in its path: {sandbox[key]}"
 
 
 @in_sandbox
@@ -609,7 +642,7 @@ def _pip(python: Path, *args: str, env: dict | None = None) -> None:
 
 @pytest.fixture(scope="module")
 def rollback_venv(tmp_path_factory):
-    root = tmp_path_factory.mktemp("rollback")
+    root = tmp_path_factory.mktemp("roll back")
     wheels = root / "wheels"
     wheels.mkdir()
     for name in FIXTURE_NAMES:
@@ -671,7 +704,7 @@ def _wire(monkeypatch, rv, app: Path, wheels: Path, *, bash_target: Path | None 
                                                 os.environ.get("PATH", "")]))
     monkeypatch.setenv("VIRTUAL_ENV", str(rv["venv"]))
     monkeypatch.setenv("PIP_NO_INDEX", "1")
-    monkeypatch.setenv("PIP_FIND_LINKS", str(wheels))
+    monkeypatch.setenv("PIP_FIND_LINKS", find_links_value(wheels))
     monkeypatch.setenv("PIP_DISABLE_PIP_VERSION_CHECK", "1")
     tmp = rv["root"] / "tmp"
     tmp.mkdir(exist_ok=True)
@@ -703,6 +736,75 @@ _PHASES = {
     "nothing (the control)": (None, False),
 }
 
+# What each phase leaves when the install step ends, before any rollback: the text its stderr
+# holds (None: the step ended without an error) and the fixture packages installed. A phase that
+# failed earlier than it names (a wheel dir pip never saw stops every one at the bulk resolve)
+# meets neither.
+_BULK_LANDED = {**PINS_A, "fixturedep": "2.0", "newdep": "1.0"}
+_PHASE_EVIDENCE: dict[str, tuple[str | None, dict[str, str]]] = {
+    "the stack probe": ("torch stack", PINS_A),
+    "the bulk resolve": ("fixturedep==9999.0", PINS_A),  # pip resolves before it installs
+    "scenedetect, after the bulk install": ("scenedetect==9999.0", _BULK_LANDED),
+    "sam3, after scenedetect": ("sam3==9999.0", {**_BULK_LANDED, "scenedetect": "2.0"}),
+    "hpsv2, after sam3": ("hpsv2==9999.0", {**_BULK_LANDED, "scenedetect": "2.0", "sam3": "2.0"}),
+    "the frontend build, after every install": (None, PINS_B),
+    "nothing (the control)": (None, PINS_B),
+}
+
+
+def test_every_phase_has_its_evidence_row():
+    assert list(_PHASE_EVIDENCE) == list(_PHASES)
+
+
+def _watch_install(monkeypatch, svc, python: Path) -> dict:
+    """Record what the install step leaves, the moment it returns or raises (so before
+    ``_recover`` or ``_roll_back`` runs): whether it raised, the fixture packages installed,
+    and the script's stderr as the service logs it. The exception goes on unchanged."""
+    from app.core import self_update as su
+
+    seen: dict = {"stderr": ""}
+    log_error = su.logger.error
+
+    def error(event, **kw):
+        if event == "self_update_deps_install_failed":
+            seen["stderr"] = kw.get("stderr", "")
+        return log_error(event, **kw)
+
+    monkeypatch.setattr(su.logger, "error", error, raising=False)
+    install = svc._install_backend_deps
+
+    async def watched():
+        raised = True
+        try:
+            await install()
+            raised = False
+        finally:
+            seen["raised"] = raised
+            installed = await asyncio.to_thread(_installed, python)
+            seen["fixtures"] = {n: v for n, v in installed.items() if n in FIXTURE_NAMES}
+
+    monkeypatch.setattr(svc, "_install_backend_deps", watched)
+    return seen
+
+
+def _assert_phase_evidence(seen: dict, phase: str) -> None:
+    cause, fixtures = _PHASE_EVIDENCE[phase]
+    stderr = seen["stderr"]
+    assert "raised" in seen, f"{phase}: the install step never ran"
+    assert not _IGNORED_LOCATION.search(stderr), f"{phase}: pip ignored a find-links location:\n{stderr}"
+    if cause is None:
+        assert not seen["raised"], f"{phase}: the install step failed:\n{stderr}"
+    else:
+        assert seen["raised"], f"{phase}: the install step did not fail"
+        assert cause in stderr, f"{phase}: the install failed, but not on {cause!r}:\n{stderr}"
+    assert seen["fixtures"] == fixtures, f"{phase}: packages when the install ended"
+
+
+@in_rollback_sandbox
+def test_the_rollback_sandbox_lives_under_a_folder_with_a_space(rollback_venv):
+    for key in ("root", "wheels", "python"):
+        assert " " in str(rollback_venv[key]), f"{key} has no space in its path: {rollback_venv[key]}"
+
 
 @in_rollback_sandbox
 @requires_bash
@@ -721,6 +823,7 @@ async def test_failed_update_preserves_runnable_revision(rollback_venv, tmp_path
     before = await asyncio.to_thread(_baseline, rollback_venv)
     app, a, b = await asyncio.to_thread(_upstream, tmp_path, pins_b, broken_probe=missing == "probe")
     svc, calls = _wire(monkeypatch, rollback_venv, app, rollback_venv["wheels"])
+    seen = _watch_install(monkeypatch, svc, rollback_venv["python"])
 
     async def frontend():
         calls["frontend"] += 1
@@ -730,6 +833,7 @@ async def test_failed_update_preserves_runnable_revision(rollback_venv, tmp_path
     monkeypatch.setattr(svc, "_build_frontend", frontend)
     await svc._apply_impl()
 
+    _assert_phase_evidence(seen, phase)
     head = await asyncio.to_thread(_git, app, "rev-parse", "HEAD")
     after = await asyncio.to_thread(_installed, rollback_venv["python"])
     fixtures = {n: v for n, v in after.items() if n in FIXTURE_NAMES}
@@ -771,10 +875,13 @@ async def test_failed_update_that_cannot_restore_the_packages_says_so_and_never_
             (wheels / "fixturedep-1.0-py3-none-any.whl").unlink()
 
     monkeypatch.setattr(svc, "_install_backend_deps", install_then_lose_the_old_wheel)
+    seen = _watch_install(monkeypatch, svc, rollback_venv["python"])
     errors: list[str] = []
     monkeypatch.setattr("app.core.self_update.logger.critical",
                         lambda event, **kw: errors.append(event), raising=False)
     await svc._apply_impl()
+
+    _assert_phase_evidence(seen, "sam3, after scenedetect")
 
     assert svc.state == UpdateState.ERROR
     assert calls["restart"] == 0

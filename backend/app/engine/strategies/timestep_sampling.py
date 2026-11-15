@@ -180,8 +180,19 @@ TIMESTEP_PARAMETERS: tuple[str, ...] = (
     "radc_end",
     "radc_width",
     "radc_res_influence",
+    "radc_uniform_prob",
     "fixed_sigmas",
 )
+
+# The modes whose draw IS the noise fraction the run trains at: a family applies no shift or warp
+# of its own on top of them (it would move the focus the settings name). One source, read by every
+# family that shifts its other modes.
+_NOISE_LEVEL_MODES = frozenset({"radc"})
+
+
+def sets_noise_level_itself(mode: str) -> bool:
+    """True when ``mode``'s draw is the noise fraction itself, so no family shift may follow it."""
+    return mode in _NOISE_LEVEL_MODES
 
 # Older names the sampler still reads for a parameter: a config that carries one has set it.
 _PARAMETER_ALIASES: dict[str, tuple[str, ...]] = {
@@ -287,6 +298,7 @@ TIMESTEP_SCHEMA_DEFAULTS: dict[str, Any] = {
     "radc_end": 0.2,
     "radc_width": 0.5,
     "radc_res_influence": 0.15,
+    "radc_uniform_prob": 0.0,
 }
 
 
@@ -463,7 +475,14 @@ class TimestepSampler:
             # sample() contract (t in [0, 1]) holds for direct callers too, not
             # only for sample_scaled's own clamp.
             indices = indices.clamp(max=cdf.shape[0] - 1)
-            return (indices.float() + 1) / 1000.0
+            t = (indices.float() + 1) / 1000.0
+            # A share of U(0, 1) on the same noise scale. At 0 (the default) nothing more is
+            # drawn, so the stream is consumed exactly as before.
+            share = float(timestep_setting(config, "radc_uniform_prob"))
+            if share > 0.0:
+                u_mask = _rand(bs, device, generator) < share
+                t = torch.where(u_mask, _rand(bs, device, generator), t)
+            return t
 
         if mode == "model_shift":
             # Inference-matched flow-match shift, in additive logit space.

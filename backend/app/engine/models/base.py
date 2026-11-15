@@ -617,6 +617,17 @@ class BaseTrainingConfig(BaseModel):
             "step": 0.05,
         },
     )
+    radc_uniform_prob: float = Field(
+        0.0,
+        description="Share of radc draws taken uniformly over the model's noise scale (0=off)",
+        json_schema_extra={
+            "group": "STRATEGY",
+            "depends_on": "timestep_sampling:radc",
+            "min": 0.0,
+            "max": 1.0,
+            "step": 0.05,
+        },
+    )
 
     # [NETWORK] LoRA Parameters
     network_rank: int = Field(

@@ -361,11 +361,12 @@ def _red_while(reason: str):
     return pytest.mark.xfail(strict=True, reason=reason) if reason else (lambda test: test)
 
 
-def _params(red: dict[str, str]):
+def _params(red: dict[str, str], offering_only: bool = False):
     return [
         pytest.param(defn.id, id=_name(defn),
                      marks=[pytest.mark.xfail(strict=True, reason=red[_name(defn)])] if _name(defn) in red else [])
         for defn in _definitions()
+        if not offering_only or _caps(defn).get("supports_flow_timestep_sampling", True)
     ]
 
 
@@ -400,6 +401,65 @@ def test_every_definition_is_checked_or_declared():
     assert len(definitions) >= 32, f"only {len(definitions)} definitions: the registry did not load"
     failures = _coverage_failures(definitions, lambda d: _result(d.id))
     assert not failures, f"{len(failures)} of {len(definitions)} definitions neither on focus nor declared:\n" + "\n".join(failures)
+
+
+# ── A5: the uniform share ────────────────────────────────────────────────────
+
+SHARES = (1.0, 0.25)
+SHARE_PROGRESS = (0.0, 1.0)
+
+
+def _share_problems(defn) -> list[str]:
+    problems = []
+    small = torch.zeros(_latent_shape(defn, SMALL_GRID))
+    for share in SHARES:
+        trainer = _build(defn, **_radc(0.0, share))
+        for progress in SHARE_PROGRESS:
+            got = _weighted_quartiles(*_trained(trainer, defn, small, progress))
+            want = _curve_quartiles(_set_centre(progress), WIDTH, share)
+            if _off_by(got, want) > TOLERANCE:
+                problems.append(f"share {share} at progress {progress}: the trained quartiles are {_fmt(got)}, "
+                                f"the mixture's {_fmt(want)}")
+    return problems
+
+
+@pytest.mark.parametrize("definition_id", _params(_RED_TODAY_FOCUS, offering_only=True))
+def test_radc_uniform_share_is_a_mixture_on_the_noise_scale(definition_id):
+    problems = _share_problems(registry.get_definition(definition_id))
+    assert not problems, "\n".join(problems)
+
+
+def test_share_zero_leaves_the_random_stream_untouched():
+    """Share 0 (the default) consumes the stream as the draw always did: one ``rand`` per batch."""
+    cpu = torch.device("cpu")
+    config = _radc(0.0)
+    without_key = {k: v for k, v in config.items() if k != "radc_uniform_prob"}
+    after = []
+    for cfg in (config, without_key):
+        torch.manual_seed(0)
+        drawn = TimestepSampler.sample("radc", 8, cpu, cfg, progress=0.5)
+        after.append((drawn, torch.rand(4)))
+    torch.manual_seed(0)
+    torch.rand(8)
+    one_draw = torch.rand(4)
+    assert torch.equal(after[0][0], after[1][0])
+    assert torch.equal(after[0][1], after[1][1]) and torch.equal(after[0][1], one_draw)
+
+
+def test_share_uses_the_local_generator():
+    cpu = torch.device("cpu")
+    config = _radc(0.0, 0.5)
+    state = torch.random.get_rng_state()
+    draws = [TimestepSampler.sample("radc", 4096, cpu, config, progress=0.0,
+                                    generator=torch.Generator().manual_seed(1)) for _ in range(2)]
+    assert torch.equal(torch.random.get_rng_state(), state), "the share drew from the global RNG"
+    assert torch.equal(draws[0], draws[1])
+    # The curve alone (centre 0.9, width 0.3) puts about 0.4 % below 0.5; half of U(0, 1) puts 25 %.
+    assert float((draws[0] < 0.5).float().mean()) > 0.2, "the share did not act"
+
+
+def test_only_radc_sets_the_noise_level_itself():
+    assert [m for m in TimestepSampler.SUPPORTED_MODES if timestep_sampling.sets_noise_level_itself(m)] == ["radc"]
 
 
 # ── Controls: break one link on a passing family, the check must report it ───

@@ -53,7 +53,7 @@ def test_flow_timestep_fields_are_every_timestep_field_of_the_schema():
     # the ones the spec names by hand are all there (a derivation that found none would be vacuous)
     for name in ("timestep_sampling", "timestep_uniform_prob", "mode_scale", "logit_normal_mu",
                  "logit_normal_sigma", "model_shift_std", "flux_shift_base", "flux_shift_max",
-                 "radc_start", "radc_end", "radc_width", "radc_res_influence", "fixed_sigmas"):
+                 "radc_start", "radc_end", "radc_width", "radc_res_influence", "radc_uniform_prob", "fixed_sigmas"):
         assert name in FLOW_TIMESTEP_FIELDS, name
 
 

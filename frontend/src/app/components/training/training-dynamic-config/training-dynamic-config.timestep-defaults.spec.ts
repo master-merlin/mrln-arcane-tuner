@@ -44,6 +44,7 @@ const SCHEMA: SchemaNode = {
         logit_normal_mu: { type: 'number', default: 0.0, group: 'STRATEGY', depends_on: 'timestep_sampling:logit_normal' },
         logit_normal_sigma: { type: 'number', default: 1.0, group: 'STRATEGY', depends_on: 'timestep_sampling:logit_normal' },
         flux_shift_max: { type: 'number', default: 1.16, group: 'STRATEGY', depends_on: 'timestep_sampling:flux_shift' },
+        radc_uniform_prob: { type: 'number', default: 0.0, group: 'STRATEGY', depends_on: 'timestep_sampling:radc' },
         fixed_sigmas: {
             anyOf: [{ type: 'array', items: { type: 'number' } }, { type: 'null' }],
             default: null,
@@ -248,6 +249,29 @@ describe('TrainingDynamicConfig: a switch never replaces a value that is not its
         expect(timestep(c)).toEqual({ mode: 'logit_normal', mu: 1.09, sigma: 0.95 });
         c.applyDefinitionDefaults(FLUX2);
         expect(timestep(c)).toEqual({ mode: 'logit_normal', mu: 0.0, sigma: 1.0 });
+    });
+});
+
+describe('TrainingDynamicConfig: the radc uniform share', () => {
+    beforeEach(() => vi.useFakeTimers());
+    afterEach(() => vi.useRealTimers());
+
+    it('is submitted, at its 0.0 default, only under radc', () => {
+        const c = build();
+        c.patchFormRecursive(c.form, { datasets: [{ dataset_name: 'foxes' }] });
+        expect('radc_uniform_prob' in submitted(c)).toBe(false); // gated off under logit_normal
+        c.form.get('timestep_sampling')!.setValue('radc');
+        expect(submitted(c)['radc_uniform_prob']).toBe(0.0);
+    });
+
+    it('a definition switch leaves a share the user set', () => {
+        const c = build();
+        c.form.get('timestep_sampling')!.setValue('radc');
+        const share = c.form.get('radc_uniform_prob')!;
+        share.setValue(0.1);
+        share.markAsDirty();
+        c.applyDefinitionDefaults(FLUX2);
+        expect(value(c, 'radc_uniform_prob')).toBe(0.1);
     });
 });
 

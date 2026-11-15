@@ -222,6 +222,45 @@ def test_radc_res_influence_is_forced_to_zero_under_one_warning(draws):
     assert len(info) == 1 and info[0][2]["res_influence"] == 0.0
 
 
+@pytest.mark.parametrize("path", PATHS)
+def test_hidream_o1_step_draws_through_sample_timesteps(path):
+    """Both of the step's paths take their sigma from ``sample_timesteps``, the family's one draw."""
+    trainer, model, batch, ts = _setup(timestep_sampling="uniform")
+    asked: list[int] = []
+
+    def fixed(batch_size, latents=None):
+        asked.append(batch_size)
+        return torch.full((batch_size,), 0.3)
+
+    trainer.sample_timesteps = fixed
+    sigma = _run(path, trainer, model, batch, ts)
+    assert asked == [BATCH], f"{path}: sample_timesteps was asked {asked}"
+    assert torch.allclose(sigma, torch.full((BATCH,), 0.3)), f"{path}: the model saw sigmas {sigma.tolist()}"
+
+
+def test_the_shared_step_draw_is_the_sigma_the_model_sees():
+    """The shared step draws ``sample_timesteps`` once, records it, and hands it to forward_pass:
+    forward_pass trains on it and draws no second sigma."""
+    trainer, model, batch, ts = _setup(timestep_sampling="uniform")
+    drawn = torch.full((BATCH,), 0.4)
+    trainer.sample_timesteps = lambda *a, **k: pytest.fail("forward_pass drew a second sigma")
+    with patch(TEXT_SAMPLE_TARGET, return_value=ts):
+        trainer.forward_pass(batch["images"], drawn, None, batch)
+    assert torch.allclose(1.0 - model.timesteps[-1], drawn)
+
+
+def test_hidream_o1_sample_timesteps_returns_the_sigma_and_its_noise_fraction_is_itself():
+    from app.engine.models.families.hidream_o1.trainer import MAX_SIGMA, T_EPS
+
+    trainer, *_ = _setup(timestep_sampling="radc", radc_res_influence=0.0)
+    torch.manual_seed(0)
+    sigma = trainer.sample_timesteps(BATCH)
+    torch.manual_seed(0)
+    expected = TimestepSampler.sample("radc", BATCH, torch.device("cpu"), trainer.config, progress=0.5)
+    assert torch.allclose(sigma, expected.clamp(min=T_EPS, max=MAX_SIGMA), atol=1e-6)
+    assert torch.equal(trainer.noise_fraction(sigma), sigma)
+
+
 def test_radc_at_zero_influence_logs_the_mode_and_no_replacement(draws):
     """Plan review 2.02: an honoured radc names itself and raises no warning."""
     trainer, model, batch, ts = _setup(timestep_sampling="radc", radc_res_influence=0.0)

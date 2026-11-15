@@ -68,6 +68,10 @@ class Archetype:
     supports_min_snr: bool = False
     supports_noise_offset: bool = True
     supports_flow_timestep_sampling: bool = True
+    # ``supports_radc_resolution``: radc's resolution term (``radc_res_influence``) can act on
+    # this model's latents (default True; hidream_o1's pixel patches and ace_step15's 3D audio
+    # latents carry no grid for it). Always False where flow timestep sampling is off.
+    supports_radc_resolution: bool = True
     config_defaults: dict = field(default_factory=dict)
 
 
@@ -287,6 +291,12 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
         )
         for name in FLOW_TIMESTEP_FIELDS
     ),
+    # A second rule on one flow field: shown only where both rules hold (the first that hides wins).
+    (
+        "radc_res_influence",
+        "supports_radc_resolution",
+        "this model's latents carry no grid for the radc resolution term",
+    ),
     # ── Distillation handling (a definition's ``distillation`` block) ─────
     *(
         (name, "supports_distillation_handling", "this model is not distilled — it trains without a distillation handling")
@@ -297,10 +307,15 @@ _FIELD_RULES: list[tuple[str, str, str]] = [
 
 def build_field_visibility(caps) -> dict[str, dict]:
     """caps: an Archetype OR a merged-capabilities dict. Returns
-    {field: {"supported": bool, "reason"?: str}} for every gated field."""
+    {field: {"supported": bool, "reason"?: str}} for every gated field.
+
+    A field with more than one rule is shown only when every rule holds; the first rule that
+    hides it gives the reason."""
     flags = caps if isinstance(caps, dict) else asdict(caps)
     out: dict[str, dict] = {}
     for field_name, flag, reason in _FIELD_RULES:
+        if not out.get(field_name, {}).get("supported", True):
+            continue
         supported = bool(flags.get(flag, True))
         entry: dict = {"supported": supported}
         if not supported:
@@ -401,6 +416,9 @@ def resolve_capabilities(definition) -> dict:
     # no special-case key knowledge lives here, unlike the dual_expert-only
     # promotion this replaced.
     caps.update(getattr(definition, "capability_overrides", None) or {})
+    # No resolution term without flow timestep sampling: one value a reader can trust.
+    caps["supports_radc_resolution"] = bool(caps.get("supports_radc_resolution", True)) and bool(
+        caps.get("supports_flow_timestep_sampling", True))
 
     # Opt-in (architecture_params ``sampling.seed_prompt_defaults``, default false): the training
     # form seeds a NEW sample-prompt row from this definition's own sampling defaults; every other

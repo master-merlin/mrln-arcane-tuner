@@ -32,9 +32,12 @@ class AceStep15Family(ModelFamily):
     # NOTE: ``supports_train_te`` is NOT overridden — the ``latent_diffusion``
     # archetype already defaults it to False (frozen Qwen3 TE + condition
     # encoder), and a project invariant reserves that override for SDXL.
+    # ``supports_radc_resolution`` False: the latents are ``[B, C, frames]`` with no spatial
+    # grid, so radc's resolution term can never act (its form field is hidden).
     capability_overrides = {
         "is_audio_family": True,
         "supports_spatial_resolution": False,
+        "supports_radc_resolution": False,
     }
 
     def get_trainer_class(self):

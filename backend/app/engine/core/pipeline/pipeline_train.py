@@ -204,9 +204,16 @@ class PipelineTrainMixin:
 
         ``t / 1000`` on the shared clock; ``1 - t / scale`` for a family whose ``t`` counts the
         clean fraction, ``scale`` the upper end of its ``validation_timestep_domain`` (1 when it
-        declares none). getattr: a trainer built on this mixin alone has neither attribute.
+        declares none); a family whose ``add_noise`` never runs (no domain) answers through its
+        own ``noise_fraction`` when it implements one. getattr: a trainer built on this mixin
+        alone has none of these attributes.
         """
         t = timesteps.detach().float()
+        if getattr(self, "validation_timestep_domain", (0.0, 1000.0)) is None:
+            try:
+                return self.noise_fraction(t).float()
+            except (AttributeError, NotImplementedError):
+                pass
         if not getattr(self, "timesteps_count_clean_fraction", False):
             return t / 1000.0
         domain = getattr(self, "validation_timestep_domain", None)

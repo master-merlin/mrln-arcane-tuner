@@ -49,6 +49,15 @@ def test_clean_fraction_families_record_as_before(module, class_name):
     assert torch.allclose(trainer._sigma_fraction(t), 1.0 - t)
 
 
+def test_a_family_whose_add_noise_never_runs_records_its_own_noise_fraction():
+    trainer = _bare("hidream_o1", "HiDreamO1Trainer")
+    sigma = torch.tensor([0.05, 0.5, 0.9])
+    assert torch.allclose(trainer._sigma_fraction(sigma), sigma)
+    # a family without a domain and without a noise_fraction keeps the shared clock
+    assert torch.allclose(_bare("bernini_r", "BerniniRTrainer")._sigma_fraction(torch.tensor([500.0])),
+                          torch.tensor([0.5]))
+
+
 def test_a_thousand_clock_family_records_as_before():
     trainer = _bare("flux2", "Flux2Trainer")
     t = torch.tensor([0.0, 250.0, 900.0, 1000.0])

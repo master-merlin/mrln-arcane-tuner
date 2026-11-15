@@ -326,27 +326,9 @@ def _coverage_failures(definitions, outcome) -> list[str]:
 
 # ── The registry-wide tests ──────────────────────────────────────────────────
 
-# Red on main; each later change removes its entries, and the list goes with the last one.
-_NO_TERM = "3D latents: the resolution term can never act, and nothing declares it"
-_RED_TODAY_FOCUS: dict[str, str] = {}
-_RED_TODAY_RESOLUTION: dict[str, str] = {
-    **_RED_TODAY_FOCUS,
-    "ace_step15/ace-step-1.5": _NO_TERM,
-    "ace_step15/ace-step-1.5-xl-base": _NO_TERM,
-}
-_RED_TODAY_COVERAGE = "the definitions in the two lists above"
-_RED_TODAY_DUAL = ""
-
-
-def _red_while(reason: str):
-    """Strictly expected to fail while ``reason`` is set; an ordinary test once it is empty."""
-    return pytest.mark.xfail(strict=True, reason=reason) if reason else (lambda test: test)
-
-
-def _params(red: dict[str, str], offering_only: bool = False):
+def _params(offering_only: bool = False):
     return [
-        pytest.param(defn.id, id=_name(defn),
-                     marks=[pytest.mark.xfail(strict=True, reason=red[_name(defn)])] if _name(defn) in red else [])
+        pytest.param(defn.id, id=_name(defn))
         for defn in _definitions()
         if not offering_only or _caps(defn).get("supports_flow_timestep_sampling", True)
     ]
@@ -360,14 +342,26 @@ def _assert_clean(definition_id: str, *lines: str) -> None:
     assert not found, f"{_name(registry.get_definition(definition_id))} ({result.kind}):\n" + "\n".join(found)
 
 
-@pytest.mark.parametrize("definition_id", _params(_RED_TODAY_FOCUS))
+@pytest.mark.parametrize("definition_id", _params())
 def test_radc_trains_at_its_set_focus(definition_id):
     _assert_clean(definition_id, "A1")
 
 
-@pytest.mark.parametrize("definition_id", _params(_RED_TODAY_RESOLUTION))
+@pytest.mark.parametrize("definition_id", _params())
 def test_radc_resolution_term_moves_the_focus_or_is_declared_absent(definition_id):
     _assert_clean(definition_id, "A2")
+
+
+def test_a_declared_absent_resolution_term_is_true_for_the_real_latents():
+    """A definition that declares no resolution term is drawn with its real latent shape (an audio
+    family's 3D latents, never a spatial grid) at influence 0.2, and lands on the centre without it."""
+    absent = [d for d in _definitions()
+              if _caps(d).get("supports_flow_timestep_sampling", True) and not _caps(d).get("supports_radc_resolution", True)]
+    assert absent, "no offering definition declares supports_radc_resolution false: this check would be vacuous"
+    failures = [f"{_name(d)}: {line}" for d in absent for line in _result(d.id).lines("A2", "build")]
+    assert not failures, "\n".join(failures)
+    audio = [d for d in absent if _caps(d).get("is_audio_family")]
+    assert audio and all(len(_latent_shape(d, SMALL_GRID)) == 3 for d in audio)
 
 
 def test_a_family_without_radc_hides_it_and_ignores_it():
@@ -377,7 +371,6 @@ def test_a_family_without_radc_hides_it_and_ignores_it():
     assert not failures, "\n".join(failures)
 
 
-@_red_while(_RED_TODAY_COVERAGE)
 def test_every_definition_is_checked_or_declared():
     definitions = _definitions()
     assert len(definitions) >= 32, f"only {len(definitions)} definitions: the registry did not load"
@@ -405,7 +398,7 @@ def _share_problems(defn) -> list[str]:
     return problems
 
 
-@pytest.mark.parametrize("definition_id", _params(_RED_TODAY_FOCUS, offering_only=True))
+@pytest.mark.parametrize("definition_id", _params(offering_only=True))
 def test_radc_uniform_share_is_a_mixture_on_the_noise_scale(definition_id):
     problems = _share_problems(registry.get_definition(definition_id))
     assert not problems, "\n".join(problems)
@@ -554,7 +547,6 @@ def test_an_undrawable_family_fails_by_name(monkeypatch):
     assert len(failures) == 1 and failures[0].startswith(f"{_name(defn)} (undrawable)"), failures
 
 
-@_red_while(_RED_TODAY_DUAL)
 def test_dual_expert_mix_uses_the_draws_latents():
     """The router's ``p_high`` is computed for the draw's own latents; mixed by the router's
     reference shape instead, the resolution check must go red (the mix is not vacuous)."""

@@ -787,6 +787,7 @@ export const distillationCapabilities = {
             "supports_min_snr": false,
             "supports_noise_offset": true,
             "supports_flow_timestep_sampling": true,
+            "supports_radc_resolution": true,
             "seed_prompt_defaults": true,
             "control_inputs": 0,
             "is_edit": false,
@@ -998,6 +999,9 @@ export const distillationCapabilities = {
             "radc_res_influence": {
                 "supported": true
             },
+            "radc_uniform_prob": {
+                "supported": true
+            },
             "distillation_handling": {
                 "supported": true
             },
@@ -1052,6 +1056,7 @@ export const distillationCapabilities = {
             "supports_min_snr": true,
             "supports_noise_offset": true,
             "supports_flow_timestep_sampling": false,
+            "supports_radc_resolution": false,
             "seed_prompt_defaults": false,
             "control_inputs": 0,
             "is_edit": false,
@@ -1246,6 +1251,10 @@ export const distillationCapabilities = {
                 "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
             },
             "radc_res_influence": {
+                "supported": false,
+                "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
+            },
+            "radc_uniform_prob": {
                 "supported": false,
                 "reason": "this model draws a discrete uniform timestep — no flow-matching timestep sampling"
             },

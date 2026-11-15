@@ -24,10 +24,11 @@ logger = structlog.get_logger(__name__)
 
 
 class Flux2Trainer(GenericTrainingPipeline):
-    """FLUX.2 (Klein / Dev) LoRA trainer."""
+    """FLUX.2 (Klein / Dev) LoRA trainer.
 
-    # The centre of the latest RADC draw; ``None`` until one happens.
-    _radc_draw_center: float | None = None
+    RADC is the shared base draw and is not also loss-weighted: weighting a draw by the curve it
+    follows counts the curve twice and narrows the focus to about 0.7 of the set width.
+    """
 
     # ── Setup ────────────────────────────────────────────────────────────
 
@@ -244,46 +245,3 @@ class Flux2Trainer(GenericTrainingPipeline):
         return torch.cat(
             [r.to(self.device, dtype=dtype) for r in results], dim=0
         )
-
-    def _training_progress(self) -> float:
-        """Fraction of the run done, computed as the base sampler computes it."""
-        max_steps = getattr(self, "max_train_steps", 1)
-        return getattr(self, "global_step", 0) / max(max_steps, 1)
-
-    def sample_timesteps(
-        self, batch_size: int, latents: torch.Tensor | None = None
-    ) -> torch.Tensor:
-        """Draw through the base, recording the RADC centre for this batch.
-
-        ``compute_loss_weight`` can't see the latents, and the centre depends on
-        them through ``radc_res_influence``, so the weight reads it from here.
-        """
-        if self.config.get("timestep_sampling") == "radc":
-            from app.engine.strategies.timestep_sampling import _radc_center
-
-            self._radc_draw_center = _radc_center(
-                self.config, self._training_progress(), latents
-            )
-        return super().sample_timesteps(batch_size, latents)
-
-    def compute_loss_weight(self, timesteps: torch.Tensor) -> torch.Tensor | None:
-        """Per-timestep loss weights for RADC mode.
-
-        Uses the curve the sampler drew this batch from: the same centre,
-        including its resolution term, quantized the same way. A call before
-        any draw has no latents to go on and uses the centre without them.
-
-        Returns ``None`` for non-RADC modes (uniform weighting).
-        """
-        if self.config.get("timestep_sampling") != "radc":
-            return None
-
-        from app.engine.strategies.timestep_sampling import _radc_center, _radc_pdf, timestep_setting
-
-        center = self._radc_draw_center
-        if center is None:
-            center = _radc_center(self.config, self._training_progress(), latents=None)
-        width = float(timestep_setting(self.config, "radc_width", getattr(self, "definition", None)))
-        pdf = _radc_pdf(round(center * 1000), round(width * 1000))
-        indices = timesteps.long().clamp(1, 1000) - 1
-        return pdf[indices.cpu()].to(timesteps.device, dtype=timesteps.dtype)

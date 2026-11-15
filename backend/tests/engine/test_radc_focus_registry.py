@@ -327,13 +327,8 @@ def _coverage_failures(definitions, outcome) -> list[str]:
 # ── The registry-wide tests ──────────────────────────────────────────────────
 
 # Red on main; each later change removes its entries, and the list goes with the last one.
-_TWICE = "the loss is weighted by the curve the draw already follows"
 _NO_TERM = "3D latents: the resolution term can never act, and nothing declares it"
-_RED_TODAY_FOCUS: dict[str, str] = {
-    "flux2/flux2-dev": _TWICE,
-    "flux2/flux2-klein-base-4b": _TWICE,
-    "flux2/flux2-klein-base-9b": _TWICE,
-}
+_RED_TODAY_FOCUS: dict[str, str] = {}
 _RED_TODAY_RESOLUTION: dict[str, str] = {
     **_RED_TODAY_FOCUS,
     "ace_step15/ace-step-1.5": _NO_TERM,

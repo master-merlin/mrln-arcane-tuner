@@ -1,12 +1,9 @@
-"""FLUX.2's radc loss weight and its draw use one centre per batch.
+"""FLUX.2 counts the radc curve once: the draw follows it, the loss is not weighted by it again.
 
-``compute_loss_weight`` keeps its one-argument signature, so it cannot see the
-batch's latents. It used to compute the centre with no latents at all, which
-dropped the ``radc_res_influence`` term the draw applies, and rebuilt its 1000-bin
-curve on every call. The draw now records its centre for the weight to read.
-
-The centre "the draw used" is taken from the arguments the real draw passes to
-``_radc_cdf``, not recomputed here, so a test can't agree with a wrong formula.
+The draw used to be weighted by the curve it was drawn from, which squared the emphasis (the
+effective curve was about 0.7 of the set width). The centre each batch draws from still carries
+its resolution term; it is taken from the arguments the real draw passes to ``_radc_cdf``, not
+recomputed here, so a test can't agree with a wrong formula.
 """
 
 from __future__ import annotations
@@ -18,7 +15,6 @@ from app.engine.core.pipeline.pipeline_base import PipelineBaseMixin
 from app.engine.models.families.flux2.driver import Flux2Driver
 from app.engine.models.families.flux2.trainer import Flux2Trainer
 from app.engine.strategies import timestep_sampling
-from app.engine.strategies.timestep_sampling import _make_radc_pdf, _radc_center
 
 ALL_TIMESTEPS = torch.arange(1, 1001, dtype=torch.float32)
 LATENTS_256_TOKENS = torch.zeros(2, 32, 32, 32)
@@ -57,11 +53,6 @@ def drawn_curves(monkeypatch):
     return calls
 
 
-def _peak_q(trainer: Flux2Trainer) -> int:
-    """The timestep (1..1000) at which the weight curve is highest."""
-    return int(trainer.compute_loss_weight(ALL_TIMESTEPS).argmax()) + 1
-
-
 @pytest.mark.parametrize(
     ("step", "latents", "expected_q"),
     [
@@ -71,64 +62,30 @@ def _peak_q(trainer: Flux2Trainer) -> int:
         (50, LATENTS_256_TOKENS, 575),  # 0.5 + 0.075
     ],
 )
-def test_weight_peaks_at_the_centre_the_draw_used(drawn_curves, step, latents, expected_q):
-    t = _trainer(step=step)
-
-    t.sample_timesteps(2, latents)
+def test_the_draw_uses_the_expected_centre(drawn_curves, step, latents, expected_q):
+    _trainer(step=step).sample_timesteps(2, latents)
 
     assert drawn_curves == [(expected_q, 500)]
-    assert _peak_q(t) == expected_q
 
 
 def test_each_batch_gets_its_own_centre(drawn_curves):
     t = _trainer()
-    peaks = []
     for latents in (LATENTS_4096_TOKENS, LATENTS_256_TOKENS, LATENTS_4096_TOKENS):
         t.sample_timesteps(2, latents)
-        peaks.append(_peak_q(t))
 
-    assert peaks == [q for q, _ in drawn_curves]
-    assert peaks == [50, 350, 50]
+    assert [q for q, _ in drawn_curves] == [50, 350, 50]
 
 
-def test_the_drawn_timesteps_are_weighted_from_that_centre():
-    t = _trainer()
-
-    timesteps = t.sample_timesteps(8, LATENTS_4096_TOKENS)
-    weights = t.compute_loss_weight(timesteps)
-
-    curve = _make_radc_pdf(0.05, 0.5)
-    expected = curve[timesteps.long().clamp(1, 1000) - 1]
-    assert torch.equal(weights, expected)
-
-
-@pytest.mark.parametrize("latents", [None, LATENTS_256_TOKENS, LATENTS_4096_TOKENS])
-def test_with_influence_zero_weights_equal_the_draws_quantized_curve(drawn_curves, latents):
-    # Step 1 of 3000 puts the raw centre at 0.7998, off the 0.001 grid.
-    t = _trainer(step=1, max_steps=3000, radc_res_influence=0.0)
-
-    t.sample_timesteps(2, latents)
-    weights = t.compute_loss_weight(ALL_TIMESTEPS)
-
-    assert drawn_curves == [(800, 500)]
-    assert torch.equal(weights, _make_radc_pdf(0.8, 0.5))
-    cdf = timestep_sampling._radc_cdf(800, 500)
-    from_cdf = torch.diff(cdf, prepend=torch.zeros(1))
-    assert torch.allclose(weights / weights.sum(), from_cdf, atol=1e-6)
-
-
-@pytest.mark.parametrize("mode", ["logit_normal", "uniform", "sigmoid", "flux_shift"])
-def test_other_modes_have_no_weight_and_record_nothing(mode):
+@pytest.mark.parametrize("mode", ["radc", "logit_normal", "uniform", "sigmoid", "flux_shift"])
+def test_flux2_radc_has_no_loss_weight(mode):
     t = _trainer(timestep_sampling=mode)
-
     t.sample_timesteps(2, LATENTS_4096_TOKENS)
 
     assert t.compute_loss_weight(ALL_TIMESTEPS) is None
-    assert t._radc_draw_center is None
 
 
-@pytest.mark.parametrize("mode", ["radc", "logit_normal"])
-def test_recording_does_not_change_the_draw_or_move_the_stream(mode):
+@pytest.mark.parametrize("mode", ["radc", "logit_normal", "uniform", "sigmoid", "cosmap", "mode", "flux_shift", "model_shift"])
+def test_flux2_draw_is_the_base_draw(mode):
     t = _trainer(step=50, timestep_sampling=mode)
 
     torch.manual_seed(7)
@@ -142,40 +99,32 @@ def test_recording_does_not_change_the_draw_or_move_the_stream(mode):
     assert torch.equal(torch.rand(1), after_expected)
 
 
-def test_the_curve_is_built_once_not_on_every_call(monkeypatch):
-    from app.engine.strategies.timestep_sampling import _radc_pdf
-
-    _radc_pdf.cache_clear()
-    built: list[tuple[float, float]] = []
-    real = timestep_sampling._make_radc_pdf
-
-    def spy(center, width):
-        built.append((center, width))
-        return real(center, width)
-
-    monkeypatch.setattr(timestep_sampling, "_make_radc_pdf", spy)
-    t = _trainer()
-    t.compute_loss_weight(ALL_TIMESTEPS)
-    t.compute_loss_weight(ALL_TIMESTEPS)
-
-    assert built == [(0.2, 0.5)]
-    assert _radc_pdf(200, 500) is _radc_pdf(200, 500)
+def test_the_shared_module_keeps_no_weight_curve():
+    assert not hasattr(timestep_sampling, "_radc_pdf")
 
 
-def test_a_returned_weight_does_not_alias_the_shared_curve():
-    t = _trainer()
-    first = t.compute_loss_weight(ALL_TIMESTEPS)
-    before = first.clone()
+# Pinned on main 54769ca (seed 0, step 50 of 100, batch 4, the real trainer and its profile latents).
+MAIN_DRAWS_DEV = {
+    "uniform": [496.256592, 768.221802, 88.477432, 132.030487],
+    "logit_normal": [823.609497, 427.164642, 101.671448, 638.401123],
+    "sigmoid": [823.609497, 427.164642, 101.671448, 638.401123],
+    "cosmap": [288.74762, 643.913696, 9.642183, 21.428944],
+    "mode": [603.588318, 311.560822, 939.222595, 907.927551],
+    "flux_shift": [885.034668, 551.4599, 157.255844, 744.298462],
+    "model_shift": [914.588745, 631.014404, 206.068359, 801.934814],
+}
 
-    first.mul_(0.0)
 
-    assert torch.equal(t.compute_loss_weight(ALL_TIMESTEPS), before)
+@pytest.mark.parametrize("mode", sorted(MAIN_DRAWS_DEV))
+def test_flux2_other_modes_draw_as_before(mode):
+    from app.engine.models.registry import registry
+    from tests.test_engine_fields_reach_the_trainer import _PROFILES, _Profile, _trainer as _real_trainer
 
-
-def test_a_direct_call_before_any_draw_uses_the_centre_without_latents():
-    t = _trainer(step=50)
-
-    assert t._radc_draw_center is None
-    expected = round(_radc_center(t.config, 0.5, None) * 1000)
-    assert expected == 500
-    assert _peak_q(t) == expected
+    registry.initialize()
+    profile = _PROFILES.get("flux2", _Profile())
+    trainer = _real_trainer(registry.get_definition("flux2-dev"), **{**profile.config, "timestep_sampling": mode})
+    trainer.global_step, trainer.max_train_steps = 50, 100
+    torch.manual_seed(0)
+    drawn = trainer.sample_timesteps(4, torch.zeros(4, profile.latents[1], *profile.latents[2:]))
+    assert torch.allclose(drawn, torch.tensor(MAIN_DRAWS_DEV[mode]), atol=1e-4), drawn.tolist()
+    assert trainer.compute_loss_weight(drawn) is None

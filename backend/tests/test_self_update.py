@@ -434,7 +434,8 @@ def test_a_find_links_dir_with_a_space_reaches_pip_whole(tmp_path):
     _wheel(wheels, "spacepkg", "1.0")
     out = tmp_path / "out"
     env = {k: v for k, v in os.environ.items() if not k.startswith("PIP_")}
-    env.update(PIP_NO_INDEX="1", PIP_FIND_LINKS=find_links_value(wheels), PIP_DISABLE_PIP_VERSION_CHECK="1")
+    env.update(PIP_NO_INDEX="1", PIP_FIND_LINKS=find_links_value(wheels), PIP_DISABLE_PIP_VERSION_CHECK="1",
+               PIP_CONFIG_FILE=os.devnull)  # no pip.ini/pip.conf of this machine's
     proc = subprocess.run(
         [sys.executable, "-m", "pip", "download", "--no-deps", "-d", str(out), "spacepkg==1.0"],
         env=env, capture_output=True, text=True, timeout=_TIMEOUT_S,

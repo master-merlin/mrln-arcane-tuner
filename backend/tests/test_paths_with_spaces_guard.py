@@ -80,7 +80,7 @@ def test_no_test_sets_a_whitespace_split_pip_variable_from_a_bare_path():
     offenders = []
     for root in SCANNED:
         for path in sorted(root.rglob("*.py")):
-            source = path.read_text(encoding="utf-8")
+            source = path.read_text(encoding="utf-8-sig")  # ast.parse rejects a byte order mark
             if "PIP_" not in source:
                 continue
             rel = path.relative_to(BACKEND).as_posix()

@@ -866,8 +866,8 @@ class _Supervised:
         last field, tabs too)."""
         fields = _Supervised._FIELDS
         values = dict(part.partition("=")[::2] for part in run.split("\t", len(fields) - 1))
-        if name not in values:
-            raise AssertionError(f"no {name}= in the server's record: {run!r}")
+        if tuple(values) != fields:
+            raise AssertionError(f"the server's record has not the fields {fields} (wanted {name}=): {run!r}")
         return values[name]
 
     def resolver_calls(self) -> int:

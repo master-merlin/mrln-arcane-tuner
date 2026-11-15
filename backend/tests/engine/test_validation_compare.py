@@ -251,10 +251,6 @@ def _split_with(representatives):
     _split_with([]),  # no held-out image described
     _split_with([{"key": key} for key in KEYS]),  # keys only: no caption or size
     _split_with([{"key": key, "caption": "", "target_w": 64, "target_h": 64} for key in KEYS[:-1]]),  # one missing
-    # every image described, but no content digest: a name could stand for another picture
-    _split_with([{"key": key, "caption": "", "target_w": 64, "target_h": 64} for key in KEYS]),
-    _split_with([{"key": key, "caption": "", "target_w": 64, "target_h": 64, "sha256": None} for key in KEYS]),
-    _split_with([{"key": key, "caption": "", "target_w": 64, "target_h": 64, "sha256": ""} for key in KEYS]),
 ])
 def test_a_split_file_that_is_not_a_split_is_unreadable(tmp_path, text):
     a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))])
@@ -361,6 +357,23 @@ def test_an_interval_straddling_zero_is_within_the_floor(tmp_path):
     assert report["floor"]["overall"] == 0.0
     assert abs(overall["gap"]) > report["floor"]["overall"]
     assert overall["verdict"] == vc.WITHIN
+
+
+@pytest.mark.parametrize("digest", ["missing", None, ""])
+def test_a_split_file_without_content_digests_gets_no_verdict(tmp_path, digest):
+    """Every image described but no content digest (written before digests were recorded): the
+    same names may hold other pictures, so the gap is reported and no verdict rests on it."""
+    runs = _seeded(tmp_path, gap=1.0, spread=0.01)
+    representatives = [{"key": key, "caption": "", "target_w": 64, "target_h": 64} for key in KEYS]
+    if digest != "missing":
+        representatives = [{**item, "sha256": digest} for item in representatives]
+    for _, folder in runs:
+        (folder / vc.SPLIT_FILE).write_text(_split_with(representatives), encoding="utf-8")
+    overall = _overall(vc.compare(runs))
+    assert overall["gap"] == pytest.approx(1.0)
+    assert overall["interval"] is None
+    assert overall["verdict"].startswith("no verdict: ")
+    assert "records no content digest" in overall["verdict"]
 
 
 def test_four_images_get_no_verdict(tmp_path):

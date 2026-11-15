@@ -171,11 +171,9 @@ def _not_a_split(split: Any) -> str | None:
         and isinstance(item.get("key"), str)
         and "caption" in item
         and all(_integer(item.get(size)) for size in ("target_w", "target_h"))
-        and isinstance(item.get("sha256"), str)
-        and item["sha256"] != ""
         for item in representatives
     ):
-        return "the held-out images lack their keys, captions, sizes or content digests"
+        return "the held-out images lack their keys, captions or sizes"
     if sorted(item["key"] for item in representatives) != sorted(holdout):
         return "its held-out images aren't its held-out keys"
     if not _integer(split.get("split_seed")):
@@ -313,6 +311,20 @@ def _check_models(runs: list[Run]) -> list[str]:
     ]
 
 
+def _digest_reasons(runs: list[Run]) -> list[str]:
+    """Why no verdict can rest on each run whose split file lacks a held-out image's content digest
+    (written before digests were recorded): without them, one file name may hold different pictures."""
+    return [
+        f"no interval: {run.folder / SPLIT_FILE} records no content digest for some held-out image "
+        "(written before digests were recorded), so the same names may hold different pictures"
+        for run in runs
+        if not all(
+            isinstance(item.get("sha256"), str) and item["sha256"]
+            for item in json.loads(run.split_text)["representatives"]
+        )
+    ]
+
+
 def _check_comparable(runs: list[Run], step: int) -> None:
     first = runs[0]
     for run in runs[1:]:
@@ -447,6 +459,7 @@ def compare(
         def values(group: list[Run]) -> list[list[float]]:
             return _arm_images(group, step, draws)
 
+    interval_reasons += _digest_reasons(loaded)
     per_arm_floor, floor_reasons = _floors(arms, step, values)
     if floor_reasons:
         floor = None

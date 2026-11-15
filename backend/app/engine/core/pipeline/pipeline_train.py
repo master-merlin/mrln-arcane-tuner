@@ -390,7 +390,7 @@ class PipelineTrainMixin:
             split_file_content,
         )
 
-        content = split_file_content(split, self.config)
+        content = split_file_content(split, self.config, getattr(getattr(self, "definition", None), "id", None))
         # The weights' own record, wherever the run now writes. No file: an older
         # checkpoint, or one from a job without validation. isfile would call a
         # locked file absent, and let the run past.

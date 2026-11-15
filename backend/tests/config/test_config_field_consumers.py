@@ -239,6 +239,7 @@ UNIVERSAL_FIELDS = frozenset(
         "validation_dataset",
         "validation_every_n_steps",
         "validation_timestep_bands",
+        "validation_noise_draws",
     }
 )
 

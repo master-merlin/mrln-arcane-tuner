@@ -14,6 +14,9 @@ from typing import Any
 
 from PIL import Image
 
+# One rule for the in-run guard and the comparison of runs; it lives in the light module.
+from app.engine.core.validation_compare import same_measurement  # noqa: F401 - re-exported
+
 NEAR_IDENTICAL_BITS = 6
 _HASH_WIDTH = 8
 # A job's config reaches the trainer as a plain dict, so the schema's bounds don't apply.
@@ -22,6 +25,7 @@ _BOUNDS = (
     ("validation_split_seed", 0, 0, math.inf),
     ("validation_every_n_steps", 500, 1, math.inf),
     ("validation_timestep_bands", 8, 2, 32),
+    ("validation_noise_draws", 1, 1, 16),
 )
 
 Item = dict[str, Any]
@@ -124,8 +128,13 @@ def _content_digest(path: str) -> str:
         return hashlib.file_digest(image, "sha256").hexdigest()
 
 
-def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
-    """The text of ``validation_split.json``: the split and the settings that made it."""
+def split_file_content(split: ValidationSplit, config: dict[str, Any], model: str | None = None) -> str:
+    """The text of ``validation_split.json``: the split and the settings that made it.
+
+    ``model`` is the definition the run trains: a comparison of runs refuses two models, whose
+    losses aren't on one scale. ``same_measurement`` leaves it out, so a resume of a run whose
+    split file predates it is still accepted.
+    """
     representative_fields = ("key", "path", "caption", "prefix", "target_w", "target_h")
     content = {
         "holdout": split.holdout_keys,
@@ -144,28 +153,10 @@ def split_file_content(split: ValidationSplit, config: dict[str, Any]) -> str:
         "hash_threshold_bits": NEAR_IDENTICAL_BITS,
         "every_n_steps": int(config.get("validation_every_n_steps", 500)),
         "timestep_bands": int(config.get("validation_timestep_bands", 8)),
+        "noise_draws": int(config.get("validation_noise_draws", 1)),
+        "model": model,
     }
     return json.dumps(content, indent=2, ensure_ascii=False)
-
-
-def same_measurement(earlier: str, content: str) -> bool:
-    """Whether two split files measure the same images the same way.
-
-    A changed interval, or a new image in training, keeps the numbers comparable. A
-    different holdout doesn't: an image that trained could now be measured. The folder a
-    dataset lies in isn't part of it, as a checkpoint can move to a machine where it
-    differs; each held-out file's content digest is, so a name can't change its picture.
-    """
-
-    def measured(text: str) -> tuple:
-        split = json.loads(text)
-        representatives = [
-            {field: value for field, value in item.items() if field != "path"}
-            for item in split.get("representatives") or []
-        ]
-        return (representatives, *(split.get(k) for k in ("holdout", "split_seed", "global_triggerword")))
-
-    return measured(earlier) == measured(content)
 
 
 def split_holdout(

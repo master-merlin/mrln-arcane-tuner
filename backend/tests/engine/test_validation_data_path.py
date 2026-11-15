@@ -218,6 +218,8 @@ def test_the_split_file_records_the_split(monkeypatch, tmp_path):
     assert written["hash_threshold_bits"] == validation_split.NEAR_IDENTICAL_BITS
     assert written["every_n_steps"] == 100
     assert written["timestep_bands"] == 4
+    assert written["noise_draws"] == 1
+    assert written["model"] == DEFINITION_ID
     assert written["groups"] == t._validation_split.groups
     assert [r["key"] for r in written["representatives"]] == written["holdout"]
     assert {"path", "caption", "target_w", "target_h"} <= set(written["representatives"][0])
@@ -336,6 +338,20 @@ def test_the_settings_and_their_bounds():
     assert extras["validation_every_n_steps"]["min"] == 1
     assert (extras["validation_timestep_bands"]["min"], extras["validation_timestep_bands"]["max"]) == (2, 32)
 
+    draws = extras["validation_noise_draws"]
+    assert fields["validation_noise_draws"].default == 1
+    assert (draws["group"], draws["depends_on"], draws["min"], draws["max"]) == ("ENGINE", "validation_enabled", 1, 16)
+
+
+def test_the_noise_draws_have_help_text():
+    from pathlib import Path
+
+    root = Path(__file__).resolve().parents[3]
+    help_entry = json.loads((root / "frontend/public/config_help.json").read_text(encoding="utf-8"))["validation_noise_draws"]
+    assert "{validation_noise_draws}" in help_entry["tip"]
+    assert "draws" in help_entry["detail"]
+    assert "`validation_noise_draws`" in (root / "docs/training-guide.md").read_text(encoding="utf-8")
+
 
 # ── Round 1 of the code review ───────────────────────────────────────────────
 
@@ -369,6 +385,17 @@ def test_a_changed_interval_is_not_a_changed_split(monkeypatch, tmp_path):
     )
     later._enter_validation_split()
     assert _written_split(tmp_path)["every_n_steps"] == 50
+
+
+def test_another_draw_count_is_not_a_changed_split(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    first = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)
+    first._enter_validation_split()
+    later = _with_output_dir(
+        _prepare(_pipeline(monkeypatch, datasets, _holdout_config(validation_noise_draws=4))), tmp_path
+    )
+    later._enter_validation_split()
+    assert _written_split(tmp_path)["noise_draws"] == 4
 
 
 def test_a_new_training_image_with_the_same_holdout_is_not_a_changed_split(monkeypatch, tmp_path):
@@ -407,6 +434,8 @@ _OUT_OF_BOUNDS = [
     ("validation_every_n_steps", -1),
     ("validation_timestep_bands", 1),
     ("validation_timestep_bands", 33),
+    ("validation_noise_draws", 0),
+    ("validation_noise_draws", 17),
     ("validation_holdout_fraction", 0.01),
     ("validation_holdout_fraction", 0.9),
     ("validation_split_seed", -1),

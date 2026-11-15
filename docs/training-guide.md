@@ -334,15 +334,60 @@ The output folder gets two files:
 - `validation_split.json`: which images were held out, and the settings that
   chose them.
 - `validation_metrics.jsonl`: one line per pass, with the loss per band, their
-  mean, the worst band and the seconds the pass took.
+  mean, the worst band and the seconds the pass took. Each line also keeps every
+  held-out image's own losses per noise draw and band (`image_band_loss`), the
+  image keys, the number of draws and the training seed the run applied.
 
 Compare runs band by band, since a change can help at one noise level and hurt
 at another. A loss that rises while the training loss keeps falling points to
 overfitting. A few images show clear differences, not small ones.
 
-**What it costs.** A pass is `images × bands` forward passes: 8 images and 8
-bands are 64 per pass. Each runs at step 0, every `validation_every_n_steps` and
-at the last step.
+**What it costs.** A pass is `images × bands × draws` forward passes: 8 images,
+8 bands and one draw are 64 per pass. Each runs at step 0, every
+`validation_every_n_steps` and at the last step.
+
+**Noise draws.** With `validation_noise_draws` above 1, each image is measured
+under that many fixed noise draws instead of one. Draw 0 is the same noise as
+with one draw, and every draw is the same in every pass and every run, so the
+draws measure how much the measurement itself varies. They cost time: 4 draws
+make a pass four times as long. Latents and captions are encoded once per image.
+
+**Comparing runs.** To ask whether one setting beats another, run each setting
+with two or more training seeds (`seed`) into separate output folders, then
+compare the folders:
+
+```
+backend\venv\Scripts\python.exe backend\scripts\compare_validation_runs.py --run uniform=outputs\a_seed42 --run uniform=outputs\a_seed43 --run radc=outputs\b_seed42 --run radc=outputs\b_seed43
+```
+
+Each `--run` is `<setting name>=<output folder>`. The comparison takes the last
+step every run has (or `--step`), and for each pair of settings, overall and per
+noise band, prints:
+
+- the **gap**: the mean over the held-out images of the difference in loss;
+- its **95% interval**, from resampling the held-out images (`--resamples`,
+  seeded by `--seed`, so the same command prints the same numbers). It needs at
+  least 5 held-out images;
+- the **noise floor**: the largest gap between two seeds of the same setting.
+  It is a minimum bar from the seeds you ran, not a significance test;
+- with two or more noise draws, the **measurement noise**: how much the gap
+  varies from draw to draw, flagged when it is as large as the gap.
+
+A pair **beats the noise floor** when its interval excludes zero and its gap is
+larger than the floor; otherwise it is **within the noise floor**. Without an
+interval or a floor (too few images, one seed per setting, or runs recorded
+before per-image losses were kept) it gets **no verdict**, with the reason.
+`--json <file>` also writes the report as JSON.
+
+The comparison refuses runs that don't measure the same thing: other held-out
+images, other noise bands, other models (each split file names the model its run
+trains; an older one that doesn't gets a note in the report), one folder given
+twice, two runs of one setting with the same seed, or a history whose steps
+repeat or go back. A loss a pass couldn't compute (written as null) makes only
+that step unusable: compare at another `--step`. A resume continues in
+the same output folder and appends to its history, so a resume from an earlier
+checkpoint repeats steps: resume into a fresh output folder when you mean to
+compare runs (a new job under another LoRA name, resuming from the checkpoint).
 
 **What it doesn't take.** Validation works on standard image datasets. Video,
 audio and paired-edit datasets, adaptive targeting's rebuild action, and the
@@ -615,6 +660,7 @@ this list.
 - **Validation Enabled** (`validation_enabled`) — Measures a loss on images training never sees, to compare settings. Off by default. Placeholder: {validation_enabled} *(schema: Measure a held-out loss during the run, for comparing training settings (images are held out of training))*. Default `False`.
 - **Validation Every N Steps** (`validation_every_n_steps`) — Steps between validation passes. Placeholder: {validation_every_n_steps}. Default `500` (min 1).
 - **Validation Holdout Fraction** (`validation_holdout_fraction`) — Share of the source images to hold out. Placeholder: {validation_holdout_fraction} *(schema: Share of the source images to hold out, unless a validation dataset is named)*. Default `0.15` (range 0.05 to 0.5, step 0.01).
+- **Validation Noise Draws** (`validation_noise_draws`) — Noise draws per image, to measure how much the measurement itself varies. Placeholder: {validation_noise_draws} *(schema: Noise draws per image, to measure the measurement's own noise; a pass runs images × bands × draws forward passes)*. Default `1` (range 1 to 16).
 - **Validation Split Seed** (`validation_split_seed`) — Seed of the split, independent of the training seed. Placeholder: {validation_split_seed} *(schema: Seed of the split; independent of the training seed)*. Default `0` (min 0).
 - **Validation Timestep Bands** (`validation_timestep_bands`) — Noise bands per image. Placeholder: {validation_timestep_bands} *(schema: Noise bands per image; a pass runs images × bands forward passes)*. Default `8` (range 2 to 32).
 - **Vram Safe Bucket Order** (`vram_safe_bucket_order`) — From the schema: Feed the largest aspect-ratio bucket first each epoch so the CUDA allocator reserves its peak segment up front; smaller buckets then reuse it. Eliminates the order-dependent fragmentation that makes reserved VRAM vary run-to-run and spill past the card. Order stays shuffled within each bucket. Disable for fully-random bucket order. Default `True`.

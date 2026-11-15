@@ -1,4 +1,5 @@
 """The held-out split for training experiments: by source image, the same for every arm."""
+import json
 import random
 
 import numpy as np
@@ -7,6 +8,7 @@ from PIL import Image
 
 from app.engine.core.pipeline.validation_split import (
     difference_hash,
+    same_measurement,
     split_holdout,
     split_separate_dataset,
 )
@@ -206,6 +208,19 @@ def test_a_file_in_both_the_training_and_the_separate_dataset_fails_naming_it():
 def test_an_empty_separate_dataset_fails():
     with pytest.raises(ValueError, match="validation"):
         split_separate_dataset(_inventory(5), [])
+
+
+def _split_text(**changes):
+    content = {"holdout": ["ds/a.png"], "representatives": [{"key": "ds/a.png", "sha256": "0"}],
+               "split_seed": 0, "global_triggerword": "", "noise_draws": 1, **changes}
+    return json.dumps(content)
+
+
+def test_another_draw_count_is_the_same_measurement_and_another_seed_is_not():
+    assert same_measurement(_split_text(), _split_text(noise_draws=8))
+    assert not same_measurement(_split_text(), _split_text(split_seed=1))
+    # The reason it is left out is written where the rule is.
+    assert "noise_draws" in same_measurement.__doc__
 
 
 def test_the_difference_hash_is_close_for_near_copies_and_far_for_others(tmp_path):

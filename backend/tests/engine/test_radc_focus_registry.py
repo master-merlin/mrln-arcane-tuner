@@ -446,6 +446,39 @@ def test_share_uses_the_local_generator():
     assert float((draws[0] < 0.5).float().mean()) > 0.2, "the share did not act"
 
 
+BAD_SHARES = [pytest.param(v, id=i) for v, i in ((-0.1, "negative"), (1.5, "above-1"), (10.0, "ten"),
+                                                  (float("nan"), "nan"), (float("inf"), "inf"))]
+SHARE_KEYS = (("radc_uniform_prob", "radc"), ("timestep_uniform_prob", "model_shift"))
+
+
+@pytest.mark.parametrize(("key", "mode"), SHARE_KEYS)
+@pytest.mark.parametrize("value", BAD_SHARES)
+def test_a_uniform_share_outside_0_to_1_is_refused_by_the_schema(key, mode, value):
+    from pydantic import ValidationError
+
+    with pytest.raises(ValidationError, match=key):
+        BaseTrainingConfig(datasets=[{"dataset_name": "d"}], **{key: value})
+
+
+@pytest.mark.parametrize(("key", "mode"), SHARE_KEYS)
+@pytest.mark.parametrize("value", BAD_SHARES)
+def test_a_uniform_share_outside_0_to_1_is_refused_by_the_sampler(key, mode, value):
+    """A config that never passed the schema (a definition default, a direct caller) is refused
+    before it draws, never silently turned into plain uniform sampling."""
+    with pytest.raises(ValueError, match=key):
+        TimestepSampler.sample(mode, 8, torch.device("cpu"), {**_radc(0.0), "timestep_sampling": mode, key: value},
+                               progress=0.5)
+
+
+@pytest.mark.parametrize(("key", "mode"), SHARE_KEYS)
+@pytest.mark.parametrize("value", [0.0, 0.5, 1.0])
+def test_a_uniform_share_within_0_to_1_is_accepted(key, mode, value):
+    assert getattr(BaseTrainingConfig(datasets=[{"dataset_name": "d"}], **{key: value}), key) == value
+    drawn = TimestepSampler.sample(mode, 8, torch.device("cpu"), {**_radc(0.0), "timestep_sampling": mode, key: value},
+                                   progress=0.5)
+    assert drawn.shape == (8,)
+
+
 def test_only_radc_sets_the_noise_level_itself():
     assert [m for m in TimestepSampler.SUPPORTED_MODES if timestep_sampling.sets_noise_level_itself(m)] == ["radc"]
 

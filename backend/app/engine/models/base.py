@@ -533,6 +533,8 @@ class BaseTrainingConfig(BaseModel):
     )
     timestep_uniform_prob: float = Field(
         0.1,
+        ge=0.0,
+        le=1.0,  # also refuses NaN and infinity
         description="Fraction of timesteps drawn uniformly (mixed into shifted modes)",
         json_schema_extra={
             "group": "STRATEGY",
@@ -619,6 +621,8 @@ class BaseTrainingConfig(BaseModel):
     )
     radc_uniform_prob: float = Field(
         0.0,
+        ge=0.0,
+        le=1.0,  # also refuses NaN and infinity
         description="Share of radc draws taken uniformly over the model's noise scale (0=off)",
         json_schema_extra={
             "group": "STRATEGY",

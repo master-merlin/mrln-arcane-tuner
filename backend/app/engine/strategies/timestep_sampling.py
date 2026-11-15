@@ -320,11 +320,16 @@ def _rand(bs: int, device: torch.device, generator: torch.Generator | None) -> t
     return torch.rand((bs,), device=generator.device, generator=generator).to(device)
 
 
-def _mix_uniform(t: torch.Tensor, share: float, device: torch.device,
+def _mix_uniform(t: torch.Tensor, config: dict[str, Any], key: str, device: torch.device,
                  generator: torch.Generator | None) -> torch.Tensor:
-    """Replace a ``share`` of ``t`` with ``U(0,1)`` draws. At 0 nothing is drawn, so the random
-    stream is consumed exactly as without it."""
-    if share <= 0.0:
+    """Replace the share ``config[key]`` of ``t`` with ``U(0,1)`` draws. At 0 nothing is drawn, so
+    the random stream is consumed exactly as without it. A share outside ``[0, 1]`` (or not finite)
+    is refused: a config that never passed the schema (a definition default, a direct caller)
+    would otherwise silently train plain uniform."""
+    share = float(timestep_setting(config, key))
+    if not 0.0 <= share <= 1.0:  # NaN fails both comparisons
+        raise ValueError(f"{key} must be a share within [0, 1], got {share!r}")
+    if share == 0.0:
         return t
     bs = t.shape[0]
     u_mask = _rand(bs, device, generator) < share
@@ -479,7 +484,7 @@ class TimestepSampler:
             indices = indices.clamp(max=cdf.shape[0] - 1)
             t = (indices.float() + 1) / 1000.0
             # A share of U(0, 1) on the same noise scale (default 0: off).
-            return _mix_uniform(t, float(timestep_setting(config, "radc_uniform_prob")), device, generator)
+            return _mix_uniform(t, config, "radc_uniform_prob", device, generator)
 
         if mode == "model_shift":
             # Inference-matched flow-match shift, in additive logit space.
@@ -505,7 +510,7 @@ class TimestepSampler:
             else:
                 mu = (0.5 + 1.16) / 2.0
             t = torch.sigmoid(_randn(bs, device, generator) * std + mu)
-            return _mix_uniform(t, float(timestep_setting(config, "timestep_uniform_prob")), device, generator)
+            return _mix_uniform(t, config, "timestep_uniform_prob", device, generator)
 
         # Unknown → fallback with warning
         logger.warning("unknown_timestep_mode", mode=mode, fallback="uniform")

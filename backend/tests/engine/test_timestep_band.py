@@ -356,14 +356,11 @@ def test_wan_radc_at_the_last_step_is_the_truncated_curve():
     assert log.warnings == []
 
 
-def test_bernini_radc_at_the_last_step_is_the_truncated_warped_curve():
+def test_bernini_radc_at_the_last_step_is_the_truncated_curve_with_no_warp():
+    """radc's draw is the noise level itself: bernini's band is the set curve truncated, as wan's."""
     sample, log = _sampler("bernini_r", {"timestep_sampling": "radc"})
     torch.manual_seed(24)
-    warped = [
-        (1000.0 * BERNINI_SHIFT * (i / 1000.0) / (1.0 + (BERNINI_SHIFT - 1.0) * i / 1000.0), w)
-        for i, w in _radc_curve(0.2, 0.5)
-    ]
-    curve = [(v, w) for v, w in warped if v >= BOUNDARY]
+    curve = [(float(i), w) for i, w in _radc_curve(0.2, 0.5) if i >= BOUNDARY]
     _assert_shape(_many(sample, HIGH, progress=1.0), _discrete_stats(curve))
     assert log.warnings == []
 

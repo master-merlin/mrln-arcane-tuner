@@ -327,13 +327,10 @@ def _coverage_failures(definitions, outcome) -> list[str]:
 # ── The registry-wide tests ──────────────────────────────────────────────────
 
 # Red on main; each later change removes its entries, and the list goes with the last one.
-_SHIFTED = "a family shift or warp is applied after the radc draw"
 _REVERSED = "the sampler's noise fraction is used as a clean fraction"
 _TWICE = "the loss is weighted by the curve the draw already follows"
 _NO_TERM = "3D latents: the resolution term can never act, and nothing declares it"
 _RED_TODAY_FOCUS: dict[str, str] = {
-    "bernini_r/bernini-r-1.3b": _SHIFTED,
-    "bernini_r/bernini-r-14b": _SHIFTED,
     "boogu_image/boogu-image-base": _REVERSED,
     "boogu_image/boogu-image-edit": _REVERSED,
     "boogu_image/boogu-image-turbo": _REVERSED,
@@ -341,9 +338,6 @@ _RED_TODAY_FOCUS: dict[str, str] = {
     "flux2/flux2-klein-base-4b": _TWICE,
     "flux2/flux2-klein-base-9b": _TWICE,
     "ideogram4/ideogram4-fp8": _REVERSED,
-    "minimax_h3/minimax-h3-fl2va": _SHIFTED,
-    "minimax_h3/minimax-h3-ref2va": _SHIFTED,
-    "minimax_h3/minimax-h3-t2va": _SHIFTED,
 }
 _RED_TODAY_RESOLUTION: dict[str, str] = {
     **_RED_TODAY_FOCUS,
@@ -351,7 +345,7 @@ _RED_TODAY_RESOLUTION: dict[str, str] = {
     "ace_step15/ace-step-1.5-xl-base": _NO_TERM,
 }
 _RED_TODAY_COVERAGE = "the definitions in the two lists above"
-_RED_TODAY_DUAL = "bernini_r's dual-expert draw is warped off focus"
+_RED_TODAY_DUAL = ""
 
 
 def _red_while(reason: str):

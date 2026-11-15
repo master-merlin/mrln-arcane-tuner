@@ -2,8 +2,9 @@
 than noise?
 
 Pure functions over the two files a run with validation writes, ``validation_metrics.jsonl``
-and ``validation_split.json``. Standard library only: this module never loads torch, PIL or
-numpy, so a comparison runs anywhere the files are.
+and ``validation_split.json``. The module imports only the standard library and never loads
+torch, PIL or numpy, so a comparison needs no GPU or model stack, only the backend's
+environment (its package, ``app``, imports structlog).
 
 Two kinds of noise stand between a gap and a verdict:
 
@@ -100,41 +101,61 @@ def _number(value: Any) -> bool:
     return isinstance(value, (int, float)) and not isinstance(value, bool) and math.isfinite(value)
 
 
+def _integer(value: Any) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool)
+
+
+def _loss_or_null(value: Any) -> bool:
+    """A pass writes a non-finite loss as null: a valid record, unusable only at its own step."""
+    return value is None or (isinstance(value, (int, float)) and not isinstance(value, bool))
+
+
 def _check_record(path: Path, line: int, record: Any) -> dict[str, Any]:
     def invalid(why: str) -> Unreadable:
         return Unreadable(f"{path}: line {line} is not a validation record: {why}")
 
-    if not isinstance(record, dict) or not isinstance(record.get("step"), int):
+    if not isinstance(record, dict) or not _integer(record.get("step")):
         raise invalid("no integer step")
+    version = record.get("version", 1)
+    if not _integer(version) or version not in (1, 2):
+        raise invalid(f"unknown record version {version!r}")
     centres = record.get("band_centres")
     if not isinstance(centres, list) or not centres or not all(_number(c) for c in centres):
         raise invalid("no band centres")
     bands = len(centres)
-    if _version(record) == 2:
+    if version == 2:
         keys = record.get("image_keys")
         draws = record.get("noise_draws")
         losses = record.get("image_band_loss")
-        if not isinstance(keys, list) or not keys or not isinstance(draws, int) or draws < 1:
+        if not isinstance(keys, list) or not keys or not _integer(draws) or draws < 1:
             raise invalid("no image keys or draw count")
         if (
             not isinstance(losses, list)
             or len(losses) != len(keys)
             or any(not isinstance(image, list) or len(image) != draws for image in losses)
             or any(not isinstance(draw, list) or len(draw) != bands for image in losses for draw in image)
+            or not all(_loss_or_null(loss) for image in losses for draw in image for loss in draw)
         ):
-            raise invalid("image_band_loss is not [images][draws][bands]")
-        if not all(_number(loss) for image in losses for draw in image for loss in draw):
-            raise invalid(f"step {record['step']} has a non-finite loss")
+            raise invalid("image_band_loss is not [images][draws][bands] of losses")
         seed = record.get("train_seed")
-        if seed is not None and not isinstance(seed, int):
+        if seed is not None and not _integer(seed):
             raise invalid("train_seed is neither an integer nor null")
     else:
         band_loss = record.get("band_loss")
-        if not isinstance(band_loss, list) or len(band_loss) != bands:
+        if not isinstance(band_loss, list) or len(band_loss) != bands or not all(_loss_or_null(x) for x in band_loss):
             raise invalid("band_loss doesn't match the band centres")
-        if not all(_number(loss) for loss in band_loss):
-            raise invalid(f"step {record['step']} has a non-finite loss")
     return record
+
+
+def _check_finite(run: Run, step: int) -> None:
+    """Every loss the comparison uses at ``step`` is a finite number."""
+    record = run.records[step]
+    if _version(record) == 2:
+        losses = [loss for image in record["image_band_loss"] for draw in image for loss in draw]
+    else:
+        losses = record["band_loss"]
+    if not all(_number(loss) for loss in losses):
+        raise Unreadable(f"{run.metrics_path}: step {step} has a non-finite loss; compare at another --step")
 
 
 def load_run(arm: str, folder: str | Path) -> Run:
@@ -343,6 +364,8 @@ def compare(
         if step not in run.records:
             raise Refusal(f"{run.metrics_path}: no record at step {step}.")
     _check_comparable(loaded, step)
+    for run in loaded:
+        _check_finite(run, step)
 
     arms: dict[str, list[Run]] = {}
     for run in loaded:

@@ -191,6 +191,47 @@ def test_a_line_that_is_not_a_record_is_invalid_naming_the_line(tmp_path):
         vc.compare([("A", a), ("B", b)])
 
 
+def _diverged(tmp_path):
+    """B's pass at step 500 has a loss the pass wrote as null (non-finite)."""
+    bad = _v2(500, _losses([1, 1]))
+    bad["image_band_loss"][0][0][0] = None
+    a = _write(tmp_path / "a", [_v2(0, _losses([1, 1])), _v2(500, _losses([1, 1]))])
+    b = _write(tmp_path / "b", [_v2(0, _losses([2, 2])), bad])
+    return a, b
+
+
+def test_a_non_finite_loss_at_another_step_still_compares(tmp_path):
+    a, b = _diverged(tmp_path)
+    report = vc.compare([("A", a), ("B", b)], step=0)
+    assert _overall(report)["gap"] == pytest.approx(-1.0)
+
+
+def test_a_non_finite_loss_at_the_compared_step_is_unreadable(tmp_path):
+    a, b = _diverged(tmp_path)
+    with pytest.raises(vc.Unreadable, match="step 500 has a non-finite loss"):
+        vc.compare([("A", a), ("B", b)], step=500)
+
+
+@pytest.mark.parametrize("version", [3, "2", 0])
+def test_a_record_of_an_unknown_version_is_unreadable(tmp_path, version):
+    a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))])
+    record = _v2(0, _losses([1, 1]))
+    record["version"] = version
+    b = _write(tmp_path / "b", [record])
+    with pytest.raises(vc.Unreadable, match="version"):
+        vc.compare([("A", a), ("B", b)])
+
+
+@pytest.mark.parametrize("field", ["step", "noise_draws", "train_seed"])
+def test_a_boolean_where_an_integer_belongs_is_unreadable(tmp_path, field):
+    a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))])
+    record = _v2(0, _losses([1, 1]), seed=1)
+    record[field] = True
+    b = _write(tmp_path / "b", [record])
+    with pytest.raises(vc.Unreadable):
+        vc.compare([("A", a), ("B", b)])
+
+
 # ── Verdicts on planted gaps ─────────────────────────────────────────────────
 
 

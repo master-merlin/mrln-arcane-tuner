@@ -213,8 +213,8 @@ def _one_bucket_per_window(batch_size, vram_safe):
             window = [next(it) for _ in range(ACCUM)]
             buckets = {x["bucket"] for batch in window for x in batch}
             assert len(buckets) == 1, f"seed={seed} step={step}: one window spans {sorted(buckets)}"
-            if vram_safe and step == 0:
-                assert buckets == {"large"}, f"seed={seed}: the warm window is not the largest bucket"
+            # Which window warms is the largest one DUE (this inventory's large bucket fills a
+            # window only every few epochs): see the epoch and re-warm tests below.
             seen.update(x["id"] for batch in window for x in batch)
         assert seen == set(range(len(inv))), f"seed={seed}: items never trained: {set(range(len(inv))) - seen}"
 
@@ -246,19 +246,67 @@ def test_accumulation_never_changes_how_often_an_item_trains(accum):
 
 
 EPOCHS = 160
+REWARM_EVERY = 5  # optimizer steps between two samples (each sample asks for a re-warm)
+
+
+@pytest.mark.parametrize("accum", [1, 4, 16])
+def test_the_warm_up_never_changes_how_often_an_item_trains(accum):
+    """The default warm-up, a largest bucket of one item, 64 smaller items, and a sample every
+    ``REWARM_EVERY`` optimizer steps. The warm window is a window the epoch trains anyway (its
+    largest one, moved to the front), never an extra: without that, the single largest item
+    trains a whole extra window at each epoch start and each sample (a 21 % share at
+    accumulation 16 instead of 1.5 %). Tolerance as above: every count within
+    ``EPOCHS +- 2 * accum``."""
+    inventory = [_item(i, 512, 512, "small") for i in range(64)] + [_item(64, 1024, 1024, "large")]
+
+    def check():
+        owner = _windowed_owner(inventory, vram_safe=True, accum=accum)
+        random.seed(0)
+        it = _iter(owner, 1)
+        counts = dict.fromkeys(range(65), 0)
+        for step in range(EPOCHS * 65 // accum):
+            if step % REWARM_EVERY == REWARM_EVERY - 1:
+                owner._vram_rewarm_pending = True  # a sample ran after this optimizer step
+            for _ in range(accum):
+                counts[next(it)[0]["id"]] += 1
+        off = {i: c for i, c in counts.items() if abs(c - EPOCHS) > 2 * accum}
+        assert not off, f"accumulation {accum}: items trained off once per epoch ({EPOCHS} epochs): {off}"
+
+    _within(check)
+
+
+def test_a_re_warm_moves_the_largest_remaining_window_to_the_front():
+    """After a sample, the next window is the largest bucket still due in the epoch."""
+    inv = [_item(i, w, h, b) for i, (w, h, b) in enumerate(
+        [(1024, 1024, "large")] * 4 + [(512, 512, "medium")] * 4 + [(256, 256, "small")] * 8)]
+
+    def check():
+        for seed in range(20):
+            random.seed(seed)
+            owner = _windowed_owner(inv)
+            it = _iter(owner, 1)
+            first = [next(it)[0]["bucket"] for _ in range(ACCUM)]  # the epoch-start warm window
+            assert first == ["large"] * ACCUM
+            owner._vram_rewarm_pending = True
+            # The epoch's remaining windows: medium and two small; medium is the largest.
+            second = [next(it)[0]["bucket"] for _ in range(ACCUM)]
+            assert second == ["medium"] * ACCUM, f"seed={seed}: {second}"
+
+    _within(check)
 
 
 def test_each_epoch_of_windows_starts_with_a_warm_window_of_the_largest_bucket():
     """Batch size 1, windows of 4, buckets of 4, 4 and 8 items: an epoch is exactly 4 windows
-    (no bucket holds a batch back), and the warm window comes before each."""
+    (no bucket holds a batch back, and the warm window is one of them), and each epoch opens
+    with the largest bucket's window."""
     inv = [_item(i, w, h, b) for i, (w, h, b) in enumerate(
         [(1024, 1024, "large")] * 4 + [(512, 512, "medium")] * 4 + [(256, 256, "small")] * 8)]
     def check():
         for seed in range(20):
             random.seed(seed)
             it = _iter(_windowed_owner(inv), 1)
-            windows = [[next(it)[0]["bucket"] for _ in range(ACCUM)] for _ in range(15)]
-            for start in (0, 5, 10):  # the warm window of epochs 1, 2 and 3
+            windows = [[next(it)[0]["bucket"] for _ in range(ACCUM)] for _ in range(12)]
+            for start in (0, 4, 8):  # the warm window of epochs 1, 2 and 3
                 assert windows[start] == ["large"] * ACCUM, f"seed={seed}: window {start} is {windows[start]}"
 
     _within(check)

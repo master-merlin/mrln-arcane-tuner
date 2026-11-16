@@ -531,9 +531,8 @@ class PipelineTrainMixin:
         # A family that routes per optimizer step (a dual-expert run decides the step's expert
         # from its first batch's latent shape) asks for one bucket per accumulation window, so
         # every batch of a step shares that shape. Every other family keeps the order above.
-        window = 1
-        if getattr(self, "one_bucket_per_accumulation_window", False):
-            window = max(1, int(self.config.get("gradient_accumulation_steps", 1)))
+        windowed = bool(getattr(self, "one_bucket_per_accumulation_window", False))
+        window = max(1, int(self.config.get("gradient_accumulation_steps", 1))) if windowed else 1
 
         # Per bucket, the batches that didn't fill a window: they open that bucket's next epoch,
         # so a window never spans buckets and no item trains more often than once per epoch in
@@ -559,17 +558,25 @@ class PipelineTrainMixin:
             random.shuffle(windows)
             return windows
 
-        if window > 1:
+        def _volume(batches: list[list]) -> int:
+            w, h, f = _bucket_key(batches[0][0])
+            return w * h * f
+
+        if windowed:
             # The loop pulls exactly ``window`` batches per optimizer step, so a window starts
-            # at a step boundary; the re-warm (epoch start, after a sample) is a whole window.
+            # at a step boundary. The warm-up (epoch start, after a sample) brings the largest
+            # window still due this epoch to the front: a window the epoch trains anyway, so it
+            # reserves the peak without training any bucket more often (an extra warm window
+            # would re-weight the largest bucket by the accumulation).
             self._vram_rewarm_pending = vram_safe_order
             while True:
-                for batches in _random_windows():
-                    if vram_safe_order and getattr(self, "_vram_rewarm_pending", False) and _largest_items:
+                due = _random_windows()
+                while due:
+                    if vram_safe_order and getattr(self, "_vram_rewarm_pending", False):
                         self._vram_rewarm_pending = False
-                        for _ in range(window):
-                            yield _warm_batch()
-                    yield from batches
+                        largest = max(range(len(due)), key=lambda i: _volume(due[i]))
+                        due.insert(0, due.pop(largest))
+                    yield from due.pop(0)
                 if vram_safe_order:
                     self._vram_rewarm_pending = True  # re-warm at the next epoch
 

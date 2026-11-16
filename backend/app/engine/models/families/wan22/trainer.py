@@ -113,6 +113,13 @@ class Wan22Trainer(
         self.driver.configure_swap_mode(swap)
         return router
 
+    @property
+    def one_bucket_per_accumulation_window(self) -> bool:
+        """A dual-expert run routes per optimizer step from its first batch's latent shape, so
+        every batch of the step must share that shape (one bucket per accumulation window)."""
+        router = getattr(getattr(self, "driver", None), "router", None)
+        return router is not None and router.pinned_expert is None
+
     def _progress(self) -> float:
         """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""
         max_steps = getattr(self, "max_train_steps", 1)

@@ -296,15 +296,23 @@ class ExpertRouter:
         step's first batch decides it: the block's uniform draw against ``p_high`` for that
         batch's latent shape, so each batch's high share is ``p_high`` at its own resolution
         and the conditional draws compose to the configured distribution at that resolution.
-        Fixed for the rest of the step, so gradients never mix experts.
+        Fixed for the rest of the step: a routing family's batches come one bucket per
+        accumulation window, so every batch of a step has its shape. A batch of another shape
+        means the step it was decided for never reached the optimizer (a window whose every
+        micro-step was skipped, which calls no :meth:`choose_expert`): it starts a new
+        decision rather than inherit the other resolution's odds.
         """
         if self.pinned_expert is not None:
             return self.pinned_expert
-        if self._step_expert is not None:
+        shape = None if latent_shape is None else (1, *(int(d) for d in tuple(latent_shape)[1:]))
+        if self._step_expert is not None and (shape is None or shape == self._last_shape):
             return self._step_expert
+        if self._step_expert is not None:
+            self.logger.warning("expert_step_shape_changed", decided_for=self._last_shape, batch=shape,
+                                reason="the step it was decided for never reached the optimizer")
         u = self._block_u.get(self._current_block)
-        if latent_shape is not None and u is not None:
-            self._last_shape = (1, *(int(d) for d in tuple(latent_shape)[1:]))
+        if shape is not None and u is not None:
+            self._last_shape = shape
             self._active_expert = HIGH if u < self._p_high_at(self._last_shape) else LOW
             # The block's later boundaries predict what this batch decided, never the older guess.
             self._block_decisions[self._current_block] = self._active_expert

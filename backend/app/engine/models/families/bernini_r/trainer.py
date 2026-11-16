@@ -282,6 +282,14 @@ class BerniniRTrainer(
     def _configured_mode(self) -> str:
         return str(timestep_setting(self.config, "timestep_sampling", getattr(self, "definition", None)))
 
+    @property
+    def one_bucket_per_accumulation_window(self) -> bool:
+        """A dual-expert run routes per optimizer step from its first batch's latent shape, so
+        every batch of the step must share that shape (one bucket per accumulation window)."""
+        driver = getattr(self, "driver", None)
+        router = getattr(driver, "router", None)
+        return bool(getattr(driver, "is_dual", False)) and router is not None and router.pinned_expert is None
+
     def _progress(self) -> float:
         """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""
         max_steps = getattr(self, "max_train_steps", 1)

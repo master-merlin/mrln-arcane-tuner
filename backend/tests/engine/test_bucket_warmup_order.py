@@ -16,6 +16,8 @@ from __future__ import annotations
 import random
 from types import SimpleNamespace
 
+import pytest
+
 from app.engine.core.pipeline.pipeline_train import PipelineTrainMixin
 
 
@@ -135,6 +137,75 @@ def test_flag_off_epoch_has_no_warm_duplicate():
     epoch = [next(it) for _ in range(n)]
     ids = sorted(b[0]["id"] for b in epoch)
     assert ids == list(range(n))
+
+
+# ── A family that routes per optimizer step: one bucket per accumulation window ──
+
+ACCUM = 4
+
+
+def _windowed_owner(inventory, *, opt_in: bool = True, vram_safe: bool = True, accum: int = ACCUM):
+    owner = _owner(inventory, vram_safe=vram_safe)
+    owner.config["gradient_accumulation_steps"] = accum
+    owner.one_bucket_per_accumulation_window = opt_in
+    return owner
+
+
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("vram_safe", [True, False], ids=["warmup", "no-warmup"])
+def test_an_opted_in_family_gets_one_bucket_per_accumulation_window(batch_size, vram_safe):
+    """Every ``gradient_accumulation_steps`` consecutive batches (one optimizer step) come from
+    one bucket, across epoch boundaries and the re-warm after a sample, and every item still
+    trains each epoch."""
+    inv = _make_inventory()
+    for seed in range(10):
+        random.seed(seed)
+        owner = _windowed_owner(inv, vram_safe=vram_safe)
+        it = _iter(owner, batch_size)
+        seen: set[int] = set()
+        for step in range(40):  # several epochs
+            if step % 7 == 3:
+                owner._vram_rewarm_pending = True  # a sample ran between two optimizer steps
+            window = [next(it) for _ in range(ACCUM)]
+            buckets = {x["bucket"] for batch in window for x in batch}
+            assert len(buckets) == 1, f"seed={seed} step={step}: one window spans {sorted(buckets)}"
+            if vram_safe and step == 0:
+                assert buckets == {"large"}, f"seed={seed}: the warm window is not the largest bucket"
+            seen.update(x["id"] for batch in window for x in batch)
+        assert seen == set(range(len(inv))), f"seed={seed}: items never trained: {set(range(len(inv))) - seen}"
+
+
+def test_each_epoch_of_windows_starts_with_a_warm_window_of_the_largest_bucket():
+    """Batch size 1, windows of 4: large (3 items) fills to 1 window, medium (4) is 1, small (5)
+    fills to 2, so an epoch is 4 windows and the warm window comes before each."""
+    inv = _make_inventory()
+    for seed in range(20):
+        random.seed(seed)
+        it = _iter(_windowed_owner(inv), 1)
+        windows = [[next(it)[0]["bucket"] for _ in range(ACCUM)] for _ in range(15)]
+        for start in (0, 5, 10):  # the warm window of epochs 1, 2 and 3
+            assert windows[start] == ["large"] * ACCUM, f"seed={seed}: window {start} is {windows[start]}"
+
+
+@pytest.mark.parametrize("batch_size", [1, 2])
+@pytest.mark.parametrize("vram_safe", [True, False], ids=["warmup", "no-warmup"])
+def test_a_family_that_does_not_opt_in_keeps_its_batch_order(batch_size, vram_safe):
+    """Gradient accumulation alone changes nothing: the same seed gives the same batches as an
+    owner with no accumulation setting at all."""
+    for seed in range(5):
+        orders = []
+        # Each owner its own list: the iterator shuffles ``inventory`` in place.
+        for owner in (_windowed_owner(_make_inventory(), opt_in=False, vram_safe=vram_safe),
+                      _owner(_make_inventory(), vram_safe=vram_safe)):
+            random.seed(seed)
+            it = _iter(owner, batch_size)
+            orders.append([[x["id"] for x in next(it)] for _ in range(40)])
+        assert orders[0] == orders[1], f"seed={seed}"
+
+
+def test_only_the_dual_expert_families_opt_in():
+    """Single-expert families keep their batching: the base default is off."""
+    assert getattr(PipelineTrainMixin, "one_bucket_per_accumulation_window", False) is False
 
 
 def test_flag_off_does_not_force_largest_first():

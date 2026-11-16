@@ -528,6 +528,45 @@ class PipelineTrainMixin:
             random.shuffle(batches)
             return batches
 
+        # A family that routes per optimizer step (a dual-expert run decides the step's expert
+        # from its first batch's latent shape) asks for one bucket per accumulation window, so
+        # every batch of a step shares that shape. Every other family keeps the order above.
+        window = 1
+        if getattr(self, "one_bucket_per_accumulation_window", False):
+            window = max(1, int(self.config.get("gradient_accumulation_steps", 1)))
+
+        def _random_windows() -> list[list[list]]:
+            """One epoch as accumulation windows of ``window`` batches, each from one bucket. A
+            bucket's short last window is filled with batches drawn again from that bucket, so
+            every item trains each epoch and no window spans buckets or epochs."""
+            random.shuffle(self.inventory)
+            buckets: dict[tuple[int, int, int], list] = defaultdict(list)
+            for it in self.inventory:
+                buckets[_bucket_key(it)].append(it)
+            size = max(1, batch_size)
+            windows: list[list[list]] = []
+            for items in buckets.values():
+                batches = [items[i : i + size] for i in range(0, len(items), size)]
+                while len(batches) % window:
+                    batches.append(random.sample(items, min(size, len(items))))
+                windows += [batches[i : i + window] for i in range(0, len(batches), window)]
+            random.shuffle(windows)
+            return windows
+
+        if window > 1:
+            # The loop pulls exactly ``window`` batches per optimizer step, so a window starts
+            # at a step boundary; the re-warm (epoch start, after a sample) is a whole window.
+            self._vram_rewarm_pending = vram_safe_order
+            while True:
+                for batches in _random_windows():
+                    if vram_safe_order and getattr(self, "_vram_rewarm_pending", False) and _largest_items:
+                        self._vram_rewarm_pending = False
+                        for _ in range(window):
+                            yield _warm_batch()
+                    yield from batches
+                if vram_safe_order:
+                    self._vram_rewarm_pending = True  # re-warm at the next epoch
+
         if not vram_safe_order:
             while True:
                 yield from _random_batches()

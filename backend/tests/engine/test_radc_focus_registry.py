@@ -18,7 +18,6 @@ family joins with no edit here.
 from __future__ import annotations
 
 import functools
-import random
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from unittest.mock import patch
@@ -599,105 +598,6 @@ def _dual_offering():
             if _caps(d).get("dual_expert") and _caps(d).get("supports_flow_timestep_sampling", True)]
     assert dual, "no dual-expert definition offers radc: this check would be vacuous"
     return dual
-
-
-ACCUM, MIXED_STEPS, MIXED_ROWS, MIXED_ITEMS = 4, 512, 16, 64
-
-
-def _van_der_corput(k: int) -> float:
-    """The k-th point of the base-2 van der Corput sequence: evenly spread for any prefix."""
-    value, denom = 0.0, 1.0
-    while k:
-        denom *= 2.0
-        k, bit = divmod(k, 2)
-        value += bit / denom
-    return value
-
-
-# Where the two resolutions' expert odds differ most (about 0.11 to 0.14 apart in every dual-expert
-# definition; at progress 1 both are near 0 and a mixed window can't show): see the docstring.
-MIXED_PROGRESS = (0.25, 0.5)
-
-
-def _mixed_resolution_problems(defn, progresses=MIXED_PROGRESS) -> list[str]:
-    """A dual-expert run on a dataset of two resolutions, batched by the PRODUCTION iterator with
-    gradient accumulation: per optimizer step the driver's hook predicts the expert, then each of
-    the step's batches draws with its own latents. Each resolution's trained distribution must be
-    the set curve at that resolution's centre. The block uniform is spread evenly within each
-    resolution of the step's first batch (a variance reduction: production draws it at random,
-    independent of the shape)."""
-    from app.engine.core.pipeline.pipeline_train import PipelineTrainMixin
-
-    problems = []
-    grids = {SMALL_GRID: 1.0, LARGE_GRID: -1.0}
-    for progress in progresses:
-        trainer = _build(defn, **_radc(INFLUENCE), gradient_accumulation_steps=ACCUM, train_batch_size=BATCH)
-        router = _router(trainer, defn)
-        trainer.global_step = round(progress * STEPS)
-        trainer.inventory = [{"id": f"{g}-{i}", "target_w": g * 8, "target_h": g * 8, "grid": g}
-                             for g in grids for i in range(MIXED_ITEMS)]
-        draws: dict[int, list[torch.Tensor]] = {g: [] for g in grids}
-        strata = dict.fromkeys(grids, 0)
-        mixed_steps = 0  # optimizer steps whose batches trained both experts
-        with torch.random.fork_rng(devices=[]):
-            torch.manual_seed(0)
-            random_state = random.getstate()
-            random.seed(0)
-            try:
-                batches = PipelineTrainMixin._iter_training_batches(trainer, BATCH)
-                for block in range(MIXED_STEPS):
-                    # The step's batches as the loop takes them (a warm-up batch is no slot).
-                    window = [items for items, _ in PipelineTrainMixin._accumulation_slots(batches, ACCUM)]
-                    first = window[0][0]["grid"]
-                    router.__dict__.setdefault("_block_u", {})[block] = _van_der_corput(strata[first] + 1)
-                    strata[first] += 1
-                    router._block_decisions.pop(block, None)
-                    trainer.driver.on_optimizer_step(block * router.switch_interval - 1)
-                    experts = set()
-                    for batch in window:
-                        grid = batch[0]["grid"]
-                        latents = torch.zeros(_latent_shape(defn, grid, batch=len(batch)))
-                        draws[grid].append(trainer.sample_timesteps(MIXED_ROWS, latents).detach().float().reshape(-1))
-                        experts.add(trainer.driver.active_expert)
-                    if len(experts) > 1:
-                        mixed_steps += 1
-            finally:
-                random.setstate(random_state)
-        if mixed_steps:
-            problems.append(f"at progress {progress}, {mixed_steps} of {MIXED_STEPS} optimizer steps trained both "
-                            f"experts: a step's batches must share one bucket")
-        for grid, sign in grids.items():
-            drawn = torch.cat(draws[grid])
-            fractions = noise_fraction_of(trainer, drawn, _reference(defn))
-            got = _weighted_quartiles(fractions, torch.ones_like(fractions))
-            expected = _set_centre(progress) + sign * INFLUENCE * progress
-            want = _curve_quartiles(expected, WIDTH)
-            if _off_by(got, want) > TOLERANCE:
-                problems.append(f"{grid}x{grid} cells at progress {progress} in a mixed run: the trained quartiles "
-                                f"are {_fmt(got)}, the curve at centre {expected:.3f} has {_fmt(want)}")
-    return problems
-
-
-@pytest.mark.parametrize("definition_id", [pytest.param(d.id, id=_name(d)) for d in _definitions()
-                                           if _caps(d).get("dual_expert")
-                                           and _caps(d).get("supports_flow_timestep_sampling", True)])
-def test_a_mixed_resolution_dual_expert_run_trains_each_resolution_at_its_focus(definition_id):
-    problems = _mixed_resolution_problems(registry.get_definition(definition_id))
-    assert not problems, "\n".join(problems)
-
-
-def test_the_dual_expert_families_and_only_they_keep_one_bucket_per_accumulation_window():
-    wrong = []
-    for defn in _definitions():
-        if not _caps(defn).get("supports_flow_timestep_sampling", True):
-            continue
-        trainer = _build(defn)
-        router = getattr(getattr(trainer, "driver", None), "router", None)
-        routes = router is not None and router.pinned_expert is None
-        if bool(getattr(trainer, "one_bucket_per_accumulation_window", False)) != routes:
-            wrong.append(f"{_name(defn)}: routes per step {routes}, one bucket per window "
-                         f"{getattr(trainer, 'one_bucket_per_accumulation_window', False)}")
-    assert not wrong, "\n".join(wrong)
 
 
 def test_positive_control_routing_by_the_reference_shape_is_reported(monkeypatch):

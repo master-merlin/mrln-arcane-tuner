@@ -75,8 +75,6 @@ class BerniniRDriver(WanDriverBase):
         # "both" (dual) | "high" | "low" — set by the trainer before loading.
         self.expert_mode: str = "both"
         self.swap_mode: str = "resident"
-        # Set by a swap that emptied the CUDA cache: the loop re-warms before the next forward.
-        self.rewarm_due = False
         # Name (HIGH/LOW) of the expert whose deep blocks are under ACTIVE
         # ``BlockSwappingManager`` management, or ``None`` (mirrors
         # :class:`Wan22Driver`). Set by the trainer once it knows (see
@@ -247,7 +245,6 @@ class BerniniRDriver(WanDriverBase):
             torch.cuda.empty_cache()
         target.to(self.device)
         self._set_active(expert)
-        self.rewarm_due = True  # the emptied pool is reserved again before the next forward
         self.logger.info("bernini_r_expert_swapped", active=expert, mode=self.swap_mode)
 
     def place_experts_for_start(self) -> None:

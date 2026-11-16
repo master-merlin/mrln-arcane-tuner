@@ -32,7 +32,6 @@ Everything here is weight-free and unit-tests with a seeded RNG + tiny tensors.
 
 from __future__ import annotations
 
-import contextlib
 import inspect
 from collections.abc import Sequence
 from typing import Any, Callable
@@ -159,9 +158,6 @@ class ExpertRouter:
         # The latent shape of the last batch drawn for: the step-boundary prediction's shape.
         self._last_shape: tuple[int, ...] | None = None
         self._p_cache: dict[tuple[float, tuple[int, ...] | None], float] = {}
-        # True while the loop runs a throwaway warm-up batch: it decides, locks and records
-        # nothing, and draws for the expert already active.
-        self.paused = False
 
         if self.pinned_expert is not None:
             # Single-expert: no switching, no MC estimate. p_high is degenerate
@@ -300,25 +296,15 @@ class ExpertRouter:
         step's first batch decides it: the block's uniform draw against ``p_high`` for that
         batch's latent shape, so each batch's high share is ``p_high`` at its own resolution
         and the conditional draws compose to the configured distribution at that resolution.
-        Fixed for the rest of the step: a routing family's batches come one bucket per
-        accumulation window, so every batch of a step has its shape. A batch of another shape
-        means the step it was decided for never reached the optimizer (a window whose every
-        micro-step was skipped, which calls no :meth:`choose_expert`): it starts a new
-        decision rather than inherit the other resolution's odds.
+        Fixed for the rest of the step, so gradients never mix experts.
         """
         if self.pinned_expert is not None:
             return self.pinned_expert
-        if self.paused:
-            return self._active_expert
-        shape = None if latent_shape is None else (1, *(int(d) for d in tuple(latent_shape)[1:]))
-        if self._step_expert is not None and (shape is None or shape == self._last_shape):
-            return self._step_expert
         if self._step_expert is not None:
-            self.logger.warning("expert_step_shape_changed", decided_for=self._last_shape, batch=shape,
-                                reason="the step it was decided for never reached the optimizer")
+            return self._step_expert
         u = self._block_u.get(self._current_block)
-        if shape is not None and u is not None:
-            self._last_shape = shape
+        if latent_shape is not None and u is not None:
+            self._last_shape = (1, *(int(d) for d in tuple(latent_shape)[1:]))
             self._active_expert = HIGH if u < self._p_high_at(self._last_shape) else LOW
             # The block's later boundaries predict what this batch decided, never the older guess.
             self._block_decisions[self._current_block] = self._active_expert
@@ -436,42 +422,3 @@ class ExpertRouter:
         rng_state = state.get("rng_state")
         if rng_state is not None:
             self._step_rng.set_state(rng_state)
-
-
-class ExpertRoutingHooks:
-    """The training loop's hooks into a dual-expert trainer's router (wan22, bernini_r)."""
-
-    def _routing_driver(self):
-        driver = getattr(self, "driver", None)
-        if getattr(driver, "router", None) is None or not getattr(driver, "is_dual", True):
-            return None
-        return driver
-
-    @contextlib.contextmanager
-    def routing_paused(self):
-        """While the loop runs a throwaway warm-up batch, the router decides nothing for it."""
-        driver = self._routing_driver()
-        if driver is None:
-            yield
-            return
-        driver.router.paused = True
-        try:
-            yield
-        finally:
-            driver.router.paused = False
-
-    def route_training_batch(self, latents: torch.Tensor) -> None:
-        """Activate the expert the step trains, decided from this training batch, before any
-        warm-up runs: the warm-up then reserves the peak on that expert."""
-        driver = self._routing_driver()
-        if driver is not None:
-            driver.route_for_batch(latents)
-
-    def take_rewarm_request(self) -> bool:
-        """Whether an expert swap emptied the CUDA cache since the last call: the loop then runs a
-        warm-up on the expert now active before the next training forward."""
-        driver = getattr(self, "driver", None)
-        due = bool(getattr(driver, "rewarm_due", False))
-        if due:
-            driver.rewarm_due = False
-        return due

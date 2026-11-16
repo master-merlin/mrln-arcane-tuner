@@ -59,7 +59,6 @@ def _force(t: Wan22Trainer, expert: str) -> None:
     """Train ``expert`` for the current step, whatever the router would decide for the batch."""
     t.driver._set_active(expert)
     t.expert_router._step_expert = expert
-    t.expert_router._last_shape = (1, *VIDEO_LATENT[1:])  # the shape the draws below use
 
 
 def _radc(**extra) -> dict:

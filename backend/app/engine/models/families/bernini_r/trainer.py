@@ -76,7 +76,7 @@ import torch
 
 from app.engine.components.checkpoints import _run_seed
 from app.engine.core.pipeline import GenericTrainingPipeline
-from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter, ExpertRoutingHooks
+from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
 from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
 from app.engine.strategies.timestep_sampling import (
     TimestepSampler,
@@ -95,7 +95,7 @@ logger = structlog.get_logger(__name__)
 
 
 class BerniniRTrainer(
-    WanTextCacheMixin, DualExpertDeferredLoadMixin, ExpertRoutingHooks, GenericTrainingPipeline
+    WanTextCacheMixin, DualExpertDeferredLoadMixin, GenericTrainingPipeline
 ):
     """Bernini-R (renderer-only video edit) LoRA trainer — 1.3B single / 14B MoE.
 
@@ -281,14 +281,6 @@ class BerniniRTrainer(
     # ── The ONE distribution: factory base draw + the family's declared warps ──
     def _configured_mode(self) -> str:
         return str(timestep_setting(self.config, "timestep_sampling", getattr(self, "definition", None)))
-
-    @property
-    def one_bucket_per_accumulation_window(self) -> bool:
-        """A dual-expert run routes per optimizer step from its first batch's latent shape, so
-        every batch of the step must share that shape (one bucket per accumulation window)."""
-        driver = getattr(self, "driver", None)
-        router = getattr(driver, "router", None)
-        return bool(getattr(driver, "is_dual", False)) and router is not None and router.pinned_expert is None
 
     def _progress(self) -> float:
         """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""

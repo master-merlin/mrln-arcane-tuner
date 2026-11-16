@@ -37,14 +37,14 @@ from app.engine.models.families.wan_shared.trainer_base import (
 from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
 
 from .driver import Wan22Driver
-from .expert_router import ExpertRouter, ExpertRoutingHooks
+from .expert_router import ExpertRouter
 from .loader import Wan22Loader
 
 logger = structlog.get_logger(__name__)
 
 
 class Wan22Trainer(
-    WanTextCacheMixin, DualExpertDeferredLoadMixin, ExpertRoutingHooks, GenericTrainingPipeline
+    WanTextCacheMixin, DualExpertDeferredLoadMixin, GenericTrainingPipeline
 ):
     """WAN 2.2 (T2V-A14B / I2V-A14B) dual-expert LoRA trainer.
 
@@ -112,13 +112,6 @@ class Wan22Trainer(
         )
         self.driver.configure_swap_mode(swap)
         return router
-
-    @property
-    def one_bucket_per_accumulation_window(self) -> bool:
-        """A dual-expert run routes per optimizer step from its first batch's latent shape, so
-        every batch of the step must share that shape (one bucket per accumulation window)."""
-        router = getattr(getattr(self, "driver", None), "router", None)
-        return router is not None and router.pinned_expert is None
 
     def _progress(self) -> float:
         """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""

@@ -15,7 +15,8 @@ The Bernini-specific pieces:
   :class:`TimestepSampler` (progress and batch latents forwarded); the family
   applies only its declared transforms on top, in the RAW ``[0, 1000]`` space
   (the wan flow-match ``add_noise`` lerp does the ``/1000``): the per-task
-  ``timestep_shift`` warp on every mode, and for the preset ``mode`` the
+  ``timestep_shift`` warp on every mode but radc (whose draw is the noise level
+  itself), and for the preset ``mode`` the
   upstream renderer's cosine SD3 formula over a factory ``uniform`` draw. The
   formula is transcribed verbatim from upstream ``bernini/training/data.py``
   ``NoiseScheduler`` (see ``.agent/workdir/bernini-r-recon.md`` §4).
@@ -77,7 +78,11 @@ from app.engine.components.checkpoints import _run_seed
 from app.engine.core.pipeline import GenericTrainingPipeline
 from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
 from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
-from app.engine.strategies.timestep_sampling import TimestepSampler, timestep_setting
+from app.engine.strategies.timestep_sampling import (
+    TimestepSampler,
+    sets_noise_level_itself,
+    timestep_setting,
+)
 from app.engine.models.families.wan_shared.trainer_base import (
     DualExpertDeferredLoadMixin,
     WanTextCacheMixin,
@@ -264,6 +269,7 @@ class BerniniRTrainer(
             and getattr(driver, "is_dual", False)
             and getattr(driver, "router", None) is not None
         ):
+            driver.route_for_batch(latents)
             return self._sample_band(
                 driver.active_expert, batch_size, latents=latents, progress=progress
             )
@@ -300,7 +306,10 @@ class BerniniRTrainer(
         ``mode`` is the one declared family transform (the upstream cosine formula,
         which differs from the factory's rational ``mode``): it rides on a factory
         ``uniform`` draw. Every other mode is the factory's own draw. The
-        ``timestep_shift`` warp is applied on top of every mode.
+        ``timestep_shift`` warp is applied on top of every mode but one whose draw
+        is the noise level itself (radc): that one trains where its settings say.
+        This is the one distribution: the single expert, each expert's band and the
+        router's ``p_high`` estimate all draw through it.
         """
         mode_scale, shift = self._timestep_params()
         cfg = self._factory_config()
@@ -313,6 +322,8 @@ class BerniniRTrainer(
         t = TimestepSampler.sample(
             mode, n, device, cfg, latents=latents, progress=progress
         )
+        if sets_noise_level_itself(mode):
+            return (t * 1000.0).clamp(0.0, 1000.0)
         sigmas = shift * t / (1.0 + (shift - 1.0) * t)
         return (sigmas * 1000.0).clamp(0.0, 1000.0)
 

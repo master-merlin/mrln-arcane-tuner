@@ -192,18 +192,43 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
                 )
         cfg = self.config
         res_influence = float(timestep_setting(cfg, "radc_res_influence", definition))
-        if effective == "radc" and res_influence > 0:
-            if not getattr(self, "_hd_res_influence_warned", False):
+        if effective == "radc" and not self._supports_radc_resolution():
+            # The form hides the field (the declared capability) and the allowlist drops it;
+            # a value the job still carries is named, once, and never applied.
+            carried = self.config.get("radc_res_influence")
+            if carried is not None and float(carried) > 0 and not getattr(self, "_hd_res_influence_warned", False):
                 self._hd_res_influence_warned = True
                 log.warning(
                     "hidream_o1_radc_res_influence_ignored",
-                    configured=res_influence,
+                    configured=float(carried),
                     used=0.0,
                     reason="pixel-space patches carry no latent grid for the radc resolution term",
                 )
             res_influence = 0.0
             cfg = {**cfg, "radc_res_influence": 0.0}
         return configured, effective, res_influence, cfg
+
+    def _supports_radc_resolution(self) -> bool:
+        """The declared ``supports_radc_resolution`` capability (read once per job)."""
+        cached = getattr(self, "_hd_supports_radc_resolution", None)
+        if cached is None:
+            from app.engine.core.archetypes import resolve_capabilities
+
+            cached = bool(resolve_capabilities(self.definition)["capabilities"].get("supports_radc_resolution", True))
+            self._hd_supports_radc_resolution = cached
+        return cached
+
+    def sample_timesteps(self, batch_size: int, latents: torch.Tensor | None = None) -> torch.Tensor:
+        """The family's one draw: ``batch_size`` sigmas, which both training paths take.
+
+        The returned value is the noise fraction itself (see :meth:`noise_fraction`); ``latents``
+        is accepted for the shared signature and unused (pixel patches carry no latent grid).
+        """
+        return self._draw_sigma(batch_size, self.device, progress=self._progress())
+
+    def noise_fraction(self, timesteps: torch.Tensor) -> torch.Tensor:
+        """A sigma is the noise fraction: the forward pass blends ``sigma * noise``."""
+        return timesteps
 
     def _draw_sigma(
         self, batch_size: int, device: torch.device, *, progress: float = 0.0
@@ -349,9 +374,10 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
 
         The base MSE would be 0 because ``compute_target`` returns
         ``x0_pred.detach()``.  Instead, call ``compute_loss(batch)`` which
-        runs the full recipe and returns a scalar loss with a grad_fn.
+        runs the full recipe and returns a scalar loss with a grad_fn, at the step's own sigma
+        draw (``timesteps``, the one the sigma statistics record).
         """
-        loss = self.compute_loss(batch)
+        loss = self.compute_loss(batch, sigma=timesteps)
         return loss / grad_accum
 
     # ── LoRA injection (overrides peft path) ─────────────────────────────
@@ -414,9 +440,10 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
 
         The base training loop calls this inside the autocast context after
         preparing noisy latents via the VAE path.  For HiDream-O1, there is
-        no VAE — we ignore ``noisy_input`` / ``timesteps`` / ``text_embeddings``
-        and compute everything from ``batch["images"]`` directly, matching
-        the recipe exactly.
+        no VAE — we ignore ``noisy_input`` / ``text_embeddings`` and compute
+        everything from ``batch["images"]`` directly, matching the recipe
+        exactly. ``timesteps`` is the step's sigma draw (from
+        :meth:`sample_timesteps`); without one, this draws it.
 
         The method returns ``x0_pred`` (the model's pixel-patch prediction),
         not a loss.  The loss is computed in ``compute_target`` + the base
@@ -452,9 +479,10 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
             p2=PATCH_SIZE,
         )
 
-        # Sample sigma
-        sigma = self._draw_sigma(patches.shape[0], self.device, progress=self._progress())
-        sigma_typed = sigma.to(dtype=patches.dtype)
+        # Sigma: the shared step's own draw (``sample_timesteps``, which it also records in the
+        # sigma statistics), or one draw here when called without it.
+        sigma = timesteps if timesteps is not None else self.sample_timesteps(patches.shape[0])
+        sigma_typed = sigma.to(device=patches.device, dtype=patches.dtype)
         sigma_view = sigma_typed.view(-1, 1, 1)
 
         # Add scaled noise
@@ -548,7 +576,7 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         # module docstring.
         return x0_pred.float().detach()
 
-    def compute_loss(self, batch: dict[str, Any]) -> torch.Tensor:
+    def compute_loss(self, batch: dict[str, Any], sigma: torch.Tensor | None = None) -> torch.Tensor:
         """One training-step loss computation per Saganaki22's recipe.
 
         This is the canonical recipe entry-point.  It is called by the
@@ -561,6 +589,7 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
             batch: ``{"pixel_values": Tensor[B, 3, H, W], "caption": list[str]}``.
                    Alternatively ``{"images": Tensor, "captions": list[str]}``
                    (the key names used by the base pipeline's ``_get_batch``).
+            sigma: the step's draw (from :meth:`sample_timesteps`); without one, this draws it.
 
         Returns:
             Scalar loss tensor with ``grad_fn`` set, clamped to ``MAX_LOSS``.
@@ -601,7 +630,9 @@ class HiDreamO1Trainer(GenericTrainingPipeline):
         )
 
         # Sigma + noise injection
-        sigma = self._draw_sigma(patches.shape[0], device, progress=self._progress()).to(dtype=dtype)
+        if sigma is None:
+            sigma = self.sample_timesteps(patches.shape[0])
+        sigma = sigma.to(device=patches.device, dtype=dtype)
         sigma_view = sigma.view(-1, 1, 1)
         noise = torch.randn_like(patches)
         scaled_noise = noise * NOISE_SCALE

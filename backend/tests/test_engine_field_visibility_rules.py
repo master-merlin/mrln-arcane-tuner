@@ -53,14 +53,34 @@ def test_flow_timestep_fields_are_every_timestep_field_of_the_schema():
     # the ones the spec names by hand are all there (a derivation that found none would be vacuous)
     for name in ("timestep_sampling", "timestep_uniform_prob", "mode_scale", "logit_normal_mu",
                  "logit_normal_sigma", "model_shift_std", "flux_shift_base", "flux_shift_max",
-                 "radc_start", "radc_end", "radc_width", "radc_res_influence", "fixed_sigmas"):
+                 "radc_start", "radc_end", "radc_width", "radc_res_influence", "radc_uniform_prob", "fixed_sigmas"):
         assert name in FLOW_TIMESTEP_FIELDS, name
 
 
 def test_the_rules_gate_exactly_the_flow_timestep_fields_by_the_one_flag():
     gated = {f for f, flag, _ in _FIELD_RULES if flag == "supports_flow_timestep_sampling"}
     assert gated == set(FLOW_TIMESTEP_FIELDS)
-    assert len([f for f, _, _ in _FIELD_RULES]) == len({f for f, _, _ in _FIELD_RULES}), "a field ruled twice"
+    # radc_res_influence alone has a second rule: the resolution term a model may not have.
+    names = [f for f, _, _ in _FIELD_RULES]
+    assert sorted({f for f in names if names.count(f) > 1}) == ["radc_res_influence"], "a field ruled twice"
+    assert ("radc_res_influence", "supports_radc_resolution") in {(f, flag) for f, flag, _ in _FIELD_RULES}
+
+
+def test_radc_res_influence_is_hidden_where_declared_absent():
+    by_id = {d.id: d for d in _definitions()}
+    for definition_id in ("hidream_o1_image", "ace-step-1.5", "ace-step-1.5-xl-base"):
+        defn = by_id[definition_id]
+        rule = _visibility(defn)["radc_res_influence"]
+        assert rule["supported"] is False and "resolution" in rule["reason"], (definition_id, rule)
+        assert resolve_capabilities(defn)["capabilities"]["supports_radc_resolution"] is False
+        config = {"timestep_sampling": "radc", "radc_res_influence": 0.2, "radc_start": 0.8}
+        assert apply_capability_allowlist(config, defn) == ["radc_res_influence"], definition_id
+        assert config == {"timestep_sampling": "radc", "radc_start": 0.8}
+    # the flow rule wins where it hides the field first: sdxl keeps its own reason
+    sdxl = by_id["sdxl_base_1.0"]
+    assert "discrete uniform" in _visibility(sdxl)["radc_res_influence"]["reason"]
+    assert resolve_capabilities(sdxl)["capabilities"]["supports_radc_resolution"] is False
+    assert _visibility(by_id["flux3-image-klein-base"])["radc_res_influence"] == {"supported": True}
 
 
 # ── Scenario 10: the flow-matching timestep fields are hidden for sdxl only ──
@@ -86,7 +106,10 @@ def test_flow_timestep_fields_shown_for_every_other_definition():
         if defn.family == "sdxl":
             continue
         vis = _visibility(defn)
+        resolution = resolve_capabilities(defn)["capabilities"]["supports_radc_resolution"]
         for name in FLOW_TIMESTEP_FIELDS:
+            if name == "radc_res_influence" and not resolution:
+                continue  # hidden by the resolution rule (test_radc_res_influence_is_hidden_where_declared_absent)
             assert vis[name] == {"supported": True}, f"{defn.family}/{defn.id} {name}: {vis[name]}"
         config = {"timestep_sampling": "radc", "radc_start": 0.8}
         assert apply_capability_allowlist(config, defn) == [], defn.id

@@ -78,6 +78,10 @@ def pad_ideogram4_text_batch(
 class IdeogramV4Trainer(GenericTrainingPipeline):
     """Ideogram 4 LoRA trainer."""
 
+    # ``t / 1000`` counts the clean fraction (t = 0 noise, t = 1000 data, see below); the
+    # sigma statistics record ``1 - t / 1000``, the noise fraction, as for every family.
+    timesteps_count_clean_fraction = True
+
     def _setup_family(self) -> None:
         self.driver = IdeogramV4Driver(self.definition, self.device)
         self.loader = IdeogramV4Loader(self.device)
@@ -102,6 +106,15 @@ class IdeogramV4Trainer(GenericTrainingPipeline):
     # to align TRAINING here. ``timesteps`` arrive in the shared [0, 1000] scale;
     # ``tau = t/1000`` is the same value ``driver.forward_pass`` feeds the DiT,
     # so the noise level the model is told matches the actual blend.
+
+    def sample_timesteps(self, batch_size: int, latents: torch.Tensor | None = None) -> torch.Tensor:
+        """The shared draw turned into Ideogram's clock: ``1000 - t``.
+
+        The shared sampler draws a NOISE fraction on ``[0, 1000]`` (1000 = pure noise); here
+        ``t = 1000`` is data. Without the flip every mode leaned to the opposite side its help
+        names, and radc's curriculum ran backwards.
+        """
+        return 1000.0 - super().sample_timesteps(batch_size, latents)
 
     def add_noise(
         self,

@@ -106,7 +106,8 @@ def spy(monkeypatch):
 # ── scenario 1: the configured mode is the base draw, the shift warp is on top ──
 
 
-def test_radc_is_the_factory_draw_with_progress_then_the_shift_warp(spy):
+def test_radc_is_the_factory_draw_with_progress_and_no_shift_warp(spy):
+    """radc's draw is the noise level itself: the per-task shift is not applied on top of it."""
     cfg = {"timestep_sampling": "radc", "radc_start": 0.8, "timestep_shift": 5.0}
     t = _trainer(cfg)
     torch.manual_seed(0)
@@ -116,7 +117,7 @@ def test_radc_is_the_factory_draw_with_progress_then_the_shift_warp(spy):
     assert spy[0].device == CPU and spy[0].config.get("radc_start") == 0.8
     torch.manual_seed(0)
     base = TimestepSampler.sample("radc", 4, CPU, cfg, progress=0.5)
-    assert torch.equal(got, _warp(base, 5.0))
+    assert torch.equal(got, (base * 1000.0).clamp(0.0, 1000.0))
 
 
 # ── scenario 2: the presets stay byte-identical ──
@@ -184,12 +185,14 @@ def test_first_draw_logs_the_mode_once_and_nothing_is_replaced():
 # ── 14B: band split and router read ONE warped distribution at the current progress ──
 
 
-def _band_mass(cfg, progress, shape, n=8192):
+def _band_mass(cfg, progress, shape, n=8192, *, warped=False):
+    """The high band's share of the radc draw (unwarped: radc sets the noise level itself)."""
     torch.manual_seed(0)
     base = TimestepSampler.sample(
         cfg["timestep_sampling"], n, CPU, cfg, latents=torch.zeros(*shape), progress=progress
     )
-    return float((_warp(base, cfg["timestep_shift"]) >= 875.0).float().mean())
+    t = _warp(base, cfg["timestep_shift"]) if warped else base * 1000.0
+    return float((t >= 875.0).float().mean())
 
 
 RADC14 = {
@@ -221,6 +224,17 @@ def test_router_p_high_follows_the_reference_resolution():
     assert abs(p512 - p1024) > 0.02, (p512, p1024)
     assert p512 == pytest.approx(_band_mass(RADC14, 0.5, _shape(512)), abs=0.02)
     assert p1024 == pytest.approx(_band_mass(RADC14, 0.5, _shape(1024)), abs=0.02)
+
+
+def test_bernini_r_router_estimate_matches_the_radc_draw():
+    """The router's p_high is the high band's share of the draw the steps really use: radc unwarped."""
+    t = _dual({**RADC14, "resolutions": [512]})
+    for progress in (0.0, 0.5):
+        got = t.expert_router.estimate_p_high(progress=progress)
+        want = _band_mass(RADC14, progress, _shape(512))
+        assert got == pytest.approx(want, abs=0.02), (progress, got, want)
+        # not vacuous: the old warped draw gives a clearly different share here
+        assert abs(_band_mass(RADC14, progress, _shape(512), warped=True) - want) > 0.05
 
 
 def test_video_shaped_reference_saturates_the_token_count():
@@ -284,6 +298,48 @@ def test_training_draws_after_consecutive_interval_switches_are_not_repeated():
     router.choose_expert(2)
     second = torch.rand(16, device=dev)
     assert not torch.equal(first, second), "the interval estimate reseeded the training RNG"
+
+
+# ── every mode but radc draws exactly as on main (seed 0, step 50 of 100, batch 4) ──
+
+# Pinned on main 54769ca, through the real trainer and its profile latents (the lane's pin_main.py).
+MAIN_DRAWS = {
+    "bernini-r-1.3b": {
+        "uniform": [831.243225, 943.092346, 326.747894, 432.002441],
+        "logit_normal": [958.925781, 788.516968, 361.386475, 898.244446],
+        "sigmoid": [958.925781, 788.516968, 361.386475, 898.244446],
+        "cosmap": [669.95105, 900.413696, 46.420536, 98.685783],
+        "mode": [833.881104, 743.68396, 958.527893, 938.231018],
+        "flux_shift": [974.677979, 860.086487, 482.669098, 935.708069],
+        "model_shift": [981.664978, 895.295227, 564.795715, 952.928345],
+    },
+    "bernini-r-14b": {
+        "uniform": [831.243225, 326.747894, 432.002441, 689.384277],
+        "logit_normal": [788.516968, 361.386475, 628.296509, 552.516235],
+        "sigmoid": [788.516968, 361.386475, 628.296509, 552.516235],
+        "cosmap": [669.95105, 46.420536, 98.685783, 392.301941],
+        "mode": [833.881104, 743.68396, 870.821838, 807.793945],
+        "flux_shift": [974.677979, 935.708069, 925.033203, 950.143433],
+        "model_shift": [981.664978, 895.295227, 952.928345, 884.534973],
+    },
+}
+
+
+@pytest.mark.parametrize(
+    ("definition_id", "mode"),
+    [(d, m) for d, modes in MAIN_DRAWS.items() for m in modes],
+)
+def test_bernini_r_other_modes_draw_as_before(definition_id, mode):
+    from app.engine.models.registry import registry
+    from tests.test_engine_fields_reach_the_trainer import _PROFILES, _Profile, _trainer as _real_trainer
+
+    registry.initialize()
+    profile = _PROFILES.get("bernini_r", _Profile())
+    trainer = _real_trainer(registry.get_definition(definition_id), **{**profile.config, "timestep_sampling": mode})
+    trainer.global_step, trainer.max_train_steps = 50, 100
+    torch.manual_seed(0)
+    drawn = trainer.sample_timesteps(4, torch.zeros(4, profile.latents[1], *profile.latents[2:]))
+    assert torch.allclose(drawn, torch.tensor(MAIN_DRAWS[definition_id][mode]), atol=1e-4), drawn.tolist()
 
 
 def test_band_sampler_draws_from_the_factory_at_the_current_progress(spy):

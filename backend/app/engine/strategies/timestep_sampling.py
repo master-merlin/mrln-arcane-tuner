@@ -75,15 +75,6 @@ def _radc_cdf(center_q: int, width_q: int) -> torch.Tensor:
     return torch.cumsum(pdf / pdf.sum(), dim=0)
 
 
-@lru_cache(maxsize=256)
-def _radc_pdf(center_q: int, width_q: int) -> torch.Tensor:
-    """Cached CPU weight curve for the quantized pair :func:`_radc_cdf` draws from.
-
-    The returned tensor is shared: index it, never modify it in place.
-    """
-    return _make_radc_pdf(center_q / 1000.0, width_q / 1000.0)
-
-
 def _make_radc_pdf(center: float, width: float) -> torch.Tensor:
     """Build a Gaussian PDF over 1000 bins with configurable center/width.
 
@@ -180,8 +171,19 @@ TIMESTEP_PARAMETERS: tuple[str, ...] = (
     "radc_end",
     "radc_width",
     "radc_res_influence",
+    "radc_uniform_prob",
     "fixed_sigmas",
 )
+
+# The modes whose draw IS the noise fraction the run trains at: a family applies no shift or warp
+# of its own on top of them (it would move the focus the settings name). One source, read by every
+# family that shifts its other modes.
+_NOISE_LEVEL_MODES = frozenset({"radc"})
+
+
+def sets_noise_level_itself(mode: str) -> bool:
+    """True when ``mode``'s draw is the noise fraction itself, so no family shift may follow it."""
+    return mode in _NOISE_LEVEL_MODES
 
 # Older names the sampler still reads for a parameter: a config that carries one has set it.
 _PARAMETER_ALIASES: dict[str, tuple[str, ...]] = {
@@ -287,6 +289,7 @@ TIMESTEP_SCHEMA_DEFAULTS: dict[str, Any] = {
     "radc_end": 0.2,
     "radc_width": 0.5,
     "radc_res_influence": 0.15,
+    "radc_uniform_prob": 0.0,
 }
 
 
@@ -315,6 +318,22 @@ def _rand(bs: int, device: torch.device, generator: torch.Generator | None) -> t
     if generator is None:
         return torch.rand((bs,), device=device)
     return torch.rand((bs,), device=generator.device, generator=generator).to(device)
+
+
+def _mix_uniform(t: torch.Tensor, config: dict[str, Any], key: str, device: torch.device,
+                 generator: torch.Generator | None) -> torch.Tensor:
+    """Replace the share ``config[key]`` of ``t`` with ``U(0,1)`` draws. At 0 nothing is drawn, so
+    the random stream is consumed exactly as without it. A share outside ``[0, 1]`` (or not finite)
+    is refused: a config that never passed the schema (a definition default, a direct caller)
+    would otherwise silently train plain uniform."""
+    share = float(timestep_setting(config, key))
+    if not 0.0 <= share <= 1.0:  # NaN fails both comparisons
+        raise ValueError(f"{key} must be a share within [0, 1], got {share!r}")
+    if share == 0.0:
+        return t
+    bs = t.shape[0]
+    u_mask = _rand(bs, device, generator) < share
+    return torch.where(u_mask, _rand(bs, device, generator), t)
 
 
 def _randn(bs: int, device: torch.device, generator: torch.Generator | None) -> torch.Tensor:
@@ -463,7 +482,9 @@ class TimestepSampler:
             # sample() contract (t in [0, 1]) holds for direct callers too, not
             # only for sample_scaled's own clamp.
             indices = indices.clamp(max=cdf.shape[0] - 1)
-            return (indices.float() + 1) / 1000.0
+            t = (indices.float() + 1) / 1000.0
+            # A share of U(0, 1) on the same noise scale (default 0: off).
+            return _mix_uniform(t, config, "radc_uniform_prob", device, generator)
 
         if mode == "model_shift":
             # Inference-matched flow-match shift, in additive logit space.
@@ -489,11 +510,7 @@ class TimestepSampler:
             else:
                 mu = (0.5 + 1.16) / 2.0
             t = torch.sigmoid(_randn(bs, device, generator) * std + mu)
-            uniform_prob = float(timestep_setting(config, "timestep_uniform_prob"))
-            if uniform_prob > 0.0:
-                u_mask = _rand(bs, device, generator) < uniform_prob
-                t = torch.where(u_mask, _rand(bs, device, generator), t)
-            return t
+            return _mix_uniform(t, config, "timestep_uniform_prob", device, generator)
 
         # Unknown → fallback with warning
         logger.warning("unknown_timestep_mode", mode=mode, fallback="uniform")

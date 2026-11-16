@@ -258,9 +258,14 @@ class TestBandSampling:
         expert (the range-split divergence); no router → full-range."""
         t = _band_trainer()
 
+        driver = t.driver
+
         class _R:
             def choose_expert(self, s):
                 return HIGH
+
+            def expert_for_batch(self, latent_shape):
+                return driver.active_expert  # the expert this test sets
 
         t.driver.router = _R()
         t.driver._set_active(HIGH)

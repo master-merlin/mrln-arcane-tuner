@@ -867,3 +867,43 @@ class TestEndToEndTrainingStep:
                 assert p.requires_grad
             else:
                 assert not p.requires_grad, f"base weight trainable: {name}"
+
+
+# ── The clock: the shared sampler draws a noise fraction, Boogu's t counts clean ──
+
+
+def _boogu_draw(mode: str, n: int = 8192, **config) -> torch.Tensor:
+    trainer = _trainer_shell()
+    trainer.config = {"timestep_sampling": mode, **config}
+    trainer.global_step, trainer.max_train_steps = 0, 100
+    torch.manual_seed(0)
+    return trainer.sample_timesteps(n)
+
+
+def _noise_fraction(trainer: BooguImageTrainer, t: torch.Tensor) -> torch.Tensor:
+    zeros = torch.zeros(t.shape[0], 1)
+    return trainer.add_noise(zeros, torch.ones_like(zeros), t).reshape(-1)
+
+
+def test_boogu_flux_shift_leans_to_noise():
+    trainer = _trainer_shell()
+    t = _boogu_draw("flux_shift")
+    assert float(_noise_fraction(trainer, t).median()) > 0.5, "flux_shift must lean toward noise, as its help says"
+
+
+def test_boogu_radc_starts_at_its_high_noise_focus():
+    trainer = _trainer_shell()
+    # centre 0.9, width 0.2 (a sigma of 0.1) cut at 1: the median noise fraction is 0.879
+    t = _boogu_draw("radc", radc_start=0.9, radc_end=0.3, radc_width=0.2, radc_res_influence=0.0)
+    assert abs(float(_noise_fraction(trainer, t).median()) - 0.879) < 0.01
+
+
+@pytest.mark.parametrize("mode", ["uniform", "logit_normal", "sigmoid"])
+def test_symmetric_modes_keep_their_distribution(mode):
+    from app.engine.strategies.timestep_sampling import TimestepSampler
+
+    drawn = _boogu_draw(mode, logit_normal_mu=0.0, logit_normal_sigma=1.0)
+    torch.manual_seed(0)
+    before = TimestepSampler.sample(mode, 8192, torch.device("cpu"), {"timestep_sampling": mode})
+    q = torch.tensor([0.1, 0.25, 0.5, 0.75, 0.9])
+    assert torch.allclose(torch.quantile(drawn, q), torch.quantile(before, q), atol=0.02)

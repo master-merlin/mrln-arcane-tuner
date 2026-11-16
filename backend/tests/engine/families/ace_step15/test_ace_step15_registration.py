@@ -19,6 +19,8 @@ def test_family_archetype_and_capability_overrides():
     assert AceStep15Family.capability_overrides == {
         "is_audio_family": True,
         "supports_spatial_resolution": False,
+        # Audio latents carry no grid for the radc resolution term.
+        "supports_radc_resolution": False,
     }
 
 

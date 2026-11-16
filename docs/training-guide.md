@@ -233,14 +233,15 @@ fixed distribution spends the same attention on both phases throughout;
 RADC is designed to spend it where the run needs it at that point in
 training instead. That the sampling window moves as described is verifiable
 in the code and its tests; that this produces better structure or detail
-than a fixed distribution is the hypothesis behind the feature, not a
-measured result — judge it on your own samples.
+than a fixed distribution is the hypothesis behind the feature. One
+measurement supports it on held-out loss, for one model and one dataset (see
+**Uniform share** below) — judge it on your own samples.
 
 **How.** Four knobs, all in Training Dynamics once `timestep_sampling` is set
 to `radc` (`backend/app/engine/models/base.py`):
 - **Noise focus at training start** (`radc_start`, default `0.8`) — where the
-  sampling window centers at step 0 (`1.0` = pure high-noise/structure,
-  `0.0` = pure low-noise/detail).
+  sampling window centers at step 0, on the model's own noise scale (`1.0` =
+  pure noise/structure, `0.0` = clean/detail).
 - **Noise focus at training end** (`radc_end`, default `0.2`) — where it
   centers by the final step; the run interpolates linearly between the two.
 - **Curve width** (`radc_width`, default `0.5`) — how broad the sampling
@@ -252,6 +253,44 @@ to `radc` (`backend/app/engine/models/base.py`):
   first place (`0` disables the effect). Measured in transformer tokens, not
   pixels: images above roughly 1024² all count as full resolution, so the
   spread only shows up in datasets that mix clearly smaller images in too.
+  HiDream-O1 (pixel patches) and ACE-Step 1.5 (audio latents) have no grid for
+  it, so the field is hidden for them.
+- **Uniform share** (`radc_uniform_prob`, default `0.0`, off) — that share of
+  the draws is taken uniformly over the whole noise scale instead of from the
+  curve, so no noise level goes untrained however narrow the curve is.
+  It is off by default because it was measured to change nothing overall:
+  on FLUX.3 Klein (2000 steps, two training seeds, 6 held-out images, start
+  `0.9`, end `0.3`, width `0.5`), a share of `0.1` moved the held-out loss by
+  `+0.00002` against `0.0`, inside the `0.00047` noise floor. It lowered the
+  loss slightly in the low-noise bands and gave that back at high noise. In
+  the same runs, `radc` with the corrected focus trained to a lower held-out
+  loss than `uniform` (by `0.00145`) and `logit_normal` (by `0.00257`), both
+  above the noise floor in every band: one model and one dataset, so judge it
+  on your own samples too.
+
+**On the model's own noise scale.** The four numbers describe a noise fraction
+on the model's own scale, `0` clean and `1` pure noise, in every family that
+offers `radc`, and no family shifts, warps or reverses that draw afterwards.
+Earlier versions did in some families, so the same numbers trained somewhere
+else. A saved config is not rewritten, and a job resumed across the update
+continues on the corrected focus. Measured with start `0.9`, end `0.3` and
+width `0.2` (the median noise fraction at the first and the last step; the set
+focus gives `0.88` and `0.30`), the earlier versions trained at:
+- **FLUX.3:** about `0.98` → `0.75`, under its fixed 6.93 shift, and the
+  resolution term did nothing. For the earlier behaviour, set the start and the
+  end near those values.
+- **Bernini-R:** about `0.97` → `0.88` on 14B and `0.97` → `0.68` on 1.3B,
+  under its `timestep_shift` warp.
+- **MiniMax-H3:** about `0.99` → `0.84`, under its video sigma shift.
+- **Boogu-Image** (base, edit, turbo) **and Ideogram 4:** backwards, about
+  `0.12` → `0.70`: their clock counts the clean fraction. Every mode now turns
+  the drawn noise fraction into their clock. The symmetric modes (`uniform`,
+  `sigmoid`, `logit_normal` with mu `0`) draw the same distribution as before;
+  `flux_shift`, `cosmap`, `mode`, `model_shift` and `logit_normal` with another
+  mu now lean to the side their help names.
+- **FLUX.2:** on focus, but the loss was weighted by the same curve, which
+  counted it twice (the effective curve was about 0.7 of the set width). FLUX.2
+  no longer weights the loss, so its runs spread wider than before.
 
 **What to expect.** The sampling center moves smoothly from `radc_start`
 toward `radc_end` over the whole run — there is no discrete phase switch to
@@ -287,19 +326,12 @@ costs tens of milliseconds of CPU and logs a warning
 `bernini_r_band_redraw_exhausted` on Bernini-R), and a job then mostly sees that
 one timestep; a higher `radc_end` or `radc_width` keeps it spread.
 
-On FLUX2, the same curve also weights each sample's training loss,
-not only which timesteps get drawn (`compute_loss_weight` in
-`backend/app/engine/models/families/flux2/trainer.py`) — a timestep the
-curriculum currently favours is both sampled more often and counted more in
-the loss. The weight uses the centre of the batch's own draw, resolution
-cross-influence included: with the defaults, at the last step, a batch of 4096
-tokens or more has its draw and its weight centred on `0.05`, and one of 256
-tokens or fewer on `0.35`. Since the weight now follows the draw, it also sits
-higher where the draws are: at 4096 tokens or more, the batch's mean weight at
-the last step went from about 1.72 to 2.06 (about 20% more), and about 3% more
-halfway through a run. On a small image the last step's mean weight is about 2%
-lower. The loss of such a run reads a little differently from an earlier version's
-for that reason alone.
+On FLUX.2, the curve decides which timesteps get drawn and nothing else: FLUX.2
+no longer weights the loss by it. Each batch still draws from its own centre,
+resolution cross-influence included: with the defaults, at the last step, a batch
+of 4096 tokens or more draws around `0.05`, and one of 256 tokens or fewer around
+`0.35`. The loss of such a run reads differently from an earlier version's for
+that reason alone.
 
 ### Held-out validation
 
@@ -568,9 +600,10 @@ this list.
 - **Model Shift Std** (`model_shift_std`) — From the schema: Std of the logit-normal draw for model_shift timestep sampling. Default `1.0` (range 0.1 to 3.0, step 0.1).
 - **Persist Embeddings** (`persist_embeddings`) — Include the text embedding cache manifest in checkpoints for seamless resume. Placeholder: {persist_embeddings} *(schema: Store embedding cache manifest in checkpoints for resume)*. Default `True`.
 - **Persist Latents** (`persist_latents`) — Include the latent cache manifest in checkpoints for seamless resume. Placeholder: {persist_latents} *(schema: Store latent cache manifest in checkpoints for resume)*. Default `True`.
-- **Radc End** (`radc_end`) — Where the noise emphasis ends at the final training step. Placeholder: {radc_end} *(schema: Noise focus at training end (detail refinement))*. Default `0.2` (range 0.0 to 1.0, step 0.05).
+- **Radc End** (`radc_end`) — Where the noise emphasis ends at the final training step, on the model's noise scale (0 = clean). Placeholder: {radc_end} *(schema: Noise focus at training end, on the model's own noise scale (low = detail refinement))*. Default `0.2` (range 0.0 to 1.0, step 0.05).
 - **Radc Res Influence** (`radc_res_influence`) — How much image resolution affects the noise focus at each training stage. Placeholder: {radc_res_influence} *(schema: Resolution cross-influence (0=off))*. Default `0.15` (range 0.0 to 0.5, step 0.05).
-- **Radc Start** (`radc_start`) — Where the noise emphasis begins at the start of training. Placeholder: {radc_start} *(schema: Noise focus at training start (1.0=high noise, 0.0=clean))*. Default `0.8` (range 0.0 to 1.0, step 0.05).
+- **Radc Start** (`radc_start`) — Where the noise emphasis begins at the start of training, on the model's noise scale (1 = pure noise). Placeholder: {radc_start} *(schema: Noise focus at training start, on the model's own noise scale (1.0=pure noise, 0.0=clean))*. Default `0.8` (range 0.0 to 1.0, step 0.05).
+- **Radc Uniform Prob** (`radc_uniform_prob`) — Share of radc draws taken uniformly over all noise levels (0 = off). Placeholder: {radc_uniform_prob} *(schema: Share of radc draws taken uniformly over the model's noise scale (0=off))*. Default `0.0` (range 0.0 to 1.0, step 0.05).
 - **Radc Width** (`radc_width`) — How broad or narrow the Gaussian sampling curve is. Placeholder: {radc_width} *(schema: Curve width (0.1=focused, 1.0=broad))*. Default `0.5` (range 0.05 to 1.0, step 0.05).
 - **Resolutions** (`resolutions`) — Target pixel resolutions for aspect-ratio bucketing. Placeholder: {resolutions} *(schema: Target resolutions for bucketing)*. Default `[1024]`.
 - **Resume From Checkpoint** (`resume_from_checkpoint`) — Path to a checkpoint directory to continue training from. Placeholder: {resume_from_checkpoint} *(schema: Path to a checkpoint directory to resume from)*. Default `""` (empty).

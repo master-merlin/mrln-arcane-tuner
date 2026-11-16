@@ -394,13 +394,18 @@ class MiniMaxH3Driver(IModelDriver):
         Family default draw is ``uniform`` (the definition's ``timestep.default_mode``) — with the
         definition's shift on top it reproduces the inference grid (diffusion-pipe's
         recommendation, research §4); a user-set ``timestep_sampling`` wins.
+
+        A mode whose draw is the noise level itself (radc) IS ``σ_v``: it is un-shifted to the
+        ``u`` that gives that ``σ_v``, so the video trains where the settings say and ``σ_a``
+        still follows from the same ``u``.
         """
         from app.engine.strategies.timestep_sampling import (  # noqa: PLC0415
             TimestepSampler,
+            sets_noise_level_itself,
             timestep_setting,
         )
 
-        from .schedule import H3SigmaSchedule, sigma_to_t
+        from .schedule import H3SigmaSchedule, sigma_to_t, unshift_sigma
         from .settings import resolve_h3_settings
 
         mode = timestep_setting(config, "timestep_sampling", self.definition)
@@ -408,6 +413,8 @@ class MiniMaxH3Driver(IModelDriver):
             mode, batch_size, device, config, latents=latents, progress=progress,
         )
         schedule = H3SigmaSchedule.from_settings(resolve_h3_settings(self.definition, config))
+        if sets_noise_level_itself(mode):
+            u = unshift_sigma(u, schedule.sigma_shift_video)
         sigma_v, _sigma_a = schedule.draw(u)
         return sigma_to_t(sigma_v).clamp(0.0, 1.0)
 

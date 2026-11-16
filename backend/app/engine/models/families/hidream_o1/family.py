@@ -10,7 +10,8 @@ class HiDreamO1Family(ModelFamily):
     archetype = "unified_transformer"
     # trainer.py forward_pass / compute_loss draw their own noise in patch space and never
     # receive the shared loop's offset noise, so noise_offset is hidden (interview Q1.1, LANE-168).
-    capability_overrides = {"supports_noise_offset": False}
+    # Pixel-space patches carry no latent grid for radc's resolution term, so it is hidden too.
+    capability_overrides = {"supports_noise_offset": False, "supports_radc_resolution": False}
 
     def get_trainer_class(self):
         # Import inside the method to avoid loading heavy training deps

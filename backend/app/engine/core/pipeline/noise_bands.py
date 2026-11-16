@@ -13,6 +13,30 @@ _CENTRE_TOLERANCE = 0.01
 _GRID_POINTS = 129
 _BISECTIONS = 48
 _MONOTONIC_SLACK = 1e-5
+_CHUNK = 1024
+
+
+def noise_fraction_of(family, timesteps: torch.Tensor, like: torch.Tensor | None = None) -> torch.Tensor:
+    """The noise fraction (0 clean, 1 pure noise) of each of ``timesteps`` on the family's clock.
+
+    Measured through ``add_noise`` with latents of 0 and noise of 1, shaped like ``like``'s
+    first item: the fraction is the item's largest value, since a frame the family pins to
+    clean stays at 0. A family whose forward adds the noise itself, so that its ``add_noise``
+    never runs (``validation_timestep_domain`` None), answers through its ``noise_fraction``.
+    """
+    flat = timesteps.reshape(-1)
+    if getattr(family, "validation_timestep_domain", None) is None:
+        try:
+            return family.noise_fraction(flat).float().reshape(-1)
+        except (AttributeError, NotImplementedError):
+            pass
+    reference = torch.zeros(1, 1) if like is None else like[:1]
+    out = []
+    for chunk in flat.split(_CHUNK):
+        latents = torch.zeros((chunk.shape[0], *reference.shape[1:]), dtype=reference.dtype, device=reference.device)
+        noisy = family.add_noise(latents, torch.ones_like(latents), chunk.to(reference.device))
+        out.append(noisy.reshape(chunk.shape[0], -1).amax(dim=1).float())
+    return torch.cat(out) if out else torch.zeros(0)
 
 
 def band_centres(count: int) -> torch.Tensor:
@@ -32,13 +56,8 @@ def timesteps_for_bands(family, count: int, like: torch.Tensor | None = None) ->
     if domain is None:
         raise ValueError(f"Validation is unavailable for the {name} family in this version.")
 
-    reference = torch.zeros(1, 1) if like is None else like[:1]
-    latents = torch.zeros_like(reference)
-    noise = torch.ones_like(reference)
-    device = reference.device
-
     def fraction(timestep: torch.Tensor) -> float:
-        return float(family.add_noise(latents, noise, timestep.reshape(1).to(device)).max())
+        return float(noise_fraction_of(family, timestep, like))
 
     low, high = float(domain[0]), float(domain[1])
     grid = torch.linspace(low, high, _GRID_POINTS, dtype=torch.float32)

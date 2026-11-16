@@ -1074,3 +1074,53 @@ def test_the_job_says_once_how_many_clips_train_without_audio(tmp_path, monkeypa
     lines = [c for c in t.logger.info.call_args_list if c.args and c.args[0] == "minimax_h3_data_summary"]
     assert len(lines) == 1, f"one line per job, got {len(lines)}"
     assert lines[0].kwargs == {"total_items": 3, "clips_without_audio": 2}
+
+
+# ── The timestep draw: radc is the video sigma; every other mode keeps the video shift ──
+
+# Pinned on main 54769ca (seed 0, step 50 of 100, batch 4, the real trainer and its profile latents).
+MAIN_DRAWS_T2VA = {
+    "uniform": [0.077993, 0.024526, 0.461939, 0.353936],
+    "logit_normal": [0.017534, 0.100518, 0.424063, 0.045074],
+    "sigmoid": [0.017534, 0.100518, 0.424063, 0.045074],
+    "cosmap": [0.17031, 0.044053, 0.895389, 0.791905],
+    "mode": [0.05189, 0.155503, 0.005364, 0.00838],
+    "flux_shift": [0.010709, 0.063478, 0.308719, 0.027832],
+    "model_shift": [0.007722, 0.046465, 0.243034, 0.020167],
+}
+
+
+def _real_h3(**config):
+    from app.engine.models.registry import registry
+    from tests.test_engine_fields_reach_the_trainer import _PROFILES, _Profile, _trainer as _real_trainer
+
+    registry.initialize()
+    profile = _PROFILES.get("minimax_h3", _Profile())
+    trainer = _real_trainer(registry.get_definition("minimax-h3-t2va"), **{**profile.config, **config})
+    trainer.global_step, trainer.max_train_steps = 50, 100
+    return trainer, torch.zeros(4, profile.latents[1], *profile.latents[2:])
+
+
+@pytest.mark.parametrize("mode", sorted(MAIN_DRAWS_T2VA))
+def test_minimax_h3_other_modes_draw_as_before(mode):
+    trainer, latents = _real_h3(timestep_sampling=mode)
+    torch.manual_seed(0)
+    drawn = trainer.sample_timesteps(4, latents)
+    assert torch.allclose(drawn, torch.tensor(MAIN_DRAWS_T2VA[mode]), atol=1e-5), drawn.tolist()
+
+
+def test_minimax_h3_radc_audio_sigma_follows_the_video_sigma():
+    from app.engine.models.families.minimax_h3.schedule import shift_sigma, unshift_sigma
+    from app.engine.strategies.timestep_sampling import TimestepSampler
+
+    cfg = {"timestep_sampling": "radc", "radc_start": 0.9, "radc_end": 0.3, "radc_res_influence": 0.0}
+    trainer, latents = _real_h3(**cfg)
+    torch.manual_seed(0)
+    t_video = trainer.sample_timesteps(4, latents)
+    torch.manual_seed(0)
+    drawn = TimestepSampler.sample("radc", 4, torch.device("cpu"), trainer.config, progress=0.5)
+    # the video trains at the drawn noise level, not at the drawn level shifted by 12
+    assert torch.allclose(1.0 - t_video, drawn, atol=1e-6)
+    # the audio sigma is the same u through the audio shift
+    t_audio = trainer.driver.audio_timestep(t_video)
+    assert torch.allclose(1.0 - t_audio, shift_sigma(unshift_sigma(drawn, 12.0), 3.0), atol=1e-6)

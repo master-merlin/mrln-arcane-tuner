@@ -535,21 +535,27 @@ class PipelineTrainMixin:
         if getattr(self, "one_bucket_per_accumulation_window", False):
             window = max(1, int(self.config.get("gradient_accumulation_steps", 1)))
 
+        # Per bucket, the batches that didn't fill a window: they open that bucket's next epoch,
+        # so a window never spans buckets and no item trains more often than once per epoch in
+        # the long run (padding with repeats would re-weight a small bucket by the accumulation).
+        # Not checkpointed: a resume restarts the epoch, losing at most one partial window per
+        # bucket, as it loses the rest of the interrupted epoch.
+        held_back: dict[tuple[int, int, int], list[list]] = defaultdict(list)
+
         def _random_windows() -> list[list[list]]:
-            """One epoch as accumulation windows of ``window`` batches, each from one bucket. A
-            bucket's short last window is filled with batches drawn again from that bucket, so
-            every item trains each epoch and no window spans buckets or epochs."""
+            """One epoch as accumulation windows of ``window`` batches, each from one bucket."""
             random.shuffle(self.inventory)
             buckets: dict[tuple[int, int, int], list] = defaultdict(list)
             for it in self.inventory:
                 buckets[_bucket_key(it)].append(it)
             size = max(1, batch_size)
             windows: list[list[list]] = []
-            for items in buckets.values():
-                batches = [items[i : i + size] for i in range(0, len(items), size)]
-                while len(batches) % window:
-                    batches.append(random.sample(items, min(size, len(items))))
-                windows += [batches[i : i + window] for i in range(0, len(batches), window)]
+            for key, items in buckets.items():
+                batches = held_back.pop(key, []) + [items[i : i + size] for i in range(0, len(items), size)]
+                full = len(batches) - len(batches) % window
+                windows += [batches[i : i + window] for i in range(0, full, window)]
+                if full < len(batches):
+                    held_back[key] = batches[full:]
             random.shuffle(windows)
             return windows
 

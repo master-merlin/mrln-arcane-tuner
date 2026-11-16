@@ -14,6 +14,7 @@ generator uses the module-level ``random``).
 from __future__ import annotations
 
 import random
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -151,12 +152,55 @@ def _windowed_owner(inventory, *, opt_in: bool = True, vram_safe: bool = True, a
     return owner
 
 
+def _within(check, seconds: float = 30.0) -> None:
+    """Run ``check`` with a time limit: a windowed iterator that holds every batch back forever
+    loops without yielding, and that must fail here, not hang the run."""
+    outcome: dict = {}
+
+    def run():
+        try:
+            check()
+        except BaseException as exc:  # noqa: BLE001 -- re-raised below, in the test's thread
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=run, daemon=True)
+    worker.start()
+    worker.join(seconds)
+    assert not worker.is_alive(), f"the iterator yielded no batch for {seconds}s"
+    if "error" in outcome:
+        raise outcome["error"]
+
+
+def test_a_dataset_smaller_than_one_window_still_trains_every_item():
+    """Buckets of 1, 2 and 3 items, windows of 4: no bucket fills a window in one epoch. Its
+    batches wait across epochs until one does, so every item trains, at once per epoch."""
+    inventory = [_item(i, w, w, f"b{w}") for i, w in enumerate([256] + [512] * 2 + [768] * 3)]
+
+    def check():
+        random.seed(0)
+        it = _iter(_windowed_owner(inventory, vram_safe=False), 1)
+        counts = dict.fromkeys(range(6), 0)
+        for _ in range(240 // ACCUM):
+            window = [next(it) for _ in range(ACCUM)]
+            assert len({x["bucket"] for batch in window for x in batch}) == 1
+            for batch in window:
+                counts[batch[0]["id"]] += 1
+        # 240 batches = 40 epochs of 6 items; each item within one window of 40.
+        assert all(abs(c - 40) <= ACCUM for c in counts.values()), counts
+
+    _within(check)
+
+
 @pytest.mark.parametrize("batch_size", [1, 2])
 @pytest.mark.parametrize("vram_safe", [True, False], ids=["warmup", "no-warmup"])
 def test_an_opted_in_family_gets_one_bucket_per_accumulation_window(batch_size, vram_safe):
     """Every ``gradient_accumulation_steps`` consecutive batches (one optimizer step) come from
     one bucket, across epoch boundaries and the re-warm after a sample, and every item still
     trains each epoch."""
+    _within(lambda: _one_bucket_per_window(batch_size, vram_safe))
+
+
+def _one_bucket_per_window(batch_size, vram_safe):
     inv = _make_inventory()
     for seed in range(10):
         random.seed(seed)
@@ -175,16 +219,49 @@ def test_an_opted_in_family_gets_one_bucket_per_accumulation_window(batch_size, 
         assert seen == set(range(len(inv))), f"seed={seed}: items never trained: {set(range(len(inv))) - seen}"
 
 
+@pytest.mark.parametrize("accum", [1, 4, 16])
+def test_accumulation_never_changes_how_often_an_item_trains(accum):
+    """Buckets of 64 items and 1 item, batch size 1, no warm-up. However many batches a window
+    holds, every item trains once per epoch in the long run: a bucket's leftover batches wait
+    for the next epoch, never padded with repeats (that would train the single item 16 times
+    per epoch at accumulation 16, a 20 % share instead of 1.5 %).
+
+    Tolerance: after the batches of ``EPOCHS`` epochs, an item is behind by at most the batches
+    its bucket holds back (fewer than one window) and ahead by at most the part of a later
+    epoch already drawn (under one window per bucket), so every count lies within
+    ``EPOCHS +- 2 * accum``."""
+    inventory = [_item(i, 512, 512, "big") for i in range(64)] + [_item(64, 256, 256, "single")]
+
+    def check():
+        owner = _windowed_owner(inventory, vram_safe=False, accum=accum)
+        random.seed(0)
+        it = _iter(owner, 1)
+        counts = dict.fromkeys(range(65), 0)
+        for _ in range(EPOCHS * 65):
+            counts[next(it)[0]["id"]] += 1
+        off = {i: c for i, c in counts.items() if abs(c - EPOCHS) > 2 * accum}
+        assert not off, f"accumulation {accum}: items trained off once per epoch ({EPOCHS} epochs): {off}"
+
+    _within(check)
+
+
+EPOCHS = 160
+
+
 def test_each_epoch_of_windows_starts_with_a_warm_window_of_the_largest_bucket():
-    """Batch size 1, windows of 4: large (3 items) fills to 1 window, medium (4) is 1, small (5)
-    fills to 2, so an epoch is 4 windows and the warm window comes before each."""
-    inv = _make_inventory()
-    for seed in range(20):
-        random.seed(seed)
-        it = _iter(_windowed_owner(inv), 1)
-        windows = [[next(it)[0]["bucket"] for _ in range(ACCUM)] for _ in range(15)]
-        for start in (0, 5, 10):  # the warm window of epochs 1, 2 and 3
-            assert windows[start] == ["large"] * ACCUM, f"seed={seed}: window {start} is {windows[start]}"
+    """Batch size 1, windows of 4, buckets of 4, 4 and 8 items: an epoch is exactly 4 windows
+    (no bucket holds a batch back), and the warm window comes before each."""
+    inv = [_item(i, w, h, b) for i, (w, h, b) in enumerate(
+        [(1024, 1024, "large")] * 4 + [(512, 512, "medium")] * 4 + [(256, 256, "small")] * 8)]
+    def check():
+        for seed in range(20):
+            random.seed(seed)
+            it = _iter(_windowed_owner(inv), 1)
+            windows = [[next(it)[0]["bucket"] for _ in range(ACCUM)] for _ in range(15)]
+            for start in (0, 5, 10):  # the warm window of epochs 1, 2 and 3
+                assert windows[start] == ["large"] * ACCUM, f"seed={seed}: window {start} is {windows[start]}"
+
+    _within(check)
 
 
 @pytest.mark.parametrize("batch_size", [1, 2])

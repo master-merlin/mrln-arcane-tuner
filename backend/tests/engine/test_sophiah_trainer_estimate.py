@@ -222,7 +222,7 @@ def test_the_sigma_histogram_does_not_count_the_estimate_s_passes(tmp_path, monk
 
     updates = []
     monkeypatch.setattr(
-        sigma_tracker.SigmaTracker, "update", lambda self, timesteps: updates.append(1)
+        sigma_tracker.SigmaTracker, "update", lambda self, timesteps, **kwargs: updates.append(1)
     )
     t = _Trainer(tmp_path, steps=4, period=1)
     _run(t)

@@ -233,8 +233,9 @@ fixed distribution spends the same attention on both phases throughout;
 RADC is designed to spend it where the run needs it at that point in
 training instead. That the sampling window moves as described is verifiable
 in the code and its tests; that this produces better structure or detail
-than a fixed distribution is the hypothesis behind the feature, not a
-measured result — judge it on your own samples.
+than a fixed distribution is the hypothesis behind the feature. One
+measurement supports it on held-out loss, for one model and one dataset (see
+**Uniform share** below) — judge it on your own samples.
 
 **How.** Four knobs, all in Training Dynamics once `timestep_sampling` is set
 to `radc` (`backend/app/engine/models/base.py`):
@@ -257,6 +258,15 @@ to `radc` (`backend/app/engine/models/base.py`):
 - **Uniform share** (`radc_uniform_prob`, default `0.0`, off) — that share of
   the draws is taken uniformly over the whole noise scale instead of from the
   curve, so no noise level goes untrained however narrow the curve is.
+  It is off by default because it was measured to change nothing overall:
+  on FLUX.3 Klein (2000 steps, two training seeds, 6 held-out images, start
+  `0.9`, end `0.3`, width `0.5`), a share of `0.1` moved the held-out loss by
+  `+0.00002` against `0.0`, inside the `0.00047` noise floor. It lowered the
+  loss slightly in the low-noise bands and gave that back at high noise. In
+  the same runs, `radc` with the corrected focus trained to a lower held-out
+  loss than `uniform` (by `0.00145`) and `logit_normal` (by `0.00257`), both
+  above the noise floor in every band: one model and one dataset, so judge it
+  on your own samples too.
 
 **On the model's own noise scale.** The four numbers describe a noise fraction
 on the model's own scale, `0` clean and `1` pure noise, in every family that

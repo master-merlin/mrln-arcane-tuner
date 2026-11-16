@@ -97,6 +97,14 @@ def test_guide_lists_radc_uniform_prob():
     assert any("`radc_uniform_prob`" in line for line in block.splitlines()), "the field reference was not regenerated"
 
 
+def test_guide_says_the_share_is_off_by_default_and_what_was_measured():
+    assert BaseTrainingConfig.model_fields["radc_uniform_prob"].default == 0.0
+    section = " ".join(_radc_section().split())
+    assert "off by default because it was measured" in section
+    assert "+0.00002" in section and "0.00047" in section, "the guide must give the share's measured gap and the floor"
+    assert "not a measured result" not in section, "the guide still calls RADC's gain unmeasured"
+
+
 def test_guide_lists_no_expert_family_as_progressless():
     # WAN 2.2 and Bernini-R both follow the curriculum, so the Limits paragraph is gone.
     assert "**Limits.**" not in GUIDE

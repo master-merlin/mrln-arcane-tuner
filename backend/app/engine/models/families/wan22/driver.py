@@ -61,6 +61,8 @@ class Wan22Driver(WanDriverBase):
         default_boundary = DEFAULT_BOUNDARY_I2V if self.is_i2v else DEFAULT_BOUNDARY_T2V
         self.boundary: float = float(arch.get("moe.boundary_ratio", default_boundary))
         self.swap_mode: str = "resident"
+        # Set by a swap that emptied the CUDA cache: the loop re-warms before the next forward.
+        self.rewarm_due = False
         # Name (HIGH/LOW) of the expert whose deep blocks are under ACTIVE
         # ``BlockSwappingManager`` management, or ``None`` if block swapping
         # isn't configured. The driver has no visibility into
@@ -260,6 +262,7 @@ class Wan22Driver(WanDriverBase):
             torch.cuda.empty_cache()
         target.to(self.device)
         self._set_active(expert)
+        self.rewarm_due = True  # the emptied pool is reserved again before the next forward
         self.logger.info("wan22_expert_swapped", active=expert, mode=self.swap_mode)
 
     def place_experts_for_start(self) -> None:

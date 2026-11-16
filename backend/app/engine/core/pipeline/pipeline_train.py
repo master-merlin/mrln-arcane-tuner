@@ -467,26 +467,173 @@ class PipelineTrainMixin:
             self.logger_component.resume_step_timer()
             self._emit_status("Training")
 
+    def _prepare_micro_batch(self, batch_items, step: int):
+        """A micro-step's inputs, ``(batch, latents, text_emb)``: the decode, the latent load or
+        encode, the flip augmentation, control latents, conditioning and the text encode."""
+        # Video families pay a heavy per-clip PyAV decode that a warm
+        # latent cache turns into pure waste (the pixels are discarded
+        # for the cached latent), starving the GPU. Defer their decode
+        # and re-run it only on a cache miss; image/pixel families (incl.
+        # the pixel-space ones that read batch["images"] in forward)
+        # decode upfront, byte-identical to before.
+        defer_decode = bool(getattr(self, "is_video_family", False)) or bool(
+            getattr(self, "is_audio_family", False)
+        )
+        batch = self._get_batch(batch_items, decode_pixels=not defer_decode)
+
+        # 1. Encode Latents
+        #    Profiler region "data_prep": cached-latent disk load + the
+        #    host→device copy + text encode — the per-step data cost that
+        #    scales with clip size (the suspected video-vs-image util gap).
+        with torch.no_grad(), self._prof_region("data_prep"):
+            use_cache = self.config.get("cache_latents", True)
+            # Per-item cache discriminators (e.g. a video clip's trim
+            # window) — present only for video batches. Splat only when
+            # set so pixel-space families whose passthrough overrides
+            # don't accept the kwarg are unaffected, and image batches
+            # keep byte-identical legacy cache paths.
+            extra_keys = batch.get("extra_keys")
+            ek_kwarg = {"extra_keys": extra_keys} if extra_keys else {}
+            latents = None
+            if use_cache:
+                bi0 = batch_items[0] if batch_items else {}
+                if bi0.get("temporal_mode") == "sliding":
+                    window_lf = _sliding_window_frames(
+                        int(bi0.get("target_frames", 1)),
+                        self.latent_manager.temporal_downscale(),
+                    )
+                    latents = (
+                        self.latent_manager.load_cached_latent_windows(
+                            batch["ids"],
+                            batch["cache_dirs"],
+                            source_paths=batch["paths"],
+                            window_frames=window_lf,
+                            device=self.device,
+                            dtype=self.autocast_dtype,
+                            **ek_kwarg,
+                        )
+                    )
+                else:
+                    latents = self.latent_manager.load_cached_latents(
+                        batch["ids"],
+                        batch["cache_dirs"],
+                        source_paths=batch["paths"],
+                        device=self.device,
+                        dtype=self.autocast_dtype,
+                        **ek_kwarg,
+                    )
+            if latents is None:
+                # Cache miss — should only happen if pre-cache was
+                # skipped or new items were added mid-run. Decode the
+                # pixels now if we deferred them above (video families),
+                # then encode. Re-decode uses the same variant-selected
+                # paths so the latent it writes is keyed identically.
+                if batch.get("images") is None:
+                    batch["images"] = self._decode_batch_images(
+                        batch_items, batch["paths"]
+                    )
+                self._uncached_encode_count = (
+                    getattr(self, "_uncached_encode_count", 0) + 1
+                )
+                self.logger.warning(
+                    "latent_cache_miss",
+                    step=step,
+                    ids=batch["ids"],
+                    miss_count=self._uncached_encode_count,
+                )
+                latents = self.latent_manager.encode_and_cache_batch(
+                    batch["images"],
+                    ids=batch["ids"],
+                    cache_dirs=batch["cache_dirs"] if use_cache else None,
+                    source_paths=batch["paths"],
+                    **ek_kwarg,
+                )
+                # Cache-hit path above already lands on (device, dtype)
+                # in one combined .to() inside the loader; only the
+                # fresh-encode (miss) path still needs it here.
+                latents = latents.to(self.device, dtype=self.autocast_dtype)
+
+            # ── Flip augmentation (applied on latent tensor) ──
+            if self._aug_h_flip and random.random() < 0.5:
+                latents = torch.flip(latents, dims=[-1])
+            if self._aug_v_flip and random.random() < 0.5:
+                latents = torch.flip(latents, dims=[-2])
+
+            # ── Clean control latents (paired edit runs) ──
+            # Loaded after the target's flip aug so controls are never
+            # flipped. No-op for non-edit batches; the family forward
+            # consumes batch["control_latents"] when present.
+            self._load_control_latents(batch)
+
+            # Pre-noise conditioning (e.g. WAN/LTX i2v first-frame latent).
+            self._attach_conditioning(batch, latents)
+
+            # 2. Encode Text (family hook). Pass the batch so paired-edit
+            # trainers can condition the text encoder on the control image
+            # + key the TE cache by (caption, control). Ignored otherwise.
+            text_emb = self.encode_text(
+                batch["captions"],
+                self.autocast_dtype,
+                batch=batch,
+            )
+        return batch, latents, text_emb
+
     @staticmethod
     def _accumulation_slots(data_iter, grad_accum: int):
-        """The optimizer step's ``grad_accum`` training batches as ``(items, False)``, and each
-        warm-up batch the iterator puts before them as ``(items, True)``: a warm-up takes no slot."""
-        filled = 0
+        """The optimizer step's ``grad_accum`` training batches, each as ``(items, warm_items)``:
+        ``warm_items`` is the warm-up batch the iterator put just before it, else ``None``. A
+        warm-up takes no slot; the loop runs it before the batch's forward."""
+        filled, warm_items = 0, None
         while filled < grad_accum:
             items = next(data_iter)
-            warm_up = isinstance(items, WarmUpBatch)
-            if not warm_up:
-                filled += 1
-            yield items, warm_up
+            if isinstance(items, WarmUpBatch):
+                warm_items = items
+                continue
+            filled += 1
+            yield items, warm_items
+            warm_items = None
+
+    def _call_hook(self, name: str, *args):
+        """A family hook the loop calls when the family defines it (``None`` otherwise)."""
+        hook = getattr(self, name, None)
+        return hook(*args) if callable(hook) else None
+
+    def _warm_items_due(self, warm_items):
+        """The warm-up to run before this training batch's forward: the iterator's (epoch start,
+        after a sample), or, after an expert swap that emptied the CUDA cache, the last warm-up
+        batch again (the largest bucket), so the peak is reserved on the expert now active. A
+        run that draws no warm-up (VRAM-safe order off) has nothing to re-warm with."""
+        swapped = bool(self._call_hook("take_rewarm_request"))
+        if warm_items is not None:
+            self._last_warm_items = warm_items
+            return warm_items
+        return getattr(self, "_last_warm_items", None) if swapped else None
+
+    def _throwaway_micro_step(self, warm_items, step: int, grad_accum: int) -> None:
+        """One forward and backward of ``warm_items`` through the micro-step's own path, for the
+        allocator's peak, inside :meth:`_throwaway_scope`: nothing of it is kept."""
+        with self._throwaway_scope():
+            batch, latents, text_emb = self._prepare_micro_batch(warm_items, step)
+            with torch.autocast("cuda", dtype=self.autocast_dtype, enabled=self.use_amp), self._prof_region(
+                "forward_loss"
+            ):
+                loss = self.forward_loss_step(latents, text_emb, batch, grad_accum)[0]
+            with self._prof_region("backward"):
+                loss.backward()
 
     @contextlib.contextmanager
     def _throwaway_scope(self):
-        """Run one micro-step and keep nothing of it: its gradients are dropped, it adds no
-        sigma statistics and takes no optimizer, scheduler, EMA, step or loss-log step (the
-        loop skips those), a routing family decides nothing for it (its ``routing_paused``),
-        and every random stream the training draws use is as it was before."""
+        """Run one micro-step and keep nothing of it: the gradients it computes are dropped and
+        the window's accumulated ones restored, it adds no sigma statistics and takes no
+        optimizer, scheduler, EMA, step or loss-log step (it is no slot), a routing family
+        decides nothing for it (its ``routing_paused``), and every random stream the training
+        draws use is as it was before."""
         import numpy as np
 
+        params = [p for group in getattr(self.optimizer, "param_groups", []) for p in group.get("params", [])]
+        accumulated = [p.grad for p in params]
+        for p in params:
+            p.grad = None
         tracker = getattr(self, "_sigma_tracker", None)
         self._sigma_tracker = None
         python_state, numpy_state = random.getstate(), np.random.get_state()
@@ -496,7 +643,8 @@ class PipelineTrainMixin:
             with torch.random.fork_rng(devices=devices), (pause() if callable(pause) else contextlib.nullcontext()):
                 yield
         finally:
-            self.optimizer.zero_grad(set_to_none=True)
+            for p, grad in zip(params, accumulated):
+                p.grad = grad
             random.setstate(python_state)
             np.random.set_state(numpy_state)
             self._sigma_tracker = tracker
@@ -812,117 +960,15 @@ class PipelineTrainMixin:
             grad_norm = torch.tensor(0.0)
             did_backward = 0  # count of micro-steps that actually ran backward()
 
-            for batch_items, warm_up in self._accumulation_slots(data_iter, grad_accum):
-                # A warm-up batch runs the micro-step below once and keeps nothing.
-                warm_scope = contextlib.ExitStack()
-                if warm_up:
-                    warm_scope.enter_context(self._throwaway_scope())
-                # Video families pay a heavy per-clip PyAV decode that a warm
-                # latent cache turns into pure waste (the pixels are discarded
-                # for the cached latent), starving the GPU. Defer their decode
-                # and re-run it only on a cache miss; image/pixel families (incl.
-                # the pixel-space ones that read batch["images"] in forward)
-                # decode upfront, byte-identical to before.
-                defer_decode = bool(getattr(self, "is_video_family", False)) or bool(
-                    getattr(self, "is_audio_family", False)
-                )
-                batch = self._get_batch(batch_items, decode_pixels=not defer_decode)
+            for batch_items, warm_items in self._accumulation_slots(data_iter, grad_accum):
+                batch, latents, text_emb = self._prepare_micro_batch(batch_items, step)
 
-                # 1. Encode Latents
-                #    Profiler region "data_prep": cached-latent disk load + the
-                #    host→device copy + text encode — the per-step data cost that
-                #    scales with clip size (the suspected video-vs-image util gap).
-                with torch.no_grad(), self._prof_region("data_prep"):
-                    use_cache = self.config.get("cache_latents", True)
-                    # Per-item cache discriminators (e.g. a video clip's trim
-                    # window) — present only for video batches. Splat only when
-                    # set so pixel-space families whose passthrough overrides
-                    # don't accept the kwarg are unaffected, and image batches
-                    # keep byte-identical legacy cache paths.
-                    extra_keys = batch.get("extra_keys")
-                    ek_kwarg = {"extra_keys": extra_keys} if extra_keys else {}
-                    latents = None
-                    if use_cache:
-                        bi0 = batch_items[0] if batch_items else {}
-                        if bi0.get("temporal_mode") == "sliding":
-                            window_lf = _sliding_window_frames(
-                                int(bi0.get("target_frames", 1)),
-                                self.latent_manager.temporal_downscale(),
-                            )
-                            latents = (
-                                self.latent_manager.load_cached_latent_windows(
-                                    batch["ids"],
-                                    batch["cache_dirs"],
-                                    source_paths=batch["paths"],
-                                    window_frames=window_lf,
-                                    device=self.device,
-                                    dtype=self.autocast_dtype,
-                                    **ek_kwarg,
-                                )
-                            )
-                        else:
-                            latents = self.latent_manager.load_cached_latents(
-                                batch["ids"],
-                                batch["cache_dirs"],
-                                source_paths=batch["paths"],
-                                device=self.device,
-                                dtype=self.autocast_dtype,
-                                **ek_kwarg,
-                            )
-                    if latents is None:
-                        # Cache miss — should only happen if pre-cache was
-                        # skipped or new items were added mid-run. Decode the
-                        # pixels now if we deferred them above (video families),
-                        # then encode. Re-decode uses the same variant-selected
-                        # paths so the latent it writes is keyed identically.
-                        if batch.get("images") is None:
-                            batch["images"] = self._decode_batch_images(
-                                batch_items, batch["paths"]
-                            )
-                        self._uncached_encode_count = (
-                            getattr(self, "_uncached_encode_count", 0) + 1
-                        )
-                        self.logger.warning(
-                            "latent_cache_miss",
-                            step=step,
-                            ids=batch["ids"],
-                            miss_count=self._uncached_encode_count,
-                        )
-                        latents = self.latent_manager.encode_and_cache_batch(
-                            batch["images"],
-                            ids=batch["ids"],
-                            cache_dirs=batch["cache_dirs"] if use_cache else None,
-                            source_paths=batch["paths"],
-                            **ek_kwarg,
-                        )
-                        # Cache-hit path above already lands on (device, dtype)
-                        # in one combined .to() inside the loader; only the
-                        # fresh-encode (miss) path still needs it here.
-                        latents = latents.to(self.device, dtype=self.autocast_dtype)
-
-                    # ── Flip augmentation (applied on latent tensor) ──
-                    if self._aug_h_flip and random.random() < 0.5:
-                        latents = torch.flip(latents, dims=[-1])
-                    if self._aug_v_flip and random.random() < 0.5:
-                        latents = torch.flip(latents, dims=[-2])
-
-                    # ── Clean control latents (paired edit runs) ──
-                    # Loaded after the target's flip aug so controls are never
-                    # flipped. No-op for non-edit batches; the family forward
-                    # consumes batch["control_latents"] when present.
-                    self._load_control_latents(batch)
-
-                    # Pre-noise conditioning (e.g. WAN/LTX i2v first-frame latent).
-                    self._attach_conditioning(batch, latents)
-
-                    # 2. Encode Text (family hook). Pass the batch so paired-edit
-                    # trainers can condition the text encoder on the control image
-                    # + key the TE cache by (caption, control). Ignored otherwise.
-                    text_emb = self.encode_text(
-                        batch["captions"],
-                        self.autocast_dtype,
-                        batch=batch,
-                    )
+                # A routing family decides the step's expert from this training batch first;
+                # a warm-up then runs on that expert, before the batch's forward.
+                self._call_hook("route_training_batch", latents)
+                warm_items = self._warm_items_due(warm_items)
+                if warm_items is not None:
+                    self._throwaway_micro_step(warm_items, step, grad_accum)
 
                 # 3. Forward + Loss (under autocast)
                 #    Profiler region "forward_loss": the compute (noise/pack/
@@ -941,13 +987,6 @@ class PipelineTrainMixin:
                         pred,
                         target,
                     ) = self.forward_loss_step(latents, text_emb, batch, grad_accum)
-
-                if warm_up:
-                    # The backward reserves its peak too; then the scope discards it all.
-                    with self._prof_region("backward"):
-                        loss.backward()
-                    warm_scope.close()
-                    continue
 
                 # 4. Backward
                 if torch.isnan(loss) or torch.isinf(loss):

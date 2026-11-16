@@ -25,8 +25,6 @@ from __future__ import annotations
 
 from typing import Any
 
-import contextlib
-
 import structlog
 import torch
 
@@ -39,14 +37,14 @@ from app.engine.models.families.wan_shared.trainer_base import (
 from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
 
 from .driver import Wan22Driver
-from .expert_router import ExpertRouter
+from .expert_router import ExpertRouter, ExpertRoutingHooks
 from .loader import Wan22Loader
 
 logger = structlog.get_logger(__name__)
 
 
 class Wan22Trainer(
-    WanTextCacheMixin, DualExpertDeferredLoadMixin, GenericTrainingPipeline
+    WanTextCacheMixin, DualExpertDeferredLoadMixin, ExpertRoutingHooks, GenericTrainingPipeline
 ):
     """WAN 2.2 (T2V-A14B / I2V-A14B) dual-expert LoRA trainer.
 
@@ -121,19 +119,6 @@ class Wan22Trainer(
         every batch of the step must share that shape (one bucket per accumulation window)."""
         router = getattr(getattr(self, "driver", None), "router", None)
         return router is not None and router.pinned_expert is None
-
-    @contextlib.contextmanager
-    def routing_paused(self):
-        """While the loop runs a throwaway warm-up batch, the router decides nothing for it."""
-        router = getattr(getattr(self, "driver", None), "router", None)
-        if router is None:
-            yield
-            return
-        router.paused = True
-        try:
-            yield
-        finally:
-            router.paused = False
 
     def _progress(self) -> float:
         """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""

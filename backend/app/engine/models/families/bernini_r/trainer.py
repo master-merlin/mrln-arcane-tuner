@@ -69,7 +69,6 @@ what the band-sampling distribution test pins.
 
 from __future__ import annotations
 
-import contextlib
 import math
 
 import structlog
@@ -77,7 +76,7 @@ import torch
 
 from app.engine.components.checkpoints import _run_seed
 from app.engine.core.pipeline import GenericTrainingPipeline
-from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter
+from app.engine.models.families.wan22.expert_router import HIGH, LOW, ExpertRouter, ExpertRoutingHooks
 from app.engine.models.families.wan_shared.vae_utils import routing_reference_shape
 from app.engine.strategies.timestep_sampling import (
     TimestepSampler,
@@ -96,7 +95,7 @@ logger = structlog.get_logger(__name__)
 
 
 class BerniniRTrainer(
-    WanTextCacheMixin, DualExpertDeferredLoadMixin, GenericTrainingPipeline
+    WanTextCacheMixin, DualExpertDeferredLoadMixin, ExpertRoutingHooks, GenericTrainingPipeline
 ):
     """Bernini-R (renderer-only video edit) LoRA trainer — 1.3B single / 14B MoE.
 
@@ -290,19 +289,6 @@ class BerniniRTrainer(
         driver = getattr(self, "driver", None)
         router = getattr(driver, "router", None)
         return bool(getattr(driver, "is_dual", False)) and router is not None and router.pinned_expert is None
-
-    @contextlib.contextmanager
-    def routing_paused(self):
-        """While the loop runs a throwaway warm-up batch, the router decides nothing for it."""
-        router = getattr(getattr(self, "driver", None), "router", None)
-        if router is None:
-            yield
-            return
-        router.paused = True
-        try:
-            yield
-        finally:
-            router.paused = False
 
     def _progress(self) -> float:
         """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""

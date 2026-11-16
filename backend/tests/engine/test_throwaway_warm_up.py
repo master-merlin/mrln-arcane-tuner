@@ -18,6 +18,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import numpy as np
+import pytest
 import torch
 
 from app.engine.core.pipeline.pipeline_train import PipelineTrainMixin, WarmUpBatch
@@ -198,3 +199,185 @@ def test_a_trainer_without_the_hook_runs_the_warm_up_too(tmp_path):
     reference = _run(tmp_path / "reference", warm_up=False)
     assert t.forwards[0][0] == "warm" and t.global_step == reference.global_step
     assert [i for i, _ in t.forwards[1:]] == [i for i, _ in reference.forwards]
+
+
+# ── A cache-clearing expert swap is a re-warm event (both dual-expert drivers) ──────────────
+
+SMALL_W, LARGE_W, REFERENCE_W = 8, 64, 32
+# One latent width per accumulation window. The reference predicts LOW, so the first (LARGE,
+# HIGH) window already swaps; every later change of width swaps again.
+WINDOWS = [LARGE_W, SMALL_W, LARGE_W, LARGE_W, SMALL_W]
+
+
+def _shape_router():
+    """p_high is 1 for a latent wider than the reference, 0 below it: the width alone decides."""
+    from app.engine.models.families.wan22.expert_router import ExpertRouter
+
+    def draw(n: int, latents=None) -> torch.Tensor:
+        wide = latents is not None and latents.shape[-1] > REFERENCE_W
+        return torch.full((n,), 999.0 if wide else 0.0)
+
+    return ExpertRouter(boundary=0.875, timestep_cfg={"timestep_sampling": "radc"}, seed=0, mc_samples=64,
+                        timestep_draw=draw, reference_latent_shape=(1, 16, 1, REFERENCE_W, REFERENCE_W))
+
+
+class _Expert(torch.nn.Module):
+    """An expert whose ``.to()`` moves nothing: the swap's order is what's under test."""
+
+    def __init__(self):
+        super().__init__()
+        self._p = torch.nn.Parameter(torch.zeros(1), requires_grad=False)
+
+    def to(self, *args, **kwargs):  # noqa: A003
+        return self
+
+
+class _Scale(torch.nn.Module):
+    def __init__(self):
+        super().__init__()
+        self.w = torch.nn.Parameter(torch.ones(()))
+
+
+class _Wan22Defn:
+    architecture_params = {"mode": "t2v", "te.max_length": 512, "moe.boundary_ratio": 0.875}
+    lora_targetable_modules: list[str] = []
+    defaults: dict = {"num_frames": 81}
+
+
+class _BerniniDefn:
+    architecture_params = {"mode": "t2v", "dual_expert": True, "switch_dit_boundary": 0.875}
+    lora_targetable_modules: list[str] = []
+
+
+def _wan22():
+    from app.engine.models.families.wan22.driver import Wan22Driver
+    from app.engine.models.families.wan22.trainer import Wan22Trainer
+
+    return Wan22Driver(_Wan22Defn(), torch.device("cpu")), Wan22Trainer
+
+
+def _bernini_r():
+    from app.engine.models.families.bernini_r.driver import BerniniRDriver
+    from app.engine.models.families.bernini_r.trainer import BerniniRTrainer
+
+    return BerniniRDriver(_BerniniDefn(), torch.device("cpu")), BerniniRTrainer
+
+
+DRIVERS = pytest.mark.parametrize("family", [_wan22, _bernini_r], ids=["wan22", "bernini_r"])
+
+
+class _RoutedTrainer(_Trainer):
+    """The real loop over a real dual-expert driver and the family trainer's own routing hooks.
+    ``events`` records each ``_swap_to``, the ``empty_cache`` inside it, and each forward."""
+
+    def __init__(self, tmp_path, *, family, swap_mode: str, warm_up: bool):
+        super().__init__(tmp_path, warm_up=warm_up)
+        self.config["max_train_steps"] = len(WINDOWS)
+        self._model = _Scale()
+        self.optimizer = torch.optim.SGD(self._model.parameters(), lr=0.1, momentum=0.9)
+        self.lr_scheduler = torch.optim.lr_scheduler.StepLR(self.optimizer, step_size=1, gamma=0.5)
+        self.latent_manager.encode_and_cache_batch.side_effect = (
+            lambda images, **kw: images.mean(dim=1, keepdim=True).unsqueeze(2).repeat(1, 16, 1, 1, 1))
+        self.driver, trainer_cls = family()
+        self.driver.transformer_high, self.driver.transformer_low = _Expert(), _Expert()
+        self.driver.configure_swap_mode(swap_mode)
+        self.driver.set_router(_shape_router())
+        self.events: list[tuple[str, dict]] = []
+        for name in ("_routing_driver", "routing_paused", "route_training_batch", "take_rewarm_request"):
+            hook = getattr(trainer_cls, name, None)
+            setattr(self, name, None if hook is None else hook.__get__(self))
+        original = self.driver._swap_to
+
+        def swap_to(expert):
+            self.events.append(("swap", {"expert": expert}))
+            with patch.object(torch.cuda, "is_available", return_value=True), patch.object(
+                    torch.cuda, "empty_cache", side_effect=lambda: self.events.append(("empty_cache", {}))):
+                original(expert)
+
+        self.driver._swap_to = swap_to
+
+    def _iter_training_batches(self, batch_size):
+        if self.warm_up:
+            yield WarmUpBatch([{"id": "warm", "size": LARGE_W}])
+        for w, size in enumerate(WINDOWS):
+            for k in range(ACCUM):
+                yield [{"id": f"{w}.{k}", "size": size}]
+
+    def sample_timesteps(self, batch_size, latents):
+        self.driver.route_for_batch(latents)  # as both families' sample_timesteps do
+        return torch.rand(batch_size)
+
+    def add_noise(self, latents, noise, timesteps):
+        return latents + noise * timesteps.view(-1, *([1] * (latents.dim() - 1)))
+
+    def forward_pass(self, noisy_input, timesteps, text_emb, batch):
+        self.events.append(("forward", {
+            "warm": batch["ids"][0] == "warm", "width": noisy_input.shape[-1],
+            "expert": self.driver.active_expert, "paused": self.driver.router.paused}))
+        return noisy_input * self._model.w
+
+
+def _routed_run(tmp_path, family, *, swap_mode: str, warm_up: bool) -> _RoutedTrainer:
+    t = _RoutedTrainer(tmp_path, family=family, swap_mode=swap_mode, warm_up=warm_up)
+    random.seed(5)
+    np.random.seed(5)
+    torch.manual_seed(5)
+    with patch("app.core.db.DatabaseEngine.get_instance", side_effect=RuntimeError("no db in test")):
+        asyncio.run(t.train())
+    t.after = (torch.rand(3), random.random(), float(np.random.rand()))
+    return t
+
+
+def _forwards(t: _RoutedTrainer, *, warm: bool) -> list[dict]:
+    return [e for kind, e in t.events if kind == "forward" and e["warm"] == warm]
+
+
+@DRIVERS
+def test_after_every_cache_clearing_swap_the_next_forward_is_a_warm_up_of_the_largest_shape(tmp_path, family):
+    t = _routed_run(tmp_path, family, swap_mode="swap", warm_up=True)
+    clears = [i for i, (kind, _) in enumerate(t.events) if kind == "empty_cache"]
+    assert len(clears) == 4, t.events  # into HIGH, LOW, HIGH, LOW
+    for i in clears:
+        swapped_to = t.events[i - 1][1]["expert"]
+        following = next(e for kind, e in t.events[i + 1:] if kind == "forward")
+        assert following["warm"] and following["width"] == LARGE_W, (i, t.events)
+        assert following["expert"] == swapped_to and following["paused"], (i, t.events)
+    training = _forwards(t, warm=False)
+    assert [f["width"] for f in training] == [w for w in WINDOWS for _ in range(ACCUM)]
+    assert all(f["expert"] == ("high" if f["width"] == LARGE_W else "low") for f in training), training
+    assert not any(f["paused"] for f in training)
+    assert t.global_step == len(WINDOWS) - 1  # the last step's index: no warm-up counted a step
+
+
+@DRIVERS
+@pytest.mark.parametrize("swap_mode", ["swap", "resident"])
+def test_the_epoch_start_warm_up_runs_on_the_expert_the_first_window_trains(tmp_path, family, swap_mode):
+    """The reference predicts LOW; the first window is LARGE (HIGH). The warm-up runs after the
+    window's own batch has routed, so on HIGH, and the router decides from that batch alone."""
+    t = _routed_run(tmp_path, family, swap_mode=swap_mode, warm_up=True)
+    first = next(e for kind, e in t.events if kind == "forward")
+    assert first["warm"] and first["expert"] == _forwards(t, warm=False)[0]["expert"] == "high", t.events
+
+
+@DRIVERS
+def test_resident_experts_warm_only_where_the_iterator_asks(tmp_path, family):
+    t = _routed_run(tmp_path, family, swap_mode="resident", warm_up=True)
+    assert not [kind for kind, _ in t.events if kind in ("swap", "empty_cache")]
+    assert len(_forwards(t, warm=True)) == 1
+
+
+@DRIVERS
+def test_the_re_warms_leave_no_trace(tmp_path, family):
+    """Warm-up off draws no warm-up batch, so it has nothing to re-warm with: the same swaps, no
+    throwaway micro-step. Everything the training keeps must be the same."""
+    with_warm = _routed_run(tmp_path / "a", family, swap_mode="swap", warm_up=True)
+    without = _routed_run(tmp_path / "b", family, swap_mode="swap", warm_up=False)
+    assert len(_forwards(with_warm, warm=True)) == 4 and not _forwards(without, warm=True)
+    assert [e for e in with_warm.events if e[0] == "swap"] == [e for e in without.events if e[0] == "swap"]
+    assert torch.equal(with_warm._model.w, without._model.w), "a warm-up changed the trained parameter"
+    sa, sb = with_warm.optimizer.state_dict(), without.optimizer.state_dict()
+    assert torch.equal(sa["state"][0]["momentum_buffer"], sb["state"][0]["momentum_buffer"])
+    assert with_warm.lr_scheduler.state_dict() == without.lr_scheduler.state_dict()
+    assert with_warm.global_step == without.global_step
+    assert _logged(with_warm) == _logged(without)
+    assert torch.equal(with_warm.after[0], without.after[0]) and with_warm.after[1:] == without.after[1:]

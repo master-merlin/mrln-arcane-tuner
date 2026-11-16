@@ -32,6 +32,7 @@ Everything here is weight-free and unit-tests with a seeded RNG + tiny tensors.
 
 from __future__ import annotations
 
+import contextlib
 import inspect
 from collections.abc import Sequence
 from typing import Any, Callable
@@ -435,3 +436,42 @@ class ExpertRouter:
         rng_state = state.get("rng_state")
         if rng_state is not None:
             self._step_rng.set_state(rng_state)
+
+
+class ExpertRoutingHooks:
+    """The training loop's hooks into a dual-expert trainer's router (wan22, bernini_r)."""
+
+    def _routing_driver(self):
+        driver = getattr(self, "driver", None)
+        if getattr(driver, "router", None) is None or not getattr(driver, "is_dual", True):
+            return None
+        return driver
+
+    @contextlib.contextmanager
+    def routing_paused(self):
+        """While the loop runs a throwaway warm-up batch, the router decides nothing for it."""
+        driver = self._routing_driver()
+        if driver is None:
+            yield
+            return
+        driver.router.paused = True
+        try:
+            yield
+        finally:
+            driver.router.paused = False
+
+    def route_training_batch(self, latents: torch.Tensor) -> None:
+        """Activate the expert the step trains, decided from this training batch, before any
+        warm-up runs: the warm-up then reserves the peak on that expert."""
+        driver = self._routing_driver()
+        if driver is not None:
+            driver.route_for_batch(latents)
+
+    def take_rewarm_request(self) -> bool:
+        """Whether an expert swap emptied the CUDA cache since the last call: the loop then runs a
+        warm-up on the expert now active before the next training forward."""
+        driver = getattr(self, "driver", None)
+        due = bool(getattr(driver, "rewarm_due", False))
+        if due:
+            driver.rewarm_due = False
+        return due

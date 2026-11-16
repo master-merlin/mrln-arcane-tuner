@@ -69,6 +69,7 @@ what the band-sampling distribution test pins.
 
 from __future__ import annotations
 
+import contextlib
 import math
 
 import structlog
@@ -289,6 +290,19 @@ class BerniniRTrainer(
         driver = getattr(self, "driver", None)
         router = getattr(driver, "router", None)
         return bool(getattr(driver, "is_dual", False)) and router is not None and router.pinned_expert is None
+
+    @contextlib.contextmanager
+    def routing_paused(self):
+        """While the loop runs a throwaway warm-up batch, the router decides nothing for it."""
+        router = getattr(getattr(self, "driver", None), "router", None)
+        if router is None:
+            yield
+            return
+        router.paused = True
+        try:
+            yield
+        finally:
+            router.paused = False
 
     def _progress(self) -> float:
         """``global_step / max_train_steps`` exactly as ``pipeline_base`` computes it."""

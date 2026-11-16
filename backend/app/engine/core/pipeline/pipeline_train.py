@@ -2,6 +2,7 @@
 Pipeline Train Mixin — the main training loop with gradient accumulation.
 """
 
+import contextlib
 import os
 import random
 import time
@@ -22,6 +23,11 @@ def _sliding_window_frames(target_frames: int, temporal_downscale: int) -> int:
     from app.engine.components.latents import LatentManager
 
     return LatentManager.latent_frames(int(target_frames), int(temporal_downscale))
+
+
+class WarmUpBatch(list):
+    """A batch the training loop runs once and discards: it reserves the VRAM peak of the
+    largest bucket before smaller batches can fragment the allocator, and trains nothing."""
 
 
 class StepTensors(NamedTuple):
@@ -461,6 +467,40 @@ class PipelineTrainMixin:
             self.logger_component.resume_step_timer()
             self._emit_status("Training")
 
+    @staticmethod
+    def _accumulation_slots(data_iter, grad_accum: int):
+        """The optimizer step's ``grad_accum`` training batches as ``(items, False)``, and each
+        warm-up batch the iterator puts before them as ``(items, True)``: a warm-up takes no slot."""
+        filled = 0
+        while filled < grad_accum:
+            items = next(data_iter)
+            warm_up = isinstance(items, WarmUpBatch)
+            if not warm_up:
+                filled += 1
+            yield items, warm_up
+
+    @contextlib.contextmanager
+    def _throwaway_scope(self):
+        """Run one micro-step and keep nothing of it: its gradients are dropped, it adds no
+        sigma statistics and takes no optimizer, scheduler, EMA, step or loss-log step (the
+        loop skips those), a routing family decides nothing for it (its ``routing_paused``),
+        and every random stream the training draws use is as it was before."""
+        import numpy as np
+
+        tracker = getattr(self, "_sigma_tracker", None)
+        self._sigma_tracker = None
+        python_state, numpy_state = random.getstate(), np.random.get_state()
+        devices = list(range(torch.cuda.device_count())) if torch.cuda.is_available() else []
+        pause = getattr(self, "routing_paused", None)
+        try:
+            with torch.random.fork_rng(devices=devices), (pause() if callable(pause) else contextlib.nullcontext()):
+                yield
+        finally:
+            self.optimizer.zero_grad(set_to_none=True)
+            random.setstate(python_state)
+            np.random.set_state(numpy_state)
+            self._sigma_tracker = tracker
+
     def _iter_training_batches(self, batch_size: int):
         """Infinite bucket-aware batch iterator for the training loop.
 
@@ -558,25 +598,28 @@ class PipelineTrainMixin:
             random.shuffle(windows)
             return windows
 
-        def _volume(batches: list[list]) -> int:
-            w, h, f = _bucket_key(batches[0][0])
-            return w * h * f
+        def _throwaway_batch() -> WarmUpBatch:
+            """A warm-up batch from the largest bucket's inventory, drawn without consuming it
+            and without moving ``random`` (the training batches are the ones warm-up-off draws)."""
+            state = random.getstate()
+            try:
+                return WarmUpBatch(_warm_batch())
+            finally:
+                random.setstate(state)
 
         if windowed:
-            # The loop pulls exactly ``window`` batches per optimizer step, so a window starts
-            # at a step boundary. The warm-up (epoch start, after a sample) brings the largest
-            # window still due this epoch to the front: a window the epoch trains anyway, so it
-            # reserves the peak without training any bucket more often (an extra warm window
-            # would re-weight the largest bucket by the accumulation).
+            # The loop pulls exactly ``window`` training batches per optimizer step, so a window
+            # starts at a step boundary. The warm-up (epoch start, after a sample) is a marked
+            # throwaway batch of the largest bucket before the window: the loop runs it and
+            # discards it, so the peak is reserved first and no bucket trains more often (a
+            # warm-up that trained would re-weight the largest bucket by the accumulation).
             self._vram_rewarm_pending = vram_safe_order
             while True:
-                due = _random_windows()
-                while due:
-                    if vram_safe_order and getattr(self, "_vram_rewarm_pending", False):
+                for batches in _random_windows():
+                    if vram_safe_order and getattr(self, "_vram_rewarm_pending", False) and _largest_items:
                         self._vram_rewarm_pending = False
-                        largest = max(range(len(due)), key=lambda i: _volume(due[i]))
-                        due.insert(0, due.pop(largest))
-                    yield from due.pop(0)
+                        yield _throwaway_batch()
+                    yield from batches
                 if vram_safe_order:
                     self._vram_rewarm_pending = True  # re-warm at the next epoch
 
@@ -769,8 +812,11 @@ class PipelineTrainMixin:
             grad_norm = torch.tensor(0.0)
             did_backward = 0  # count of micro-steps that actually ran backward()
 
-            for accum_idx in range(grad_accum):
-                batch_items = next(data_iter)
+            for batch_items, warm_up in self._accumulation_slots(data_iter, grad_accum):
+                # A warm-up batch runs the micro-step below once and keeps nothing.
+                warm_scope = contextlib.ExitStack()
+                if warm_up:
+                    warm_scope.enter_context(self._throwaway_scope())
                 # Video families pay a heavy per-clip PyAV decode that a warm
                 # latent cache turns into pure waste (the pixels are discarded
                 # for the cached latent), starving the GPU. Defer their decode
@@ -895,6 +941,13 @@ class PipelineTrainMixin:
                         pred,
                         target,
                     ) = self.forward_loss_step(latents, text_emb, batch, grad_accum)
+
+                if warm_up:
+                    # The backward reserves its peak too; then the scope discards it all.
+                    with self._prof_region("backward"):
+                        loss.backward()
+                    warm_scope.close()
+                    continue
 
                 # 4. Backward
                 if torch.isnan(loss) or torch.isinf(loss):

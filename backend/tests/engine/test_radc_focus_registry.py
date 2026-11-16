@@ -646,7 +646,9 @@ def _mixed_resolution_problems(defn, progresses=MIXED_PROGRESS) -> list[str]:
             try:
                 batches = PipelineTrainMixin._iter_training_batches(trainer, BATCH)
                 for block in range(MIXED_STEPS):
-                    window = [next(batches) for _ in range(ACCUM)]
+                    # The step's batches as the loop takes them (a warm-up batch is no slot).
+                    window = [items for items, warm_up in PipelineTrainMixin._accumulation_slots(batches, ACCUM)
+                              if not warm_up]
                     first = window[0][0]["grid"]
                     router.__dict__.setdefault("_block_u", {})[block] = _van_der_corput(strata[first] + 1)
                     strata[first] += 1

@@ -158,6 +158,9 @@ class ExpertRouter:
         # The latent shape of the last batch drawn for: the step-boundary prediction's shape.
         self._last_shape: tuple[int, ...] | None = None
         self._p_cache: dict[tuple[float, tuple[int, ...] | None], float] = {}
+        # True while the loop runs a throwaway warm-up batch: it decides, locks and records
+        # nothing, and draws for the expert already active.
+        self.paused = False
 
         if self.pinned_expert is not None:
             # Single-expert: no switching, no MC estimate. p_high is degenerate
@@ -304,6 +307,8 @@ class ExpertRouter:
         """
         if self.pinned_expert is not None:
             return self.pinned_expert
+        if self.paused:
+            return self._active_expert
         shape = None if latent_shape is None else (1, *(int(d) for d in tuple(latent_shape)[1:]))
         if self._step_expert is not None and (shape is None or shape == self._last_shape):
             return self._step_expert

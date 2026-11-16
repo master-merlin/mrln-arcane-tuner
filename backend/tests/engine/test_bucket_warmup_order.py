@@ -19,7 +19,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.engine.core.pipeline.pipeline_train import PipelineTrainMixin
+from app.engine.core.pipeline.pipeline_train import PipelineTrainMixin, WarmUpBatch
 
 
 # ── Stub inventory ────────────────────────────────────────────────────────
@@ -171,6 +171,17 @@ def _within(check, seconds: float = 30.0) -> None:
         raise outcome["error"]
 
 
+def _training_batch(it, warm_ups: list | None = None):
+    """The next batch that trains. A warm-up batch (a throwaway forward and backward on the
+    largest bucket, discarded) is set aside in ``warm_ups``: it is never a training batch."""
+    batch = next(it)
+    while isinstance(batch, WarmUpBatch):
+        if warm_ups is not None:
+            warm_ups.append(batch)
+        batch = next(it)
+    return batch
+
+
 def test_a_dataset_smaller_than_one_window_still_trains_every_item():
     """Buckets of 1, 2 and 3 items, windows of 4: no bucket fills a window in one epoch. Its
     batches wait across epochs until one does, so every item trains, at once per epoch."""
@@ -181,7 +192,7 @@ def test_a_dataset_smaller_than_one_window_still_trains_every_item():
         it = _iter(_windowed_owner(inventory, vram_safe=False), 1)
         counts = dict.fromkeys(range(6), 0)
         for _ in range(240 // ACCUM):
-            window = [next(it) for _ in range(ACCUM)]
+            window = [_training_batch(it) for _ in range(ACCUM)]
             assert len({x["bucket"] for batch in window for x in batch}) == 1
             for batch in window:
                 counts[batch[0]["id"]] += 1
@@ -194,9 +205,9 @@ def test_a_dataset_smaller_than_one_window_still_trains_every_item():
 @pytest.mark.parametrize("batch_size", [1, 2])
 @pytest.mark.parametrize("vram_safe", [True, False], ids=["warmup", "no-warmup"])
 def test_an_opted_in_family_gets_one_bucket_per_accumulation_window(batch_size, vram_safe):
-    """Every ``gradient_accumulation_steps`` consecutive batches (one optimizer step) come from
-    one bucket, across epoch boundaries and the re-warm after a sample, and every item still
-    trains each epoch."""
+    """Every ``gradient_accumulation_steps`` consecutive training batches (one optimizer step)
+    come from one bucket, across epoch boundaries and the re-warm after a sample; a warm-up
+    batch only ever comes between two windows; every item still trains."""
     _within(lambda: _one_bucket_per_window(batch_size, vram_safe))
 
 
@@ -210,11 +221,13 @@ def _one_bucket_per_window(batch_size, vram_safe):
         for step in range(40):  # several epochs
             if step % 7 == 3:
                 owner._vram_rewarm_pending = True  # a sample ran between two optimizer steps
-            window = [next(it) for _ in range(ACCUM)]
+            window = []
+            for slot in range(ACCUM):
+                warm_ups: list = []
+                window.append(_training_batch(it, warm_ups))
+                assert not warm_ups or slot == 0, f"seed={seed} step={step}: a warm-up inside a window"
             buckets = {x["bucket"] for batch in window for x in batch}
             assert len(buckets) == 1, f"seed={seed} step={step}: one window spans {sorted(buckets)}"
-            # Which window warms is the largest one DUE (this inventory's large bucket fills a
-            # window only every few epochs): see the epoch and re-warm tests below.
             seen.update(x["id"] for batch in window for x in batch)
         assert seen == set(range(len(inv))), f"seed={seed}: items never trained: {set(range(len(inv))) - seen}"
 
@@ -238,7 +251,7 @@ def test_accumulation_never_changes_how_often_an_item_trains(accum):
         it = _iter(owner, 1)
         counts = dict.fromkeys(range(65), 0)
         for _ in range(EPOCHS * 65):
-            counts[next(it)[0]["id"]] += 1
+            counts[_training_batch(it)[0]["id"]] += 1
         off = {i: c for i, c in counts.items() if abs(c - EPOCHS) > 2 * accum}
         assert not off, f"accumulation {accum}: items trained off once per epoch ({EPOCHS} epochs): {off}"
 
@@ -247,67 +260,69 @@ def test_accumulation_never_changes_how_often_an_item_trains(accum):
 
 EPOCHS = 160
 REWARM_EVERY = 5  # optimizer steps between two samples (each sample asks for a re-warm)
+SPARSE = [_item(i, 512, 512, "small") for i in range(64)] + [_item(64, 1024, 1024, "large")]
 
 
 @pytest.mark.parametrize("accum", [1, 4, 16])
 def test_the_warm_up_never_changes_how_often_an_item_trains(accum):
     """The default warm-up, a largest bucket of one item, 64 smaller items, and a sample every
-    ``REWARM_EVERY`` optimizer steps. The warm window is a window the epoch trains anyway (its
-    largest one, moved to the front), never an extra: without that, the single largest item
-    trains a whole extra window at each epoch start and each sample (a 21 % share at
-    accumulation 16 instead of 1.5 %). Tolerance as above: every count within
-    ``EPOCHS +- 2 * accum``."""
-    inventory = [_item(i, 512, 512, "small") for i in range(64)] + [_item(64, 1024, 1024, "large")]
+    ``REWARM_EVERY`` optimizer steps. A warm-up batch is a throwaway, never a training batch,
+    so it changes no item's training count (an extra warm window would give the single largest
+    item a 21 % share at accumulation 16 instead of 1.5 %). Tolerance as above: every count
+    within ``EPOCHS +- 2 * accum``."""
 
     def check():
-        owner = _windowed_owner(inventory, vram_safe=True, accum=accum)
+        owner = _windowed_owner(SPARSE, vram_safe=True, accum=accum)
         random.seed(0)
         it = _iter(owner, 1)
         counts = dict.fromkeys(range(65), 0)
+        warm_ups: list = []
         for step in range(EPOCHS * 65 // accum):
             if step % REWARM_EVERY == REWARM_EVERY - 1:
                 owner._vram_rewarm_pending = True  # a sample ran after this optimizer step
             for _ in range(accum):
-                counts[next(it)[0]["id"]] += 1
+                counts[_training_batch(it, warm_ups)[0]["id"]] += 1
         off = {i: c for i, c in counts.items() if abs(c - EPOCHS) > 2 * accum}
         assert not off, f"accumulation {accum}: items trained off once per epoch ({EPOCHS} epochs): {off}"
+        assert warm_ups, "no warm-up batch at all"
 
     _within(check)
 
 
-def test_a_re_warm_moves_the_largest_remaining_window_to_the_front():
-    """After a sample, the next window is the largest bucket still due in the epoch."""
-    inv = [_item(i, w, h, b) for i, (w, h, b) in enumerate(
-        [(1024, 1024, "large")] * 4 + [(512, 512, "medium")] * 4 + [(256, 256, "small")] * 8)]
+@pytest.mark.parametrize("accum", [1, 16])
+def test_the_largest_shape_comes_first_at_the_start_and_after_each_sample(accum):
+    """A largest bucket of one item that fills a window only every ``accum`` epochs: the first
+    batch through the model at the start, and the first after each sample, is still that
+    largest shape (a warm-up batch drawn from its inventory, consumed by no epoch)."""
 
     def check():
-        for seed in range(20):
+        for seed in range(5):
             random.seed(seed)
-            owner = _windowed_owner(inv)
+            owner = _windowed_owner(SPARSE, vram_safe=True, accum=accum)
             it = _iter(owner, 1)
-            first = [next(it)[0]["bucket"] for _ in range(ACCUM)]  # the epoch-start warm window
-            assert first == ["large"] * ACCUM
-            owner._vram_rewarm_pending = True
-            # The epoch's remaining windows: medium and two small; medium is the largest.
-            second = [next(it)[0]["bucket"] for _ in range(ACCUM)]
-            assert second == ["medium"] * ACCUM, f"seed={seed}: {second}"
+            first = next(it)
+            assert isinstance(first, WarmUpBatch) and first[0]["bucket"] == "large", first
+            for step in range(30):
+                for _ in range(accum):
+                    _training_batch(it)
+                owner._vram_rewarm_pending = True  # a sample after this optimizer step
+                after = next(it)
+                assert isinstance(after, WarmUpBatch) and after[0]["bucket"] == "large", (seed, step, after)
 
     _within(check)
 
 
-def test_each_epoch_of_windows_starts_with_a_warm_window_of_the_largest_bucket():
-    """Batch size 1, windows of 4, buckets of 4, 4 and 8 items: an epoch is exactly 4 windows
-    (no bucket holds a batch back, and the warm window is one of them), and each epoch opens
-    with the largest bucket's window."""
-    inv = [_item(i, w, h, b) for i, (w, h, b) in enumerate(
-        [(1024, 1024, "large")] * 4 + [(512, 512, "medium")] * 4 + [(256, 256, "small")] * 8)]
+def test_a_warm_up_draw_leaves_the_random_stream_alone():
+    """The warm-up batch is drawn without moving ``random``: the training batches are the same
+    as with warm-up off (where no warm-up batch is drawn at all)."""
+    def batches(vram_safe):
+        random.seed(3)
+        owner = _windowed_owner([dict(x) for x in SPARSE], vram_safe=vram_safe, accum=4)
+        it = _iter(owner, 1)
+        return [_training_batch(it)[0]["id"] for _ in range(400)]
+
     def check():
-        for seed in range(20):
-            random.seed(seed)
-            it = _iter(_windowed_owner(inv), 1)
-            windows = [[next(it)[0]["bucket"] for _ in range(ACCUM)] for _ in range(12)]
-            for start in (0, 4, 8):  # the warm window of epochs 1, 2 and 3
-                assert windows[start] == ["large"] * ACCUM, f"seed={seed}: window {start} is {windows[start]}"
+        assert batches(True) == batches(False)
 
     _within(check)
 

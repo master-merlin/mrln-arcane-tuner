@@ -426,3 +426,34 @@ def test_an_all_nan_window_followed_by_another_bucket_routes_that_bucket(make_dr
     driver.on_optimizer_step(0)
     driver.route_for_batch(small)
     assert driver.active_expert == LOW
+
+
+@pytest.mark.parametrize("make_driver", [_wan22_driver, _bernini_driver], ids=["wan22", "bernini_r"])
+def test_a_paused_router_decides_nothing_for_a_warm_up_batch(make_driver):
+    """A throwaway warm-up batch (another shape, before the step's first batch) draws for the
+    expert already active and leaves the step's decision to the step's own first batch."""
+    driver = make_driver()
+    driver.set_router(_shape_router())
+    router = driver.router
+    driver.on_optimizer_step(0)
+    before = (router.active_expert, router._step_expert, router._last_shape, dict(router._block_decisions))
+    router.paused = True
+    driver.route_for_batch(torch.zeros(LARGE))  # the warm-up: would decide HIGH
+    router.paused = False
+    assert (router.active_expert, router._step_expert, router._last_shape, dict(router._block_decisions)) == before
+    assert driver.active_expert == before[0]
+    driver.route_for_batch(torch.zeros(SMALL))  # the step's own first batch decides
+    assert driver.active_expert == LOW and router._step_expert == LOW
+
+
+def test_the_dual_expert_trainers_pause_their_router_for_a_warm_up():
+    from app.engine.models.families.bernini_r.trainer import BerniniRTrainer
+    from app.engine.models.families.wan22.trainer import Wan22Trainer
+
+    for cls, make_driver in ((Wan22Trainer, _wan22_driver), (BerniniRTrainer, _bernini_driver)):
+        trainer = object.__new__(cls)
+        trainer.driver = make_driver()
+        trainer.driver.set_router(_shape_router())
+        with trainer.routing_paused():
+            assert trainer.driver.router.paused, cls.__name__
+        assert not trainer.driver.router.paused, cls.__name__

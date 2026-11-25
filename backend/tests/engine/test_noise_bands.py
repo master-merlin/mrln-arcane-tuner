@@ -2,7 +2,13 @@
 import pytest
 import torch
 
-from app.engine.core.pipeline.noise_bands import band_centres, noise_fraction_of, timesteps_for_bands
+from app.engine.core.pipeline.noise_bands import (
+    band_centres,
+    band_edges,
+    band_shares,
+    noise_fraction_of,
+    timesteps_for_bands,
+)
 
 
 class _Family:
@@ -39,6 +45,26 @@ def _assert_on_centres(family, count=8):
 
 def test_band_centres_have_equal_widths_in_noise():
     assert band_centres(4).tolist() == [0.125, 0.375, 0.625, 0.875]
+
+
+def test_band_edges_bound_equal_bands():
+    assert band_edges(4).tolist() == [0.0, 0.25, 0.5, 0.75, 1.0]
+
+
+@pytest.mark.parametrize("count", [2, 4, 8, 32])
+def test_band_centres_are_the_midpoints_of_the_edges(count):
+    edges = band_edges(count)
+    assert torch.equal(band_centres(count), (edges[:-1] + edges[1:]) / 2)
+
+
+def test_band_shares_put_an_edge_in_the_band_above():
+    assert band_shares(torch.tensor([0.0, 0.25, 0.5, 1.0]), 4) == [0.25, 0.25, 0.25, 0.25]
+
+
+@pytest.mark.parametrize("fractions", [[1.2], [-0.1], [float("nan")], []])
+def test_band_shares_refuse_a_fraction_outside_the_scale(fractions):
+    with pytest.raises(ValueError):
+        band_shares(torch.tensor(fractions), 4)
 
 
 def test_a_forward_clock_on_a_thousand():

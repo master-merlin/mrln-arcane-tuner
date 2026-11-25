@@ -74,18 +74,26 @@ class Comparison:
 
 
 @functools.cache
-def timestep_keys_from_source() -> frozenset[str]:
-    """``timestep_sampling``, every key of ``TIMESTEP_PARAMETERS`` and their older names, read from
-    the sampler's own source (importing it would load torch into this process)."""
+def timestep_source() -> dict[str, Any]:
+    """``TIMESTEP_PARAMETERS``, ``_PARAMETER_ALIASES`` and ``TIMESTEP_SCHEMA_DEFAULTS``, read from the
+    sampler's own source as literals (importing it would load torch into this process)."""
+    wanted = ("TIMESTEP_PARAMETERS", "_PARAMETER_ALIASES", "TIMESTEP_SCHEMA_DEFAULTS")
     found: dict[str, Any] = {}
     for node in ast.parse(_TIMESTEP_SOURCE.read_text(encoding="utf-8")).body:
         target = node.target if isinstance(node, ast.AnnAssign) else (
             node.targets[0] if isinstance(node, ast.Assign) else None)
-        if isinstance(target, ast.Name) and target.id in ("TIMESTEP_PARAMETERS", "_PARAMETER_ALIASES"):
+        if isinstance(target, ast.Name) and target.id in wanted:
             found[target.id] = ast.literal_eval(node.value)
-    if "TIMESTEP_PARAMETERS" not in found:
-        raise RuntimeError(f"TIMESTEP_PARAMETERS not found in {_TIMESTEP_SOURCE}")
-    aliases = [name for names in found.get("_PARAMETER_ALIASES", {}).values() for name in names]
+    missing = [name for name in wanted if name not in found]
+    if missing:
+        raise RuntimeError(f"{', '.join(missing)} not found in {_TIMESTEP_SOURCE}")
+    return found
+
+
+def timestep_keys_from_source() -> frozenset[str]:
+    """``timestep_sampling``, every key of ``TIMESTEP_PARAMETERS`` and their older names."""
+    found = timestep_source()
+    aliases = [name for names in found["_PARAMETER_ALIASES"].values() for name in names]
     return frozenset({"timestep_sampling", *found["TIMESTEP_PARAMETERS"], *aliases})
 
 

@@ -39,9 +39,39 @@ def noise_fraction_of(family, timesteps: torch.Tensor, like: torch.Tensor | None
     return torch.cat(out) if out else torch.zeros(0)
 
 
+def band_edges(count: int) -> torch.Tensor:
+    """The ``count + 1`` edges of ``count`` bands of equal width in noise fraction, from 0 to 1."""
+    return torch.arange(count + 1, dtype=torch.float64) / count
+
+
 def band_centres(count: int) -> torch.Tensor:
-    """The centres of ``count`` bands of equal width in noise fraction, from 0 to 1."""
+    """The centres of ``count`` bands of equal width in noise fraction, from 0 to 1.
+
+    Stored runs compare their centres exactly, so the formula stays as they were written with
+    (the midpoints of :func:`band_edges` differ from it by an ulp for some counts).
+    """
     return (torch.arange(count, dtype=torch.float64) + 0.5) / count
+
+
+def band_shares(fractions: torch.Tensor, count: int) -> list[float]:
+    """The share of ``fractions`` in each of ``count`` bands of :func:`band_edges`.
+
+    A fraction on an inner edge belongs to the band above it; 1.0 belongs to the last band.
+    An empty input, a NaN or a value outside ``[0, 1]`` raises ``ValueError``.
+    """
+    flat = fractions.reshape(-1).double()
+    if flat.numel() == 0:
+        raise ValueError("No noise fractions to share out over the bands.")
+    if torch.isnan(flat).any():
+        raise ValueError("A noise fraction is NaN.")
+    if (flat < 0).any() or (flat > 1).any():
+        raise ValueError(
+            f"A noise fraction lies outside [0, 1]: from {float(flat.min()):.4f} to {float(flat.max()):.4f}."
+        )
+    inner = band_edges(count)[1:-1]
+    index = torch.bucketize(flat, inner, right=True)
+    counts = torch.bincount(index, minlength=count)
+    return (counts.double() / flat.numel()).tolist()
 
 
 def timesteps_for_bands(family, count: int, like: torch.Tensor | None = None) -> torch.Tensor:

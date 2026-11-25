@@ -10,6 +10,9 @@ _FRAME_RULE_RE = re.compile(r"^\s*(\d+)\s*n\s*\+\s*(\d+)\s*$", re.IGNORECASE)
 
 logger = structlog.get_logger(__name__)
 
+# The step every bucket side snaps down to: training builds its managers with this default.
+BUCKET_DIVISIBILITY = 32
+
 
 class BucketResolution(TypedDict):
     width: int
@@ -32,7 +35,7 @@ class BucketManager:
     def __init__(
         self,
         base_resolutions: int | list[int] = 1024,
-        divisibility: int = 32,
+        divisibility: int = BUCKET_DIVISIBILITY,
         frame_buckets: list[int] | None = None,
         frame_rule: str | None = None,
     ):

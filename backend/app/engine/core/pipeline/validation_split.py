@@ -28,6 +28,14 @@ _BOUNDS = (
     ("validation_noise_draws", 1, 1, 16),
 )
 
+
+def setting_bounds(setting: str) -> tuple[float, float]:
+    """The lowest and highest value validation accepts for ``setting``."""
+    for name, _default, low, high in _BOUNDS:
+        if name == setting:
+            return low, high
+    raise KeyError(f"{setting} is no bounded validation setting")
+
 Item = dict[str, Any]
 
 

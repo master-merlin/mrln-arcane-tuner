@@ -185,6 +185,19 @@ class VideoConfigReport:
         return not self.errors
 
 
+def apply_video_contract(definition, config: dict[str, Any]) -> VideoConfigReport:
+    """Fold the model-owned settings of :func:`validate_video_config` into ``config``, in place.
+
+    The step a job's config assembly runs: a derived value replaces the config's own, and a config
+    the contract refuses raises ``ValueError`` with every error, before anything is folded in.
+    """
+    report = validate_video_config(definition, config)
+    if not report.ok:
+        raise ValueError("; ".join(report.errors))
+    config.update(report.derived)
+    return report
+
+
 def _truthy(value: Any) -> bool:
     return bool(value) and str(value).lower() not in ("false", "0", "")
 

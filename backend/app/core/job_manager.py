@@ -456,13 +456,9 @@ class JobManager:
         if definition is None:
             return
 
-        from app.engine.core.video_contract import validate_video_config
+        from app.engine.core.video_contract import apply_video_contract
 
-        report = validate_video_config(definition, config)
-        if not report.ok:
-            raise ValueError("; ".join(report.errors))
-        for key, value in report.derived.items():
-            config[key] = value
+        apply_video_contract(definition, config)
 
     def _apply_capability_allowlist(
         self,

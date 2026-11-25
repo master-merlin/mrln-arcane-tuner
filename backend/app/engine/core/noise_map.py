@@ -16,7 +16,7 @@ import structlog
 import torch
 
 from app.engine.core.archetypes import resolve_capabilities
-from app.engine.core.pipeline.noise_bands import band_edges, band_shares, noise_fraction_of
+from app.engine.core.pipeline.noise_bands import band_centres, band_edges, band_shares, noise_fraction_of
 from app.engine.models.base import BaseTrainingConfig
 from app.engine.models.registry import registry
 from app.engine.strategies.noise_interpolation import NoiseInterpolation
@@ -323,3 +323,117 @@ def map_definition(
         except Exception as exc:  # noqa: BLE001 -- every failure is the row's reason, never skipped
             row.update(status="not_mapped", reason=f"{type(exc).__name__}: {exc}", phases=[], all=None)
     return row
+
+
+# ── The report over the registry ──
+
+
+class Refusal(ValueError):
+    """A request the report can't serve (an unknown model name), with the reason."""
+
+
+def _ensure_registry() -> None:
+    if not registry.list_models():
+        registry.initialize()
+
+
+def select_definitions(names: list[str] | None) -> list[str]:
+    """The definition ids ``names`` select, each once, in order.
+
+    ``None`` selects every registered definition; a name is a definition id or a family id (all of
+    its definitions). Definitions are ordered by ``(family, id)`` within each selection. An unknown
+    name raises :class:`Refusal` naming it.
+    """
+    _ensure_registry()
+    by_family: dict[str, list[str]] = {}
+    for definition_id in registry.list_models():
+        by_family.setdefault(registry.get_definition(definition_id).family, []).append(definition_id)
+
+    def ordered(ids):
+        return sorted(ids, key=lambda i: (registry.get_definition(i).family, i))
+
+    if names is None:
+        return ordered(registry.list_models())
+    unknown = [n for n in names if registry.get_definition(n) is None and n not in by_family]
+    if unknown:
+        raise Refusal(f"Unknown model name(s): {', '.join(unknown)} (a definition id or a family id)")
+    out: list[str] = []
+    for name in names:
+        for definition_id in [name] if registry.get_definition(name) is not None else ordered(by_family[name]):
+            if definition_id not in out:
+                out.append(definition_id)
+    return out
+
+
+def build_report(names: list[str] | None, samplers: list[SamplerSpec], resolutions: list[int], **options) -> dict:
+    """One :func:`map_definition` row per selected definition, sampler and resolution, in that order,
+    with the settings every row shares."""
+    ids = select_definitions(names)
+    count = DEFAULT_BANDS if options.get("bands") is None else int(options["bands"])
+    options = {**options, "bands": count}
+    rows = [
+        map_definition(registry.get_definition(definition_id), sampler, resolution, **options)
+        for definition_id in ids
+        for sampler in samplers
+        for resolution in resolutions
+    ]
+    return {
+        "band_edges": band_edges(count).tolist(),
+        "band_centres": band_centres(count).tolist(),
+        "steps": options.get("steps", 2000),
+        "phases": options.get("phases", 4),
+        "draws_per_step": options.get("draws_per_step", 4),
+        "seed": options.get("seed", 0),
+        "latent_frames": options.get("latent_frames", 1),
+        "latent_downscale": options.get("latent_downscale"),
+        "rows": rows,
+    }
+
+
+def _band_labels(edges: list[float]) -> list[str]:
+    """``lo-hi`` per band, with two decimals where every edge has them exactly, else three."""
+    digits = 2 if all(abs(e * 100 - round(e * 100)) < 1e-9 for e in edges) else 3
+    return [f"{lo:.{digits}f}-{hi:.{digits}f}" for lo, hi in zip(edges, edges[1:])]
+
+
+def _share_cells(part: dict, width: int) -> str:
+    shares = "".join(f"{share * 100:{width - 1}.1f}%" for share in part["shares"])
+    return f"{shares}   median {part['median']:.3f}"
+
+
+def format_report(report: dict) -> str:
+    """The report as text: per definition a block, one line per sampler, resolution and phase,
+    and a closing ``Not mapped:`` section with each such row's reason (none when every row maps)."""
+    labels = _band_labels(report["band_edges"])
+    width = max(len(label) for label in labels) + 1
+    lines = [
+        f"Noise-coordinate map: share of training draws per validation noise band "
+        f"({report['steps']} steps, {report['phases']} phases, {report['draws_per_step']} draws per step, "
+        f"seed {report['seed']}, latent frames {report['latent_frames']})",
+        "Band (noise fraction): " + " | ".join(labels),
+    ]
+    header = " " * 26 + "".join(f"{label:>{width}}" for label in labels)
+    not_mapped = []
+    current = None
+    for row in report["rows"]:
+        if row["definition"] != current:
+            current = row["definition"]
+            lines += ["", f"== {row['definition']} ({row['family']}) ==", header]
+        name = f"{row['sampler']} @ {row['resolution']}"
+        if row["status"] != "mapped":
+            lines.append(f"  {name}: not mapped")
+            not_mapped.append(f"  {row['family']}/{row['definition']} {name}: {row['reason']}")
+            continue
+        grid = row["latent_grid"]
+        where = f"grid {grid[0]}x{grid[1]} ({row['latent_grid_source']})" if grid else "grid-free"
+        mode = row["sampler_config"].get("timestep_sampling")
+        lines.append(f"  {name}  [{mode}, {where}]")
+        if row["scheduler_error"]:
+            lines.append(f"    (scheduler not built: {row['scheduler_error']})")
+        for part in row["phases"]:
+            first, end = part["steps"]
+            lines.append(f"    {f'steps {first}-{end}':<22}{_share_cells(part, width)}")
+        lines.append(f"    {'all':<22}{_share_cells(row['all'], width)}")
+    if not_mapped:
+        lines += ["", "Not mapped:", *not_mapped]
+    return "\n".join(lines) + "\n"

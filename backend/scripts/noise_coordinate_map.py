@@ -37,6 +37,7 @@ from app.engine.core import noise_map as nm  # noqa: E402
 
 
 def _parser() -> argparse.ArgumentParser:
+    defaults = nm.MapOptions()
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--model", action="append", default=None, metavar="ID",
                         help="a definition id or a family id (repeat; default every definition)")
@@ -44,15 +45,16 @@ def _parser() -> argparse.ArgumentParser:
                         help="'default' or <mode>[:key=value,...] (repeat; default 'default')")
     parser.add_argument("--resolution", type=int, action="append", default=None,
                         help="training resolution in pixels (repeat; default 1024)")
-    parser.add_argument("--steps", type=int, default=2000, help="steps of the simulated training")
-    parser.add_argument("--phases", type=int, default=4, help="equal phases the steps are split into")
-    parser.add_argument("--draws-per-step", type=int, default=4, help="timesteps drawn per step")
-    parser.add_argument("--bands", type=int, default=None,
-                        help=f"validation noise bands (default the schema's, {nm.DEFAULT_BANDS})")
-    parser.add_argument("--seed", type=int, default=0, help="seed of the draws")
-    parser.add_argument("--latent-downscale", type=int, default=None,
+    parser.add_argument("--steps", type=int, default=defaults.steps, help="steps of the simulated training")
+    parser.add_argument("--phases", type=int, default=defaults.phases, help="equal phases the steps are split into")
+    parser.add_argument("--draws-per-step", type=int, default=defaults.draws_per_step, help="timesteps drawn per step")
+    parser.add_argument("--bands", type=int, default=defaults.bands,
+                        help=f"validation noise bands (default the schema's, {defaults.bands})")
+    parser.add_argument("--seed", type=int, default=defaults.seed, help="seed of the draws")
+    parser.add_argument("--latent-downscale", type=int, default=defaults.latent_downscale,
                         help="pixels per latent cell, for a model that declares none")
-    parser.add_argument("--latent-frames", type=int, default=1, help="latent frames of a video model's draws")
+    parser.add_argument("--latent-frames", type=int, default=defaults.latent_frames,
+                        help="latent frames of a video model's draws")
     parser.add_argument("--json", type=Path, default=None, help="also write the report as JSON to this file")
     return parser
 
@@ -71,10 +73,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     sys.stdout.write(nm.format_report(report))
     code = 0
-    if not any(row["status"] == "mapped" for row in report["rows"]):
-        print("No row was mapped:", file=sys.stderr)
-        for row in report["rows"]:
-            print(f"  {row['definition']} {row['sampler']} @ {row['resolution']}: {row['reason']}", file=sys.stderr)
+    if not report["any_mapped"]:  # the reasons are in the table's Not mapped section
+        print("No row was mapped", file=sys.stderr)
         code = 2
     if args.json is not None:
         try:

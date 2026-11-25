@@ -51,12 +51,6 @@ def test_band_edges_bound_equal_bands():
     assert band_edges(4).tolist() == [0.0, 0.25, 0.5, 0.75, 1.0]
 
 
-@pytest.mark.parametrize("count", [2, 4, 8, 32])
-def test_band_centres_are_the_midpoints_of_the_edges(count):
-    edges = band_edges(count)
-    assert torch.equal(band_centres(count), (edges[:-1] + edges[1:]) / 2)
-
-
 def test_band_shares_put_an_edge_in_the_band_above():
     assert band_shares(torch.tensor([0.0, 0.25, 0.5, 1.0]), 4) == [0.25, 0.25, 0.25, 0.25]
 

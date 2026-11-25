@@ -137,11 +137,16 @@ class PipelineLoadingMixin:
                 arch_params=sorted(self.definition.architecture_params.keys()),
             )
 
-        # 3. Init scheduler (family hook)
-        self.scheduler = self.init_scheduler()
+        # 3. Init scheduler (family hook) + 3b. noise interpolation
+        self._init_noise_path(self.init_scheduler())
+
+    def _init_noise_path(self, scheduler) -> None:
+        """Keep ``scheduler`` (what :meth:`init_scheduler` returned) and build the noise
+        interpolation on it: steps 3 and 3b of :meth:`load_model`, which need no weights."""
+        self.scheduler = scheduler
         self.components["scheduler"] = self.scheduler
 
-        # 3b. Noise interpolation (configurable: linear, ddpm, cosine)
+        # Noise interpolation (configurable: linear, ddpm, cosine)
         interp_mode = self.config.get("noise_interpolation", "linear")
         self.noise_interpolation = NoiseInterpolation(
             mode=interp_mode,

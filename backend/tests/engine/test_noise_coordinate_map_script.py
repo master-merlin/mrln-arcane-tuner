@@ -11,7 +11,7 @@ if str(_SCRIPTS) not in sys.path:
 
 import noise_coordinate_map as cli  # noqa: E402
 
-from app.engine.core.noise_map import build_report, parse_sampler  # noqa: E402
+from app.engine.core.noise_map import MapOptions, build_report, parse_sampler  # noqa: E402
 
 pytestmark = pytest.mark.xdist_group("noise_map_registry")
 
@@ -39,8 +39,22 @@ def test_a_bad_sampler_exits_two_naming_the_bad_part(capsys):
 def test_nothing_mapped_exits_two_with_the_reasons(capsys):
     assert cli.main(["--model", "sdxl_base_1.0", "--sampler", "uniform", *SHORT]) == 2
     captured = capsys.readouterr()
-    assert "Not mapped:" in captured.out
-    assert "flow-matching" in captured.err
+    assert "Not mapped:" in captured.out and "flow-matching" in captured.out
+    assert captured.err == "No row was mapped\n"
+
+
+@pytest.mark.parametrize("bands", ["0", "1"])
+def test_a_band_count_validation_refuses_exits_two(capsys, bands):
+    assert cli.main(["--model", "moss-image-base", "--sampler", "uniform", "--bands", bands, *SHORT]) == 2
+    assert "bands" in capsys.readouterr().err
+
+
+def test_the_options_default_to_the_modules_defaults():
+    args = cli._parser().parse_args([])
+    defaults = MapOptions()
+    assert (args.steps, args.phases, args.draws_per_step, args.bands, args.seed, args.latent_downscale,
+            args.latent_frames) == (defaults.steps, defaults.phases, defaults.draws_per_step, defaults.bands,
+                                    defaults.seed, defaults.latent_downscale, defaults.latent_frames)
 
 
 def test_the_json_file_holds_the_modules_report(tmp_path):

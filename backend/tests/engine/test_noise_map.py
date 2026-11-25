@@ -102,6 +102,11 @@ def test_a_named_sampler_is_never_replaced_by_the_default():
     assert shell.config["timestep_sampling"] == "uniform"
 
 
+@pytest.mark.parametrize("definition_id, shift", [("wan2.1-t2v-14b", 3.0), ("k5-t2v-lite-sft-5s", 5.0)])
+def test_a_video_shell_carries_the_shift_a_job_derives(definition_id, shift):
+    assert sampling_shell(_definition(definition_id), {}, 10).config["model_shift_fixed"] == shift
+
+
 def test_the_shell_carries_the_run_length_in_its_config():
     shell = sampling_shell(_definition("moss-image-base"), {}, 10)
     assert shell.config["max_train_steps"] == 10 and shell.max_train_steps == 10
@@ -207,6 +212,13 @@ class _CallSpy:
 
 def test_flux3_uniform_carries_its_fixed_shift():
     _assert_shares(_row("flux3-image-klein-base", "uniform", **SHARES_ONLY), [0.0459, 0.0802, 0.1760, 0.6979])
+
+
+def test_a_video_models_default_draws_at_its_training_shift():
+    row = _row("wan2.1-t2v-14b", steps=64, draws_per_step=64, phases=1)
+    assert row["status"] == "mapped", row["reason"]
+    assert abs(row["all"]["shares"][-1] - 0.4626) <= 0.005, row["all"]["shares"]
+    assert row["derived_config"]["model_shift_fixed"] == 3.0
 
 
 def test_moss_uniform_is_flat():
@@ -343,7 +355,7 @@ def test_no_cuda_generator_is_reseeded(monkeypatch):
 
 
 def test_a_row_records_what_sets_its_scale(radc_curriculum):
-    keys = {"definition", "family", "sampler", "sampler_config", "resolution", "latent_grid",
+    keys = {"definition", "family", "sampler", "sampler_config", "derived_config", "resolution", "latent_grid",
             "latent_grid_source", "latent_frames", "latent_shape", "band_edges", "scheduler_error",
             "scheduler_fallback", "steps", "draws_per_step", "seed", "status", "reason", "phases", "all"}
     moss = _row("moss-image-base", "uniform", steps=20)

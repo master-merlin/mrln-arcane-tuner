@@ -18,7 +18,7 @@ import torch
 from app.engine.core.archetypes import resolve_capabilities
 from app.engine.core.pipeline.noise_bands import band_centres, band_edges, band_shares, noise_fraction_of
 from app.engine.core.pipeline.validation_split import setting_bounds
-from app.engine.core.video_contract import resolve_video_profile
+from app.engine.core.video_contract import apply_video_contract, resolve_video_profile
 from app.engine.models.base import BaseTrainingConfig
 from app.engine.models.registry import registry
 from app.engine.strategies.timestep_sampling import (
@@ -122,16 +122,20 @@ def _init_scheduler(trainer):
 def sampling_shell(definition, config: dict, steps: int):
     """``definition``'s own trainer, built as a training job builds it, without weights.
 
-    The run config is the base config, then ``config``, then the family's timestep defaults (what
-    the shared ``setup()`` does first), with ``max_train_steps`` ``steps``. The family and the
-    trainer come from their own constructors; the device is the CPU. The scheduler comes from
-    :func:`_init_scheduler`: one that raises is kept as a stand-in that re-raises on every read,
-    its error on ``scheduler_error``; a returned ``None`` stays ``None``.
+    The run config is the base config, then ``config``, with ``max_train_steps`` ``steps``; then
+    what a job's config assembly folds in (the model-owned settings of the video contract, its
+    shift among them, kept on ``derived_config``); then the family's timestep defaults (what the
+    shared ``setup()`` does first). The family and the trainer come from their own constructors;
+    the device is the CPU. The scheduler comes from :func:`_init_scheduler`: one that raises is
+    kept as a stand-in that re-raises on every read, its error on ``scheduler_error``; a returned
+    ``None`` stays ``None``.
     """
     run_config = {**copy.deepcopy(_BASE_CONFIG), **config, "max_train_steps": steps}
+    derived = dict(apply_video_contract(definition, run_config).derived)
     apply_family_timestep_defaults(definition, run_config)
     family = registry.get_family_class(definition.family)(definition, run_config)
     trainer = family.get_trainer_class()(definition=definition, run_config=run_config)
+    trainer.derived_config = derived
     trainer.device = torch.device("cpu")
     trainer.max_train_steps = steps
     trainer._setup_family()
@@ -337,6 +341,7 @@ def _map(definition, sampler: SamplerSpec, resolution: int, opts: MapOptions, ca
         "family": definition.family,
         "sampler": sampler.label,
         "sampler_config": dict(sampler.config),
+        "derived_config": None,
         "resolution": resolution,
         "latent_grid": None,
         "latent_grid_source": None,
@@ -359,7 +364,7 @@ def _map(definition, sampler: SamplerSpec, resolution: int, opts: MapOptions, ca
             own_draw = not caps.get("supports_flow_timestep_sampling", True)
             row.update(sampler_config=({"timestep_sampling": OWN_DRAW} if own_draw
                                        else _sampler_config(trainer.config, definition)),
-                       scheduler_error=trainer.scheduler_error, scheduler_fallback=trainer.scheduler_fallback)
+                       derived_config=dict(trainer.derived_config), scheduler_error=trainer.scheduler_error, scheduler_fallback=trainer.scheduler_fallback)
             if sampler.config and own_draw:
                 raise _NotMapped(NO_FLOW_SAMPLING)
             downscale = _downscale(definition, opts, caps)

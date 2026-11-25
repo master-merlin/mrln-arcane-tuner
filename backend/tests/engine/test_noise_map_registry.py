@@ -60,6 +60,21 @@ def test_a_definition_that_can_not_be_drawn_fails_the_coverage_check(draw_raises
     assert all(reason == "RuntimeError: boom" for reason in failures.values())
 
 
+def test_every_shell_carries_what_a_job_derives_for_its_model():
+    from app.core.job_manager import JobManager
+
+    manager = JobManager()
+    derived_somewhere = False
+    for definition_id in registry.list_models():
+        job = {"definition_id": definition_id}
+        manager._apply_video_contract(job, definition_id)
+        del job["definition_id"]
+        derived_somewhere |= bool(job)
+        shell = sampling_shell(registry.get_definition(definition_id), {}, 1)
+        assert {key: shell.config.get(key) for key in job} == job, definition_id
+    assert derived_somewhere
+
+
 def test_a_family_name_selects_all_its_definitions():
     assert select_definitions(["moss_image"]) == ["moss-image-base", "moss-image-sft"]
 

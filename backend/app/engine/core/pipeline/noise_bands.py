@@ -45,9 +45,12 @@ def band_edges(count: int) -> torch.Tensor:
 
 
 def band_centres(count: int) -> torch.Tensor:
-    """The centres of ``count`` bands of equal width in noise fraction, from 0 to 1."""
-    edges = band_edges(count)
-    return (edges[:-1] + edges[1:]) / 2
+    """The centres of ``count`` bands of equal width in noise fraction, from 0 to 1.
+
+    Stored runs compare their centres exactly, so the formula stays as they were written with
+    (the midpoints of :func:`band_edges` differ from it by an ulp for some counts).
+    """
+    return (torch.arange(count, dtype=torch.float64) + 0.5) / count
 
 
 def band_shares(fractions: torch.Tensor, count: int) -> list[float]:

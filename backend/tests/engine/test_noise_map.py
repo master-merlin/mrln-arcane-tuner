@@ -9,6 +9,7 @@ import torch
 from app.engine.core.noise_map import (
     NEEDS_DOWNSCALE,
     NO_FLOW_SAMPLING,
+    MapOptions,
     SamplerSpec,
     capabilities,
     latent_downscale,
@@ -59,6 +60,32 @@ def test_a_scheduler_that_raises_is_kept_as_its_error(scheduler_raises):
     assert shell.scheduler_error == "RuntimeError: no scheduler"
     with pytest.raises(RuntimeError, match="no scheduler"):
         shell.scheduler.alphas_cumprod  # noqa: B018 -- the read itself must raise
+
+
+def test_a_fallback_to_the_drivers_scheduler_keeps_the_trainers_error(monkeypatch):
+    def raising(self):
+        raise RuntimeError("needs the loaded betas")
+
+    monkeypatch.setattr(_trainer_class("moss-image-base"), "init_scheduler", raising)
+    shell = sampling_shell(_definition("moss-image-base"), {}, 10)
+    assert shell.scheduler_error is None
+    assert shell.scheduler_fallback == "RuntimeError: needs the loaded betas"
+    row = _row("moss-image-base", "uniform", steps=10)
+    assert row["status"] == "mapped", row["reason"]
+    assert row["scheduler_fallback"] == "RuntimeError: needs the loaded betas"
+
+
+def test_the_trainers_own_scheduler_leaves_no_fallback():
+    assert sampling_shell(_definition("moss-image-base"), {}, 10).scheduler_fallback is None
+
+
+def test_each_shell_starts_from_its_own_base_config():
+    first = sampling_shell(_definition("moss-image-base"), {}, 10)
+    first.config["sample_prompts"].append("a prompt one shell added")
+    try:
+        assert sampling_shell(_definition("moss-image-base"), {}, 10).config["sample_prompts"] == []
+    finally:
+        first.config["sample_prompts"].clear()
 
 
 def test_the_shell_carries_the_family_default():
@@ -235,6 +262,39 @@ def test_phase_bounds_with_a_remainder():
     assert [phase["steps"] for phase in row["phases"]] == [[0, 2], [2, 5], [5, 7], [7, 10]]
 
 
+def test_fewer_than_one_latent_frame_is_refused():
+    with pytest.raises(ValueError, match="latent_frames"):
+        MapOptions(latent_frames=0)
+
+
+@pytest.mark.parametrize("definition_id, downscale", [("qwen-image-2.1", 16), ("moss-image-base", 8)])
+def test_a_resolution_below_one_latent_cell_is_not_mapped(definition_id, downscale):
+    row = _row(definition_id, "uniform", 4 if downscale == 8 else 8, steps=10)
+    assert row["status"] == "not_mapped"
+    assert "below one latent cell" in row["reason"] and str(downscale) in row["reason"]
+    assert row["latent_grid"] is None
+
+
+def test_a_resolution_training_never_uses_is_not_mapped_naming_the_nearest():
+    row = _row("qwen-image-2.1", "uniform", 1000, steps=10)
+    assert row["status"] == "not_mapped"
+    assert "no multiple of the latent downscale 16" in row["reason"]
+    assert "992" in row["reason"] and "1008" in row["reason"]
+    assert row["latent_grid"] is None
+
+
+def test_an_audio_family_is_grid_free_even_with_a_given_downscale():
+    row = _row("ace-step-1.5", "uniform", steps=10, latent_downscale=8)
+    assert row["status"] == "mapped", row["reason"]
+    assert row["latent_grid"] is None and row["latent_grid_source"] is None
+
+
+def test_a_family_without_flow_sampling_reports_its_own_draw():
+    row = _row("sdxl_base_1.0", steps=10)
+    assert row["status"] == "mapped", row["reason"]
+    assert row["sampler_config"]["timestep_sampling"] == "own"
+
+
 def test_more_phases_than_steps_is_refused():
     with pytest.raises(ValueError):
         _row("moss-image-base", "uniform", steps=3, phases=4)
@@ -285,7 +345,7 @@ def test_no_cuda_generator_is_reseeded(monkeypatch):
 def test_a_row_records_what_sets_its_scale(radc_curriculum):
     keys = {"definition", "family", "sampler", "sampler_config", "resolution", "latent_grid",
             "latent_grid_source", "latent_frames", "latent_shape", "band_edges", "scheduler_error",
-            "steps", "draws_per_step", "seed", "status", "reason", "phases", "all"}
+            "scheduler_fallback", "steps", "draws_per_step", "seed", "status", "reason", "phases", "all"}
     moss = _row("moss-image-base", "uniform", steps=20)
     assert keys <= set(moss)
     assert moss["definition"] == "moss-image-base" and moss["family"] == "moss_image"

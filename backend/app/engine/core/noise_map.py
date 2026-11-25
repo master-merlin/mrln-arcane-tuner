@@ -43,6 +43,8 @@ NEEDS_DOWNSCALE = (
     "this sampler depends on resolution and the definition declares no latent downscale: pass --latent-downscale"
 )
 NO_FLOW_SAMPLING = "declares no flow-matching timestep sampling: only its own draw (default) applies"
+# The mode a row of such a family reports: its trainer draws its own way, never the schema's mode.
+OWN_DRAW = "own"
 
 # The schema's own default band count: the count a validation pass uses when the job names none.
 DEFAULT_BANDS: int = BaseTrainingConfig.model_fields["validation_timestep_bands"].default
@@ -81,6 +83,8 @@ class MapOptions:
             raise ValueError(f"bands must lie in [{low:g}, {high:g}] as validation's do, got {self.bands}")
         if self.latent_downscale is not None and self.latent_downscale < 1:
             raise ValueError(f"latent_downscale must be at least 1, got {self.latent_downscale}")
+        if self.latent_frames < 1:
+            raise ValueError(f"latent_frames must be at least 1, got {self.latent_frames}")
 
 
 def capabilities(definition) -> dict:
@@ -105,11 +109,14 @@ class _FailedScheduler:
 def _init_scheduler(trainer):
     """The trainer's own ``init_scheduler`` hook, as ``load_model`` runs it. A hook that reads what
     loading assigns (SDXL's reads the betas ``_assign_components`` caches) raises without weights:
-    then its driver's hook, which builds the same scheduler from the driver's own defaults."""
+    then its driver's hook, which builds the same scheduler from the driver's own defaults, and the
+    trainer hook's error is kept on ``scheduler_fallback`` (``None`` when its own hook built it)."""
+    trainer.scheduler_fallback = None
     try:
         return trainer.init_scheduler()
-    except Exception:  # noqa: BLE001 -- the driver's hook decides; its error is the one kept
-        return trainer.driver.init_scheduler()
+    except Exception as exc:  # noqa: BLE001 -- the driver's hook decides; this error is shown beside it
+        trainer.scheduler_fallback = _reason(exc)
+    return trainer.driver.init_scheduler()
 
 
 def sampling_shell(definition, config: dict, steps: int):
@@ -121,7 +128,7 @@ def sampling_shell(definition, config: dict, steps: int):
     :func:`_init_scheduler`: one that raises is kept as a stand-in that re-raises on every read,
     its error on ``scheduler_error``; a returned ``None`` stays ``None``.
     """
-    run_config = {**_BASE_CONFIG, **config, "max_train_steps": steps}
+    run_config = {**copy.deepcopy(_BASE_CONFIG), **config, "max_train_steps": steps}
     apply_family_timestep_defaults(definition, run_config)
     family = registry.get_family_class(definition.family)(definition, run_config)
     trainer = family.get_trainer_class()(definition=definition, run_config=run_config)
@@ -301,9 +308,25 @@ def _shares(trainer, definition, draws: torch.Tensor, opts: MapOptions, caps: di
 
 
 def _downscale(definition, opts: MapOptions, caps: dict) -> tuple[int, str] | None:
+    """The latent grid's downscale and its source; ``None`` for a grid-free row (an audio family's
+    latents have no spatial grid, whatever downscale is given or declared)."""
+    if caps.get("is_audio_family"):
+        return None
     if opts.latent_downscale is not None:
         return opts.latent_downscale, GIVEN_DOWNSCALE
     return latent_downscale(definition, caps)
+
+
+def _cells(resolution: int, downscale: int, source: str) -> int:
+    """Latent cells per side of a training at ``resolution``: one that is below one cell, or no
+    multiple of the downscale (a grid training never uses), is not mapped."""
+    if resolution < downscale:
+        raise _NotMapped(f"resolution {resolution} is below one latent cell (latent downscale {downscale}, {source})")
+    if resolution % downscale:
+        low = resolution - resolution % downscale
+        raise _NotMapped(f"resolution {resolution} is no multiple of the latent downscale {downscale} ({source}): "
+                         f"the nearest are {low} and {low + downscale}")
+    return resolution // downscale
 
 
 def _map(definition, sampler: SamplerSpec, resolution: int, opts: MapOptions, caps: dict) -> dict:
@@ -321,6 +344,7 @@ def _map(definition, sampler: SamplerSpec, resolution: int, opts: MapOptions, ca
         "latent_shape": None,
         "band_edges": band_edges(opts.bands).tolist(),
         "scheduler_error": None,
+        "scheduler_fallback": None,
         "steps": opts.steps,
         "draws_per_step": opts.draws_per_step,
         "seed": opts.seed,
@@ -332,16 +356,18 @@ def _map(definition, sampler: SamplerSpec, resolution: int, opts: MapOptions, ca
     with torch.random.fork_rng(devices=[]):
         try:
             trainer = _seeded_shell(definition, sampler, opts)
-            row.update(sampler_config=_sampler_config(trainer.config, definition),
-                       scheduler_error=trainer.scheduler_error)
-            if sampler.config and not caps.get("supports_flow_timestep_sampling", True):
+            own_draw = not caps.get("supports_flow_timestep_sampling", True)
+            row.update(sampler_config=({"timestep_sampling": OWN_DRAW} if own_draw
+                                       else _sampler_config(trainer.config, definition)),
+                       scheduler_error=trainer.scheduler_error, scheduler_fallback=trainer.scheduler_fallback)
+            if sampler.config and own_draw:
                 raise _NotMapped(NO_FLOW_SAMPLING)
             downscale = _downscale(definition, opts, caps)
             if downscale is None:
                 draws = _grid_free_draws(trainer, definition, sampler, opts, caps,
                                          row["sampler_config"]["timestep_sampling"])
             else:
-                cells = resolution // downscale[0]
+                cells = _cells(resolution, *downscale)
                 latents = latents_for(definition, cells, opts.latent_frames, opts.draws_per_step, caps)
                 row.update(latent_grid=[cells, cells], latent_grid_source=downscale[1], latent_shape=list(latents.shape))
                 draws = _draw_run(trainer, opts, latents)
@@ -478,6 +504,8 @@ def format_report(report: dict) -> str:
         lines.append(f"  {name}  [{mode}, {where}]")
         if row["scheduler_error"]:
             lines.append(f"    (scheduler not built: {row['scheduler_error']})")
+        if row.get("scheduler_fallback"):
+            lines.append(f"    (scheduler from the driver's hook; the trainer's raised {row['scheduler_fallback']})")
         for part in row["phases"]:
             first, end = part["steps"]
             lines.append(f"    {f'steps {first}-{end}':<22}{_share_cells(part, width)}")

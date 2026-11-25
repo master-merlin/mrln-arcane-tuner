@@ -92,6 +92,23 @@ def test_the_text_puts_two_families_side_by_side():
     assert "Not mapped:" not in text
 
 
+def test_the_text_shows_a_family_without_flow_sampling_on_its_own_draw():
+    report = build_report(["sdxl_base_1.0"], [parse_sampler("default")], [1024], **OPTIONS)
+    line = next(text for text in format_report(report).splitlines() if text.strip().startswith("default @"))
+    assert "own" in line and "logit_normal" not in line
+
+
+def test_the_text_shows_a_scheduler_fallback(monkeypatch):
+    def raising(self):
+        raise RuntimeError("needs the loaded betas")
+
+    monkeypatch.setattr(type(sampling_shell(registry.get_definition("moss-image-base"), {}, 1)),
+                        "init_scheduler", raising)
+    report = build_report(["moss-image-base"], [parse_sampler("uniform")], [1024], **OPTIONS)
+    assert report["rows"][0]["scheduler_fallback"] == "RuntimeError: needs the loaded betas"
+    assert "RuntimeError: needs the loaded betas" in format_report(report)
+
+
 def test_the_text_lists_what_was_not_mapped():
     report = build_report(["sdxl_base_1.0"], [parse_sampler("uniform")], [1024], **OPTIONS)
     assert report["any_mapped"] is False

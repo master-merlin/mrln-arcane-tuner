@@ -47,6 +47,13 @@ def test_band_centres_have_equal_widths_in_noise():
     assert band_centres(4).tolist() == [0.125, 0.375, 0.625, 0.875]
 
 
+@pytest.mark.parametrize("count", range(2, 33))
+def test_band_centres_keep_the_stored_values_bit_for_bit(count):
+    # Stored runs compare their centres exactly: the formula they were written with stays.
+    stored = ((torch.arange(count, dtype=torch.float64) + 0.5) / count).tolist()
+    assert band_centres(count).tolist() == stored
+
+
 def test_band_edges_bound_equal_bands():
     assert band_edges(4).tolist() == [0.0, 0.25, 0.5, 0.75, 1.0]
 

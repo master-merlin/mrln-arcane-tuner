@@ -49,6 +49,11 @@ def test_a_band_count_validation_refuses_exits_two(capsys, bands):
     assert "bands" in capsys.readouterr().err
 
 
+def test_fewer_than_one_latent_frame_exits_two(capsys):
+    assert cli.main(["--model", "moss-image-base", "--sampler", "uniform", "--latent-frames", "0", *SHORT]) == 2
+    assert "latent_frames" in capsys.readouterr().err
+
+
 def test_the_options_default_to_the_modules_defaults():
     args = cli._parser().parse_args([])
     defaults = MapOptions()

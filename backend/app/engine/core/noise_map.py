@@ -10,11 +10,13 @@ formula is copied here: a family joins with no edit to this module. CPU only, no
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import asdict, dataclass
 from typing import Any
 
 import torch
 
+from app.engine.components.bucketing import BUCKET_DIVISIBILITY
 from app.engine.core.archetypes import resolve_capabilities
 from app.engine.core.pipeline.noise_bands import band_centres, band_edges, band_shares, noise_fraction_of
 from app.engine.core.pipeline.validation_split import setting_bounds
@@ -256,10 +258,12 @@ def _draw_run(trainer, opts: MapOptions, latents: torch.Tensor) -> torch.Tensor:
 
 
 def _seeded_shell(definition, sampler: SamplerSpec, opts: MapOptions):
-    """A fresh shell on a freshly seeded default generator (never ``torch.manual_seed``: it also
-    reseeds every CUDA generator, which the caller's ``fork_rng`` does not restore)."""
+    """A fresh shell whose run config carries the report's seed, as a job's does (a family's own
+    generators, an expert router's among them, read it there), on a freshly seeded default
+    generator (never ``torch.manual_seed``: it also reseeds every CUDA generator, which the
+    caller's ``fork_rng`` does not restore)."""
     torch.default_generator.manual_seed(opts.seed)
-    return sampling_shell(definition, sampler.config, opts.steps)
+    return sampling_shell(definition, {**sampler.config, "seed": opts.seed}, opts.steps)
 
 
 def _sampler_config(config: dict, definition) -> dict:
@@ -322,14 +326,17 @@ def _downscale(definition, opts: MapOptions, caps: dict) -> tuple[int, str] | No
 
 
 def _cells(resolution: int, downscale: int, source: str) -> int:
-    """Latent cells per side of a training at ``resolution``: one that is below one cell, or no
-    multiple of the downscale (a grid training never uses), is not mapped."""
+    """Latent cells per side of a training's square bucket at ``resolution``. One below one cell is
+    not mapped; nor is one that is no square bucket training makes (its bucket sides snap down to
+    multiples of ``BUCKET_DIVISIBILITY``) on a whole latent grid, with the nearest that are."""
     if resolution < downscale:
         raise _NotMapped(f"resolution {resolution} is below one latent cell (latent downscale {downscale}, {source})")
-    if resolution % downscale:
-        low = resolution - resolution % downscale
-        raise _NotMapped(f"resolution {resolution} is no multiple of the latent downscale {downscale} ({source}): "
-                         f"the nearest are {low} and {low + downscale}")
+    step = math.lcm(downscale, BUCKET_DIVISIBILITY)
+    if resolution % step:
+        low = resolution - resolution % step
+        nearest = f"the nearest are {low} and {low + step}" if low else f"the nearest is {step}"
+        raise _NotMapped(f"resolution {resolution} is no square bucket training makes (latent downscale {downscale}, "
+                         f"{source}; buckets snap to multiples of {BUCKET_DIVISIBILITY}): {nearest}")
     return resolution // downscale
 
 

@@ -287,12 +287,26 @@ def test_a_resolution_below_one_latent_cell_is_not_mapped(definition_id, downsca
     assert row["latent_grid"] is None
 
 
-def test_a_resolution_training_never_uses_is_not_mapped_naming_the_nearest():
-    row = _row("qwen-image-2.1", "uniform", 1000, steps=10)
+@pytest.mark.parametrize("resolution", [1000, 1008])
+def test_a_resolution_training_never_uses_is_not_mapped_naming_the_nearest(resolution):
+    row = _row("qwen-image-2.1", "uniform", resolution, steps=10)
     assert row["status"] == "not_mapped"
-    assert "no multiple of the latent downscale 16" in row["reason"]
-    assert "992" in row["reason"] and "1008" in row["reason"]
+    assert "latent downscale 16" in row["reason"] and "multiples of 32" in row["reason"]
+    assert "992 and 1024" in row["reason"] and "1008" not in row["reason"].split(":", 1)[1]
     assert row["latent_grid"] is None
+
+
+def test_a_resolution_below_one_bucket_step_names_the_first_one():
+    row = _row("prx-pixel-t2i", "default", 20, steps=10)
+    assert row["status"] == "not_mapped"
+    assert "the nearest is 32" in row["reason"]
+
+
+@pytest.mark.parametrize("resolution", [992, 1024])
+def test_a_square_bucket_maps_on_its_own_grid(resolution):
+    row = _row("qwen-image-2.1", "uniform", resolution, steps=10)
+    assert row["status"] == "mapped", row["reason"]
+    assert row["latent_grid"] == [resolution // 16] * 2
 
 
 def test_an_audio_family_is_grid_free_even_with_a_given_downscale():
@@ -322,6 +336,28 @@ def test_the_same_seed_gives_the_same_row_and_another_seed_another():
     first = _row("moss-image-base", "uniform", steps=50)
     assert _row("moss-image-base", "uniform", steps=50) == first
     assert _row("moss-image-base", "uniform", steps=50, seed=1)["all"] != first["all"]
+
+
+@pytest.mark.parametrize("seed", [0, 1, 42])
+def test_the_report_seed_reaches_expert_routing(monkeypatch, seed):
+    cls = _trainer_class("wan2.2-t2v-a14b")
+    seen = []
+    real = cls.sample_timesteps
+
+    def spy(this, *args, **kwargs):
+        seen.append((this.config.get("seed"), this.expert_router._seed))
+        return real(this, *args, **kwargs)
+
+    monkeypatch.setattr(cls, "sample_timesteps", spy)
+    row = _row("wan2.2-t2v-a14b", "uniform", steps=4, draws_per_step=4, seed=seed)
+    assert row["status"] == "mapped", row["reason"]
+    assert seen and set(seen) == {(seed, seed)}
+
+
+def test_a_dual_expert_row_routes_on_the_report_seed():
+    row = _row("wan2.2-t2v-a14b", "uniform", steps=4, draws_per_step=4, bands=8, seed=1)
+    assert row["status"] == "mapped", row["reason"]
+    assert row["all"]["shares"][-1] == 0.0
 
 
 def _three_rows(monkeypatch):

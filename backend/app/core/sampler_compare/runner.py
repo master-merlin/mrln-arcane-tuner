@@ -645,8 +645,20 @@ def _append(c: Comparison, record: dict) -> None:
         out.write(json.dumps(record, default=str) + "\n")
 
 
-def _existing(c: Comparison, label: str, folder: Path) -> bool:
-    return folder.exists() or any((c.work_dir / "logs").glob(f"{label}.*"))
+def existing_run(c: Comparison, label: str, folder: Path, requested: dict, definition_id: str,
+                 manifest: dict[str, str]) -> tuple[str, str | None]:
+    """What the queue does with a run already on disk: ("new" | "reuse" | "partial" | "refuse", why).
+    A run of another identity is refused whether or not it finished: it is never trained over."""
+    if not (folder.exists() or any((c.work_dir / "logs").glob(f"{label}.*"))):
+        return "new", None
+    recorded = _read_json(_log(c, label, "identity.json"))
+    difference = plan.identity_difference(recorded, requested) if recorded is not None else []
+    if difference:
+        return "refuse", f"it ran another experiment: its identity differs in {', '.join(difference)}"
+    if folder.exists() and is_complete(folder, c):
+        why = reusable(folder, c, label, requested, definition_id, manifest)
+        return ("refuse", why) if why else ("reuse", None)
+    return "partial", None
 
 
 def run_queue(c: Comparison, seams: Seams, prepared: Prepared | None = None) -> str | None:
@@ -664,19 +676,14 @@ def run_queue(c: Comparison, seams: Seams, prepared: Prepared | None = None) -> 
         label = plan.label(arm, seed)
         folder = run_dir(c, label, prepared.definition_id)
         requested = prepared.requested[label]
-        if _existing(c, label, folder):
-            recorded = _read_json(_log(c, label, "identity.json"))
-            difference = plan.identity_difference(recorded, requested) if recorded is not None else []
-            if difference:
-                stop = f"{label} (run earlier): it ran another experiment: its identity differs in {', '.join(difference)}"
-                break
-            if folder.exists() and is_complete(folder, c):
-                why = reusable(folder, c, label, requested, prepared.definition_id, prepared.manifest)
-                if why:
-                    stop = f"{label} (finished earlier): {why}"
-                    break
-                _append(c, _record(c, arm, seed, reused=True, complete=True, run_dir=str(folder)))
-                continue
+        state, why = existing_run(c, label, folder, requested, prepared.definition_id, prepared.manifest)
+        if state == "refuse":
+            stop = f"{label} (run earlier): {why}"
+            break
+        if state == "reuse":
+            _append(c, _record(c, arm, seed, reused=True, complete=True, run_dir=str(folder)))
+            continue
+        if state == "partial":
             move_aside(c, label, folder)
         record = run_one(c, arm, seed, prepared.definition_id, requested, seams, status)
         _append(c, record)

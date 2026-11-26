@@ -36,7 +36,8 @@ def _last_runs(c: Comparison) -> dict[str, dict]:
     return out
 
 
-def _sampler_text(facts: dict, arm: str) -> dict[str, str]:
+def sampler_text(facts: dict, arm: str) -> dict[str, str]:
+    """Each key of an arm's effective sampler -> its value and where it came from."""
     resolved = facts["arms"][arm]
     return {key: f"{value} {_SOURCES.get(resolved['source'].get(key), 'from ' + str(resolved['source'].get(key)))}"
             for key, value in resolved["effective"].items()}
@@ -73,7 +74,7 @@ def _rows(c: Comparison, facts: dict, requested: dict, definition_id: str) -> tu
             "label": name, "arm": arm, "seed": seed, "finished": finished, "accepted": finished and why is None,
             "refused": why, "run_dir": str(folder) if folder.exists() else None,
             **{key: record.get(key) for key in _PEAKS},
-            "sampler": _sampler_text(facts, arm),
+            "sampler": sampler_text(facts, arm),
         })
     return rows, accepted, refusals
 

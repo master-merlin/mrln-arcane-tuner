@@ -33,7 +33,8 @@ ISOLATED_PATHS: dict[str, str] = {
 DATASET_FOLDER = "data/dataset"
 METADATA_SNAPSHOT = "data/metadata.db"
 OWNER_RECORD = "data/dataset-owner.json"  # which folder the comparison made its dataset copy in
-MANIFEST_VERSION = 2  # 2: the source's files beside the copy's, which a mask rebuild may extend
+# 2: the source's files beside the copy's, which a mask rebuild may extend; 3: the recipe the copy was made by
+MANIFEST_VERSION = 3
 _LEFT_BEHIND = frozenset({".cache", ".thumbnails"})  # rebuilt in the copy, never copied
 _ACTIVE = ("pending", "running", "paused")
 _CHUNK_BYTES = 1 << 20
@@ -202,15 +203,39 @@ def _claim(work_dir: Path, target: Path) -> None:
                {"version": MANIFEST_VERSION, "folder": _folder_id(target), "token": secrets.token_hex(16)})
 
 
+def mask_recipe(opacity: float | None) -> dict[str, Any]:
+    """What a dataset copy is made by: its masked pictures rebuilt at ``opacity``, or (None) not
+    rebuilt at all."""
+    if opacity is None:
+        return {"masks_rebuilt": False}
+    return {"masks_rebuilt": True, "mask_opacity": float(opacity)}
+
+
+def _recipe_problem(recorded_path: Path, record: dict, recipe: dict[str, Any]) -> str | None:
+    """Why the copy ``record`` describes was not made by ``recipe``, or None. Arms may already
+    have read the copy, so it is refused, never rebuilt in place."""
+    made_by = record.get("recipe")
+    if made_by is None:
+        return (f"the dataset copy's manifest {recorded_path} records no recipe (made by an earlier "
+                f"version), so it can't be shown to be made by {recipe!r}; start a comparison of another name")
+    if made_by != recipe:
+        return (f"the dataset copy {recorded_path} records was made by {made_by!r}, "
+                f"not by the reference job's {recipe!r} now; start a comparison of another name")
+    return None
+
+
 def copy_dataset(source: Path, work_dir: Path, copy: bool = True,
-                 rebuild: Callable[[Path], None] | None = None) -> dict[str, str]:
+                 rebuild: Callable[[Path], None] | None = None,
+                 recipe: dict[str, Any] | None = None) -> dict[str, str]:
     """Copy the dataset without its caches into the work folder (``dataset_target``); -> the copy's
     manifest. Only a folder this comparison made is written into or cleaned (``_claim``).
     ``rebuild`` (the masked pictures of a job that recreates them) runs once on the fresh copy and
-    raises when it can't finish; only then is the manifest written, of the copy as it is. A copy
-    made before is kept, but only while it and the source still hold what was recorded. Without
-    ``copy`` nothing is written: the manifest is the earlier copy's (checked the same way) or the
-    source's own."""
+    raises when it can't finish; only then is the manifest written, of the copy as it is, with the
+    ``recipe`` (``mask_recipe``; no rebuild unless given) that made it. A copy made before is kept,
+    but only while it was made by the same ``recipe`` and it and the source still hold what was
+    recorded. Without ``copy`` nothing is written: the manifest is the earlier copy's (checked the
+    same way) or the source's own."""
+    recipe = json.loads(json.dumps(mask_recipe(None) if recipe is None else recipe))
     source = Path(source)
     if not source.is_dir():
         raise RuntimeError(f"the dataset folder {source} does not exist")
@@ -220,6 +245,9 @@ def copy_dataset(source: Path, work_dir: Path, copy: bool = True,
     recorded_path = manifest_path(target)
     if recorded_path.exists():
         record = json.loads(recorded_path.read_text(encoding="utf-8"))
+        problem = _recipe_problem(recorded_path, record, recipe)
+        if problem:
+            raise RuntimeError(problem)
         recorded = record["files"]
         problem = copy_problem(work_dir, recorded)
         if problem:
@@ -232,14 +260,16 @@ def copy_dataset(source: Path, work_dir: Path, copy: bool = True,
         return recorded
     if not copy:
         return source_manifest(source)
+    if (rebuild is not None) != recipe.get("masks_rebuilt"):
+        raise ValueError(f"the dataset copy's recipe {recipe!r} disagrees with its rebuild ({rebuild!r})")
     fresh = {name: _copy_hashed(source / name, target / name) for name in _dataset_files(source)}
     _remove_all_but(target, set(fresh))  # an interrupted copy may have left files the source lacks
     files = fresh
     if rebuild is not None:
         rebuild(target)
         files = source_manifest(target)
-    write_json(recorded_path, {"version": MANIFEST_VERSION, "source": str(source), "source_files": fresh,
-                               "files": files})
+    write_json(recorded_path, {"version": MANIFEST_VERSION, "source": str(source), "recipe": recipe,
+                               "source_files": fresh, "files": files})
     return files
 
 

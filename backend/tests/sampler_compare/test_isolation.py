@@ -191,13 +191,15 @@ def test_masked_pictures_are_rebuilt_once_before_the_manifest(tmp_path):
         (target / "masked" / "img0.jpg").write_bytes(b"rebuilt at the job's opacity")
         (target / "masked" / "img1.jpg").write_bytes(b"rebuilt from img1's mask")
 
-    manifest = isolation.copy_dataset(source, work, rebuild=rebuild)
+    recipe = isolation.mask_recipe(0.4)
+    manifest = isolation.copy_dataset(source, work, rebuild=rebuild, recipe=recipe)
     target = work / isolation.DATASET_FOLDER
     assert calls == [target]
     assert manifest["masked/img0.jpg"] == hashlib.sha256(b"rebuilt at the job's opacity").hexdigest()
     assert "masked/img1.jpg" in manifest and isolation.read_manifest(target) == manifest
     assert isolation.copy_problem(work, manifest) is None
-    assert isolation.copy_dataset(source, work, rebuild=rebuild) == manifest  # a resume rebuilds nothing
+    # a resume rebuilds nothing
+    assert isolation.copy_dataset(source, work, rebuild=rebuild, recipe=recipe) == manifest
     assert calls == [target]
 
 
@@ -208,7 +210,7 @@ def test_a_rebuild_that_fails_records_no_copy(tmp_path):
         raise RuntimeError("the masked pictures of img1 could not be rebuilt from their masks")
 
     with pytest.raises(RuntimeError, match="img1 could not be rebuilt"):
-        isolation.copy_dataset(source, work, rebuild=rebuild)
+        isolation.copy_dataset(source, work, rebuild=rebuild, recipe=isolation.mask_recipe(0.0))
     assert not isolation.manifest_path(work / isolation.DATASET_FOLDER).exists()
 
 
@@ -222,7 +224,9 @@ def test_a_rebuild_that_fails_records_no_copy(tmp_path):
 ])
 def test_every_masked_file_is_checked_strictly(tmp_path, change, named, rebuilt):
     source, work = _masked_source(tmp_path), tmp_path / "work"
-    manifest = isolation.copy_dataset(source, work, rebuild=(lambda target: None) if rebuilt else None)
+    recipe = isolation.mask_recipe(0.0 if rebuilt else None)
+    manifest = isolation.copy_dataset(source, work, rebuild=(lambda target: None) if rebuilt else None,
+                                      recipe=recipe)
     masked = work / isolation.DATASET_FOLDER / "masked"
     if change == "changed masked picture":
         (masked / "img0.jpg").write_bytes(b"changed during an arm")
@@ -236,16 +240,94 @@ def test_every_masked_file_is_checked_strictly(tmp_path, change, named, rebuilt)
         (work / isolation.DATASET_FOLDER / "masks" / "img0.png").write_bytes(b"an edited mask")
     assert named in isolation.copy_problem(work, manifest)
     with pytest.raises(RuntimeError, match=named):
-        isolation.copy_dataset(source, work)
+        isolation.copy_dataset(source, work, recipe=recipe)
 
 
 def test_a_changed_source_is_refused_after_a_rebuild_too(tmp_path):
     source, work = _masked_source(tmp_path), tmp_path / "work"
-    isolation.copy_dataset(source, work, rebuild=lambda t: (t / "masked" / "img1.jpg").write_bytes(b"rebuilt"))
-    assert isolation.copy_dataset(source, work) is not None  # the rebuilt file is no change of the source
+    recipe = isolation.mask_recipe(0.0)
+    isolation.copy_dataset(source, work, rebuild=lambda t: (t / "masked" / "img1.jpg").write_bytes(b"rebuilt"),
+                           recipe=recipe)
+    # the rebuilt file is no change of the source
+    assert isolation.copy_dataset(source, work, recipe=recipe) is not None
     (source / "img1.txt").write_text("an edited caption", encoding="utf-8")
     with pytest.raises(RuntimeError, match="the dataset changed since this comparison began"):
-        isolation.copy_dataset(source, work)
+        isolation.copy_dataset(source, work, recipe=recipe)
+
+
+def _counting_rebuild(calls):
+    def rebuild(target):
+        calls.append(target)
+        (target / "masked" / "img1.jpg").write_bytes(b"rebuilt from img1's mask")
+    return rebuild
+
+
+@pytest.mark.parametrize("copy", [True, False])
+def test_a_retry_with_another_mask_opacity_is_refused(tmp_path, copy):
+    source, work, calls = _masked_source(tmp_path), tmp_path / "work", []
+    isolation.copy_dataset(source, work, rebuild=_counting_rebuild(calls), recipe=isolation.mask_recipe(0.2))
+    before = _tree(work / isolation.DATASET_FOLDER)
+    with pytest.raises(RuntimeError, match=r"mask_opacity.*0\.2.*0\.5.*start a comparison of another name"):
+        isolation.copy_dataset(source, work, copy=copy, rebuild=_counting_rebuild(calls) if copy else None,
+                               recipe=isolation.mask_recipe(0.5))
+    assert len(calls) == 1 and _tree(work / isolation.DATASET_FOLDER) == before
+
+
+@pytest.mark.parametrize("copy", [True, False])
+@pytest.mark.parametrize(("first", "retry"), [(0.2, None), (None, 0.2)])
+def test_a_retry_turning_the_mask_rebuild_on_or_off_is_refused(tmp_path, first, retry, copy):
+    source, work, calls = _masked_source(tmp_path), tmp_path / "work", []
+    isolation.copy_dataset(source, work, rebuild=None if first is None else _counting_rebuild(calls),
+                           recipe=isolation.mask_recipe(first))
+    with pytest.raises(RuntimeError, match="masks_rebuilt.*start a comparison of another name"):
+        isolation.copy_dataset(source, work, copy=copy,
+                               rebuild=None if retry is None or not copy else _counting_rebuild(calls),
+                               recipe=isolation.mask_recipe(retry))
+    assert len(calls) == (0 if first is None else 1)
+
+
+@pytest.mark.parametrize("copy", [True, False])
+@pytest.mark.parametrize("version", [1, 2])
+def test_a_manifest_without_its_recipe_is_refused(tmp_path, version, copy):
+    source, work, calls = _masked_source(tmp_path), tmp_path / "work", []
+    isolation.copy_dataset(source, work)
+    path = isolation.manifest_path(work / isolation.DATASET_FOLDER)
+    record = json.loads(path.read_text(encoding="utf-8"))
+    del record["recipe"]
+    record["version"] = version
+    if version == 1:
+        del record["source_files"]
+    path.write_text(json.dumps(record), encoding="utf-8")
+    with pytest.raises(RuntimeError, match="records no recipe.*start a comparison of another name"):
+        isolation.copy_dataset(source, work, copy=copy, rebuild=_counting_rebuild(calls) if copy else None,
+                               recipe=isolation.mask_recipe(0.0))
+    with pytest.raises(RuntimeError, match="records no recipe"):
+        isolation.copy_dataset(source, work, copy=copy)  # not even a copy without a rebuild passes
+    assert calls == []
+
+
+@pytest.mark.parametrize("opacity", [None, 0.0, 0.35])
+def test_the_same_recipe_reuses_the_copy_unchanged(tmp_path, opacity):
+    source, work, calls = _masked_source(tmp_path), tmp_path / "work", []
+    rebuild = None if opacity is None else _counting_rebuild(calls)
+    first = isolation.copy_dataset(source, work, rebuild=rebuild, recipe=isolation.mask_recipe(opacity))
+    before = _tree(work / isolation.DATASET_FOLDER)
+    record = json.loads(isolation.manifest_path(work / isolation.DATASET_FOLDER).read_text(encoding="utf-8"))
+    assert record["version"] == isolation.MANIFEST_VERSION == 3
+    assert record["recipe"] == isolation.mask_recipe(opacity)
+    for copy in (True, False):
+        assert isolation.copy_dataset(source, work, copy=copy, rebuild=rebuild if copy else None,
+                                      recipe=isolation.mask_recipe(opacity)) == first
+    assert len(calls) == (0 if opacity is None else 1) and _tree(work / isolation.DATASET_FOLDER) == before
+
+
+def test_a_recipe_that_disagrees_with_its_rebuild_is_a_programming_error(tmp_path):
+    source, work = _masked_source(tmp_path), tmp_path / "work"
+    with pytest.raises(ValueError, match="recipe"):
+        isolation.copy_dataset(source, work, rebuild=lambda target: None)  # a rebuild under the plain recipe
+    with pytest.raises(ValueError, match="recipe"):
+        isolation.copy_dataset(source, work, recipe=isolation.mask_recipe(0.2))  # a rebuild recipe, no rebuild
+    assert not isolation.manifest_path(work / isolation.DATASET_FOLDER).exists()
 
 
 @pytest.mark.parametrize(("entry", "recreates"), [

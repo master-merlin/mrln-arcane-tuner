@@ -262,15 +262,22 @@ def requested_identities(c: Comparison, base: dict, definition_id: str, facts: d
     }
 
 
+def _mask_opacity(base: dict) -> float | None:
+    """The opacity the reference job recreates its masked pictures at, or None when it doesn't."""
+    if not plan.recreates_masks(base):
+        return None
+    return float(plan.dataset_entry(base).get("mask_opacity", 0.0))  # as pipeline_data reads it
+
+
 def _mask_rebuild(c: Comparison, seams: Seams, base: dict) -> Callable[[Path], None] | None:
     """For a reference job that recreates its masked pictures (``plan.recreates_masks``), the one
     rebuild of them in the comparison's copy, through the product's masking code, before the copy
     is recorded; the runs then recreate nothing (``plan.run_config``)."""
-    if not plan.recreates_masks(base):
+    opacity = _mask_opacity(base)
+    if opacity is None:
         return None
     if seams.rebuild_masks is None:
         raise ConfigError("the reference job recreates its masked pictures, and nothing here can rebuild them")
-    opacity = float(plan.dataset_entry(base).get("mask_opacity", 0.0))  # as pipeline_data reads it
     env = isolation.child_env(c, _db_folder(c) / "masks.db")
     return lambda target: seams.rebuild_masks(target, opacity, env)
 
@@ -286,7 +293,8 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
     dataset = plan.dataset_name(first_config)
     source = source_dataset(seams.user_db, dataset)
     manifest = isolation.copy_dataset(source, c.work_dir, copy=copy,
-                                      rebuild=_mask_rebuild(c, seams, base) if copy else None)
+                                      rebuild=_mask_rebuild(c, seams, base) if copy else None,
+                                      recipe=isolation.mask_recipe(_mask_opacity(base)))
     snapshot = c.work_dir / isolation.METADATA_SNAPSHOT
     if copy:
         snapshot = isolation.snapshot_database(seams.user_db, c.work_dir, dataset)

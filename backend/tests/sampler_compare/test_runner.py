@@ -718,6 +718,47 @@ def test_masked_pictures_are_rebuilt_once_and_every_arm_trains_on_them(world):
         assert identity["masks_rebuilt"] is True
 
 
+@pytest.mark.parametrize(("retry", "named"), [
+    ({"mask_opacity": 0.5}, "mask_opacity"),
+    ({"recreate_masks": False}, "masks_rebuilt"),
+])
+def test_a_retry_after_a_failed_start_under_another_mask_recipe_is_refused(world, retry, named):
+    _recreating_world(world)
+    calls = []
+
+    def rebuild(target, opacity, env):
+        calls.append(opacity)
+
+    def no_facts(*args):
+        raise RuntimeError("the facts child failed")
+
+    c = world.comparison()
+    assert runner.run_queue(c, world.seams(rebuild_masks=rebuild, facts=no_facts)) == "the facts child failed"
+    assert calls == [0.0] and isolation.manifest_path(c.work_dir / isolation.DATASET_FOLDER).exists()
+    world.set_base(datasets=[{**world.base["datasets"][0], **retry}])
+    stop = runner.run_queue(c, world.seams(rebuild_masks=rebuild))
+    assert named in stop and "start a comparison of another name" in stop
+    assert calls == [0.0] and world.trainer_starts == 0 and world.backend_starts == 0
+    with pytest.raises(RuntimeError, match=named):  # the report's reading, which copies nothing
+        runner.prepare(c, world.seams(rebuild_masks=rebuild), copy=False)
+
+
+def test_a_retry_after_a_failed_start_under_the_same_mask_recipe_reuses_the_copy(world):
+    _recreating_world(world)
+    calls = []
+
+    def rebuild(target, opacity, env):
+        calls.append(opacity)
+
+    def no_facts(*args):
+        raise RuntimeError("the facts child failed")
+
+    c = world.comparison()
+    runner.run_queue(c, world.seams(rebuild_masks=rebuild, facts=no_facts))
+    assert runner.run_queue(c, world.seams(rebuild_masks=rebuild)) is None
+    assert calls == [0.0] and world.trainer_starts == 4
+
+
 def test_a_job_without_mask_recreation_rebuilds_nothing(world):
     def rebuild(*args, **kwargs):
         raise AssertionError("a rebuild for a job that recreates no masks")

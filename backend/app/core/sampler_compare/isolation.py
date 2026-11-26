@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import secrets
 import sqlite3
 import time
 from collections.abc import Callable
@@ -30,6 +31,7 @@ ISOLATED_PATHS: dict[str, str] = {
 }
 DATASET_FOLDER = "data/dataset"
 METADATA_SNAPSHOT = "data/metadata.db"
+OWNER_RECORD = "data/dataset-owner.json"  # which folder the comparison made its dataset copy in
 MANIFEST_VERSION = 1
 _LEFT_BEHIND = frozenset({".cache", ".thumbnails"})  # rebuilt in the copy, never copied
 _ACTIVE = ("pending", "running", "paused")
@@ -164,18 +166,53 @@ def dataset_target(source: Path, work_dir: Path) -> Path:
                 if _is_link(Path(folder) / name):
                     raise RuntimeError(f"refusing the dataset copy: {Path(folder) / name} is a link; the copy "
                                        "holds plain files only")
+        if not _owned(work_dir, target) and any(target.iterdir()):
+            raise RuntimeError(f"refusing the dataset copy: {target} holds files and was not made by this "
+                               "comparison; give the comparison a work folder of its own")
     return target
+
+
+def _folder_id(path: Path) -> list[int]:
+    """What tells one folder from another put in its place: its device and file number."""
+    stat = os.stat(path)
+    return [stat.st_dev, stat.st_ino]
+
+
+def _owned(work_dir: Path, target: Path) -> bool:
+    """Whether ``target`` is the dataset folder this comparison made (``_claim``)."""
+    path = Path(work_dir) / OWNER_RECORD
+    try:
+        record = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(record, dict) and record.get("folder") == _folder_id(target)
+
+
+def _claim(work_dir: Path, target: Path) -> None:
+    """Make the dataset folder (or take an empty one a crash left) and record it as this
+    comparison's own; only an owned folder is ever written into or cleaned."""
+    try:
+        target.mkdir(parents=True)  # exclusive: an existing folder is taken only while empty
+    except FileExistsError:
+        if any(target.iterdir()):
+            raise RuntimeError(f"refusing the dataset copy: {target} holds files and was not made by this "
+                               "comparison") from None
+    write_json(Path(work_dir) / OWNER_RECORD,
+               {"version": MANIFEST_VERSION, "folder": _folder_id(target), "token": secrets.token_hex(16)})
 
 
 def copy_dataset(source: Path, work_dir: Path, copy: bool = True) -> dict[str, str]:
     """Copy the dataset without its caches into the work folder (``dataset_target``); -> its
-    manifest. A copy made before is kept, but only while the source still holds the same content.
-    Without ``copy`` nothing is written: the manifest is the earlier copy's (checked the same way)
-    or the source's own."""
+    manifest. Only a folder this comparison made is written into or cleaned (``_claim``). A copy
+    made before is kept, but only while the source still holds the same content. Without ``copy``
+    nothing is written: the manifest is the earlier copy's (checked the same way) or the source's
+    own."""
     source = Path(source)
     if not source.is_dir():
         raise RuntimeError(f"the dataset folder {source} does not exist")
     target = dataset_target(source, work_dir)
+    if copy and not (target.exists() and _owned(work_dir, target)):
+        _claim(work_dir, target)
     recorded_path = manifest_path(target)
     if recorded_path.exists():
         recorded = read_manifest(target)

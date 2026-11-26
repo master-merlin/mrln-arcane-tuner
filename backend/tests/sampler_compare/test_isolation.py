@@ -181,9 +181,48 @@ def test_a_copy_with_only_its_caches_added_is_kept(tmp_path):
     assert isolation.copy_problem(work, first) is None
 
 
+@pytest.mark.parametrize("copy", [True, False])
+def test_a_dataset_folder_the_comparison_did_not_make_is_never_written_or_cleaned(tmp_path, copy):
+    source = _dataset(tmp_path / "Cars")
+    work = tmp_path / "work"
+    target = work / isolation.DATASET_FOLDER
+    target.mkdir(parents=True)
+    (target / "unrelated.png").write_bytes(b"somebody else's picture")
+    (target / "img0.png").write_bytes(b"a file named like one of the source's")
+    before, source_before = _tree(target), _tree(source)
+    with pytest.raises(RuntimeError, match="refusing the dataset copy: .* was not made by this comparison"):
+        isolation.copy_dataset(source, work, copy=copy)
+    assert _tree(target) == before and _tree(source) == source_before
+
+
+def test_a_dataset_folder_put_in_place_of_the_comparisons_own_is_refused(tmp_path):
+    source = _dataset(tmp_path / "Cars")
+    work = tmp_path / "work"
+    isolation.copy_dataset(source, work)
+    target = work / isolation.DATASET_FOLDER
+    isolation.manifest_path(target).unlink()  # as an interrupted copy leaves it
+    target.rename(work / "data" / "set-aside")
+    target.mkdir()
+    (target / "unrelated.png").write_bytes(b"somebody else's picture")
+    before = _tree(target)
+    with pytest.raises(RuntimeError, match="was not made by this comparison"):
+        isolation.copy_dataset(source, work)
+    assert _tree(target) == before
+
+
+def test_an_empty_dataset_folder_is_claimed_and_filled(tmp_path):
+    source = _dataset(tmp_path / "Cars")
+    work = tmp_path / "work"
+    (work / isolation.DATASET_FOLDER).mkdir(parents=True)  # a crash between the folder and its mark
+    manifest = isolation.copy_dataset(source, work)
+    assert sorted(manifest) == ["img0.png", "img0.txt", "img1.png", "img1.txt", "img2.png", "img2.txt"]
+
+
 def test_a_copy_over_an_interrupted_one_holds_exactly_the_manifests_files(tmp_path):
     source = _dataset(tmp_path / "Cars")
     target = tmp_path / "work" / "data" / "dataset"
+    isolation.copy_dataset(source, target.parents[1])
+    isolation.manifest_path(target).unlink()  # the copy was interrupted before its manifest
     (target / "gone" / ".cache").mkdir(parents=True)
     (target / "stale.png").write_bytes(b"left by an interrupted copy")
     (target / "gone" / "old.txt").write_text("an earlier caption", encoding="utf-8")

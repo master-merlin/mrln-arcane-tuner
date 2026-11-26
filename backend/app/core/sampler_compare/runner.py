@@ -95,6 +95,8 @@ class Seams:
     port_answers: Callable[[int], bool] = port_answers  # the only probe once a backend is started
     # (definition_id, env): downloads what the cache lacks, with ``allow_downloads`` only (``prepare``)
     prefetch: Callable[[str, dict], None] | None = None
+    # (dataset copy, opacity, env): rebuilds its masked pictures once, raising when one can't be
+    rebuild_masks: Callable[[Path, float, dict], None] | None = None
     poll_s: float = 3.0
     ready_wait_s: float = READY_WAIT_S
     card_problem: str | None = None  # why the card read can't be told to be the trainer's
@@ -122,6 +124,8 @@ class Seams:
             port_taken=port_taken,
             facts=lambda definition_id, arms, env: facts_module.facts_in_child(definition_id, arms, env, python),
             prefetch=lambda definition_id, env: facts_module.prefetch_in_child(definition_id, env, python),
+            rebuild_masks=lambda target, opacity, env: facts_module.rebuild_masks_in_child(target, opacity, env,
+                                                                                           python),
             user_db=Path(DatabaseEngine().db_path),  # where the backend's own engine looks; opens nothing
             user_settings=Path(port_resolver.settings_path()),
             card_problem=card_problem,
@@ -249,11 +253,26 @@ class Prepared:
 def requested_identities(c: Comparison, base: dict, definition_id: str, facts: dict,
                          dataset_digest: str, model_source: dict, metadata_digest: str) -> dict[str, dict]:
     """label -> the identity each run of the queue is asked for now."""
+    rebuilt = plan.recreates_masks(base)
     return {
         plan.label(arm, seed): plan.identity(c, definition_id, dataset_digest, plan.run_config(base, c, arm, seed),
-                                             facts["arms"][arm]["effective"], model_source, metadata_digest)
+                                             facts["arms"][arm]["effective"], model_source, metadata_digest,
+                                             masks_rebuilt=rebuilt)
         for arm, seed in plan.queue(c)
     }
+
+
+def _mask_rebuild(c: Comparison, seams: Seams, base: dict) -> Callable[[Path], None] | None:
+    """For a reference job that recreates its masked pictures (``plan.recreates_masks``), the one
+    rebuild of them in the comparison's copy, through the product's masking code, before the copy
+    is recorded; the runs then recreate nothing (``plan.run_config``)."""
+    if not plan.recreates_masks(base):
+        return None
+    if seams.rebuild_masks is None:
+        raise ConfigError("the reference job recreates its masked pictures, and nothing here can rebuild them")
+    opacity = float(plan.dataset_entry(base).get("mask_opacity", 0.0))  # as pipeline_data reads it
+    env = isolation.child_env(c, _db_folder(c) / "masks.db")
+    return lambda target: seams.rebuild_masks(target, opacity, env)
 
 
 def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
@@ -266,7 +285,8 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
     first_config = plan.run_config(base, c, first_arm, first_seed)
     dataset = plan.dataset_name(first_config)
     source = source_dataset(seams.user_db, dataset)
-    manifest = isolation.copy_dataset(source, c.work_dir, copy=copy, recreates_masks=plan.recreates_masks(first_config))
+    manifest = isolation.copy_dataset(source, c.work_dir, copy=copy,
+                                      rebuild=_mask_rebuild(c, seams, base) if copy else None)
     snapshot = c.work_dir / isolation.METADATA_SNAPSHOT
     if copy:
         snapshot = isolation.snapshot_database(seams.user_db, c.work_dir, dataset)
@@ -789,7 +809,7 @@ def run_one(c: Comparison, arm: str, seed: int, requested: dict, manifest: dict[
     """Train one arm at one seed beside the user's backend; -> the run's record."""
     label = plan.label(arm, seed)
     status = status or _Status(c, seams)
-    refusal = (isolation.copy_problem(c.work_dir, manifest, plan.recreates_masks(requested["config"]))
+    refusal = (isolation.copy_problem(c.work_dir, manifest)
                or isolation.model_source_problem(c.work_dir / isolation.ISOLATED_PATHS["MRLN_SETTINGS_PATH"],
                                                  requested["definition_id"], requested["model_source"])
                or preflight(c, seams))

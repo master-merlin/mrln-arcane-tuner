@@ -180,6 +180,8 @@ class World:
             trainer_argv=self.trainer_argv,
             port_taken=port_taken,
             facts=self.facts,
+            rebuild_masks=lambda target, opacity, env: facts_module.rebuild_masks_in_child(
+                target, opacity, env, sys.executable),  # the product's masking code, in a child
             user_db=self.db,
             user_settings=self.settings,
             poll_s=0.05,

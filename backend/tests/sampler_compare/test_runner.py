@@ -643,6 +643,60 @@ def test_a_fully_local_override_does_not_follow_the_hub_cache(world, tmp_path, m
     assert runner.run_queue(c, world.seams()) is None and world.trainer_starts == 0
 
 
+def _recreating_world(world):
+    """The reference job masks its dataset and recreates the masked pictures as it trains."""
+    world.set_base(datasets=[{"dataset_name": "Original", "masking_enabled": True, "recreate_masks": True,
+                              "mask_opacity": 0.0}])
+
+
+def _picture(path, mode="RGB", size=(16, 16), colour=(200, 40, 40)):
+    from PIL import Image
+
+    path.parent.mkdir(parents=True, exist_ok=True)
+    Image.new(mode, size, colour if mode == "RGB" else 255).save(path, format="PNG" if path.suffix.lower() ==
+                                                                  ".png" else "JPEG")
+
+
+def test_a_mask_that_cannot_be_rebuilt_stops_the_comparison_before_any_arm(world):
+    _recreating_world(world)
+    (world.dataset / "masks").mkdir()
+    (world.dataset / "masks" / "img00.png").write_bytes(b"not a picture")  # a corrupt mask
+    (world.dataset / "masked").mkdir()
+    (world.dataset / "masked" / "img00.jpg").write_bytes(b"pixels changed by hand")
+    c = world.comparison()
+    stop = runner.run_queue(c, world.seams())
+    assert "img00" in stop and "could not be rebuilt" in stop
+    assert world.trainer_starts == 0 and world.backend_starts == 0
+    assert not isolation.manifest_path(c.work_dir / isolation.DATASET_FOLDER).exists()
+
+
+def test_masked_pictures_are_rebuilt_once_and_every_arm_trains_on_them(world):
+    _recreating_world(world)
+    _picture(world.dataset / "photo.JPG", mode="RGB")  # a camera's upper-case name
+    _picture(world.dataset / "masks" / "photo.png", mode="L")
+    c = world.comparison()
+    stop = runner.run_queue(c, world.seams())
+    assert stop is None and world.trainer_starts == 4
+    manifest = isolation.read_manifest(c.work_dir / isolation.DATASET_FOLDER)
+    assert "masked/photo.jpg" in manifest  # rebuilt in the copy, then recorded
+    assert not (world.dataset / "masked").exists()  # never in the user's dataset
+    assert isolation.copy_problem(c.work_dir, manifest) is None
+    for label in QUEUE:
+        identity = json.loads((c.work_dir / "logs" / f"{label}.identity.json").read_text(encoding="utf-8"))
+        entry = identity["config"]["datasets"][0]
+        assert entry["recreate_masks"] is False and entry["masking_enabled"] is True
+        assert identity["masks_rebuilt"] is True
+
+
+def test_a_job_without_mask_recreation_rebuilds_nothing(world):
+    def rebuild(*args, **kwargs):
+        raise AssertionError("a rebuild for a job that recreates no masks")
+
+    c = world.comparison()
+    world.place_all(c)
+    assert runner.run_queue(c, world.seams(rebuild_masks=rebuild)) is None
+
+
 def _enabled(db_path):
     db = sqlite3.connect(db_path)
     try:

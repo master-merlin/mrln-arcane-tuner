@@ -253,6 +253,10 @@ def run_config(base: dict, c: Comparison, arm: str, seed: int) -> dict:
     entry = dataset_entry(config)
     if c.dataset is not None:
         entry = {**entry, "dataset_name": c.dataset} if isinstance(entry, dict) else c.dataset
+    if isinstance(entry, dict) and "recreate_masks" in entry:
+        # The comparison rebuilt the masked pictures once in its copy (``runner.prepare``): no arm
+        # remakes them, so the copy every arm reads stays the one recorded.
+        entry = {**entry, "recreate_masks": False}
     config["datasets"] = [entry]
     if c.global_triggerword is not None:
         config["global_triggerword"] = c.global_triggerword
@@ -283,7 +287,7 @@ def run_config(base: dict, c: Comparison, arm: str, seed: int) -> dict:
 
 
 def identity(c: Comparison, definition_id: str, dataset_digest: str, config: dict, effective: dict,
-             model_source: dict, metadata_digest: str) -> dict:
+             model_source: dict, metadata_digest: str, masks_rebuilt: bool = False) -> dict:
     """What sets a run's result: a finished run is reused only for an equal identity.
     ``model_source`` is where the weights load from (``isolation.model_source``);
     ``metadata_digest`` the dataset's rows in the comparison's metadata snapshot
@@ -295,6 +299,7 @@ def identity(c: Comparison, definition_id: str, dataset_digest: str, config: dic
         "dataset": dataset_name(config),
         "dataset_digest": dataset_digest,
         "dataset_metadata_digest": metadata_digest,
+        "masks_rebuilt": masks_rebuilt,  # the copy's masked pictures were rebuilt once, before any arm
         "config": {k: v for k, v in config.items() if k not in NAME_AND_PATH_KEYS},
         "effective_sampler": effective,
         "passes": passes(c.steps, c.validation.every),

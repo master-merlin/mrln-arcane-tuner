@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import subprocess
 import sys
+from pathlib import Path
 from typing import Any
 
 import psutil
@@ -21,6 +23,7 @@ from app.engine.strategies.timestep_keys import PARAMETER_ALIASES, TIMESTEP_PARA
 MARKER = "SAMPLER-COMPARE-FACTS "
 CHILD_TIMEOUT_S = 300
 DOWNLOAD_TIMEOUT_S = 6 * 3600  # a missing model of tens of GB on a slow line, still bounded
+MASKS_TIMEOUT_S = 3600  # every masked picture of a large dataset, made again once
 KILL_WAIT_S = 30
 _TOLERANCE = 1e-9
 
@@ -178,9 +181,53 @@ def prefetch_in_child(definition_id: str, env: dict[str, str], python: str) -> N
         raise RuntimeError(f"the weight download exited with {code}: {stderr[-1500:]}")
 
 
+def rebuild_masks_here(dataset: str, opacity: float) -> dict:
+    """The masked pictures of ``dataset`` made again the way the trainer makes them for a job with
+    ``recreate_masks`` (``pipeline_data``: ``MaskingService().mass_apply(path, opacity,
+    overwrite=True)``); -> its counts and the stems of every mask whose picture was not written."""
+    from app.core.masking.masking_service import MaskingService
+
+    masks, masked = Path(dataset) / "masks", Path(dataset) / "masked"
+    stems = sorted(os.path.splitext(name)[0] for name in os.listdir(masks)
+                   if name.lower().endswith(".png")) if masks.is_dir() else []
+
+    def written(stem: str) -> int | None:
+        path = masked / f"{stem}.jpg"
+        return path.stat().st_mtime_ns if path.exists() else None
+
+    before = {stem: written(stem) for stem in stems}
+    result = MaskingService().mass_apply(str(dataset), opacity, overwrite=True)
+    failed = [stem for stem in stems if written(stem) is None or written(stem) == before[stem]]
+    return {"applied": result["applied"], "skipped": result["skipped"], "failed": failed}
+
+
+def rebuild_masks_in_child(dataset: Path, opacity: float, env: dict[str, str], python: str) -> None:
+    """``rebuild_masks_here`` in a child of ``python`` under ``env``, bounded by ``MASKS_TIMEOUT_S``;
+    raises naming every mask whose picture could not be rebuilt."""
+    argv = [python, "-m", "app.core.sampler_compare.facts", "--masks", str(dataset), repr(float(opacity))]
+    try:
+        code, stdout, stderr = run_child(argv, env, MASKS_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"rebuilding the masked pictures did not finish within {MASKS_TIMEOUT_S} s") from None
+    if code != 0:
+        raise RuntimeError(f"rebuilding the masked pictures exited with {code}: {stderr[-1500:]}")
+    result = next((json.loads(line[len(MARKER):]) for line in reversed(stdout.splitlines())
+                   if line.startswith(MARKER)), None)
+    if result is None:
+        raise RuntimeError(f"rebuilding the masked pictures printed no result: {stdout[-1500:]}")
+    if result["failed"] or result["skipped"]:
+        names = ", ".join(result["failed"]) or f"{result['skipped']} skipped"
+        raise RuntimeError(f"the masked pictures of {names} could not be rebuilt from their masks; nothing "
+                           "trained: fix those masks, or set recreate_masks off in the reference job")
+
+
 def main(argv: list[str]) -> int:
     if argv[:1] == ["--prefetch"]:
         prefetch_here(argv[1])
+        return 0
+    if argv[:1] == ["--masks"]:
+        sys.stdout.write(MARKER + json.dumps(rebuild_masks_here(argv[1], float(argv[2]))) + "\n")
+        sys.stdout.flush()
         return 0
     definition_id, arms = argv
     sys.stdout.write(MARKER + json.dumps(facts_here(definition_id, json.loads(arms))) + "\n")

@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Any, BinaryIO
 
 from app.core.dataset.fresh_write import replace_with_fresh_file
-from app.core.dataset.media_types import IMAGE_EXTENSION_PREFERENCE
 from app.core.sampler_compare.plan import Comparison, ConfigError
 
 # Every path seam the backend reads, and where a comparison's children find it under the work
@@ -34,10 +33,8 @@ ISOLATED_PATHS: dict[str, str] = {
 DATASET_FOLDER = "data/dataset"
 METADATA_SNAPSHOT = "data/metadata.db"
 OWNER_RECORD = "data/dataset-owner.json"  # which folder the comparison made its dataset copy in
-MANIFEST_VERSION = 1
+MANIFEST_VERSION = 2  # 2: the source's files beside the copy's, which a mask rebuild may extend
 _LEFT_BEHIND = frozenset({".cache", ".thumbnails"})  # rebuilt in the copy, never copied
-_RECREATED_FOLDER = "masked"  # copied, but a job may recreate its pictures in the copy (``_recreated``)
-_MASKS_FOLDER = "masks"
 _ACTIVE = ("pending", "running", "paused")
 _CHUNK_BYTES = 1 << 20
 # Windows refuses a rename while a process holds the file (access denied 5, sharing violation 32):
@@ -205,12 +202,15 @@ def _claim(work_dir: Path, target: Path) -> None:
                {"version": MANIFEST_VERSION, "folder": _folder_id(target), "token": secrets.token_hex(16)})
 
 
-def copy_dataset(source: Path, work_dir: Path, copy: bool = True, recreates_masks: bool = False) -> dict[str, str]:
-    """Copy the dataset without its caches into the work folder (``dataset_target``); -> its
-    manifest. Only a folder this comparison made is written into or cleaned (``_claim``). A copy
-    made before is kept, but only while the source still holds the same content. Without ``copy``
-    nothing is written: the manifest is the earlier copy's (checked the same way) or the source's
-    own."""
+def copy_dataset(source: Path, work_dir: Path, copy: bool = True,
+                 rebuild: Callable[[Path], None] | None = None) -> dict[str, str]:
+    """Copy the dataset without its caches into the work folder (``dataset_target``); -> the copy's
+    manifest. Only a folder this comparison made is written into or cleaned (``_claim``).
+    ``rebuild`` (the masked pictures of a job that recreates them) runs once on the fresh copy and
+    raises when it can't finish; only then is the manifest written, of the copy as it is. A copy
+    made before is kept, but only while it and the source still hold what was recorded. Without
+    ``copy`` nothing is written: the manifest is the earlier copy's (checked the same way) or the
+    source's own."""
     source = Path(source)
     if not source.is_dir():
         raise RuntimeError(f"the dataset folder {source} does not exist")
@@ -219,11 +219,12 @@ def copy_dataset(source: Path, work_dir: Path, copy: bool = True, recreates_mask
         _claim(work_dir, target)
     recorded_path = manifest_path(target)
     if recorded_path.exists():
-        recorded = read_manifest(target)
-        problem = copy_problem(work_dir, recorded, recreates_masks)
+        record = json.loads(recorded_path.read_text(encoding="utf-8"))
+        recorded = record["files"]
+        problem = copy_problem(work_dir, recorded)
         if problem:
             raise RuntimeError(problem)
-        if source_manifest(source) != recorded:
+        if source_manifest(source) != record.get("source_files", recorded):
             raise RuntimeError(
                 f"the dataset changed since this comparison began: {source} no longer holds what "
                 f"{recorded_path} recorded; start a comparison of another name"
@@ -233,41 +234,27 @@ def copy_dataset(source: Path, work_dir: Path, copy: bool = True, recreates_mask
         return source_manifest(source)
     fresh = {name: _copy_hashed(source / name, target / name) for name in _dataset_files(source)}
     _remove_all_but(target, set(fresh))  # an interrupted copy may have left files the source lacks
-    write_json(recorded_path, {"version": MANIFEST_VERSION, "source": str(source), "files": fresh})
-    return fresh
+    files = fresh
+    if rebuild is not None:
+        rebuild(target)
+        files = source_manifest(target)
+    write_json(recorded_path, {"version": MANIFEST_VERSION, "source": str(source), "source_files": fresh,
+                               "files": files})
+    return files
 
 
-def _recreated(name: str, manifest: dict[str, str]) -> bool:
-    """A picture a job with ``recreate_masks`` writes into the dataset as it trains, and so every
-    arm makes again the same way from checked inputs: ``MaskingService.mass_apply`` writes
-    ``masked/<stem>.jpg`` for each ``masks/<stem>.png`` that has a picture ``<stem>.<ext>``."""
-    prefix = f"{_RECREATED_FOLDER}/"
-    if not name.startswith(prefix) or not name.endswith(".jpg") or "/" in name[len(prefix):]:
-        return False
-    stem = name[len(prefix):-len(".jpg")]
-    has_mask = any(n.startswith(f"{_MASKS_FOLDER}/") and "/" not in n[len(_MASKS_FOLDER) + 1:]
-                   and n.lower().endswith(".png") and n[len(_MASKS_FOLDER) + 1:-len(".png")] == stem
-                   for n in manifest)
-    return has_mask and any(f"{stem}{ext}" in manifest for ext in IMAGE_EXTENSION_PREFERENCE)
-
-
-def copy_problem(work_dir: Path, manifest: dict[str, str], recreates_masks: bool = False) -> str | None:
+def copy_problem(work_dir: Path, manifest: dict[str, str]) -> str | None:
     """Why the work folder's dataset copy no longer holds exactly ``manifest`` (a file changed,
-    missing or added; the caches the runs build aside and, for a job that ``recreates_masks``
-    (``plan.recreates_masks``), the masked pictures it makes again (``_recreated``), though one may
-    not go missing), or None. Nothing is written or deleted:
-    arms that trained earlier read the copy as it was, so a changed copy is refused, never redone."""
+    missing or added; only the caches the runs build are left out), or None. Nothing is written
+    or deleted: arms that trained earlier read the copy as it was, so a changed copy is refused,
+    never redone."""
     target = Path(work_dir) / DATASET_FOLDER
     if not target.is_dir():
         return f"the dataset copy {target} is gone"
     actual = source_manifest(target)
-    def remade(name: str) -> bool:
-        return recreates_masks and _recreated(name, manifest)
-
-    differences = ([f"changed {n}" for n in sorted(manifest)
-                    if n in actual and actual[n] != manifest[n] and not remade(n)]
+    differences = ([f"changed {n}" for n in sorted(manifest) if n in actual and actual[n] != manifest[n]]
                    + [f"missing {n}" for n in sorted(manifest) if n not in actual]
-                   + [f"extra {n}" for n in sorted(actual) if n not in manifest and not remade(n)])
+                   + [f"extra {n}" for n in sorted(actual) if n not in manifest])
     if not differences:
         return None
     shown = ", ".join(differences[:10]) + (f" and {len(differences) - 10} more" if len(differences) > 10 else "")

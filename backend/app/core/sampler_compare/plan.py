@@ -237,6 +237,14 @@ def dataset_name(config: dict[str, Any]) -> str:
     return entry if isinstance(entry, str) else str(entry.get("dataset_name", ""))
 
 
+def recreates_masks(config: dict[str, Any]) -> bool:
+    """Whether the trainer makes the dataset's masked pictures again as it trains: the dataset
+    entry's ``masking_enabled`` and ``recreate_masks``, as ``pipeline_data`` reads them."""
+    entry = dataset_entry(config)
+    return isinstance(entry, dict) and bool(entry.get("masking_enabled", False)) and bool(
+        entry.get("recreate_masks", False))
+
+
 def run_config(base: dict, c: Comparison, arm: str, seed: int) -> dict:
     """One run's config: the reference job without its sampler, plus the arm and the comparison."""
     config = copy.deepcopy(base)

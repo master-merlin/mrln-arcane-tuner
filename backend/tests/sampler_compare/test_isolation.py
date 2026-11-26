@@ -171,22 +171,68 @@ def test_a_changed_copy_is_refused_on_resume(tmp_path, change, named, copy):
     assert _tree(target) == before
 
 
-def test_masked_pictures_the_trainer_recreates_in_the_copy_are_no_change(tmp_path):
+def _masked_copy(tmp_path):
+    """A copied dataset with a mask for img0 and img1, their masked pictures and a masked caption."""
     source = _dataset(tmp_path / "Cars")
     (source / "masks").mkdir()
     (source / "masks" / "img0.png").write_bytes(b"a mask")
+    (source / "masks" / "img1.png").write_bytes(b"another mask")
     (source / "masked").mkdir()
     (source / "masked" / "img0.jpg").write_bytes(b"masked at the source's opacity")
+    (source / "masked" / "img0.txt").write_text("a masked caption", encoding="utf-8")
     work = tmp_path / "work"
     manifest = isolation.copy_dataset(source, work)
-    assert "masked/img0.jpg" in manifest  # copied as the source has it
-    masked = work / isolation.DATASET_FOLDER / "masked"
+    assert {"masked/img0.jpg", "masked/img0.txt"} <= set(manifest)  # copied as the source has them
+    return source, work, manifest, work / isolation.DATASET_FOLDER / "masked"
+
+
+def test_masked_pictures_a_recreating_job_makes_again_are_no_change(tmp_path):
+    source, work, manifest, masked = _masked_copy(tmp_path)
     (masked / "img0.jpg").write_bytes(b"recreated at the job's opacity")  # MaskingService.mass_apply
-    (masked / "img1.jpg").write_bytes(b"recreated for a mask added since")
-    assert isolation.copy_problem(work, manifest) is None
-    assert isolation.copy_dataset(source, work) == manifest
-    (work / isolation.DATASET_FOLDER / "masks" / "img0.png").write_bytes(b"an edited mask")
-    assert "changed masks/img0.png" in isolation.copy_problem(work, manifest)
+    (masked / "img1.jpg").write_bytes(b"recreated from img1's mask")
+    assert isolation.copy_problem(work, manifest, recreates_masks=True) is None
+    assert isolation.copy_dataset(source, work, recreates_masks=True) == manifest
+
+
+@pytest.mark.parametrize(("change", "named"), [
+    ("edited masked caption", "changed masked/img0.txt"),
+    ("added masked caption", "extra masked/img1.txt"),
+    ("masked picture without a mask", "extra masked/img2.jpg"),
+    ("masked picture of another format", "extra masked/img1.png"),
+    ("edited mask", "changed masks/img0.png"),
+])
+def test_what_mask_recreation_does_not_write_is_still_checked(tmp_path, change, named):
+    source, work, manifest, masked = _masked_copy(tmp_path)
+    if change == "edited masked caption":
+        (masked / "img0.txt").write_text("an edited caption", encoding="utf-8")
+    elif change == "added masked caption":
+        (masked / "img1.txt").write_text("a new caption", encoding="utf-8")
+    elif change == "masked picture without a mask":
+        (masked / "img2.jpg").write_bytes(b"no mask makes this")
+    elif change == "masked picture of another format":
+        (masked / "img1.png").write_bytes(b"mass_apply writes .jpg only")
+    else:
+        (work / isolation.DATASET_FOLDER / "masks" / "img0.png").write_bytes(b"an edited mask")
+    assert named in isolation.copy_problem(work, manifest, recreates_masks=True)
+
+
+def test_masked_pictures_are_checked_strictly_without_recreation(tmp_path):
+    source, work, manifest, masked = _masked_copy(tmp_path)
+    (masked / "img0.jpg").write_bytes(b"changed by hand")
+    assert "changed masked/img0.jpg" in isolation.copy_problem(work, manifest)
+    with pytest.raises(RuntimeError, match="changed masked/img0.jpg"):
+        isolation.copy_dataset(source, work)
+
+
+@pytest.mark.parametrize(("entry", "recreates"), [
+    ({"dataset_name": "Cars", "masking_enabled": True, "recreate_masks": True}, True),
+    ({"dataset_name": "Cars", "masking_enabled": True, "recreate_masks": False}, False),
+    ({"dataset_name": "Cars", "masking_enabled": False, "recreate_masks": True}, False),
+    ({"dataset_name": "Cars"}, False),
+    ("Cars", False),
+])
+def test_a_job_recreates_masks_only_as_the_trainer_reads_it(entry, recreates):
+    assert plan.recreates_masks({"datasets": [entry]}) is recreates
 
 
 def test_a_copy_with_only_its_caches_added_is_kept(tmp_path):

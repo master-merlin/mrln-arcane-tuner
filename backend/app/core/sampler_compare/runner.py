@@ -260,9 +260,10 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
     base, definition_id = read_reference(seams.user_db, c.reference_job)
     settings = isolation.read_settings(seams.user_settings)
     first_arm, first_seed = plan.queue(c)[0]
-    dataset = plan.dataset_name(plan.run_config(base, c, first_arm, first_seed))
+    first_config = plan.run_config(base, c, first_arm, first_seed)
+    dataset = plan.dataset_name(first_config)
     source = source_dataset(seams.user_db, dataset)
-    manifest = isolation.copy_dataset(source, c.work_dir, copy=copy)
+    manifest = isolation.copy_dataset(source, c.work_dir, copy=copy, recreates_masks=plan.recreates_masks(first_config))
     snapshot = c.work_dir / isolation.METADATA_SNAPSHOT
     if copy:
         snapshot = isolation.snapshot_database(seams.user_db, c.work_dir, dataset)
@@ -772,7 +773,7 @@ def run_one(c: Comparison, arm: str, seed: int, requested: dict, manifest: dict[
     """Train one arm at one seed beside the user's backend; -> the run's record."""
     label = plan.label(arm, seed)
     status = status or _Status(c, seams)
-    refusal = (isolation.copy_problem(c.work_dir, manifest)
+    refusal = (isolation.copy_problem(c.work_dir, manifest, plan.recreates_masks(requested["config"]))
                or isolation.model_source_problem(c.work_dir / isolation.ISOLATED_PATHS["MRLN_SETTINGS_PATH"],
                                                  requested["definition_id"], requested["model_source"])
                or preflight(c, seams))

@@ -59,6 +59,9 @@ def dry_run(c: plan.Comparison, seams: runner.Seams) -> int:
         _say(f"PROBLEM: {text}")
 
     _say(f"comparison {c.name}: work folder {c.work_dir}")
+    busy = runner.lock_problem(c)
+    if busy:
+        problem(busy)
     labels = [plan.label(arm, seed) for arm, seed in plan.queue(c)]
     _say(f"queue ({len(labels)} runs): {', '.join(labels)}")
     try:
@@ -116,12 +119,21 @@ def main(argv: list[str] | None = None, seams: runner.Seams | None = None) -> in
     if args.dry_run:
         return dry_run(c, seams)
     try:
-        prepared = runner.prepare(c, seams, copy=not args.report_only)
+        with runner.work_lock(c):  # held through the report; a second launch touches nothing
+            return _launch(c, seams, args.report_only)
+    except runner.WorkFolderBusy as exc:
+        _say(f"stopped: {exc}")
+        return 1
+
+
+def _launch(c: plan.Comparison, seams: runner.Seams, report_only: bool) -> int:
+    try:
+        prepared = runner.prepare(c, seams, copy=not report_only)
     except _FAILURES as exc:
         _say(f"stopped: {exc}")
         return 1
     try:
-        stop = None if args.report_only else runner.run_queue(c, seams, prepared)
+        stop = None if report_only else runner.run_queue(c, seams, prepared)
         code = report.write_report(c, stop, prepared)
     except Exception as exc:  # noqa: BLE001 - the reason, never a traceback
         _say(f"stopped: {type(exc).__name__}: {exc}")

@@ -116,6 +116,87 @@ class Seams:
         )
 
 
+# ── One comparison per work folder ──────────────────────────────────────────
+
+LOCK_FILE = "run.lock"
+_HELD: set[str] = set()  # the work folders this process holds: the lock is taken once per process
+
+
+def _lock_path(c: Comparison) -> Path:
+    return c.work_dir / LOCK_FILE
+
+
+def _try_lock(fd: int) -> bool:
+    """An exclusive lock on ``fd``'s first byte, without waiting; the system drops it with its process."""
+    try:
+        if os.name == "nt":
+            import msvcrt
+            os.lseek(fd, 0, os.SEEK_SET)
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        return False
+    return True
+
+
+def _unlock(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+    else:
+        import fcntl
+        fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+def _busy(c: Comparison) -> str:
+    return (f"another comparison is running in {c.work_dir} (it holds {_lock_path(c)}); "
+            "wait for it to end, or give this one another name")
+
+
+class WorkFolderBusy(RuntimeError):
+    """Another process holds the comparison's work folder."""
+
+
+@contextlib.contextmanager
+def work_lock(c: Comparison):
+    """The work folder for this process alone while the block runs: a second launch is refused
+    before it reads, moves or writes anything there. Taken again in the same process, it is kept."""
+    key = os.path.realpath(c.work_dir)
+    if key in _HELD:
+        yield
+        return
+    c.work_dir.mkdir(parents=True, exist_ok=True)
+    fd = os.open(_lock_path(c), os.O_RDWR | os.O_CREAT)
+    try:
+        if not _try_lock(fd):
+            raise WorkFolderBusy(_busy(c))
+        _HELD.add(key)
+        try:
+            yield
+        finally:
+            _HELD.discard(key)
+            _unlock(fd)
+    finally:
+        os.close(fd)
+
+
+def lock_problem(c: Comparison) -> str | None:
+    """Why the work folder is busy now, or None; creates nothing (the dry run's check)."""
+    if os.path.realpath(c.work_dir) in _HELD or not _lock_path(c).exists():
+        return None
+    fd = os.open(_lock_path(c), os.O_RDONLY)
+    try:
+        if not _try_lock(fd):
+            return _busy(c)
+        _unlock(fd)
+        return None
+    finally:
+        os.close(fd)
+
+
 # ── The reference job and what it asks for ──────────────────────────────────
 
 
@@ -770,7 +851,16 @@ def existing_run(c: Comparison, label: str, folder: Path, requested: dict,
 
 
 def run_queue(c: Comparison, seams: Seams, prepared: Prepared | None = None) -> str | None:
-    """Run the queue to its end or its first stop; -> the stop's reason, or None."""
+    """Run the queue to its end or its first stop, holding the work folder (``work_lock``);
+    -> the stop's reason, or None. A work folder another process holds is left untouched."""
+    try:
+        with work_lock(c):
+            return _run_queue(c, seams, prepared)
+    except WorkFolderBusy as exc:
+        return str(exc)
+
+
+def _run_queue(c: Comparison, seams: Seams, prepared: Prepared | None) -> str | None:
     for sub in ("runs", "logs", "partial"):
         (c.work_dir / sub).mkdir(parents=True, exist_ok=True)
     status = _Status(c, seams)
@@ -794,6 +884,11 @@ def run_queue(c: Comparison, seams: Seams, prepared: Prepared | None = None) -> 
             _append(c, _record(arm, seed, reused=True, complete=True, run_dir=str(folder)))
             continue
         if state == "partial":
+            if seams.port_taken(c.port):  # a run of this folder may still be serving there: move nothing
+                why = f"before the run: port {c.port} is already taken: refusing to use or touch that process"
+                _append(c, _record(arm, seed, stopped_for=why))
+                stop = f"{label}: {why}"
+                break
             move_aside(c, label, folder)
         try:
             record = run_one(c, arm, seed, requested, prepared.manifest, seams, status)

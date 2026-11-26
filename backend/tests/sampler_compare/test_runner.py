@@ -679,6 +679,75 @@ def test_a_partial_run_is_moved_aside_never_appended_to(world):
     assert steps == plan.passes(c.steps, c.validation.every)
 
 
+def _work_files(c):
+    """Every path under the work folder -> (bytes, mtime) of a file, or None for a folder; the lock
+    file another process holds can't be read on Windows: its size and mtime stand for it."""
+    out = {}
+    for path in sorted(c.work_dir.rglob("*")):
+        if path.name == runner.LOCK_FILE:
+            content = (path.stat().st_size, path.stat().st_mtime_ns)
+        else:
+            content = (path.read_bytes(), path.stat().st_mtime_ns) if path.is_file() else None
+        out[path.relative_to(c.work_dir).as_posix()] = content
+    return out
+
+
+def _partial_on_disk(world):
+    """A comparison whose first run is partial on disk, as an active run looks from outside."""
+    world.default_mode = "partial"
+    c, stop = _run_all(world)
+    assert "incomplete" in stop
+    world.default_mode = "ok"
+    world.trainer_starts = world.backend_starts = 0
+    return c
+
+
+def _hold_lock(c, tmp_path):
+    """A real child holding ``c``'s work-folder lock until it is killed."""
+    code = ("import sys, time; sys.path.insert(0, sys.argv[1])\n"
+            "from app.core.sampler_compare import plan, runner\n"
+            "with runner.work_lock(plan.load_comparison(sys.argv[2])):\n"
+            "    print('locked', flush=True); time.sleep(120)\n")
+    child = subprocess.Popen([sys.executable, "-c", code, str(plan.BACKEND), str(tmp_path / "comparison.json")],
+                             stdout=subprocess.PIPE, text=True, cwd=tmp_path)
+    assert child.stdout.readline().strip() == "locked"
+    return child
+
+
+def test_a_second_launch_while_the_first_holds_the_work_folder_moves_nothing(world, tmp_path):
+    c = _partial_on_disk(world)
+    child = _hold_lock(c, tmp_path)
+    try:
+        before = _work_files(c)
+        stop = runner.run_queue(c, world.seams())
+        assert "another comparison is running in" in stop and str(c.work_dir) in stop
+        assert world.trainer_starts == 0 and world.backend_starts == 0
+        assert _work_files(c) == before
+    finally:
+        child.kill()
+        child.wait(timeout=30)
+    deadline = time.monotonic() + 30  # Windows drops a killed process's locks soon after, not at once
+    while runner.lock_problem(c) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    assert runner.run_queue(c, world.seams()) is None  # the lock goes with its process
+
+
+def test_a_taken_port_is_checked_before_a_partial_run_is_moved(world):
+    c = _partial_on_disk(world)
+    folder = runner.run_dir(c, "uniform_s42", DEFINITION)
+    before = sorted(p.name for p in folder.iterdir())
+    owner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    owner.bind(("127.0.0.1", world.port))
+    owner.listen()
+    try:
+        stop = runner.run_queue(c, world.seams())
+    finally:
+        owner.close()
+    assert "already taken" in stop
+    assert sorted(p.name for p in folder.iterdir()) == before
+    assert list((c.work_dir / "partial").iterdir()) == []
+
+
 def test_the_status_file_carries_the_lowest_ram_between_writes(world):
     c = world.comparison()
     world.place_all(c, skip={"uniform_s42"})

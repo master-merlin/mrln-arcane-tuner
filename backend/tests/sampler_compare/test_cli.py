@@ -180,6 +180,45 @@ def test_the_exit_code_is_one_when_the_queue_stopped(world):
     assert world.trainer_starts == 0
 
 
+def _tree(folder):
+    """Path -> (bytes, mtime), None for a folder; the held lock file (unreadable on Windows) by its size."""
+    def content(p):
+        if p.name == runner.LOCK_FILE:
+            return p.stat().st_size, p.stat().st_mtime_ns
+        return (p.read_bytes(), p.stat().st_mtime_ns) if p.is_file() else None
+
+    return {p.relative_to(folder).as_posix(): content(p) for p in sorted(folder.rglob("*"))} if folder.exists() else {}
+
+
+@pytest.mark.parametrize("flags", [[], ["--report-only"], ["--dry-run"]])
+def test_a_launch_beside_a_running_comparison_exits_one_and_moves_nothing(world, capsys, flags):
+    path = _config(world)
+    c = plan.load_comparison(path)
+    world.place_all(c, skip={"uniform_s42"})
+    code = ("import sys, time; sys.path.insert(0, sys.argv[1])\n"
+            "from app.core.sampler_compare import plan, runner\n"
+            "with runner.work_lock(plan.load_comparison(sys.argv[2])):\n"
+            "    print('locked', flush=True); time.sleep(120)\n")
+    child = subprocess.Popen([sys.executable, "-c", code, str(plan.BACKEND), path], stdout=subprocess.PIPE,
+                             text=True, cwd=world.root)
+    try:
+        assert child.stdout.readline().strip() == "locked"
+        before = _tree(c.work_dir)
+        assert cli.main([path, *flags], seams=_no_children(world)) == 1
+        assert _tree(c.work_dir) == before
+    finally:
+        child.kill()
+        child.wait(timeout=30)
+    assert "another comparison is running in" in capsys.readouterr().out
+
+
+def test_a_dry_run_takes_no_lock_and_writes_nothing(world):
+    path = _config(world)
+    c = plan.load_comparison(path)
+    assert cli.main([path, "--dry-run"], seams=_no_children(world)) == 0
+    assert not c.work_dir.exists()
+
+
 @pytest.mark.parametrize("flags", [["--dry-run"], ["--dry-run", "--report-only"]])
 def test_the_script_runs_from_any_working_directory(tmp_path, flags):
     bad = tmp_path / "bad.json"

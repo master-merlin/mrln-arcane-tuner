@@ -531,6 +531,20 @@ def test_every_arm_trains_on_one_metadata_snapshot(world):
     assert [_enabled(p) for p in run_dbs] == [20, 20, 20, 20]
 
 
+def test_a_dataset_copy_changed_between_arms_stops_the_queue(world):
+    real_argv = world.trainer_argv
+
+    def argv(c, definition_id, config):
+        if world.trainer_starts == 0:  # while the first arm trains, its caption is edited in the copy
+            (c.work_dir / isolation.DATASET_FOLDER / "img05.txt").write_text("edited", encoding="utf-8")
+        return real_argv(c, definition_id, config)
+
+    c = world.comparison()
+    stop = runner.run_queue(c, world.seams(trainer_argv=argv))
+    assert world.trainer_starts == 1
+    assert stop.startswith("radc_s42: before the run: the dataset copy") and "changed img05.txt" in stop
+
+
 def test_a_resume_trains_on_the_first_metadata_snapshot(world):
     c = world.comparison()
     world.place_all(c, skip={"radc_s43"})

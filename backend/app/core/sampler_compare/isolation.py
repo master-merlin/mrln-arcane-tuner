@@ -179,6 +179,9 @@ def copy_dataset(source: Path, work_dir: Path, copy: bool = True) -> dict[str, s
     recorded_path = manifest_path(target)
     if recorded_path.exists():
         recorded = read_manifest(target)
+        problem = copy_problem(work_dir, recorded)
+        if problem:
+            raise RuntimeError(problem)
         if source_manifest(source) != recorded:
             raise RuntimeError(
                 f"the dataset changed since this comparison began: {source} no longer holds what "
@@ -191,6 +194,24 @@ def copy_dataset(source: Path, work_dir: Path, copy: bool = True) -> dict[str, s
     _remove_all_but(target, set(fresh))  # an interrupted copy may have left files the source lacks
     write_json(recorded_path, {"version": MANIFEST_VERSION, "source": str(source), "files": fresh})
     return fresh
+
+
+def copy_problem(work_dir: Path, manifest: dict[str, str]) -> str | None:
+    """Why the work folder's dataset copy no longer holds exactly ``manifest`` (a file changed,
+    missing or added; the caches the runs build aside), or None. Nothing is written or deleted:
+    arms that trained earlier read the copy as it was, so a changed copy is refused, never redone."""
+    target = Path(work_dir) / DATASET_FOLDER
+    if not target.is_dir():
+        return f"the dataset copy {target} is gone"
+    actual = source_manifest(target)
+    differences = ([f"changed {n}" for n in sorted(manifest) if n in actual and actual[n] != manifest[n]]
+                   + [f"missing {n}" for n in sorted(manifest) if n not in actual]
+                   + [f"extra {n}" for n in sorted(actual) if n not in manifest])
+    if not differences:
+        return None
+    shown = ", ".join(differences[:10]) + (f" and {len(differences) - 10} more" if len(differences) > 10 else "")
+    return (f"the dataset copy {target} changed since it was made: {shown}; "
+            "start a comparison of another name")
 
 
 def _retrying(action: Callable[[], None]) -> None:

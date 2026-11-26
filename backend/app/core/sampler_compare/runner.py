@@ -681,7 +681,7 @@ def run_one(c: Comparison, arm: str, seed: int, requested: dict, manifest: dict[
     """Train one arm at one seed beside the user's backend; -> the run's record."""
     label = plan.label(arm, seed)
     status = status or _Status(c, seams)
-    refusal = preflight(c, seams)
+    refusal = isolation.copy_problem(c.work_dir, manifest) or preflight(c, seams)
     if refusal:
         return _record(arm, seed, stopped_for=f"before the run: {refusal}")
     definition_id = requested["definition_id"]

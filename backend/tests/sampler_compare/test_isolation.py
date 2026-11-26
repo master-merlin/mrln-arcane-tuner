@@ -144,6 +144,43 @@ def test_a_changed_source_dataset_is_refused_on_resume(tmp_path):
         isolation.copy_dataset(source, target.parents[1])
 
 
+@pytest.mark.parametrize(("change", "named"), [
+    ("edited", "changed img1.txt"), ("missing", "missing img1.txt"), ("extra", "extra new.txt"),
+    ("extra cache-like", "extra sub/.cache2"),
+])
+@pytest.mark.parametrize("copy", [True, False])
+def test_a_changed_copy_is_refused_on_resume(tmp_path, change, named, copy):
+    source = _dataset(tmp_path / "Cars")
+    work = tmp_path / "work"
+    isolation.copy_dataset(source, work)
+    target = work / isolation.DATASET_FOLDER
+    if change == "edited":
+        (target / "img1.txt").write_text("an edited caption", encoding="utf-8")
+    elif change == "missing":
+        (target / "img1.txt").unlink()
+    elif change == "extra":
+        (target / "new.txt").write_text("a caption the source lacks", encoding="utf-8")
+    else:
+        (target / "sub").mkdir()
+        (target / "sub" / ".cache2").write_bytes(b"x")
+    (target / ".cache").mkdir(exist_ok=True)
+    (target / ".cache" / "latent").write_bytes(b"a cache the runs build is no change")
+    before = _tree(target)
+    with pytest.raises(RuntimeError, match=f"the dataset copy .* changed since it was made: {named}"):
+        isolation.copy_dataset(source, work, copy=copy)
+    assert _tree(target) == before
+
+
+def test_a_copy_with_only_its_caches_added_is_kept(tmp_path):
+    source = _dataset(tmp_path / "Cars")
+    work = tmp_path / "work"
+    first = isolation.copy_dataset(source, work)
+    (work / isolation.DATASET_FOLDER / ".cache" / "m").mkdir(parents=True)
+    (work / isolation.DATASET_FOLDER / ".cache" / "m" / "latent").write_bytes(b"latent")
+    assert isolation.copy_dataset(source, work) == first
+    assert isolation.copy_problem(work, first) is None
+
+
 def test_a_copy_over_an_interrupted_one_holds_exactly_the_manifests_files(tmp_path):
     source = _dataset(tmp_path / "Cars")
     target = tmp_path / "work" / "data" / "dataset"

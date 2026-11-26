@@ -169,7 +169,7 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
     first_arm, first_seed = plan.queue(c)[0]
     dataset = plan.dataset_name(plan.run_config(base, c, first_arm, first_seed))
     source = source_dataset(seams.user_db, dataset)
-    manifest = isolation.copy_dataset(source, c.work_dir / isolation.DATASET_FOLDER, copy=copy)
+    manifest = isolation.copy_dataset(source, c.work_dir, copy=copy)
     if copy:
         isolation.copy_settings(seams.user_settings, c.work_dir / isolation.ISOLATED_PATHS["MRLN_SETTINGS_PATH"])
         facts = seams.facts(definition_id, c.arms, isolation.child_env(c, _db_folder(c) / "facts.db"))

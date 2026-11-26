@@ -103,7 +103,7 @@ def test_a_database_without_the_comparisons_dataset_is_refused(tmp_path):
 def test_the_dataset_copy_leaves_caches_and_thumbnails_behind(tmp_path):
     source = _dataset(tmp_path / "Cars")
     target = tmp_path / "work" / "data" / "dataset"
-    manifest = isolation.copy_dataset(source, target)
+    manifest = isolation.copy_dataset(source, target.parents[1])
     assert not (target / ".cache").exists()
     assert not (target / ".thumbnails").exists()
     assert sorted(manifest) == ["img0.png", "img0.txt", "img1.png", "img1.txt", "img2.png", "img2.txt"]
@@ -124,7 +124,7 @@ def test_the_dataset_copy_never_writes_into_the_source(tmp_path):
         linked = False  # the platform refuses links to this user: the content case is not testable here
     before, outside_before = _tree(source), outside.read_bytes()
     target = tmp_path / "work" / "data" / "dataset"
-    manifest = isolation.copy_dataset(source, target)
+    manifest = isolation.copy_dataset(source, target.parents[1])
     assert _tree(source) == before
     assert outside.read_bytes() == outside_before
     if linked:
@@ -136,11 +136,11 @@ def test_the_dataset_copy_never_writes_into_the_source(tmp_path):
 def test_a_changed_source_dataset_is_refused_on_resume(tmp_path):
     source = _dataset(tmp_path / "Cars")
     target = tmp_path / "work" / "data" / "dataset"
-    first = isolation.copy_dataset(source, target)
-    assert isolation.copy_dataset(source, target) == first
+    first = isolation.copy_dataset(source, target.parents[1])
+    assert isolation.copy_dataset(source, target.parents[1]) == first
     (source / "img1.png").write_bytes(b"another picture")
     with pytest.raises(RuntimeError, match="the dataset changed since this comparison began"):
-        isolation.copy_dataset(source, target)
+        isolation.copy_dataset(source, target.parents[1])
 
 
 def test_a_copy_over_an_interrupted_one_holds_exactly_the_manifests_files(tmp_path):
@@ -151,7 +151,7 @@ def test_a_copy_over_an_interrupted_one_holds_exactly_the_manifests_files(tmp_pa
     (target / "gone" / "old.txt").write_text("an earlier caption", encoding="utf-8")
     (target / "gone" / ".cache" / "latent").write_bytes(b"latent")
     (target / "img0.png").write_bytes(b"half a picture")
-    manifest = isolation.copy_dataset(source, target)
+    manifest = isolation.copy_dataset(source, target.parents[1])
     files = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
     assert files == sorted(manifest)
     assert not (target / "gone").exists()
@@ -224,6 +224,73 @@ def test_a_write_that_fails_otherwise_raises_at_once(tmp_path, monkeypatch):
     with pytest.raises(PermissionError):
         isolation.write_bytes(tmp_path / "state.json", b"{}")
     assert sleeps == [] and list(tmp_path.iterdir()) == []
+
+
+def _folder_link(link, target):
+    """A folder link at ``link`` to ``target`` (a junction on Windows), or the test is skipped."""
+    link.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if os.name == "nt":
+            import _winapi
+            _winapi.CreateJunction(str(target), str(link))
+        else:
+            os.symlink(target, link, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"the platform refuses a folder link here: {exc}")
+
+
+@pytest.mark.parametrize("where", ["data/dataset", "data/dataset/Cars", "data", "runs/Cars", "."])
+@pytest.mark.parametrize("copy", [True, False])
+def test_a_source_inside_the_work_folder_is_refused_and_left_whole(tmp_path, where, copy):
+    work = tmp_path / "work"
+    source = _dataset(work / where)
+    before = _tree(source)
+    with pytest.raises(RuntimeError, match="refusing the dataset copy"):
+        isolation.copy_dataset(source, work, copy=copy)
+    assert _tree(source) == before
+
+
+@pytest.mark.parametrize("copy", [True, False])
+def test_a_work_folder_inside_the_source_is_refused_and_the_source_left_whole(tmp_path, copy):
+    source = _dataset(tmp_path / "Cars")
+    before = _tree(source)
+    with pytest.raises(RuntimeError, match="refusing the dataset copy"):
+        isolation.copy_dataset(source, source / "work", copy=copy)
+    assert _tree(source) == before
+
+
+def test_a_dataset_folder_linked_to_the_source_is_refused_and_the_source_left_whole(tmp_path):
+    source = _dataset(tmp_path / "Cars")
+    work = tmp_path / "work"
+    _folder_link(work / isolation.DATASET_FOLDER, source)
+    before = _tree(source)
+    with pytest.raises(RuntimeError, match="refusing the dataset copy"):
+        isolation.copy_dataset(source, work)
+    assert _tree(source) == before
+
+
+def test_a_data_folder_linked_out_of_the_work_folder_is_refused(tmp_path):
+    user = tmp_path / "user"
+    source = _dataset(user / "Cars")
+    (user / "dataset").mkdir()
+    (user / "dataset" / "sibling.png").write_bytes(b"a picture of the user's")
+    work = tmp_path / "work"
+    _folder_link(work / "data", user)
+    before, sibling = _tree(source), _tree(user / "dataset")
+    with pytest.raises(RuntimeError, match="refusing the dataset copy"):
+        isolation.copy_dataset(source, work)
+    assert _tree(source) == before and _tree(user / "dataset") == sibling
+
+
+def test_a_link_inside_the_dataset_copy_is_refused_and_never_followed(tmp_path):
+    source = _dataset(tmp_path / "Cars")
+    work = tmp_path / "work"
+    (work / isolation.DATASET_FOLDER).mkdir(parents=True)
+    _folder_link(work / isolation.DATASET_FOLDER / "gone", source)
+    before = _tree(source)
+    with pytest.raises(RuntimeError, match="refusing the dataset copy"):
+        isolation.copy_dataset(source, work)
+    assert _tree(source) == before
 
 
 def test_the_dataset_digest_follows_content_not_order():

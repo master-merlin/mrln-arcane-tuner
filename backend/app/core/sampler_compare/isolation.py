@@ -133,13 +133,48 @@ def manifest_path(target: Path) -> Path:
     return target.parent / "manifest.json"
 
 
-def copy_dataset(source: Path, target: Path, copy: bool = True) -> dict[str, str]:
-    """Copy the dataset without its caches; -> its manifest. A copy made before is kept, but only
-    while the source still holds the same content. Without ``copy`` nothing is written: the
-    manifest is the earlier copy's (checked the same way) or the source's own."""
-    source, target = Path(source), Path(target)
+def _real(path: Path) -> Path:
+    return Path(os.path.realpath(path))
+
+
+def _overlap(a: Path, b: Path) -> bool:
+    return a == b or a.is_relative_to(b) or b.is_relative_to(a)
+
+
+def _is_link(path: Path) -> bool:
+    return path.is_symlink() or os.path.isjunction(path)
+
+
+def dataset_target(source: Path, work_dir: Path) -> Path:
+    """The work folder's dataset copy for ``source``, once it is proven safe to write and clean:
+    it resolves to the work folder's own dataset folder (no link on the way), holds no link, and
+    neither the copy nor the work folder overlaps the source. Raises otherwise; writes nothing."""
+    target = Path(work_dir) / DATASET_FOLDER
+    real_source, real_work, real_target = _real(source), _real(work_dir), _real(target)
+    if _overlap(real_source, real_work):
+        raise RuntimeError(f"refusing the dataset copy: the dataset {source} and the work folder {work_dir} "
+                           "overlap; give the comparison a work folder outside the dataset")
+    if real_target != real_work / DATASET_FOLDER:
+        raise RuntimeError(f"refusing the dataset copy: {target} resolves to {real_target}, outside the work "
+                           "folder (a link on the way)")
+    if target.exists():
+        for folder, dirs, files in os.walk(target):
+            for name in (*dirs, *files):
+                if _is_link(Path(folder) / name):
+                    raise RuntimeError(f"refusing the dataset copy: {Path(folder) / name} is a link; the copy "
+                                       "holds plain files only")
+    return target
+
+
+def copy_dataset(source: Path, work_dir: Path, copy: bool = True) -> dict[str, str]:
+    """Copy the dataset without its caches into the work folder (``dataset_target``); -> its
+    manifest. A copy made before is kept, but only while the source still holds the same content.
+    Without ``copy`` nothing is written: the manifest is the earlier copy's (checked the same way)
+    or the source's own."""
+    source = Path(source)
     if not source.is_dir():
         raise RuntimeError(f"the dataset folder {source} does not exist")
+    target = dataset_target(source, work_dir)
     recorded_path = manifest_path(target)
     if recorded_path.exists():
         recorded = read_manifest(target)
@@ -171,25 +206,25 @@ def _retrying(action: Callable[[], None]) -> None:
 
 def _remove_all_but(target: Path, keep: set[str]) -> None:
     """Delete every file under ``target`` not named in ``keep`` (caches included), and the folders
-    that leaves empty; a link is removed, never followed."""
+    that leaves empty. ``dataset_target`` proved the tree holds no link; each path is checked again
+    to lie inside ``target`` before it goes."""
+    real_target = _real(target)
+
+    def remove(path: Path, action: Callable[[], None]) -> None:
+        if _is_link(path) or not _real(path).is_relative_to(real_target) or _real(path) == real_target:
+            raise RuntimeError(f"refusing to delete {path}: it is not a plain entry of the dataset copy {target}")
+        _retrying(action)
+
     for folder, dirs, files in os.walk(target, topdown=False):
         here = Path(folder)
         for name in files:
             path = here / name
             if path.relative_to(target).as_posix() not in keep:
-                _retrying(path.unlink)
+                remove(path, path.unlink)
         for name in dirs:
             path = here / name
-            if path.is_symlink() or not any(path.iterdir()):
-                _retrying(lambda p=path: _remove_link_or_empty_folder(p))
-
-
-def _remove_link_or_empty_folder(path: Path) -> None:
-    # Windows removes a folder link with rmdir; elsewhere a link is a file to unlink.
-    if path.is_symlink() and os.name != "nt":
-        path.unlink()
-    else:
-        os.rmdir(path)
+            if not any(path.iterdir()):
+                remove(path, lambda p=path: os.rmdir(p))
 
 
 def read_manifest(target: Path) -> dict[str, str]:

@@ -32,6 +32,15 @@ def _arm(definition_id, arm):
     return facts.facts_here(definition_id, {"a": arm})["arms"]["a"]
 
 
+@pytest.mark.parametrize("definition_id", ["sdxl_base_1.0", "moss-image-base"])
+def test_the_hub_paths_are_every_component_the_loader_fetches(definition_id):
+    definition = registry.get_definition(definition_id)
+    wanted = sorted({c.path for c in definition.components.values()
+                     if isinstance(getattr(c, "path", None), str) and c.path.startswith("huggingface:")})
+    assert wanted  # both definitions load from the hub
+    assert facts.facts_here(definition_id, {"a": {}})["hub_paths"] == wanted
+
+
 def test_the_timestep_keys_are_the_products_own():
     assert timestep_keys.TIMESTEP_KEYS == {"timestep_sampling", *TIMESTEP_PARAMETERS, "logit_normal_mean",
                                            "logit_normal_std"}

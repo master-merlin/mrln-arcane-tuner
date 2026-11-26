@@ -92,7 +92,7 @@ def fake_facts(definition_id: str, arms: dict, env: dict) -> dict:
         effective = {**TIMESTEP_SCHEMA_DEFAULTS, **given}
         resolved[arm] = {"effective": effective,
                          "source": {key: "arm" if key in given else "schema" for key in effective}}
-    return {"api_port": int(env["PORT"]), "arms": resolved}
+    return {"api_port": int(env["PORT"]), "arms": resolved, "hub_paths": []}
 
 
 class World:
@@ -117,6 +117,7 @@ class World:
         self.backend_starts = 0
         self.modes: dict[str, str] = {}
         self.default_mode = "ok"
+        self.facts = fake_facts
 
     def write_db(self, extra_jobs: dict | None = None) -> None:
         self._prepared: list[tuple[plan.Comparison, runner.Prepared]] = []  # the reference job may change
@@ -178,7 +179,7 @@ class World:
             backend_argv=self.backend_argv,
             trainer_argv=self.trainer_argv,
             port_taken=port_taken,
-            facts=fake_facts,
+            facts=self.facts,
             user_db=self.db,
             user_settings=self.settings,
             poll_s=0.05,

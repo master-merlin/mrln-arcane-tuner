@@ -21,7 +21,8 @@ from app.engine.core import validation_compare as vc
 from app.engine.core.pipeline.validation_pass import is_due
 
 from . import fake_trainer
-from .conftest import DEFINITION, GIB, FakeClock, started_pids
+from .conftest import DEFINITION, GIB, FakeClock, fake_facts, started_pids
+from .test_isolation import hub_snapshot
 
 QUEUE = ["uniform_s42", "radc_s42", "uniform_s43", "radc_s43"]
 
@@ -551,6 +552,47 @@ def test_a_changed_model_source_refuses_the_finished_runs(world, tmp_path, chang
     assert "uniform_s42" in stop and f"model_source.{change}" in stop
     assert _folders(c) == before
     assert (settings_copy.read_bytes() if settings_copy.exists() else None) == copied_before
+
+
+HUB_PATH = "huggingface:org/base"
+
+
+def _hub_world(world, tmp_path, monkeypatch):
+    """The world's definition loads ``HUB_PATH`` from a hub cache under ``tmp_path``."""
+    cache = tmp_path / "hub"
+    hub_snapshot(cache, "org/base", "a" * 40)
+    monkeypatch.setattr(isolation, "hub_cache", lambda: cache)
+    world.facts = lambda definition_id, arms, env: {**fake_facts(definition_id, arms, env), "hub_paths": [HUB_PATH]}
+    return cache
+
+
+def test_a_changed_hub_snapshot_refuses_the_finished_runs(world, tmp_path, monkeypatch):
+    cache = _hub_world(world, tmp_path, monkeypatch)
+    c = world.comparison()
+    world.place_all(c)
+    before = _folders(c)
+    world._prepared = []
+    assert runner.run_queue(c, world.seams()) is None and world.trainer_starts == 0
+    hub_snapshot(cache, "org/base", "b" * 40)  # another download moved main on
+    stop = runner.run_queue(c, world.seams())
+    assert world.trainer_starts == 0
+    assert "uniform_s42" in stop and "model_source.revision" in stop
+    assert _folders(c) == before
+
+
+def test_a_hub_snapshot_moved_between_arms_stops_the_queue(world, tmp_path, monkeypatch):
+    cache = _hub_world(world, tmp_path, monkeypatch)
+    real_argv = world.trainer_argv
+
+    def argv(c, definition_id, config):
+        if world.trainer_starts == 0:  # while the first arm trains, the live backend updates the model
+            hub_snapshot(cache, "org/base", "b" * 40)
+        return real_argv(c, definition_id, config)
+
+    c = world.comparison()
+    stop = runner.run_queue(c, world.seams(trainer_argv=argv))
+    assert world.trainer_starts == 1
+    assert stop.startswith("radc_s42: before the run:") and "model_source.revision" in stop
 
 
 def _enabled(db_path):

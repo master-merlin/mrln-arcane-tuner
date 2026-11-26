@@ -10,6 +10,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import secrets
 import sqlite3
 import time
@@ -389,11 +390,42 @@ def _weights_fingerprint(folder: Path) -> str:
     return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
 
 
-def model_source(settings: bytes | None, definition_id: str) -> dict[str, Any]:
+def hub_cache() -> Path:
+    """The Hugging Face cache the comparison's children load from (they inherit this environment)."""
+    from huggingface_hub import constants
+
+    return Path(constants.HF_HUB_CACHE)
+
+
+_COMMIT = re.compile(r"^[0-9a-f]{40}$")
+
+
+def _hub_revision(path: str, cache: Path) -> str:
+    """The commit of the cached snapshot a ``huggingface:<repo>[@<revision>][:<file>]`` path loads
+    offline (``ModelPathResolver._resolve_hf``'s parsing): a pinned commit, else what
+    ``refs/<revision or main>`` names, in the hub's cache layout; read from disk, never the network."""
+    repo = path[len("huggingface:"):].split(":")[0]
+    repo, revision = repo.split("@", 1) if "@" in repo else (repo, None)
+    folder = cache / f"models--{repo.replace('/', '--')}"
+    commit = revision if revision and _COMMIT.match(revision) else None
+    if commit is None:
+        ref = folder / "refs" / (revision or "main")
+        try:
+            commit = ref.read_text(encoding="utf-8").strip()
+        except OSError:
+            commit = None
+    if not commit or not (folder / "snapshots" / commit).is_dir():
+        return f"not cached: {repo}@{revision or 'main'}"
+    return commit
+
+
+def model_source(settings: bytes | None, definition_id: str, hub_paths: list[str] | tuple = (),
+                 cache: Path | None = None) -> dict[str, Any]:
     """Where the trainer loads ``definition_id``'s weights from under ``settings`` (the bytes of a
     settings file): ``ModelOverrideManager.resolve_effective_source``'s answer (a test pins the
-    two agreeing; that module's settings are the process-wide file), plus a fingerprint of a local
-    weight folder."""
+    two agreeing; that module's settings are the process-wide file), a fingerprint of a local
+    weight folder, and the cached snapshot commit of every hub component (``hub_paths``, from the
+    product's facts) in ``cache`` (``hub_cache``)."""
     from app.core.schemas.model_overrides import ModelSettings, ModelSourceType
 
     try:  # a pydantic refusal is a ValueError too
@@ -401,10 +433,20 @@ def model_source(settings: bytes | None, definition_id: str) -> dict[str, Any]:
         models = ModelSettings.model_validate((raw.get("models") if isinstance(raw, dict) else None) or {})
     except ValueError as exc:
         raise ConfigError(f"the settings file's model sources can't be read: {exc}") from None
+    cache = hub_cache() if cache is None else Path(cache)
+    hub = {"hub_paths": list(hub_paths), "revision": {path: _hub_revision(path, cache) for path in hub_paths}}
     override = models.overrides.get(definition_id)
     if not override or override.source_type == ModelSourceType.HF_HUB:
         offline = models.global_offline_mode or (override.skip_update if override else False)
         return {"source_type": ModelSourceType.HF_HUB.value, "local_path": None, "local_files_only": offline,
-                "weights": None}
+                "weights": None, **hub}
     return {"source_type": override.source_type.value, "local_path": override.local_path,
-            "local_files_only": False, "weights": _weights_fingerprint(Path(override.local_path))}
+            "local_files_only": False, "weights": _weights_fingerprint(Path(override.local_path)), **hub}
+
+
+def model_source_problem(settings_path: Path, definition_id: str, recorded: dict[str, Any]) -> str | None:
+    """Why the weights a run would load now are not the ``recorded`` model source, or None."""
+    now = json.loads(json.dumps(model_source(read_settings(settings_path), definition_id,
+                                             recorded.get("hub_paths") or ())))
+    changed = [f"model_source.{key}" for key in sorted(set(now) | set(recorded)) if now.get(key) != recorded.get(key)]
+    return f"the model's weights changed since the comparison began: {', '.join(changed)}" if changed else None

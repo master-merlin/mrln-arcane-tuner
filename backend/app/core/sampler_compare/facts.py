@@ -95,7 +95,11 @@ def facts_here(definition_id: str, arms: dict[str, dict]) -> dict:
                 effective[key] = _canonical_value(key, TIMESTEP_SCHEMA_DEFAULTS[key])
                 source[key] = "schema"
         resolved[arm] = {"effective": effective, "source": source}
-    return {"api_port": _resolve_api_port(), "arms": resolved}
+    # Every component the loader fetches from the hub (``ModelPathResolver``'s ``huggingface:`` paths,
+    # as ``model_utils`` prefetches them): ``isolation.model_source`` records each one's cached snapshot.
+    hub_paths = sorted({c.path for c in definition.components.values()
+                        if isinstance(getattr(c, "path", None), str) and c.path.startswith("huggingface:")})
+    return {"api_port": _resolve_api_port(), "arms": resolved, "hub_paths": hub_paths}
 
 
 def kill_all(processes: list[psutil.Process], wait_s: float) -> None:

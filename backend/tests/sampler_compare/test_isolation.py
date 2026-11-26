@@ -426,6 +426,36 @@ def test_the_model_source_follows_the_weights_in_a_local_folder(tmp_path):
     assert isolation.model_source(settings, "m")["weights"] != first["weights"]
 
 
+def hub_snapshot(cache, repo, commit, ref="main"):
+    """A Hugging Face cache entry as the hub lays it out: refs/<ref> names snapshots/<commit>."""
+    folder = cache / f"models--{repo.replace('/', '--')}"
+    (folder / "snapshots" / commit).mkdir(parents=True, exist_ok=True)
+    (folder / "refs").mkdir(exist_ok=True)
+    (folder / "refs" / ref).write_text(commit, encoding="utf-8")
+
+
+def test_a_hub_component_records_the_cached_snapshot_it_loads(tmp_path):
+    cache = tmp_path / "hub"
+    hub_snapshot(cache, "org/base", "a" * 40)
+    hub_snapshot(cache, "org/vae", "c" * 40)
+    hub_snapshot(cache, "org/pinned", "d" * 40, ref="diffusers")
+    paths = ["huggingface:org/base", "huggingface:org/vae:vae.safetensors", "huggingface:org/pinned@diffusers",
+             "huggingface:org/fixed@" + "e" * 40]
+    first = isolation.model_source(None, "m", paths, cache=cache)
+    assert first["revision"] == {paths[0]: "a" * 40, paths[1]: "c" * 40, paths[2]: "d" * 40,
+                                 paths[3]: "not cached: org/fixed@" + "e" * 40}
+    assert first["hub_paths"] == paths
+    hub_snapshot(cache, "org/base", "b" * 40)  # another download moved main on
+    later = isolation.model_source(None, "m", paths, cache=cache)
+    assert later["revision"][paths[0]] == "b" * 40
+    assert plan.identity_difference({"model_source": first}, {"model_source": later}) == ["model_source.revision"]
+
+
+def test_an_uncached_hub_component_is_named_not_guessed(tmp_path):
+    source = isolation.model_source(None, "m", ["huggingface:org/missing"], cache=tmp_path / "hub")
+    assert source["revision"] == {"huggingface:org/missing": "not cached: org/missing@main"}
+
+
 def test_the_dataset_digest_follows_content_not_order():
     a = {"a.png": "1" * 64, "b.png": "2" * 64}
     b = {"b.png": "2" * 64, "a.png": "1" * 64}

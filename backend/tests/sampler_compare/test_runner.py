@@ -341,11 +341,36 @@ def test_the_ready_wait_asks_nothing_before_the_port_is_bound(world, monkeypatch
 
     monkeypatch.setattr(runner.urllib.request, "urlopen", no_request)
     clock = FakeClock(scale=1.0)
-    seams = world.seams(port_taken=lambda port: False, clock=clock.clock, sleep=clock.sleep, ready_wait_s=60,
+    seams = world.seams(port_answers=lambda port: False, clock=clock.clock, sleep=clock.sleep, ready_wait_s=60,
                         poll_s=5)
     why = runner._wait_ready(world.comparison(), seams, _Alive(), "Cars", tmp_path / "backend.log")
     assert why == f"the comparison's backend did not answer within 1 min; see {tmp_path / 'backend.log'}"
     assert 60 <= clock.now < 61
+
+
+def test_the_ready_wait_never_bind_probes_a_started_backend(world, monkeypatch):
+    """A bind probe meeting the backend's own bind makes uvicorn's bind fail as in use: once the
+    backend is started, its port is only connected to."""
+    real_free, started, during = runner.restart_launcher.port_is_free, [], []
+
+    def port_is_free(host, port):
+        if started and not started[-1]:
+            during.append(port)
+        return real_free(host, port)
+
+    def backend_argv(c):
+        started.append(False)
+        return world.backend_argv(c)
+
+    def trainer_argv(c, definition_id, config):
+        started[-1] = True  # the readiness wait is over
+        return world.trainer_argv(c, definition_id, config)
+
+    monkeypatch.setattr(runner.restart_launcher, "port_is_free", port_is_free)
+    c = world.comparison(seeds=[42, 43])
+    stop = runner.run_queue(c, world.seams(backend_argv=backend_argv, trainer_argv=trainer_argv))
+    assert stop is None and len(started) == 4
+    assert during == []
 
 
 def test_the_port_wait_runs_on_the_seams_clock(world):

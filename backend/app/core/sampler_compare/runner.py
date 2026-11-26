@@ -59,15 +59,23 @@ UNREADABLE_SPLIT = "its split file can't be read"
 _LOG_GROWTH = "job_log.jsonl"
 
 
-def port_taken(port: int) -> bool:
-    """Whether something listens on ``port``. A bind probe (``restart_launcher.port_is_free``)
-    answers at once; a port it can't bind is then asked by connecting, since a socket a killed
-    server left waiting blocks a bind on some systems but takes no connection."""
-    if restart_launcher.port_is_free(LOOPBACK, port):
-        return False
+def port_answers(port: int) -> bool:
+    """Whether something accepts a connection on ``port``; binds nothing, so it never meets a
+    starting server's own bind (on Windows that bind then fails as in use)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.settimeout(1)
         return probe.connect_ex((LOOPBACK, port)) == 0
+
+
+def port_taken(port: int) -> bool:
+    """Whether something listens on ``port``, for the checks before a run starts and after it
+    stopped, never while a backend of this comparison starts (``port_answers``). A bind probe
+    (``restart_launcher.port_is_free``) answers at once; a port it can't bind is then asked by
+    connecting, since a socket a killed server left waiting blocks a bind on some systems but
+    takes no connection."""
+    if restart_launcher.port_is_free(LOOPBACK, port):
+        return False
+    return port_answers(port)
 
 
 @dataclass
@@ -84,6 +92,7 @@ class Seams:
     facts: Callable[[str, dict, dict], dict]
     user_db: Path
     user_settings: Path
+    port_answers: Callable[[int], bool] = port_answers  # the only probe once a backend is started
     poll_s: float = 3.0
     ready_wait_s: float = READY_WAIT_S
     card_problem: str | None = None  # why the card read can't be told to be the trainer's
@@ -613,7 +622,8 @@ def _wait_ready(c: Comparison, seams: Seams, backend: subprocess.Popen, dataset:
     while True:
         if backend.poll() is not None:
             return f"the comparison's backend exited with {backend.returncode}; see {log}"
-        if seams.port_taken(c.port):  # else not bound yet: a request would only wait for its refusal
+        # Connected to, never bound: a bind probe here can make the starting backend's bind fail.
+        if seams.port_answers(c.port):  # else not listening yet: a request would only wait for its refusal
             try:
                 with urllib.request.urlopen(request, timeout=3):
                     return None

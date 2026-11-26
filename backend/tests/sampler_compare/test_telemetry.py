@@ -62,6 +62,44 @@ def test_without_nvml_the_memory_is_no_reading(monkeypatch):
     assert telemetry.vram_used_mib(0) is None
 
 
+@pytest.mark.parametrize("count", [None, 0, 1])
+def test_one_card_or_none_is_card_zero(count):
+    assert telemetry.card_choice(count, {"CUDA_VISIBLE_DEVICES": "3"}) == (0, None)
+
+
+@pytest.mark.parametrize(
+    "env",
+    [{}, {"CUDA_VISIBLE_DEVICES": "1"}, {"CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+     {"CUDA_VISIBLE_DEVICES": "0,1", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+     {"CUDA_VISIBLE_DEVICES": "2", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"},
+     {"CUDA_VISIBLE_DEVICES": "GPU-1234", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}],
+    ids=["nothing", "no-order", "no-card", "two-cards", "no-such-card", "uuid"],
+)
+def test_two_cards_without_one_named_in_bus_order_are_refused(env):
+    index, problem = telemetry.card_choice(2, env)
+    assert "2 cards" in problem and "CUDA_VISIBLE_DEVICES" in problem and "PCI_BUS_ID" in problem
+
+
+def test_two_cards_with_one_named_in_bus_order_watch_that_one():
+    assert telemetry.card_choice(2, {"CUDA_VISIBLE_DEVICES": " 1 ", "CUDA_DEVICE_ORDER": "PCI_BUS_ID"}) == (1, None)
+
+
+def test_the_card_count_comes_from_nvml(monkeypatch):
+    monkeypatch.setattr(telemetry.gpu_health, "nvml_ready", lambda: False)
+    assert telemetry.nvml_device_count() is None
+
+    class FakeNvml:
+        NVMLError = RuntimeError
+
+        @staticmethod
+        def nvmlDeviceGetCount():
+            return 2
+
+    monkeypatch.setattr(telemetry.gpu_health, "nvml_ready", lambda: True)
+    monkeypatch.setattr(telemetry.gpu_health, "pynvml", FakeNvml)
+    assert telemetry.nvml_device_count() == 2
+
+
 def test_the_file_has_a_header_and_a_row_once_started(tmp_path):
     file = telemetry.TelemetryFile(tmp_path / "run.telemetry.csv")
     file.start()

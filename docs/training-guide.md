@@ -442,7 +442,10 @@ weights are only read: a missing one fails the run unless `allow_downloads` is
 true. A run stops, with both of its processes ended, when the card runs hotter,
 fuller or longer than the limits, the host runs short of RAM, the log stalls, or
 the run used another sampler or split than asked for; `logs\<run>.telemetry.csv`
-holds a row every few seconds. `report.txt` then gives the noise floor and every
+holds a row every few seconds. On a host with two or more cards, set
+`CUDA_VISIBLE_DEVICES` to the one card to train on and `CUDA_DEVICE_ORDER=PCI_BUS_ID`
+before you start, or no run starts: the card watched must be the one the trainer
+uses. `report.txt` then gives the noise floor and every
 pair's verdict, and a row per run. `--dry-run` checks the config, the reference
 job, the port and the card and starts nothing; `--report-only` writes the report
 over the runs that finished. A finished run is reused only while everything that

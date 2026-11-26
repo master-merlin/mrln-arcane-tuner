@@ -1,8 +1,11 @@
 """One run and the queue, against the fake trainer and backend as real child processes. A test
 that only needs finished runs on disk places them (``World.place_finished``) instead of training."""
 import json
+import os
 import re
 import socket
+import subprocess
+import sys
 import time
 from pathlib import Path
 
@@ -162,9 +165,131 @@ def test_no_child_survives_a_card_reader_that_raises(world):
 
     world.default_mode = "hang"
     c = world.comparison()
-    with pytest.raises(RuntimeError, match="the card reader broke"):
-        runner.run_queue(c, world.seams(read_card=read_card))
+    stop = runner.run_queue(c, world.seams(read_card=read_card))
+    assert stop == "uniform_s42: the runner failed: RuntimeError: the card reader broke"
     _assert_all_gone(c, "uniform_s42")
+
+
+def test_a_run_that_raises_leaves_its_verdict_its_record_and_a_final_status(world, monkeypatch):
+    def broken(*args, **kwargs):
+        raise RuntimeError("the database copy broke")
+
+    monkeypatch.setattr(runner.isolation, "copy_database", broken)
+    c, stop = _run_all(world)
+    assert stop == "uniform_s42: the runner failed: RuntimeError: the database copy broke"
+    assert world.trainer_starts == 0
+    [record] = _records(c)
+    assert record["label"] == "uniform_s42" and record["stopped_for"] == stop[len("uniform_s42: "):]
+    assert record["error"] == "RuntimeError: the database copy broke"
+    verdict = json.loads((c.work_dir / "logs" / "uniform_s42.verdict.json").read_text(encoding="utf-8"))
+    assert verdict["accepted"] is False and "the database copy broke" in verdict["stopped_for"]
+    status = json.loads((c.work_dir / "status.json").read_text(encoding="utf-8"))
+    assert status["running"] is None and status["queue_stop"] == stop
+
+
+def _grandchild_code(pid_file):
+    """A child that starts a sleeping grandchild and writes the grandchild's pid."""
+    return ("import pathlib, subprocess, sys, time\n"
+            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            f"pathlib.Path({str(pid_file)!r}).write_text(str(g.pid))\n"
+            "time.sleep(120)\n")
+
+
+def _wait_pid(pid_file):
+    deadline = time.monotonic() + 30
+    while not (pid_file.exists() and pid_file.read_text().strip()):
+        assert time.monotonic() < deadline, "the child started no grandchild"
+        time.sleep(0.05)
+    return int(pid_file.read_text())
+
+
+def _tree_of(pid):
+    root = psutil.Process(pid)
+    return [root, *root.children(recursive=True)]
+
+
+def _one_cpu():
+    """A mask other than this process's own wherever the host has two CPUs."""
+    return [psutil.Process().cpu_affinity()[-1]]
+
+
+def test_every_process_a_child_starts_runs_on_the_configured_cpus(tmp_path):
+    before = psutil.Process().cpu_affinity()
+    mask = _one_cpu()
+    children = runner._Children(mask)
+    pid_file = tmp_path / "grandchild.pid"
+    with open(tmp_path / "child.log", "w", encoding="utf-8") as log:
+        try:
+            proc = children.start([sys.executable, "-c", _grandchild_code(pid_file)], dict(os.environ), log)
+            grandchild = _wait_pid(pid_file)
+            assert psutil.Process().cpu_affinity() == before
+            for p in [*_tree_of(proc.pid), *_tree_of(grandchild)]:
+                assert p.cpu_affinity() == mask, p
+        finally:
+            children.stop()
+
+
+def test_a_child_is_started_already_on_the_configured_cpus(tmp_path, monkeypatch):
+    """A pin after the start races a venv launcher's own child: the mask is in place before it."""
+    before = psutil.Process().cpu_affinity()
+    mask = _one_cpu()
+    real_popen, at_start = subprocess.Popen, []
+
+    def popen(*args, **kwargs):
+        at_start.append(psutil.Process().cpu_affinity())
+        return real_popen(*args, **kwargs)
+
+    monkeypatch.setattr(runner.subprocess, "Popen", popen)
+    children = runner._Children(mask)
+    with open(tmp_path / "child.log", "w", encoding="utf-8") as log:
+        try:
+            children.start([sys.executable, "-c", "import time; time.sleep(30)"], dict(os.environ), log)
+        finally:
+            children.stop()
+    assert at_start == [mask]
+    assert psutil.Process().cpu_affinity() == before
+
+
+def test_a_poll_pins_every_process_seen_under_a_child(tmp_path):
+    before = psutil.Process().cpu_affinity()
+    if len(before) < 2:
+        pytest.skip("one CPU: no other mask to set")
+    mask = _one_cpu()
+    pid_file = tmp_path / "grandchild.pid"
+    proc = subprocess.Popen([sys.executable, "-c", _grandchild_code(pid_file)], stdout=subprocess.DEVNULL)
+    children = runner._Children(mask)
+    children.procs.append(proc)
+    try:
+        grandchild = _wait_pid(pid_file)
+        assert psutil.Process(grandchild).cpu_affinity() == before
+        children.note(proc)
+        for p in _tree_of(proc.pid):
+            assert p.cpu_affinity() == mask, p
+    finally:
+        children.stop()
+
+
+def test_a_card_that_cant_be_told_apart_refuses_the_run(world):
+    c, stop = _run_all(world, card_problem="2 cards: name one")
+    assert stop == "uniform_s42: before the run: 2 cards: name one"
+    assert world.backend_starts == 0 and world.trainer_starts == 0
+
+
+def test_a_progress_line_written_in_two_halves_is_read_once(tmp_path):
+    path = tmp_path / "trainer.log"
+    path.write_text('{"event": "step_progress", "st', encoding="utf-8")
+    with open(path, encoding="utf-8") as reader:
+        progress = runner._StepReader(reader)
+        progress.poll()
+        assert (progress.step, progress.events) == (0, 0)
+        with open(path, "a", encoding="utf-8") as out:
+            out.write('ep": 5, "step_time": 0.5}\n{"event": "step_progress", "step": 6')
+        progress.poll()
+        assert (progress.step, progress.step_time, progress.events) == (5, 0.5, 1)
+        with open(path, "a", encoding="utf-8") as out:
+            out.write(', "step_time": 0.4}\n')
+        progress.poll()
+        assert (progress.step, progress.step_time, progress.events) == (6, 0.4, 2)
 
 
 def test_a_stalled_run_is_stopped(world):
@@ -335,6 +460,16 @@ def test_a_changed_reference_setting_refuses_the_finished_runs(world):
     assert world.trainer_starts == 0
     assert "uniform_s42" in stop and "config.learning_rate" in stop
     assert _folders(c) == before
+
+
+def test_every_refused_finished_run_is_named_before_anything_trains(world):
+    c = world.comparison()
+    world.place_all(c, skip={"uniform_s42"})
+    world.set_base(learning_rate=0.0002)
+    stop = runner.run_queue(c, world.seams())
+    assert world.trainer_starts == 0
+    assert [name for name in QUEUE if f"{name} (run earlier)" in stop] == QUEUE[1:]
+    assert stop.count("config.learning_rate") == 3
 
 
 @pytest.mark.parametrize(

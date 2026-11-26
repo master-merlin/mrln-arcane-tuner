@@ -8,6 +8,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+import psutil
+
 from app.engine.strategies.timestep_keys import TIMESTEP_KEYS
 
 BACKEND = Path(__file__).resolve().parents[3]
@@ -160,7 +162,10 @@ def load_comparison(path: Path) -> Comparison:
     seeds = given["seeds"]
     if not isinstance(seeds, list) or not all(_integer(s) for s in seeds):
         raise ConfigError("seeds must be a list of integers")
-    if len(set(seeds)) < 2:
+    repeated = sorted({s for s in seeds if seeds.count(s) > 1})
+    if repeated:
+        raise ConfigError(f"seed {repeated[0]} repeats: each seed runs once per arm")
+    if len(seeds) < 2:
         raise ConfigError("the comparison needs two or more seeds (distinct), else it has no noise floor")
     port = given["port"]
     if not _integer(port) or not 1 <= port <= 65535:
@@ -169,6 +174,10 @@ def load_comparison(path: Path) -> Comparison:
     if affinity is not None and (not isinstance(affinity, list) or not affinity
                                  or not all(_integer(cpu) and cpu >= 0 for cpu in affinity)):
         raise ConfigError("cpu_affinity must be a non-empty list of CPU numbers")
+    host = psutil.cpu_count() or 1
+    for cpu in affinity or ():
+        if cpu >= host:
+            raise ConfigError(f"cpu_affinity names CPU {cpu}; this host has CPUs 0 to {host - 1}")
     downloads = given.get("allow_downloads", False)
     if not isinstance(downloads, bool):
         raise ConfigError("allow_downloads must be true or false")
@@ -239,8 +248,10 @@ def run_config(base: dict, c: Comparison, arm: str, seed: int) -> dict:
     config["datasets"] = [entry]
     if c.global_triggerword is not None:
         config["global_triggerword"] = c.global_triggerword
-    # A separate validation dataset would switch the trainer to it, and the copy holds only one.
+    # A separate validation dataset would switch the trainer to it, and the copy holds only one;
+    # the reference job's own id names that job, not this run.
     config.pop("validation_dataset", None)
+    config.pop("job_id", None)
     config.update(copy.deepcopy(c.arms[arm]))
     config.update(
         seed=seed,

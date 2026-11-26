@@ -63,8 +63,9 @@ def _rows(c: Comparison, prepared: runner.Prepared) -> tuple[list[dict], list, l
         folder = runner.run_dir(c, name, prepared.definition_id)
         records = runner.metrics(folder)
         finished = folder.exists() and runner.is_complete(folder, c, records)
-        why = runner.reusable(folder, c, name, prepared.requested[name], prepared.manifest, records) \
-            if finished else None
+        # The report records no measurement: ``vc.compare`` refuses runs that measure differently.
+        why = runner.reusable(folder, c, name, prepared.requested[name], prepared.manifest, records,
+                              record=False) if finished else None
         if finished and why:
             refusals.append(f"{name}: {why}")
         elif finished:

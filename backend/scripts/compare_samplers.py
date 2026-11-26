@@ -80,7 +80,8 @@ def dry_run(c: plan.Comparison, seams: runner.Seams) -> int:
         for arm, seed in plan.queue(c):
             name = plan.label(arm, seed)
             folder = runner.run_dir(c, name, prepared.definition_id)
-            state, why = runner.existing_run(c, name, folder, prepared.requested[name], prepared.manifest)
+            state, why = runner.existing_run(c, name, folder, prepared.requested[name], prepared.manifest,
+                                             record=False)
             if state == "refuse":
                 problem(f"{name} (run earlier) would be refused: {why}")
             elif state == "reuse":
@@ -118,8 +119,12 @@ def main(argv: list[str] | None = None, seams: runner.Seams | None = None) -> in
     except _FAILURES as exc:
         _say(f"stopped: {exc}")
         return 1
-    stop = None if args.report_only else runner.run_queue(c, seams, prepared)
-    code = report.write_report(c, stop, prepared)
+    try:
+        stop = None if args.report_only else runner.run_queue(c, seams, prepared)
+        code = report.write_report(c, stop, prepared)
+    except Exception as exc:  # noqa: BLE001 - the reason, never a traceback
+        _say(f"stopped: {type(exc).__name__}: {exc}")
+        return 1
     _say(f"queue {'stopped: ' + stop if stop else 'done'}; report: {c.work_dir / 'report.txt'}")
     return 1 if stop else code
 

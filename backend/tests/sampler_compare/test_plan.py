@@ -2,6 +2,7 @@
 import dataclasses
 import json
 
+import psutil
 import pytest
 
 from app.core.sampler_compare import plan
@@ -90,6 +91,18 @@ def test_one_seed_is_refused(tmp_path):
         _comparison(tmp_path, seeds=[42])
 
 
+def test_a_repeated_seed_is_refused(tmp_path):
+    with pytest.raises(plan.ConfigError, match="seed 42 repeats"):
+        _comparison(tmp_path, seeds=[42, 42, 43])
+
+
+def test_a_cpu_the_host_lacks_is_refused(tmp_path):
+    missing = psutil.cpu_count()
+    with pytest.raises(plan.ConfigError, match=f"CPU {missing}"):
+        _comparison(tmp_path, cpu_affinity=[0, missing])
+    assert _comparison(tmp_path, cpu_affinity=[0]).cpu_affinity == (0,)
+
+
 def test_an_arm_key_that_is_no_timestep_key_is_refused(tmp_path):
     with pytest.raises(plan.ConfigError, match="learning_rate"):
         _comparison(tmp_path, arms={"a": {"learning_rate": 1}, "b": {}})
@@ -141,6 +154,11 @@ def test_a_separate_validation_dataset_of_the_reference_job_is_dropped(tmp_path)
     assert "validation_dataset" not in config
     assert len(config["datasets"]) == 1
     assert config["datasets"][0] == {"dataset_name": "Porsche 911 Targa", "repeats": 2}
+
+
+def test_the_reference_jobs_own_job_id_is_dropped(tmp_path):
+    config = plan.run_config({**BASE, "job_id": "job-1"}, _comparison(tmp_path), "uniform", 42)
+    assert "job_id" not in config
 
 
 @pytest.mark.parametrize("base", [{**BASE, "validation_enabled": False},

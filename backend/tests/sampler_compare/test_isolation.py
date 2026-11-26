@@ -5,6 +5,7 @@ import re
 import sqlite3
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
@@ -142,6 +143,22 @@ def test_a_changed_source_dataset_is_refused_on_resume(tmp_path):
         isolation.copy_dataset(source, target)
 
 
+def test_a_copy_over_an_interrupted_one_holds_exactly_the_manifests_files(tmp_path):
+    source = _dataset(tmp_path / "Cars")
+    target = tmp_path / "work" / "data" / "dataset"
+    (target / "gone" / ".cache").mkdir(parents=True)
+    (target / "stale.png").write_bytes(b"left by an interrupted copy")
+    (target / "gone" / "old.txt").write_text("an earlier caption", encoding="utf-8")
+    (target / "gone" / ".cache" / "latent").write_bytes(b"latent")
+    (target / "img0.png").write_bytes(b"half a picture")
+    manifest = isolation.copy_dataset(source, target)
+    files = sorted(p.relative_to(target).as_posix() for p in target.rglob("*") if p.is_file())
+    assert files == sorted(manifest)
+    assert not (target / "gone").exists()
+    assert hashlib.sha256((target / "img0.png").read_bytes()).hexdigest() == manifest["img0.png"]
+    assert isolation.read_manifest(target) == manifest
+
+
 def test_a_missing_settings_file_is_a_first_launch_not_an_error(tmp_path):
     target = tmp_path / "work" / "data" / "settings.json"
     isolation.copy_settings(tmp_path / "missing.json", target)
@@ -159,11 +176,20 @@ def test_downloads_are_off_unless_the_config_allows_them(make_comparison, tmp_pa
 
 
 def test_the_children_get_the_port_threads_and_no_bytecode(make_comparison, tmp_path):
-    env = isolation.child_env(make_comparison(cpu_affinity=[4, 5, 6, 7]), tmp_path / "run.db")
+    cpus = list(range(min(4, os.cpu_count() or 1)))  # CPUs every host has
+    env = isolation.child_env(make_comparison(cpu_affinity=cpus), tmp_path / "run.db")
     assert (env["PORT"], env["MRLN_RESTART"], env["MRLN_GIT_REMOTE"]) == ("8001", "1", "")
     assert env["PYTHONDONTWRITEBYTECODE"] == "1"
-    assert (env["OMP_NUM_THREADS"], env["MKL_NUM_THREADS"]) == ("4", "4")
+    assert (env["OMP_NUM_THREADS"], env["MKL_NUM_THREADS"]) == (str(len(cpus)), str(len(cpus)))
     assert env["MRLN_DB_PATH"] == str(tmp_path / "run.db")
+
+
+def test_the_stores_can_sit_outside_the_work_folder(make_comparison, tmp_path):
+    c = make_comparison()
+    env = isolation.child_env(c, tmp_path / "scratch" / "facts.db", root=tmp_path / "scratch")
+    for name in isolation.ISOLATED_PATHS:
+        assert Path(env[name]).is_relative_to(tmp_path / "scratch")
+        assert not Path(env[name]).is_relative_to(c.work_dir)
 
 
 def _locked() -> PermissionError:

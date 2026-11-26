@@ -1,8 +1,11 @@
 """Each arm's effective sampler and the trainer's loopback port, resolved the product's own way."""
 import json
 import os
+import subprocess
 import sys
+import time
 
+import psutil
 import pytest
 import torch
 
@@ -151,6 +154,28 @@ def test_the_api_port_follows_the_port_variable(tmp_path):
     got = facts.facts_in_child("moss-image-base", {"a": {}}, env, sys.executable)
     assert got["api_port"] == 8001
     assert got["arms"]["a"]["effective"]["logit_normal_mu"] == 1.09
+
+
+def _gone(pid):
+    try:
+        return psutil.Process(pid).status() == psutil.STATUS_ZOMBIE
+    except psutil.NoSuchProcess:
+        return True
+
+
+def test_a_child_past_its_time_is_ended_with_everything_it_started(tmp_path):
+    pids = tmp_path / "pids.txt"
+    code = ("import os, pathlib, subprocess, sys, time\n"
+            "g = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])\n"
+            f"pathlib.Path({str(pids)!r}).write_text(f'{{os.getpid()}} {{g.pid}}')\n"
+            "time.sleep(120)\n")
+    with pytest.raises(subprocess.TimeoutExpired):
+        facts.run_child([sys.executable, "-c", code], dict(os.environ), timeout_s=8)
+    started = [int(pid) for pid in pids.read_text().split()]
+    deadline = time.monotonic() + 10
+    while not all(_gone(pid) for pid in started):
+        assert time.monotonic() < deadline, f"still alive: {started}"
+        time.sleep(0.1)
 
 
 def test_an_unknown_definition_is_an_error_naming_it():

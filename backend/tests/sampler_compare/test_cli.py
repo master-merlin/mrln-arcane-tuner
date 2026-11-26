@@ -3,13 +3,14 @@ import json
 import socket
 import subprocess
 import sys
+from pathlib import Path
 
 import pytest
 
-from app.core.sampler_compare import plan
+from app.core.sampler_compare import isolation, plan, report, runner
 from app.core.sampler_compare.telemetry import Card
 
-from .conftest import write_config
+from .conftest import fake_facts, write_config
 
 SCRIPT = plan.BACKEND / "scripts" / "compare_samplers.py"
 EXAMPLE = plan.BACKEND / "scripts" / "compare_samplers.example.json"
@@ -102,6 +103,55 @@ def test_a_dry_run_names_finished_runs_it_would_refuse(world, capsys):
     assert cli.main([path, "--dry-run"], seams=_no_children(world)) == 1
     out = capsys.readouterr().out
     assert "uniform_s42" in out and "config.learning_rate" in out
+
+
+def _tree(folder):
+    return {p.relative_to(folder).as_posix(): (p.read_bytes() if p.is_file() else None)
+            for p in sorted(folder.rglob("*"))}
+
+
+def test_a_dry_run_over_finished_runs_writes_nothing_into_the_work_folder(world, capsys):
+    path = _config(world)
+    c = plan.load_comparison(path)
+    world.place_all(c)
+    assert not (c.work_dir / "comparison.json").exists()
+    envs = []
+
+    def facts(definition_id, arms, env):
+        envs.append(env)
+        return fake_facts(definition_id, arms, env)
+
+    seams = _no_children(world)
+    seams.facts = facts
+    before = _tree(c.work_dir)
+    assert cli.main([path, "--dry-run"], seams=seams) == 0
+    assert "uniform_s42: finished earlier; reused" in capsys.readouterr().out
+    assert _tree(c.work_dir) == before
+    assert envs and all(not Path(envs[0][name]).is_relative_to(c.work_dir) for name in isolation.ISOLATED_PATHS)
+
+
+def _raises(error):
+    def fail(*args, **kwargs):
+        raise error
+
+    return fail
+
+
+@pytest.mark.parametrize(
+    ("target", "error"),
+    [("run_one", RuntimeError("process 7 survived a kill for 30 s")),
+     ("write_report", PermissionError(13, "report.json is locked"))],
+    ids=["a-run", "the-report"],
+)
+def test_a_failure_past_the_checks_exits_one_with_the_reason(world, capsys, monkeypatch, target, error):
+    monkeypatch.setattr(runner if target == "run_one" else report, target, _raises(error))
+    path = _config(world)
+    assert cli.main([path], seams=world.seams()) == 1
+    out = capsys.readouterr().out
+    assert str(error) in out
+    c = plan.load_comparison(path)
+    if target == "run_one":
+        assert str(error) in json.loads((c.work_dir / "report.json").read_text(encoding="utf-8"))["queue_stop"]
 
 
 def test_a_bad_config_exits_two_with_the_reason(world, capsys):

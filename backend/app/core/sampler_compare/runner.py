@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import datetime
 import hashlib
+import contextlib
 import json
+import os
 import shutil
 import socket
 import sqlite3
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.parse
@@ -83,10 +86,12 @@ class Seams:
     user_settings: Path
     poll_s: float = 3.0
     ready_wait_s: float = READY_WAIT_S
+    card_problem: str | None = None  # why the card read can't be told to be the trainer's
 
     @classmethod
     def real(cls, c: Comparison) -> Seams:
         python = sys.executable
+        card, card_problem = telemetry.card_choice(telemetry.nvml_device_count(), os.environ)
 
         def backend_argv(c: Comparison) -> list[str]:
             return [python, "-m", "uvicorn", "app.main:app", "--app-dir", str(BACKEND),
@@ -97,7 +102,7 @@ class Seams:
                     "--config", json.dumps(config)]
 
         return cls(
-            read_card=lambda: telemetry.read_card(telemetry.CARD_INDEX),
+            read_card=lambda: telemetry.read_card(card),
             available_ram_bytes=lambda: psutil.virtual_memory().available,
             clock=time.monotonic,
             sleep=time.sleep,
@@ -107,6 +112,7 @@ class Seams:
             facts=lambda definition_id, arms, env: facts_module.facts_in_child(definition_id, arms, env, python),
             user_db=Path(DatabaseEngine().db_path),  # where the backend's own engine looks; opens nothing
             user_settings=Path(port_resolver.settings_path()),
+            card_problem=card_problem,
         )
 
 
@@ -166,7 +172,12 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
     manifest = isolation.copy_dataset(source, c.work_dir / isolation.DATASET_FOLDER, copy=copy)
     if copy:
         isolation.copy_settings(seams.user_settings, c.work_dir / isolation.ISOLATED_PATHS["MRLN_SETTINGS_PATH"])
-    facts = seams.facts(definition_id, c.arms, isolation.child_env(c, _db_folder(c) / "facts.db"))
+        facts = seams.facts(definition_id, c.arms, isolation.child_env(c, _db_folder(c) / "facts.db"))
+    else:  # nothing is written into the work folder: the fact child's stores go to a scratch folder
+        with tempfile.TemporaryDirectory(prefix="sampler-compare-", ignore_cleanup_errors=True) as scratch:
+            root = Path(scratch)
+            facts = seams.facts(definition_id, c.arms, isolation.child_env(
+                c, root / isolation.ISOLATED_PATHS["MRLN_DB_PATH"] / "facts.db", root=root))
     if int(facts["api_port"]) != c.port:
         raise ConfigError(f"the trainer's loopback calls would go to port {facts['api_port']}, not {c.port}")
     digest = isolation.dataset_digest(manifest)
@@ -332,9 +343,10 @@ def _sampler_and_seed(folder: Path, c: Comparison, label: str, requested: dict) 
 
 
 def finished_run_problem(folder: Path, c: Comparison, label: str, requested: dict, manifest: dict[str, str],
-                         records: list[dict] | None = None) -> str | None:
+                         records: list[dict] | None = None, record: bool = True) -> str | None:
     """Why the run on disk is not a finished run of ``requested``, or None: every pass, the sampler
-    and seed it ran, and its split. Checked after a run, before a reuse and before the report."""
+    and seed it ran, and its split (recorded as the measurement only with ``record``). Checked after
+    a run, before a reuse and before the report."""
     if not folder.exists():
         return "the run wrote no run folder"
     records = metrics(folder) if records is None else records
@@ -342,7 +354,7 @@ def finished_run_problem(folder: Path, c: Comparison, label: str, requested: dic
     if _steps(records) != wanted:
         return f"incomplete metrics: passes {_steps(records)} of {wanted}"
     return _sampler_and_seed(folder, c, label, requested) or split_problem(
-        folder, c, requested, manifest, records=records)
+        folder, c, requested, manifest, record=record, records=records)
 
 
 def _identity_problem(recorded: dict | None, requested: dict) -> str | None:
@@ -362,10 +374,11 @@ def _verdict_problem(c: Comparison, label: str) -> str | None:
 
 
 def reusable(folder: Path, c: Comparison, label: str, requested: dict, manifest: dict[str, str],
-             records: list[dict] | None = None) -> str | None:
+             records: list[dict] | None = None, record: bool = True) -> str | None:
     """Why a finished run on disk can't stand for the run asked for now, or None."""
     return (_identity_problem(_read_json(_log(c, label, "identity.json")), requested)
-            or _verdict_problem(c, label) or finished_run_problem(folder, c, label, requested, manifest, records))
+            or _verdict_problem(c, label)
+            or finished_run_problem(folder, c, label, requested, manifest, records, record=record))
 
 
 def move_aside(c: Comparison, label: str, folder: Path) -> list[Path]:
@@ -406,7 +419,7 @@ def checks(c: Comparison, seams: Seams, card: Card | None) -> list[tuple[str | N
     return [
         (f"port {c.port} is already taken: refusing to use or touch that process" if seams.port_taken(c.port)
          else None, f"port {c.port}: free"),
-        (_card_problem(limits, card), card_text),
+        (seams.card_problem or _card_problem(limits, card), card_text),
         (f"host available RAM {available:.1f} GiB, under {limits.free_ram_gib:g} GiB"
          if available < limits.free_ram_gib else None,
          f"host RAM: {available:.1f} GiB available (floor {limits.free_ram_gib:g} GiB)"),
@@ -432,28 +445,48 @@ def preflight(c: Comparison, seams: Seams) -> str | None:
 # ── The children ────────────────────────────────────────────────────────────
 
 
-class _Children:
-    """The backend and trainer, and every process seen under them: all killed by ``stop``."""
+@contextlib.contextmanager
+def _pinned(affinity: tuple[int, ...] | None):
+    """This process on ``affinity`` while the block runs, so a child started in it inherits the
+    mask from its first instruction (a venv's launcher starts the real interpreter at once)."""
+    if not affinity:
+        yield
+        return
+    me = psutil.Process()
+    before = me.cpu_affinity()
+    me.cpu_affinity(list(affinity))
+    try:
+        yield
+    finally:
+        me.cpu_affinity(before)
 
-    def __init__(self) -> None:
+
+class _Children:
+    """The backend and trainer, and every process seen under them: each kept on ``affinity`` and
+    all killed by ``stop``."""
+
+    def __init__(self, affinity: tuple[int, ...] | list[int] | None = None) -> None:
+        self.affinity = sorted(affinity) if affinity else None
         self.procs: list[subprocess.Popen] = []
         self.seen: dict[int, psutil.Process] = {}
 
-    def start(self, argv: list[str], env: dict, log, affinity) -> subprocess.Popen:
-        proc = subprocess.Popen(argv, cwd=BACKEND, env=env, stdout=log, stderr=subprocess.STDOUT)
+    def start(self, argv: list[str], env: dict, log) -> subprocess.Popen:
+        with _pinned(self.affinity):
+            proc = subprocess.Popen(argv, cwd=BACKEND, env=env, stdout=log, stderr=subprocess.STDOUT)
         self.procs.append(proc)
         self.note(proc)
-        if affinity:
-            psutil.Process(proc.pid).cpu_affinity(list(affinity))
         return proc
 
     def note(self, proc: subprocess.Popen) -> None:
-        try:
-            parent = psutil.Process(proc.pid)
-            for p in [parent, *parent.children(recursive=True)]:
-                self.seen.setdefault(p.pid, p)
-        except psutil.Error:
-            pass  # gone already: what it started was noted on an earlier poll
+        """Every process under ``proc`` is remembered and, with an affinity, put on it."""
+        for p in facts_module.tree(proc.pid):  # empty when gone: what it started was noted earlier
+            p = self.seen.setdefault(p.pid, p)
+            if self.affinity:
+                try:
+                    if sorted(p.cpu_affinity()) != self.affinity:
+                        p.cpu_affinity(self.affinity)
+                except psutil.Error:
+                    pass  # ended meanwhile
 
     def rss_bytes(self) -> int:
         total = 0
@@ -468,12 +501,7 @@ class _Children:
     def stop(self) -> None:
         for proc in self.procs:
             self.note(proc)
-        for p in self.seen.values():
-            try:
-                p.kill()
-            except psutil.Error:
-                pass
-        psutil.wait_procs(list(self.seen.values()), timeout=KILL_WAIT_S)
+        facts_module.kill_all(list(self.seen.values()), KILL_WAIT_S)
         for proc in self.procs:
             try:
                 proc.wait(timeout=KILL_WAIT_S)
@@ -571,29 +599,46 @@ class _Run:
     peaks: Peaks = field(default_factory=Peaks)
 
 
+class _StepReader:
+    """The trainer's last ``step_progress`` from its log, read as it grows; a line not yet ended
+    waits for the rest of it."""
+
+    def __init__(self, reader):
+        self.reader = reader
+        self.tail = ""
+        self.step, self.step_time, self.events = 0, None, 0
+
+    def poll(self) -> None:
+        lines = (self.tail + self.reader.read()).split("\n")
+        self.tail = lines.pop()
+        for line in lines:
+            if '"step_progress"' not in line:
+                continue
+            try:
+                event = json.loads(line)
+                self.step, self.step_time = int(event.get("step", self.step)), event.get("step_time")
+            except (ValueError, TypeError, AttributeError):
+                continue
+            self.events += 1
+
+
 def _watch(run: _Run, trainer: subprocess.Popen) -> tuple[str | None, Sample | None]:
     c, seams, folder = run.c, run.seams, run.folder
     started = seams.clock()
     grown_at, size_seen = started, -1
-    step, step_time = 0, None
     sampler_checked = split_checked = False
     sample = None
     with open(run.log_path, encoding="utf-8", errors="replace") as reader:
+        progress = _StepReader(reader)
         while trainer.poll() is None:
             seams.sleep(seams.poll_s)
             now = seams.clock()
-            for line in reader.readlines():
-                if '"step_progress"' not in line:
-                    continue
-                try:
-                    event = json.loads(line)
-                    step, step_time = int(event.get("step", step)), event.get("step_time")
-                except (ValueError, TypeError, AttributeError):
-                    continue
+            progress.poll()
+            step = progress.step
             for proc in run.children.procs:
                 run.children.note(proc)
-            sample = Sample(now - started, step, step_time, seams.read_card(), seams.available_ram_bytes() / MIB,
-                            run.children.rss_bytes() / MIB)
+            sample = Sample(now - started, step, progress.step_time, seams.read_card(),
+                            seams.available_ram_bytes() / MIB, run.children.rss_bytes() / MIB)
             run.peaks.add(sample)
             size = run.log_path.stat().st_size + ((folder / _LOG_GROWTH).stat().st_size
                                                   if (folder / _LOG_GROWTH).exists() else 0)
@@ -637,7 +682,8 @@ def run_one(c: Comparison, arm: str, seed: int, requested: dict, manifest: dict[
     (c.work_dir / "logs").mkdir(parents=True, exist_ok=True)
     isolation.write_json(_log(c, label, "identity.json"), requested)
     run = _Run(c, seams, label, run_dir(c, label, definition_id), requested, manifest,
-               TelemetryFile(_log(c, label, "telemetry.csv")), status, _log(c, label, "log"), peaks=status.new_run())
+               TelemetryFile(_log(c, label, "telemetry.csv")), status, _log(c, label, "log"),
+               children=_Children(c.cpu_affinity), peaks=status.new_run())
     run.file.start()
     run.file.row(Sample(0.0, 0, None, seams.read_card(), seams.available_ram_bytes() / MIB, 0.0,
                         note="before the trainer starts"))
@@ -647,11 +693,10 @@ def run_one(c: Comparison, arm: str, seed: int, requested: dict, manifest: dict[
     backend_log = open(backend_log_path, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
     trainer_log = open(run.log_path, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
     try:
-        backend = run.children.start(seams.backend_argv(c), env, backend_log, c.cpu_affinity)
+        backend = run.children.start(seams.backend_argv(c), env, backend_log)
         stopped_for = _wait_ready(c, seams, backend, requested["dataset"], backend_log_path)
         if stopped_for is None:
-            trainer = run.children.start(seams.trainer_argv(c, definition_id, config), env, trainer_log,
-                                         c.cpu_affinity)
+            trainer = run.children.start(seams.trainer_argv(c, definition_id, config), env, trainer_log)
             stopped_for, last = _watch(run, trainer)
             exit_code = trainer.poll()
         ended = None
@@ -694,9 +739,10 @@ def _append(c: Comparison, record: dict) -> None:
 
 
 def existing_run(c: Comparison, label: str, folder: Path, requested: dict,
-                 manifest: dict[str, str]) -> tuple[str, str | None]:
+                 manifest: dict[str, str], record: bool = True) -> tuple[str, str | None]:
     """What the queue does with a run already on disk: ("new" | "reuse" | "partial" | "refuse", why).
-    A run of another identity is refused whether or not it finished: it is never trained over."""
+    A run of another identity is refused whether or not it finished: it is never trained over.
+    Without ``record`` nothing is written (``split_problem``)."""
     if not (folder.exists() or any((c.work_dir / "logs").glob(f"{label}.*"))):
         return "new", None
     recorded = _read_json(_log(c, label, "identity.json"))
@@ -707,7 +753,7 @@ def existing_run(c: Comparison, label: str, folder: Path, requested: dict,
     if not (folder.exists() and is_complete(folder, c, records)):
         return "partial", None
     why = identity or _verdict_problem(c, label) or finished_run_problem(folder, c, label, requested, manifest,
-                                                                         records)
+                                                                         records, record=record)
     return ("refuse", why) if why else ("reuse", None)
 
 
@@ -721,8 +767,8 @@ def run_queue(c: Comparison, seams: Seams, prepared: Prepared | None = None) -> 
     except (ConfigError, RuntimeError, OSError, sqlite3.Error) as exc:
         status.write(running=None, queue_stop=str(exc))
         return str(exc)
-    stop = None
-    for arm, seed in plan.queue(c):
+    stop = refused_runs(c, prepared)
+    for arm, seed in plan.queue(c) if stop is None else ():
         label = plan.label(arm, seed)
         folder = run_dir(c, label, prepared.definition_id)
         requested = prepared.requested[label]
@@ -735,10 +781,34 @@ def run_queue(c: Comparison, seams: Seams, prepared: Prepared | None = None) -> 
             continue
         if state == "partial":
             move_aside(c, label, folder)
-        record = run_one(c, arm, seed, requested, prepared.manifest, seams, status)
+        try:
+            record = run_one(c, arm, seed, requested, prepared.manifest, seams, status)
+        except Exception as exc:  # noqa: BLE001 - the queue still ends with a verdict, a record and a status
+            record = _failed_run(c, arm, seed, exc)
         _append(c, record)
         if record["stopped_for"]:
             stop = f"{label}: {record['stopped_for']}"
             break
     status.write(running=None, queue_stop=stop)
     return stop
+
+
+def refused_runs(c: Comparison, prepared: Prepared) -> str | None:
+    """Every run on disk the queue would refuse, each named, or None; nothing is written."""
+    refusals = []
+    for arm, seed in plan.queue(c):
+        label = plan.label(arm, seed)
+        state, why = existing_run(c, label, run_dir(c, label, prepared.definition_id), prepared.requested[label],
+                                  prepared.manifest, record=False)
+        if state == "refuse":
+            refusals.append(f"{label} (run earlier): {why}")
+    return "; ".join(refusals) or None
+
+
+def _failed_run(c: Comparison, arm: str, seed: int, exc: Exception) -> dict:
+    """The record of a run the runner failed in; its verdict refuses it, where it can be written."""
+    error = f"{type(exc).__name__}: {exc}"
+    why = f"the runner failed: {error}"
+    with contextlib.suppress(OSError):
+        write_verdict(c, plan.label(arm, seed), False, why)
+    return _record(arm, seed, ran=True, stopped_for=why, error=error)

@@ -7,13 +7,13 @@ open can list as empty on Windows, so a reader mid-run would see nothing.
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 
 from app.core import gpu_health
 from app.core.sampler_compare.plan import Limits
 
-CARD_INDEX = 0  # the card a comparison watches: the first, as NVML (and nvidia-smi) number them
 COLUMNS = ("unix_time,elapsed_s,step,step_time_s,vram_mib,temperature_c,power_w,power_limit_w,"
            "available_ram_mib,rss_mib,note")
 MIB_PER_GIB = 1024
@@ -26,6 +26,30 @@ class Card:
     temperature_c: float
     power_w: float | None
     power_limit_w: float | None
+
+
+def nvml_device_count() -> int | None:
+    """How many cards NVML sees; None without NVML or an answer."""
+    if not gpu_health.nvml_ready():
+        return None
+    try:
+        return int(gpu_health.pynvml.nvmlDeviceGetCount())
+    except Exception:  # noqa: BLE001 - no count is no reading, never a crash
+        return None
+
+
+def card_choice(count: int | None, env: Mapping[str, str]) -> tuple[int, str | None]:
+    """(the NVML index of the trainer's card, why it can't be told, or None). NVML numbers cards
+    by bus order, CUDA by speed unless ``CUDA_DEVICE_ORDER=PCI_BUS_ID``: with two or more cards
+    the trainer's is known only when ``CUDA_VISIBLE_DEVICES`` names one card in that order."""
+    if count is None or count <= 1:
+        return 0, None
+    visible = [v.strip() for v in env.get("CUDA_VISIBLE_DEVICES", "").split(",") if v.strip()]
+    if (env.get("CUDA_DEVICE_ORDER") == "PCI_BUS_ID" and len(visible) == 1 and visible[0].isdigit()
+            and int(visible[0]) < count):
+        return int(visible[0]), None
+    return 0, (f"{count} cards: set CUDA_VISIBLE_DEVICES to one card's number and CUDA_DEVICE_ORDER=PCI_BUS_ID, "
+               "so the card watched is the one the trainer uses")
 
 
 def vram_used_mib(index: int) -> int | None:

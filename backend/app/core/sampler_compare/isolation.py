@@ -40,19 +40,15 @@ _LOCK_BACKOFF_S = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0)
 
 
 def _write_fresh(path: Path, fill: Callable[[BinaryIO], None]) -> None:
-    """``fill`` a fresh file beside ``path`` and move it onto ``path``; a Windows file lock is
-    waited out within ``_LOCK_BACKOFF_S``, any other error raises at once."""
+    """``fill`` a fresh file beside ``path`` and move it onto ``path`` (``_retrying``)."""
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    for delay in (*_LOCK_BACKOFF_S, None):
-        try:
-            with replace_with_fresh_file(path) as out:
-                fill(out)
-            return
-        except PermissionError as exc:
-            if delay is None or getattr(exc, "winerror", None) not in _LOCK_WINERRORS:
-                raise
-            time.sleep(delay)
+
+    def write() -> None:
+        with replace_with_fresh_file(path) as out:
+            fill(out)
+
+    _retrying(write)
 
 
 def write_bytes(path: Path, data: bytes) -> None:
@@ -70,11 +66,12 @@ def read_only(db: Path) -> sqlite3.Connection:
     return sqlite3.connect(f"{Path(db).resolve().as_uri()}?mode=ro", uri=True)
 
 
-def child_env(c: Comparison, db_path: Path) -> dict[str, str]:
-    """The environment of the comparison's backend, trainer and fact child."""
+def child_env(c: Comparison, db_path: Path, root: Path | None = None) -> dict[str, str]:
+    """The environment of the comparison's backend, trainer and fact child; its stores sit under
+    ``root`` (the work folder unless given)."""
     env = dict(os.environ)
     for name, relative in ISOLATED_PATHS.items():
-        env[name] = str(c.work_dir / relative)
+        env[name] = str((root or c.work_dir) / relative)
     env["MRLN_DB_PATH"] = str(db_path)
     env.update(
         PORT=str(c.port),
@@ -155,8 +152,44 @@ def copy_dataset(source: Path, target: Path, copy: bool = True) -> dict[str, str
     if not copy:
         return source_manifest(source)
     fresh = {name: _copy_hashed(source / name, target / name) for name in _dataset_files(source)}
+    _remove_all_but(target, set(fresh))  # an interrupted copy may have left files the source lacks
     write_json(recorded_path, {"version": MANIFEST_VERSION, "source": str(source), "files": fresh})
     return fresh
+
+
+def _retrying(action: Callable[[], None]) -> None:
+    """``action``, a Windows file lock waited out within ``_LOCK_BACKOFF_S``; any other error raises at once."""
+    for delay in (*_LOCK_BACKOFF_S, None):
+        try:
+            action()
+            return
+        except PermissionError as exc:
+            if delay is None or getattr(exc, "winerror", None) not in _LOCK_WINERRORS:
+                raise
+            time.sleep(delay)
+
+
+def _remove_all_but(target: Path, keep: set[str]) -> None:
+    """Delete every file under ``target`` not named in ``keep`` (caches included), and the folders
+    that leaves empty; a link is removed, never followed."""
+    for folder, dirs, files in os.walk(target, topdown=False):
+        here = Path(folder)
+        for name in files:
+            path = here / name
+            if path.relative_to(target).as_posix() not in keep:
+                _retrying(path.unlink)
+        for name in dirs:
+            path = here / name
+            if path.is_symlink() or not any(path.iterdir()):
+                _retrying(lambda p=path: _remove_link_or_empty_folder(p))
+
+
+def _remove_link_or_empty_folder(path: Path) -> None:
+    # Windows removes a folder link with rmdir; elsewhere a link is a file to unlink.
+    if path.is_symlink() and os.name != "nt":
+        path.unlink()
+    else:
+        os.rmdir(path)
 
 
 def read_manifest(target: Path) -> dict[str, str]:

@@ -13,11 +13,14 @@ import subprocess
 import sys
 from typing import Any
 
+import psutil
+
 from app.core.sampler_compare.plan import BACKEND
 from app.engine.strategies.timestep_keys import PARAMETER_ALIASES, TIMESTEP_PARAMETERS, TIMESTEP_SCHEMA_DEFAULTS
 
 MARKER = "SAMPLER-COMPARE-FACTS "
 CHILD_TIMEOUT_S = 300
+KILL_WAIT_S = 30
 _TOLERANCE = 1e-9
 
 
@@ -95,20 +98,55 @@ def facts_here(definition_id: str, arms: dict[str, dict]) -> dict:
     return {"api_port": _resolve_api_port(), "arms": resolved}
 
 
+def kill_all(processes: list[psutil.Process], wait_s: float) -> None:
+    """Kill every process given and wait up to ``wait_s`` for them to end."""
+    for p in processes:
+        try:
+            p.kill()
+        except psutil.Error:
+            pass  # gone already
+    psutil.wait_procs(processes, timeout=wait_s)
+
+
+def tree(pid: int) -> list[psutil.Process]:
+    """The process ``pid`` and everything under it, as far as it still runs."""
+    try:
+        root = psutil.Process(pid)
+        return [root, *root.children(recursive=True)]
+    except psutil.Error:
+        return []
+
+
+def run_child(argv: list[str], env: dict[str, str], timeout_s: float) -> tuple[int, str, str]:
+    """(exit code, stdout, stderr) of ``argv``; past ``timeout_s`` it and every process under it
+    are killed and ``subprocess.TimeoutExpired`` raises."""
+    proc = subprocess.Popen(argv, cwd=BACKEND, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace")
+    try:
+        out, err = proc.communicate(timeout=timeout_s)
+    except subprocess.TimeoutExpired as expired:
+        kill_all(tree(proc.pid), KILL_WAIT_S)
+        try:
+            proc.communicate(timeout=KILL_WAIT_S)
+        except subprocess.TimeoutExpired:
+            pass  # a survivor still holds the pipes: the timeout is the answer either way
+        raise expired from None
+    return proc.returncode, out, err
+
+
 def facts_in_child(definition_id: str, arms: dict[str, dict], env: dict[str, str], python: str) -> dict:
     """``facts_here`` in a child of ``python`` under ``env``, bounded by ``CHILD_TIMEOUT_S``."""
     argv = [python, "-m", "app.core.sampler_compare.facts", definition_id, json.dumps(arms)]
     try:
-        done = subprocess.run(argv, cwd=BACKEND, env=env, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=CHILD_TIMEOUT_S)
+        code, stdout, stderr = run_child(argv, env, CHILD_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         raise RuntimeError(f"the product facts child did not answer within {CHILD_TIMEOUT_S} s") from None
-    if done.returncode != 0:
-        raise RuntimeError(f"the product facts child exited with {done.returncode}: {done.stderr[-1500:]}")
-    for line in reversed(done.stdout.splitlines()):
+    if code != 0:
+        raise RuntimeError(f"the product facts child exited with {code}: {stderr[-1500:]}")
+    for line in reversed(stdout.splitlines()):
         if line.startswith(MARKER):
             return json.loads(line[len(MARKER):])
-    raise RuntimeError(f"the product facts child printed no facts: {done.stdout[-1500:]}")
+    raise RuntimeError(f"the product facts child printed no facts: {stdout[-1500:]}")
 
 
 def main(argv: list[str]) -> int:

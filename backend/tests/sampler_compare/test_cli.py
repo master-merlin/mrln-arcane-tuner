@@ -97,8 +97,7 @@ def test_a_dry_run_says_whether_downloads_are_allowed(world, capsys):
 def test_a_dry_run_names_finished_runs_it_would_refuse(world, capsys):
     path = _config(world)
     c = plan.load_comparison(path)
-    for arm, seed in plan.queue(c):
-        world.place_finished(c, arm, seed)
+    world.place_all(c)
     world.set_base(learning_rate=0.0002)
     assert cli.main([path, "--dry-run"], seams=_no_children(world)) == 1
     out = capsys.readouterr().out
@@ -115,8 +114,7 @@ def test_a_bad_config_exits_two_with_the_reason(world, capsys):
 def test_report_only_trains_nothing(world):
     path = _config(world)
     c = plan.load_comparison(path)
-    for arm, seed in plan.queue(c):
-        world.place_finished(c, arm, seed)
+    world.place_all(c)
     assert cli.main([path, "--report-only"], seams=_no_children(world)) == 0
     out = json.loads((c.work_dir / "report.json").read_text(encoding="utf-8"))
     assert len(out["pairs"]) == 1 and out["queue_stop"] is None

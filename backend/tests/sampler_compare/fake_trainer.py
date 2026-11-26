@@ -3,8 +3,8 @@
 It takes ``--definition_id`` and ``--config`` as the trainer does, asks the backend on ``PORT``
 for its dataset, and writes what a run with validation writes: ``training_log.json``,
 ``validation_split.json`` and ``validation_metrics.jsonl`` (records in the product's shape), and
-``run_seed_applied`` / ``step_progress`` lines on stdout. ``--mode`` (or ``FAKE_MODE``) picks a
-behaviour; every mode but ``exit1``, ``hang`` and ``partial`` writes every pass.
+``run_seed_applied`` / ``step_progress`` lines on stdout. ``--mode`` picks a behaviour; every mode
+but ``exit1``, ``hang`` and ``partial`` writes every pass.
 """
 from __future__ import annotations
 
@@ -153,9 +153,9 @@ def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--definition_id", required=True)
     parser.add_argument("--config", required=True)
-    parser.add_argument("--mode", default=None, choices=MODES)
+    parser.add_argument("--mode", default="ok", choices=MODES)
     args = parser.parse_args()
-    mode = args.mode or os.environ.get("FAKE_MODE", "ok")
+    mode = args.mode
     config = json.loads(args.config)
     lines, identity = _work_files(config)
     say("fake_trainer_started", pid=os.getpid(), port=os.environ.get("PORT"), telemetry_lines=lines,

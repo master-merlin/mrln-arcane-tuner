@@ -6,8 +6,8 @@ import pytest
 
 from app.core.sampler_compare import plan
 from app.engine.core.pipeline.validation_pass import is_due
-
-TIMESTEP_KEYS = plan.timestep_keys_from_source()
+from app.engine.models.base import BaseTrainingConfig
+from app.engine.strategies.timestep_keys import TIMESTEP_KEYS
 
 CONFIG = {
     "version": 1,
@@ -107,27 +107,37 @@ def test_the_passes_are_every_interval_and_the_last_step():
     assert plan.passes(2000, 500) == [s for s in range(2000) if is_due(s, 500, 2000)]
 
 
+def test_the_default_band_count_is_the_schemas():
+    assert plan.DEFAULT_BANDS == BaseTrainingConfig.model_fields["validation_timestep_bands"].default
+
+
 def test_an_arm_never_inherits_the_reference_jobs_sampler(tmp_path):
     c = _comparison(tmp_path)
-    config = plan.run_config(BASE, c, "uniform", 42, TIMESTEP_KEYS)
+    config = plan.run_config(BASE, c, "uniform", 42)
     assert config["timestep_sampling"] == "uniform"
     assert "radc_start" not in config
     assert "logit_normal_mean" not in config
 
 
+def _differing(a, b):
+    """Every key outside the sampler, the seed and the names in which two run configs differ."""
+    keys = (set(a) | set(b)) - TIMESTEP_KEYS - plan.NAME_AND_PATH_KEYS - {"seed"}
+    return sorted(k for k in keys if (k in a) != (k in b) or a.get(k) != b.get(k))
+
+
 def test_arms_differ_only_in_timestep_keys_seed_and_names(tmp_path):
     c = _comparison(tmp_path)
-    configs = [plan.run_config(BASE, c, arm, seed, TIMESTEP_KEYS) for arm, seed in plan.queue(c)]
+    configs = [plan.run_config(BASE, c, arm, seed) for arm, seed in plan.queue(c)]
     for a in configs:
         for b in configs:
-            assert plan.differing_keys(a, b, TIMESTEP_KEYS) == []
-    changed = plan.run_config({**BASE, "learning_rate": 0.0002}, c, "radc", 42, TIMESTEP_KEYS)
-    assert plan.differing_keys(configs[0], changed, TIMESTEP_KEYS) == ["learning_rate"]
+            assert _differing(a, b) == []
+    changed = plan.run_config({**BASE, "learning_rate": 0.0002}, c, "radc", 42)
+    assert _differing(configs[0], changed) == ["learning_rate"]
 
 
 def test_a_separate_validation_dataset_of_the_reference_job_is_dropped(tmp_path):
     c = _comparison(tmp_path)
-    config = plan.run_config({**BASE, "validation_dataset": "Other"}, c, "uniform", 42, TIMESTEP_KEYS)
+    config = plan.run_config({**BASE, "validation_dataset": "Other"}, c, "uniform", 42)
     assert "validation_dataset" not in config
     assert len(config["datasets"]) == 1
     assert config["datasets"][0] == {"dataset_name": "Porsche 911 Targa", "repeats": 2}
@@ -136,25 +146,25 @@ def test_a_separate_validation_dataset_of_the_reference_job_is_dropped(tmp_path)
 @pytest.mark.parametrize("base", [{**BASE, "validation_enabled": False},
                                   {k: v for k, v in BASE.items() if k != "validation_enabled"}])
 def test_validation_is_switched_on_whatever_the_reference_job_says(tmp_path, base):
-    config = plan.run_config(base, _comparison(tmp_path), "uniform", 42, TIMESTEP_KEYS)
+    config = plan.run_config(base, _comparison(tmp_path), "uniform", 42)
     assert config["validation_enabled"] is True
 
 
 def test_the_band_count_is_set_explicitly(tmp_path):
     c = _comparison(tmp_path)
-    assert plan.run_config(BASE, c, "uniform", 42, TIMESTEP_KEYS)["validation_timestep_bands"] == 8
+    assert plan.run_config(BASE, c, "uniform", 42)["validation_timestep_bands"] == 8
     with_four = {**BASE, "validation_timestep_bands": 4}
-    assert plan.run_config(with_four, c, "uniform", 42, TIMESTEP_KEYS)["validation_timestep_bands"] == 4
+    assert plan.run_config(with_four, c, "uniform", 42)["validation_timestep_bands"] == 4
 
 
 @pytest.mark.parametrize("base", [{**BASE, "store_quantized_version": True}, BASE])
 def test_a_run_never_stores_a_quantized_copy(tmp_path, base):
-    config = plan.run_config(base, _comparison(tmp_path), "uniform", 42, TIMESTEP_KEYS)
+    config = plan.run_config(base, _comparison(tmp_path), "uniform", 42)
     assert config["store_quantized_version"] is False
 
 
 def _identity(c, base=BASE, arm="radc", seed=42, definition="moss-image-base", digest="a", effective=None):
-    config = plan.run_config(base, c, arm, seed, TIMESTEP_KEYS)
+    config = plan.run_config(base, c, arm, seed)
     if effective is None:
         effective = {k: v for k, v in config.items() if k in TIMESTEP_KEYS}
     return plan.identity(c, definition, digest, config, effective)

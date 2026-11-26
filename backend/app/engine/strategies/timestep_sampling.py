@@ -35,6 +35,10 @@ from typing import Any, Callable
 import structlog
 import torch
 
+# The timestep keys and their schema defaults live in a torch-free module; re-exported here.
+from app.engine.strategies.timestep_keys import PARAMETER_ALIASES as _PARAMETER_ALIASES
+from app.engine.strategies.timestep_keys import TIMESTEP_PARAMETERS, TIMESTEP_SCHEMA_DEFAULTS
+
 logger = structlog.get_logger(__name__)
 
 
@@ -157,24 +161,6 @@ def validate_fixed_sigmas(values: Any) -> list[float]:
     return out
 
 
-# The run-config keys that parameterize a timestep mode. A definition may state a family default for
-# each as ``timestep.<key>`` in ``architecture_params`` (or as ``<key>`` in its ``defaults:``).
-TIMESTEP_PARAMETERS: tuple[str, ...] = (
-    "logit_normal_mu",
-    "logit_normal_sigma",
-    "mode_scale",
-    "flux_shift_base",
-    "flux_shift_max",
-    "model_shift_std",
-    "timestep_uniform_prob",
-    "radc_start",
-    "radc_end",
-    "radc_width",
-    "radc_res_influence",
-    "radc_uniform_prob",
-    "fixed_sigmas",
-)
-
 # The modes whose draw IS the noise fraction the run trains at: a family applies no shift or warp
 # of its own on top of them (it would move the focus the settings name). One source, read by every
 # family that shifts its other modes.
@@ -184,12 +170,6 @@ _NOISE_LEVEL_MODES = frozenset({"radc"})
 def sets_noise_level_itself(mode: str) -> bool:
     """True when ``mode``'s draw is the noise fraction itself, so no family shift may follow it."""
     return mode in _NOISE_LEVEL_MODES
-
-# Older names the sampler still reads for a parameter: a config that carries one has set it.
-_PARAMETER_ALIASES: dict[str, tuple[str, ...]] = {
-    "logit_normal_mu": ("logit_normal_mean",),
-    "logit_normal_sigma": ("logit_normal_std",),
-}
 
 
 def _timestep_value(definition_id: str, source: str, key: str, value: Any) -> Any:
@@ -272,25 +252,6 @@ def apply_family_timestep_defaults(definition, config: dict[str, Any]) -> dict[s
             continue
         config[key] = list(value) if isinstance(value, list) else value
     return config
-
-
-# The run-config schema's own defaults for the timestep keys (``BaseTrainingConfig``'s; a test
-# pins the two equal): the value for a config that names none, of a definition that names none.
-TIMESTEP_SCHEMA_DEFAULTS: dict[str, Any] = {
-    "timestep_sampling": "logit_normal",
-    "logit_normal_mu": 0.0,
-    "logit_normal_sigma": 1.0,
-    "mode_scale": 1.5,
-    "flux_shift_base": 0.5,
-    "flux_shift_max": 1.16,
-    "model_shift_std": 1.0,
-    "timestep_uniform_prob": 0.1,
-    "radc_start": 0.8,
-    "radc_end": 0.2,
-    "radc_width": 0.5,
-    "radc_res_influence": 0.15,
-    "radc_uniform_prob": 0.0,
-}
 
 
 def timestep_setting(config: dict[str, Any], key: str, definition=None) -> Any:

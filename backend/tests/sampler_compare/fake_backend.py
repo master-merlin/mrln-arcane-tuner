@@ -42,15 +42,21 @@ class Handler(BaseHTTPRequestHandler):
         pass
 
 
-def main() -> int:
-    port = int(os.environ["PORT"])
+def _started(port: int) -> None:
     sys.stdout.write(json.dumps({"event": "fake_backend_started", "pid": os.getpid(), "port": str(port),
                                  "db": os.environ.get("MRLN_DB_PATH")}) + "\n")
     sys.stdout.flush()
+
+
+def main() -> int:
+    port = int(os.environ["PORT"])
     if os.environ.get("FAKE_BACKEND") == "never_answers":
+        _started(port)
         while True:
             time.sleep(1)
-    ThreadingHTTPServer(("127.0.0.1", port), Handler).serve_forever()
+    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)  # bound before it says it started
+    _started(port)
+    server.serve_forever()
     return 0
 
 

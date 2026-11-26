@@ -22,7 +22,6 @@ import sys
 sys.dont_write_bytecode = True  # the checkout is shared and only read while a comparison runs
 
 import argparse  # noqa: E402
-import os  # noqa: E402
 import sqlite3  # noqa: E402
 from pathlib import Path  # noqa: E402
 
@@ -30,7 +29,9 @@ _BACKEND = Path(__file__).absolute().parents[1]
 if str(_BACKEND) not in sys.path:
     sys.path.insert(0, str(_BACKEND))
 
-from app.core.sampler_compare import facts, isolation, plan, report, runner  # noqa: E402
+from huggingface_hub.constants import HF_HUB_CACHE  # noqa: E402
+
+from app.core.sampler_compare import isolation, plan, report, runner  # noqa: E402
 
 _FAILURES = (plan.ConfigError, RuntimeError, OSError, sqlite3.Error, ValueError, KeyError)
 
@@ -41,21 +42,12 @@ def _parser() -> argparse.ArgumentParser:
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--dry-run", action="store_true", help="check everything; start no backend or trainer")
     mode.add_argument("--report-only", action="store_true", help="write the report over the finished runs")
-    mode.add_argument("--facts", nargs=2, metavar=("DEFINITION", "ARMS"), help=argparse.SUPPRESS)
     return parser
 
 
 def _say(text: str) -> None:
     sys.stdout.write(text + "\n")
     sys.stdout.flush()
-
-
-def _weight_cache() -> str:
-    explicit = os.environ.get("HF_HUB_CACHE")
-    if explicit:
-        return explicit
-    home = os.environ.get("HF_HOME") or str(Path.home() / ".cache" / "huggingface")
-    return str(Path(home) / "hub")
 
 
 def dry_run(c: plan.Comparison, seams: runner.Seams) -> int:
@@ -88,36 +80,20 @@ def dry_run(c: plan.Comparison, seams: runner.Seams) -> int:
         for arm, seed in plan.queue(c):
             name = plan.label(arm, seed)
             folder = runner.run_dir(c, name, prepared.definition_id)
-            state, why = runner.existing_run(c, name, folder, prepared.requested[name], prepared.definition_id,
-                                             prepared.manifest)
+            state, why = runner.existing_run(c, name, folder, prepared.requested[name], prepared.manifest)
             if state == "refuse":
                 problem(f"{name} (run earlier) would be refused: {why}")
             elif state == "reuse":
                 _say(f"{name}: finished earlier; reused")
             elif state == "partial":
                 _say(f"{name}: partial; would be moved aside to {c.work_dir / 'partial'}")
-    if seams.port_taken(c.port):
-        problem(f"port {c.port} is already taken: the queue would refuse to use or touch that process")
-    else:
-        _say(f"port {c.port}: free")
-    card = seams.read_card()
-    if card is None:
-        problem("the card can't be read")
-    else:
-        _say(f"card: {card.vram_mib} MiB in use (idle at {c.limits.idle_vram_mib}), {card.temperature_c:g} C, "
-             f"power limit {card.power_limit_w if card.power_limit_w is None else f'{card.power_limit_w:g} W'}")
-        wanted = c.limits.power_limit_w
-        if wanted is not None and (card.power_limit_w is None
-                                   or abs(card.power_limit_w - wanted) > runner.POWER_TOLERANCE_W):
-            shown = "none" if card.power_limit_w is None else f"{card.power_limit_w:g} W"
-            problem(f"the power limit reads {shown}, not {wanted:g} W")
-    available = seams.available_ram_bytes() / runner.GIB
-    if available < c.limits.free_ram_gib:
-        problem(f"host available RAM {available:.1f} GiB, under {c.limits.free_ram_gib:g} GiB")
-    else:
-        _say(f"host RAM: {available:.1f} GiB available (floor {c.limits.free_ram_gib:g} GiB)")
+    for failed, read in runner.checks(c, seams, seams.read_card()):
+        if failed:
+            problem(failed)
+        else:
+            _say(read)
     if c.allow_downloads:
-        _say(f"downloads on: a missing weight downloads, and the shared weight cache {_weight_cache()} is written to")
+        _say(f"downloads on: a missing weight downloads, and the shared weight cache {HF_HUB_CACHE} is written to")
     else:
         _say("downloads off: a missing weight fails the run; the shared weight cache is only read")
     _say("dry run: " + ("OK" if not problems else "PROBLEMS above"))
@@ -127,8 +103,6 @@ def dry_run(c: plan.Comparison, seams: runner.Seams) -> int:
 def main(argv: list[str] | None = None, seams: runner.Seams | None = None) -> int:
     parser = _parser()
     args = parser.parse_args(argv)
-    if args.facts:
-        return facts.main(args.facts)
     if args.config is None:
         parser.error("the config file is required")
     try:
@@ -145,7 +119,7 @@ def main(argv: list[str] | None = None, seams: runner.Seams | None = None) -> in
         _say(f"stopped: {exc}")
         return 1
     stop = None if args.report_only else runner.run_queue(c, seams, prepared)
-    code = report.write_report(c, stop, prepared.facts, prepared.requested, prepared.definition_id)
+    code = report.write_report(c, stop, prepared)
     _say(f"queue {'stopped: ' + stop if stop else 'done'}; report: {c.work_dir / 'report.txt'}")
     return 1 if stop else code
 

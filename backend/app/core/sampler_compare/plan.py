@@ -1,21 +1,22 @@
 """The comparison's config, its queue, each run's config, and the identity a finished run records."""
 from __future__ import annotations
 
-import ast
 import copy
-import functools
 import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from app.engine.strategies.timestep_keys import TIMESTEP_KEYS
+
 BACKEND = Path(__file__).resolve().parents[3]
-_TIMESTEP_SOURCE = BACKEND / "app" / "engine" / "strategies" / "timestep_sampling.py"
 
 CONFIG_VERSION = 1
 IDENTITY_VERSION = 1
-DEFAULT_BANDS = 8  # validation_pass / validation_split read this default for a config without one
+# BaseTrainingConfig's default, which validation_pass / validation_split read for a config without
+# one (that module imports torch; a test pins the two equal).
+DEFAULT_BANDS = 8
 
 # Run-config keys that name a run's own folders or files: they differ between runs by design.
 NAME_AND_PATH_KEYS = frozenset({
@@ -73,30 +74,6 @@ class Comparison:
     work_dir: Path
 
 
-@functools.cache
-def timestep_source() -> dict[str, Any]:
-    """``TIMESTEP_PARAMETERS``, ``_PARAMETER_ALIASES`` and ``TIMESTEP_SCHEMA_DEFAULTS``, read from the
-    sampler's own source as literals (importing it would load torch into this process)."""
-    wanted = ("TIMESTEP_PARAMETERS", "_PARAMETER_ALIASES", "TIMESTEP_SCHEMA_DEFAULTS")
-    found: dict[str, Any] = {}
-    for node in ast.parse(_TIMESTEP_SOURCE.read_text(encoding="utf-8")).body:
-        target = node.target if isinstance(node, ast.AnnAssign) else (
-            node.targets[0] if isinstance(node, ast.Assign) else None)
-        if isinstance(target, ast.Name) and target.id in wanted:
-            found[target.id] = ast.literal_eval(node.value)
-    missing = [name for name in wanted if name not in found]
-    if missing:
-        raise RuntimeError(f"{', '.join(missing)} not found in {_TIMESTEP_SOURCE}")
-    return found
-
-
-def timestep_keys_from_source() -> frozenset[str]:
-    """``timestep_sampling``, every key of ``TIMESTEP_PARAMETERS`` and their older names."""
-    found = timestep_source()
-    aliases = [name for names in found["_PARAMETER_ALIASES"].values() for name in names]
-    return frozenset({"timestep_sampling", *found["TIMESTEP_PARAMETERS"], *aliases})
-
-
 def _integer(value: Any) -> bool:
     return isinstance(value, int) and not isinstance(value, bool)
 
@@ -151,14 +128,13 @@ def _validation(given: Any) -> Validation:
 def _arms(given: Any) -> dict[str, dict[str, Any]]:
     if not isinstance(given, dict) or len(given) < 2:
         raise ConfigError("arms must name two or more arms")
-    keys = timestep_keys_from_source()
     for arm, settings in given.items():
         if not _ARM.match(arm):
             raise ConfigError(f"the arm name {arm!r} must be letters, digits, '_' or '-'")
         if not isinstance(settings, dict):
             raise ConfigError(f"arm {arm} must be an object of timestep keys")
         for key in settings:
-            if key not in keys:
+            if key not in TIMESTEP_KEYS:
                 raise ConfigError(f"arm {arm}: {key!r} is no timestep key")
     return {arm: dict(settings) for arm, settings in given.items()}
 
@@ -252,10 +228,10 @@ def dataset_name(config: dict[str, Any]) -> str:
     return entry if isinstance(entry, str) else str(entry.get("dataset_name", ""))
 
 
-def run_config(base: dict, c: Comparison, arm: str, seed: int, timestep_keys: frozenset[str]) -> dict:
+def run_config(base: dict, c: Comparison, arm: str, seed: int) -> dict:
     """One run's config: the reference job without its sampler, plus the arm and the comparison."""
     config = copy.deepcopy(base)
-    for key in timestep_keys:
+    for key in TIMESTEP_KEYS:
         config.pop(key, None)
     entry = dataset_entry(config)
     if c.dataset is not None:
@@ -285,13 +261,6 @@ def run_config(base: dict, c: Comparison, arm: str, seed: int, timestep_keys: fr
         **run_names(c, arm, seed),
     )
     return config
-
-
-def differing_keys(a: dict, b: dict, timestep_keys: frozenset[str]) -> list[str]:
-    """Every key outside the sampler, the seed and the names in which two run configs differ."""
-    allowed = timestep_keys | NAME_AND_PATH_KEYS | {"seed"}
-    keys = (set(a) | set(b)) - allowed
-    return sorted(k for k in keys if (k in a) != (k in b) or a.get(k) != b.get(k))
 
 
 def identity(c: Comparison, definition_id: str, dataset_digest: str, config: dict, effective: dict) -> dict:

@@ -1,4 +1,5 @@
 """The report: the noise floor and every pair's verdict, over finished runs the guards accept."""
+import dataclasses
 import json
 import os
 
@@ -19,14 +20,12 @@ ARMS = {
 
 def _finished(world, mode="ok", modes=None, **changes):
     c = world.comparison(arms=ARMS, **changes)
-    for arm, seed in plan.queue(c):
-        world.place_finished(c, arm, seed, mode=(modes or {}).get(plan.label(arm, seed), mode))
+    world.place_all(c, mode=mode, modes=modes)
     return c
 
 
 def _write(world, c, queue_stop=None):
-    prepared = runner.prepare(c, world.seams(), copy=False)
-    code = report.write_report(c, queue_stop, prepared.facts, prepared.requested, prepared.definition_id)
+    code = report.write_report(c, queue_stop, runner.prepare(c, world.seams(), copy=False))
     return code, json.loads((c.work_dir / "report.json").read_text(encoding="utf-8"))
 
 
@@ -150,7 +149,7 @@ def test_each_run_row_carries_its_telemetry_and_effective_sampler(world):
     prepared = runner.prepare(c, world.seams(), copy=False)
     facts = json.loads(json.dumps(prepared.facts))
     facts["arms"]["uniform"]["source"]["logit_normal_mu"] = "family"
-    report.write_report(c, None, facts, prepared.requested, prepared.definition_id)
+    report.write_report(c, None, dataclasses.replace(prepared, facts=facts))
     out = json.loads((c.work_dir / "report.json").read_text(encoding="utf-8"))
     row = next(r for r in out["runs"] if r["label"] == "uniform_s42")
     assert (row["minutes"], row["peak_temperature_c"], row["peak_vram_mib"], row["peak_power_w"]) == (12.5, 71.0, 40000, 480.0)
@@ -179,7 +178,7 @@ def test_the_report_is_written_through_a_fresh_file(world, monkeypatch):
     prepared = runner.prepare(c, world.seams(), copy=False)
     monkeypatch.setattr(os, "replace", failing_replace)
     with pytest.raises(OSError, match="disk full"):
-        report.write_report(c, "a stop", prepared.facts, prepared.requested, prepared.definition_id)
+        report.write_report(c, "a stop", prepared)
     monkeypatch.undo()
     assert (c.work_dir / "report.json").read_bytes() == earlier
     assert not [p.name for p in c.work_dir.iterdir() if p.name.endswith(".tmp")]

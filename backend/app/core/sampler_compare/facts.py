@@ -1,9 +1,9 @@
-"""Product facts the comparison needs from the engine: each arm's effective sampler, the
-timestep keys, and the port the trainer's loopback calls go to.
+"""Product facts the comparison needs from the engine: each arm's effective sampler and the port
+the trainer's loopback calls go to.
 
 The engine imports torch, so the runner asks a child (``facts_in_child``); ``facts_here`` is
 what that child runs. ``canonical_sampler`` and ``sampler_mismatch`` stay torch-free: they read
-the sampler's names from its source (``plan.timestep_source``).
+the sampler's names from ``timestep_keys``.
 """
 from __future__ import annotations
 
@@ -13,7 +13,8 @@ import subprocess
 import sys
 from typing import Any
 
-from app.core.sampler_compare.plan import BACKEND, timestep_source
+from app.core.sampler_compare.plan import BACKEND
+from app.engine.strategies.timestep_keys import PARAMETER_ALIASES, TIMESTEP_PARAMETERS, TIMESTEP_SCHEMA_DEFAULTS
 
 MARKER = "SAMPLER-COMPARE-FACTS "
 CHILD_TIMEOUT_S = 300
@@ -34,14 +35,12 @@ def _canonical_value(key: str, value: Any) -> Any:
 def canonical_sampler(config: dict) -> dict:
     """The config's timestep keys under their canonical names, as the sampler reads them: the
     canonical key first, else its older name. No defaults are added."""
-    source = timestep_source()
-    aliases = source["_PARAMETER_ALIASES"]
     out: dict[str, Any] = {}
-    for key in ("timestep_sampling", *source["TIMESTEP_PARAMETERS"]):
+    for key in ("timestep_sampling", *TIMESTEP_PARAMETERS):
         if config.get(key) is not None:
             out[key] = _canonical_value(key, config[key])
             continue
-        for alias in aliases.get(key, ()):
+        for alias in PARAMETER_ALIASES.get(key, ()):
             if config.get(alias) is not None:
                 out[key] = _canonical_value(key, config[alias])
                 break
@@ -58,9 +57,8 @@ def sampler_mismatch(logged_config: dict, effective: dict) -> str | None:
     """Why the sampler a run logged is not the effective one asked for, or None. A key the log
     carries under neither name counts as its schema default."""
     logged = canonical_sampler(logged_config)
-    defaults = timestep_source()["TIMESTEP_SCHEMA_DEFAULTS"]
     for key, want in effective.items():
-        got = logged.get(key, defaults.get(key))
+        got = logged.get(key, TIMESTEP_SCHEMA_DEFAULTS.get(key))
         if not _differs(got, want):
             continue
         if key == "timestep_sampling":
@@ -73,12 +71,7 @@ def facts_here(definition_id: str, arms: dict[str, dict]) -> dict:
     """The facts, resolved in this process (it imports the engine, and with it torch)."""
     from app.engine.core.pipeline.pipeline_data import _resolve_api_port
     from app.engine.models.registry import registry
-    from app.engine.strategies.timestep_sampling import (
-        _PARAMETER_ALIASES,
-        TIMESTEP_PARAMETERS,
-        TIMESTEP_SCHEMA_DEFAULTS,
-        apply_family_timestep_defaults,
-    )
+    from app.engine.strategies.timestep_sampling import apply_family_timestep_defaults
 
     registry.initialize()
     definition = registry.get_definition(definition_id)
@@ -99,12 +92,7 @@ def facts_here(definition_id: str, arms: dict[str, dict]) -> dict:
                 effective[key] = _canonical_value(key, TIMESTEP_SCHEMA_DEFAULTS[key])
                 source[key] = "schema"
         resolved[arm] = {"effective": effective, "source": source}
-    aliases = [name for names in _PARAMETER_ALIASES.values() for name in names]
-    return {
-        "timestep_keys": sorted({"timestep_sampling", *TIMESTEP_PARAMETERS, *aliases}),
-        "api_port": _resolve_api_port(),
-        "arms": resolved,
-    }
+    return {"api_port": _resolve_api_port(), "arms": resolved}
 
 
 def facts_in_child(definition_id: str, arms: dict[str, dict], env: dict[str, str], python: str) -> dict:

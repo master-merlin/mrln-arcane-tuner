@@ -166,6 +166,40 @@ def test_the_children_get_the_port_threads_and_no_bytecode(make_comparison, tmp_
     assert env["MRLN_DB_PATH"] == str(tmp_path / "run.db")
 
 
+def _locked() -> PermissionError:
+    error = PermissionError(13, "locked")
+    error.winerror = 5
+    return error
+
+
+def test_a_write_waits_out_a_windows_file_lock(tmp_path, monkeypatch):
+    real_replace, errors, sleeps = os.replace, [_locked()], []
+
+    def replace(src, dst):
+        if errors:
+            raise errors.pop()
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(isolation.time, "sleep", sleeps.append)
+    isolation.write_bytes(tmp_path / "state.json", b"{}")
+    assert (tmp_path / "state.json").read_bytes() == b"{}"
+    assert sleeps == [0.2]
+    assert [p.name for p in tmp_path.iterdir()] == ["state.json"]
+
+
+def test_a_write_that_fails_otherwise_raises_at_once(tmp_path, monkeypatch):
+    def replace(src, dst):
+        raise PermissionError(13, "denied")
+
+    sleeps = []
+    monkeypatch.setattr(os, "replace", replace)
+    monkeypatch.setattr(isolation.time, "sleep", sleeps.append)
+    with pytest.raises(PermissionError):
+        isolation.write_bytes(tmp_path / "state.json", b"{}")
+    assert sleeps == [] and list(tmp_path.iterdir()) == []
+
+
 def test_the_dataset_digest_follows_content_not_order():
     a = {"a.png": "1" * 64, "b.png": "2" * 64}
     b = {"b.png": "2" * 64, "a.png": "1" * 64}

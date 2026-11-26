@@ -1,23 +1,23 @@
 """The card reading, a run's telemetry file and the limits that stop a run.
 
-The telemetry file is opened, appended and closed for every row: a file a writer holds open can
-list as empty on Windows, so a reader mid-run would see nothing.
+The card is read through NVML (``gpu_health``), which starts no process per poll and loads no
+torch. The telemetry file is opened, appended and closed for every row: a file a writer holds
+open can list as empty on Windows, so a reader mid-run would see nothing.
 """
 from __future__ import annotations
 
-import statistics
-import subprocess
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from pathlib import Path
 
+from app.core import gpu_health
 from app.core.sampler_compare.plan import Limits
 
-QUERY = "memory.used,temperature.gpu,power.draw,power.limit"
-READ_TIMEOUT_S = 30
+CARD_INDEX = 0  # the card a comparison watches: the first, as NVML (and nvidia-smi) number them
 COLUMNS = ("unix_time,elapsed_s,step,step_time_s,vram_mib,temperature_c,power_w,power_limit_w,"
            "available_ram_mib,rss_mib,note")
 MIB_PER_GIB = 1024
+_BYTES_PER_MIB = 2**20
 
 
 @dataclass(frozen=True)
@@ -28,34 +28,32 @@ class Card:
     power_limit_w: float | None
 
 
-def _optional(text: str) -> float | None:
-    try:
-        return float(text)
-    except ValueError:
-        return None  # "[N/A]": a field this card does not offer
-
-
-def parse_card(line: str) -> Card | None:
-    """One ``nvidia-smi`` line of ``QUERY``; None for anything that is not a reading."""
-    fields = [f.strip() for f in line.split(",")]
-    if len(fields) != 4:
+def vram_used_mib(index: int) -> int | None:
+    """Card ``index``'s memory in use, through NVML (``gpu_health`` reads none); None without one."""
+    if not gpu_health.nvml_ready():
         return None
+    nvml = gpu_health.pynvml
     try:
-        vram, temperature = int(float(fields[0])), float(fields[1])
-    except ValueError:
+        handle = nvml.nvmlDeviceGetHandleByIndex(index)
+        try:  # the count nvidia-smi shows: without the driver's reserve
+            info = nvml.nvmlDeviceGetMemoryInfo(handle, version=nvml.nvmlMemory_v2)
+        except nvml.NVMLError:
+            info = nvml.nvmlDeviceGetMemoryInfo(handle)
+        return int(info.used) // _BYTES_PER_MIB
+    except Exception:  # noqa: BLE001 - a card that stopped answering is no reading, never a crash
         return None
-    return Card(vram, temperature, _optional(fields[2]), _optional(fields[3]))
 
 
-def read_card(run=subprocess.run) -> Card | None:
-    """The first card's reading (a host with two cards: the first line), or None."""
-    try:
-        done = run(["nvidia-smi", f"--query-gpu={QUERY}", "--format=csv,noheader,nounits"],
-                   capture_output=True, text=True, timeout=READ_TIMEOUT_S)
-    except (OSError, subprocess.TimeoutExpired):
+def read_card(index: int, health=gpu_health.read_gpu_health, vram=vram_used_mib) -> Card | None:
+    """Card ``index``'s reading, or None: no NVML, a card that stopped answering, or no
+    temperature or memory reading."""
+    reading = health(index)
+    if not reading or not reading.get("readable") or reading.get("temperature_c") is None:
         return None
-    lines = (done.stdout or "").strip().splitlines()
-    return parse_card(lines[0]) if lines else None
+    used = vram(index)
+    if used is None:
+        return None
+    return Card(used, float(reading["temperature_c"]), reading.get("power_draw_w"), reading.get("power_limit_w"))
 
 
 @dataclass
@@ -120,35 +118,47 @@ def breach(sample: Sample, limits: Limits, quiet_s: float) -> str | None:
     return None
 
 
+def _higher(current, value):
+    return value if current is None else max(current, value)
+
+
+def _rounded(value, digits: int):
+    return None if value is None else round(value, digits)
+
+
 @dataclass
 class Peaks:
-    temperature_c: list[float] = field(default_factory=list)
-    vram_mib: list[int] = field(default_factory=list)
-    power_w: list[float] = field(default_factory=list)
-    ram_gib: list[float] = field(default_factory=list)
-    rss_gib: list[float] = field(default_factory=list)
-    step_time_s: list[float] = field(default_factory=list)
+    """A run's running extremes, and the sum and count its mean step time comes from."""
+
+    temperature_c: float | None = None
+    vram_mib: int | None = None
+    power_w: float | None = None
+    min_ram_gib: float | None = None
+    rss_gib: float | None = None
+    step_time_sum_s: float = 0.0
+    step_time_count: int = 0
 
     def add(self, sample: Sample) -> None:
-        if sample.card is not None:
-            self.temperature_c.append(sample.card.temperature_c)
-            self.vram_mib.append(sample.card.vram_mib)
-            if sample.card.power_w is not None:
-                self.power_w.append(sample.card.power_w)
-        self.ram_gib.append(sample.available_ram_mib / MIB_PER_GIB)
-        self.rss_gib.append(sample.rss_mib / MIB_PER_GIB)
+        card = sample.card
+        if card is not None:
+            self.temperature_c = _higher(self.temperature_c, card.temperature_c)
+            self.vram_mib = _higher(self.vram_mib, card.vram_mib)
+            if card.power_w is not None:
+                self.power_w = _higher(self.power_w, card.power_w)
+        ram_gib = sample.available_ram_mib / MIB_PER_GIB
+        self.min_ram_gib = ram_gib if self.min_ram_gib is None else min(self.min_ram_gib, ram_gib)
+        self.rss_gib = _higher(self.rss_gib, sample.rss_mib / MIB_PER_GIB)
         if sample.step_time_s is not None:
-            self.step_time_s.append(sample.step_time_s)
+            self.step_time_sum_s += sample.step_time_s
+            self.step_time_count += 1
 
     def summary(self) -> dict:
-        def top(values, digits=2):
-            return round(max(values), digits) if values else None
-
+        count = self.step_time_count
         return {
-            "peak_temperature_c": top(self.temperature_c, 1),
-            "peak_vram_mib": max(self.vram_mib) if self.vram_mib else None,
-            "peak_power_w": top(self.power_w, 1),
-            "min_available_ram_gib": round(min(self.ram_gib), 2) if self.ram_gib else None,
-            "peak_rss_gib": top(self.rss_gib),
-            "mean_step_time_s": round(statistics.fmean(self.step_time_s), 3) if self.step_time_s else None,
+            "peak_temperature_c": _rounded(self.temperature_c, 1),
+            "peak_vram_mib": self.vram_mib,
+            "peak_power_w": _rounded(self.power_w, 1),
+            "min_available_ram_gib": _rounded(self.min_ram_gib, 2),
+            "peak_rss_gib": _rounded(self.rss_gib, 2),
+            "mean_step_time_s": round(self.step_time_sum_s / count, 3) if count else None,
         }

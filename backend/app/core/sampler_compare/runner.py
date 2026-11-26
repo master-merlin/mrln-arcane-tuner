@@ -14,7 +14,6 @@ from __future__ import annotations
 import datetime
 import hashlib
 import json
-import os
 import shutil
 import socket
 import sqlite3
@@ -25,29 +24,47 @@ import urllib.error
 import urllib.parse
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+import port_resolver
 import psutil
+import restart_launcher
 
+from app.core.container_config import auth_token
+from app.core.db.engine import DatabaseEngine
 from app.core.naming import model_part_from_definition_id
 from app.core.sampler_compare import facts as facts_module
 from app.core.sampler_compare import isolation, plan, telemetry
-from app.core.sampler_compare.plan import BACKEND, Comparison, ConfigError
-from app.core.sampler_compare.telemetry import Card, Sample
+from app.core.sampler_compare.plan import BACKEND, Comparison, ConfigError, Limits
+from app.core.sampler_compare.telemetry import Card, Peaks, Sample, TelemetryFile
 from app.engine.core import validation_compare as vc
 
 GIB = 2**30
 MIB = 2**20
+LOOPBACK = "127.0.0.1"
 READY_WAIT_S = 240
 STATUS_EVERY_S = 30
 IDLE_POLL_S = 30
 KILL_WAIT_S = 30
 PORT_FREE_WAIT_S = 15
+PORT_FREE_POLL_S = 0.2
 POWER_TOLERANCE_W = 1.0
 STATE_VERSION = 1
+UNREADABLE_SPLIT = "its split file can't be read"
 _LOG_GROWTH = "job_log.jsonl"
+
+
+def port_taken(port: int) -> bool:
+    """Whether something listens on ``port``. A bind probe (``restart_launcher.port_is_free``)
+    answers at once; a port it can't bind is then asked by connecting, since a socket a killed
+    server left waiting blocks a bind on some systems but takes no connection."""
+    if restart_launcher.port_is_free(LOOPBACK, port):
+        return False
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.settimeout(1)
+        return probe.connect_ex((LOOPBACK, port)) == 0
 
 
 @dataclass
@@ -65,6 +82,7 @@ class Seams:
     user_db: Path
     user_settings: Path
     poll_s: float = 3.0
+    ready_wait_s: float = READY_WAIT_S
 
     @classmethod
     def real(cls, c: Comparison) -> Seams:
@@ -72,14 +90,14 @@ class Seams:
 
         def backend_argv(c: Comparison) -> list[str]:
             return [python, "-m", "uvicorn", "app.main:app", "--app-dir", str(BACKEND),
-                    "--host", "127.0.0.1", "--port", str(c.port)]
+                    "--host", LOOPBACK, "--port", str(c.port)]
 
         def trainer_argv(c: Comparison, definition_id: str, config: dict) -> list[str]:
             return [python, str(BACKEND / "run_trainer.py"), "--definition_id", definition_id,
                     "--config", json.dumps(config)]
 
         return cls(
-            read_card=telemetry.read_card,
+            read_card=lambda: telemetry.read_card(telemetry.CARD_INDEX),
             available_ram_bytes=lambda: psutil.virtual_memory().available,
             clock=time.monotonic,
             sleep=time.sleep,
@@ -87,29 +105,17 @@ class Seams:
             trainer_argv=trainer_argv,
             port_taken=port_taken,
             facts=lambda definition_id, arms, env: facts_module.facts_in_child(definition_id, arms, env, python),
-            user_db=Path(os.environ.get("MRLN_DB_PATH") or BACKEND / "app" / "arcane_tuner.db"),
-            user_settings=Path(os.environ.get("MRLN_SETTINGS_PATH") or BACKEND / "settings.json"),
+            user_db=Path(DatabaseEngine().db_path),  # where the backend's own engine looks; opens nothing
+            user_settings=Path(port_resolver.settings_path()),
         )
-
-
-def port_taken(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.settimeout(1)
-        return probe.connect_ex(("127.0.0.1", port)) == 0
 
 
 # ── The reference job and what it asks for ──────────────────────────────────
 
 
-def _read_only(db: Path) -> sqlite3.Connection:
-    if not Path(db).exists():
-        raise ConfigError(f"the database {db} does not exist")
-    return sqlite3.connect(f"{Path(db).resolve().as_uri()}?mode=ro", uri=True)
-
-
 def read_reference(db: Path, job_id: str) -> tuple[dict, str]:
     """(config, definition_id) of the reference job, from the user's database opened read-only."""
-    conn = _read_only(db)
+    conn = isolation.read_only(db)
     try:
         row = conn.execute("select config, definition_id from job_history where id=?", (job_id,)).fetchone()
     finally:
@@ -120,7 +126,7 @@ def read_reference(db: Path, job_id: str) -> tuple[dict, str]:
 
 
 def source_dataset(db: Path, name: str) -> Path:
-    conn = _read_only(db)
+    conn = isolation.read_only(db)
     try:
         row = conn.execute("select path from datasets where name=?", (name,)).fetchone()
     finally:
@@ -132,23 +138,19 @@ def source_dataset(db: Path, name: str) -> Path:
 
 @dataclass
 class Prepared:
-    base: dict
     definition_id: str
     dataset: str
     source: Path
     facts: dict
     manifest: dict[str, str]
-    digest: str
     requested: dict[str, dict]
 
 
 def requested_identities(c: Comparison, base: dict, definition_id: str, facts: dict,
                          dataset_digest: str) -> dict[str, dict]:
     """label -> the identity each run of the queue is asked for now."""
-    keys = frozenset(facts["timestep_keys"])
     return {
-        plan.label(arm, seed): plan.identity(c, definition_id, dataset_digest,
-                                             plan.run_config(base, c, arm, seed, keys),
+        plan.label(arm, seed): plan.identity(c, definition_id, dataset_digest, plan.run_config(base, c, arm, seed),
                                              facts["arms"][arm]["effective"])
         for arm, seed in plan.queue(c)
     }
@@ -159,27 +161,16 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
     for its facts, and resolve every run's requested identity."""
     base, definition_id = read_reference(seams.user_db, c.reference_job)
     first_arm, first_seed = plan.queue(c)[0]
-    dataset = plan.dataset_name(plan.run_config(base, c, first_arm, first_seed, plan.timestep_keys_from_source()))
+    dataset = plan.dataset_name(plan.run_config(base, c, first_arm, first_seed))
     source = source_dataset(seams.user_db, dataset)
-    target = c.work_dir / isolation.DATASET_FOLDER
+    manifest = isolation.copy_dataset(source, c.work_dir / isolation.DATASET_FOLDER, copy=copy)
     if copy:
-        manifest = isolation.copy_dataset(source, target)
         isolation.copy_settings(seams.user_settings, c.work_dir / isolation.ISOLATED_PATHS["MRLN_SETTINGS_PATH"])
-    elif isolation.manifest_path(target).exists():
-        manifest = isolation.read_manifest(target)
-        if isolation.source_manifest(source) != manifest:
-            raise ConfigError(f"the dataset changed since this comparison began: {source}")
-    else:
-        if not source.is_dir():
-            raise ConfigError(f"the dataset folder {source} does not exist")
-        manifest = isolation.source_manifest(source)
     facts = seams.facts(definition_id, c.arms, isolation.child_env(c, _db_folder(c) / "facts.db"))
-    if set(facts["timestep_keys"]) != plan.timestep_keys_from_source():
-        raise ConfigError("the sampler's source and the product disagree on the timestep keys")
     if int(facts["api_port"]) != c.port:
         raise ConfigError(f"the trainer's loopback calls would go to port {facts['api_port']}, not {c.port}")
     digest = isolation.dataset_digest(manifest)
-    return Prepared(base, definition_id, dataset, source, facts, manifest, digest,
+    return Prepared(definition_id, dataset, source, facts, manifest,
                     requested_identities(c, base, definition_id, facts, digest))
 
 
@@ -191,6 +182,7 @@ def _db_folder(c: Comparison) -> Path:
 
 
 def run_dir(c: Comparison, label: str, definition_id: str) -> Path:
+    """Where the trainer writes a run: ``<output_dir>/<lora_name>_<model part>`` of ``plan.run_names``."""
     return c.work_dir / "runs" / f"{c.name}_{label}_{model_part_from_definition_id(definition_id)}"
 
 
@@ -220,8 +212,12 @@ def metrics(folder: Path) -> list[dict]:
     return out
 
 
-def is_complete(folder: Path, c: Comparison) -> bool:
-    return [r.get("step") for r in metrics(folder)] == plan.passes(c.steps, c.validation.every)
+def _steps(records: list[dict]) -> list:
+    return [r.get("step") for r in records]
+
+
+def is_complete(folder: Path, c: Comparison, records: list[dict] | None = None) -> bool:
+    return _steps(metrics(folder) if records is None else records) == plan.passes(c.steps, c.validation.every)
 
 
 def applied_seed(log: Path) -> Any:
@@ -250,17 +246,19 @@ def write_verdict(c: Comparison, label: str, accepted: bool, stopped_for: str | 
 
 
 def _measured_digest(split_text: str) -> str:
-    """The sha256 of what ``validation_compare.same_measurement`` compares."""
+    """The sha256 of what ``validation_compare.same_measurement`` compares (a test pins the two
+    agreeing; that module's own reading is local to its function)."""
     split = json.loads(split_text)
     representatives = [{k: v for k, v in item.items() if k != "path"} for item in split.get("representatives") or []]
     measured = [representatives, *(split.get(k) for k in ("holdout", "split_seed", "global_triggerword"))]
     return hashlib.sha256(json.dumps(measured, sort_keys=True).encode("utf-8")).hexdigest()
 
 
-def split_problem(run_dir: Path, c: Comparison, config: dict, definition_id: str, manifest: dict[str, str],
-                  record: bool = True) -> str | None:
-    """Why this run's split is not the measurement asked for, or None. The first split that passes
-    everything is recorded in ``comparison.json`` (``record``), once."""
+def split_problem(run_dir: Path, c: Comparison, requested: dict, manifest: dict[str, str], record: bool = True,
+                  records: list[dict] | None = None) -> str | None:
+    """Why this run's split is not the measurement ``requested`` asks for, or None. The first split
+    that passes everything is recorded in ``comparison.json`` (``record``), once."""
+    config, definition_id = requested["config"], requested["definition_id"]
     path = run_dir / vc.SPLIT_FILE
     if not path.exists():
         return "the run wrote no split file"
@@ -268,7 +266,7 @@ def split_problem(run_dir: Path, c: Comparison, config: dict, definition_id: str
     try:
         split = json.loads(text)
     except ValueError:
-        return "its split file can't be read"
+        return UNREADABLE_SPLIT
     wanted = {
         "split_seed": config["validation_split_seed"],
         "holdout_fraction": config["validation_holdout_fraction"],
@@ -293,7 +291,7 @@ def split_problem(run_dir: Path, c: Comparison, config: dict, definition_id: str
         name = key[len(prefix):] if key.startswith(prefix) else None
         if name is None or manifest.get(name) != item["sha256"]:
             return f"its held-out {key} is not the copied dataset's picture"
-    for entry in metrics(run_dir):
+    for entry in metrics(run_dir) if records is None else records:
         draws, centres = entry.get("noise_draws"), entry.get("band_centres") or []
         if draws != wanted["noise_draws"]:
             return f"its metrics at step {entry.get('step')} records noise_draws {draws!r}, not {wanted['noise_draws']}"
@@ -333,24 +331,41 @@ def _sampler_and_seed(folder: Path, c: Comparison, label: str, requested: dict) 
     return None
 
 
-def reusable(run_dir: Path, c: Comparison, label: str, requested_identity: dict, definition_id: str,
-             manifest: dict[str, str]) -> str | None:
-    """Why a finished run on disk can't stand for the run asked for now, or None."""
-    if not is_complete(run_dir, c):
-        return f"it lacks validation passes: {[r.get('step') for r in metrics(run_dir)]}"
-    recorded = _read_json(_log(c, label, "identity.json"))
+def finished_run_problem(folder: Path, c: Comparison, label: str, requested: dict, manifest: dict[str, str],
+                         records: list[dict] | None = None) -> str | None:
+    """Why the run on disk is not a finished run of ``requested``, or None: every pass, the sampler
+    and seed it ran, and its split. Checked after a run, before a reuse and before the report."""
+    if not folder.exists():
+        return "the run wrote no run folder"
+    records = metrics(folder) if records is None else records
+    wanted = plan.passes(c.steps, c.validation.every)
+    if _steps(records) != wanted:
+        return f"incomplete metrics: passes {_steps(records)} of {wanted}"
+    return _sampler_and_seed(folder, c, label, requested) or split_problem(
+        folder, c, requested, manifest, records=records)
+
+
+def _identity_problem(recorded: dict | None, requested: dict) -> str | None:
     if recorded is None:
         return "no recorded identity: nothing says which experiment it ran"
-    difference = plan.identity_difference(recorded, requested_identity)
-    if difference:
-        return f"it ran another experiment: its identity differs in {', '.join(difference)}"
+    difference = plan.identity_difference(recorded, requested)
+    return f"it ran another experiment: its identity differs in {', '.join(difference)}" if difference else None
+
+
+def _verdict_problem(c: Comparison, label: str) -> str | None:
     verdict = _read_json(_log(c, label, "verdict.json"))
     if verdict is None:
         return "no recorded verdict"
     if verdict.get("accepted") is not True:
         return verdict.get("stopped_for") or "its run was refused"
-    return _sampler_and_seed(run_dir, c, label, requested_identity) or split_problem(
-        run_dir, c, requested_identity["config"], definition_id, manifest)
+    return None
+
+
+def reusable(folder: Path, c: Comparison, label: str, requested: dict, manifest: dict[str, str],
+             records: list[dict] | None = None) -> str | None:
+    """Why a finished run on disk can't stand for the run asked for now, or None."""
+    return (_identity_problem(_read_json(_log(c, label, "identity.json")), requested)
+            or _verdict_problem(c, label) or finished_run_problem(folder, c, label, requested, manifest, records))
 
 
 def move_aside(c: Comparison, label: str, folder: Path) -> list[Path]:
@@ -368,30 +383,50 @@ def move_aside(c: Comparison, label: str, folder: Path) -> list[Path]:
 # ── Before a run ────────────────────────────────────────────────────────────
 
 
+def _card_problem(limits: Limits, card: Card | None) -> str | None:
+    if card is None:
+        return "the card can't be read"
+    if limits.power_limit_w is not None:
+        if card.power_limit_w is None:
+            return f"the card reads no power limit; the config asks for {limits.power_limit_w:g} W"
+        if abs(card.power_limit_w - limits.power_limit_w) > POWER_TOLERANCE_W:
+            return f"the power limit reads {card.power_limit_w:g} W, not {limits.power_limit_w:g} W"
+    return None
+
+
+def checks(c: Comparison, seams: Seams, card: Card | None) -> list[tuple[str | None, str]]:
+    """Every check a run makes before it starts, on one card reading (the idle wait aside):
+    (why it fails, or None; what was read)."""
+    limits = c.limits
+    available = seams.available_ram_bytes() / GIB
+    shown = "none" if card is None or card.power_limit_w is None else f"{card.power_limit_w:g} W"
+    card_text = "card: unreadable" if card is None else (
+        f"card: {card.vram_mib} MiB in use (idle at {limits.idle_vram_mib}), {card.temperature_c:g} C, "
+        f"power limit {shown}")
+    return [
+        (f"port {c.port} is already taken: refusing to use or touch that process" if seams.port_taken(c.port)
+         else None, f"port {c.port}: free"),
+        (_card_problem(limits, card), card_text),
+        (f"host available RAM {available:.1f} GiB, under {limits.free_ram_gib:g} GiB"
+         if available < limits.free_ram_gib else None,
+         f"host RAM: {available:.1f} GiB available (floor {limits.free_ram_gib:g} GiB)"),
+    ]
+
+
 def preflight(c: Comparison, seams: Seams) -> str | None:
     """Why no run may start now (waiting up to ``idle_wait_minutes`` for an idle card), or None."""
-    if seams.port_taken(c.port):
-        return f"port {c.port} is already taken: refusing to use or touch that process"
     limits = c.limits
     started = seams.clock()
     while True:
         card = seams.read_card()
-        if card is None:
-            return "the card can't be read"
-        if limits.power_limit_w is not None:
-            if card.power_limit_w is None:
-                return f"the card reads no power limit; the config asks for {limits.power_limit_w:g} W"
-            if abs(card.power_limit_w - limits.power_limit_w) > POWER_TOLERANCE_W:
-                return f"the power limit reads {card.power_limit_w:g} W, not {limits.power_limit_w:g} W"
+        problems = [problem for problem, _ in checks(c, seams, card) if problem]
+        if problems:
+            return problems[0]
         if card.vram_mib <= limits.idle_vram_mib:
-            break
+            return None
         if seams.clock() - started >= limits.idle_wait_minutes * 60:
             return f"the card is not idle after {limits.idle_wait_minutes:g} min: {card.vram_mib} MiB in use"
         seams.sleep(IDLE_POLL_S)
-    available = seams.available_ram_bytes() / GIB
-    if available < limits.free_ram_gib:
-        return f"host available RAM {available:.1f} GiB, under {limits.free_ram_gib:g} GiB"
-    return None
 
 
 # ── The children ────────────────────────────────────────────────────────────
@@ -447,35 +482,37 @@ class _Children:
 
 
 def _token_headers() -> dict[str, str]:
-    token = os.environ.get("MRLN_AUTH_TOKEN", "").strip()
+    """The header the trainer's own loopback calls send (``pipeline_data._internal_api_headers``)."""
+    token = auth_token()
     return {"X-Auth-Token": token} if token else {}
 
 
 def _wait_ready(c: Comparison, seams: Seams, backend: subprocess.Popen, dataset: str, log: Path) -> str | None:
-    url = f"http://127.0.0.1:{c.port}/api/datasets/{urllib.parse.quote(dataset, safe='')}"
+    url = f"http://{LOOPBACK}:{c.port}/api/datasets/{urllib.parse.quote(dataset, safe='')}"
     request = urllib.request.Request(url, headers=_token_headers())
-    deadline = seams.clock() + READY_WAIT_S
+    deadline = seams.clock() + seams.ready_wait_s
     while True:
         if backend.poll() is not None:
             return f"the comparison's backend exited with {backend.returncode}; see {log}"
-        try:
-            with urllib.request.urlopen(request, timeout=3):
-                return None
-        except urllib.error.HTTPError as exc:
-            return f"the comparison's backend answers {exc.code} for the dataset {dataset!r}; see {log}"
-        except (urllib.error.URLError, OSError):
-            pass  # not up yet
+        if seams.port_taken(c.port):  # else not bound yet: a request would only wait for its refusal
+            try:
+                with urllib.request.urlopen(request, timeout=3):
+                    return None
+            except urllib.error.HTTPError as exc:
+                return f"the comparison's backend answers {exc.code} for the dataset {dataset!r}; see {log}"
+            except (urllib.error.URLError, OSError):
+                pass  # bound, not serving yet
         if seams.clock() >= deadline:
-            return f"the comparison's backend did not answer within {READY_WAIT_S // 60} min; see {log}"
+            return f"the comparison's backend did not answer within {seams.ready_wait_s / 60:g} min; see {log}"
         seams.sleep(seams.poll_s)
 
 
 def _wait_port_free(c: Comparison, seams: Seams) -> bool:
-    deadline = time.monotonic() + PORT_FREE_WAIT_S
+    deadline = seams.clock() + PORT_FREE_WAIT_S
     while seams.port_taken(c.port):
-        if time.monotonic() >= deadline:
+        if seams.clock() >= deadline:
             return False
-        time.sleep(0.2)
+        seams.sleep(PORT_FREE_POLL_S)
     return True
 
 
@@ -483,23 +520,26 @@ def _wait_port_free(c: Comparison, seams: Seams) -> bool:
 
 
 class _Status:
-    """``status.json``: written at most every ``STATUS_EVERY_S`` and on every stop."""
+    """``status.json``: written at most every ``STATUS_EVERY_S`` and on every stop, with the lowest
+    available RAM of every run so far."""
 
     def __init__(self, c: Comparison, seams: Seams):
         self.path = c.work_dir / "status.json"
         self.seams = seams
         self.written_at: float | None = None
-        self.min_ram_gib: float | None = None
+        self.runs: list[Peaks] = []
 
-    def ram(self, available_bytes: float) -> None:
-        gib = available_bytes / GIB
-        self.min_ram_gib = gib if self.min_ram_gib is None else min(self.min_ram_gib, gib)
+    def new_run(self) -> Peaks:
+        peaks = Peaks()
+        self.runs.append(peaks)
+        return peaks
 
     def write(self, **fields) -> None:
+        lows = [p.min_ram_gib for p in self.runs if p.min_ram_gib is not None]
         isolation.write_json(self.path, {
             "version": STATE_VERSION,
             "at": f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}",
-            "min_available_ram_gib": None if self.min_ram_gib is None else round(self.min_ram_gib, 2),
+            "min_available_ram_gib": round(min(lows), 2) if lows else None,
             **fields,
         })
         self.written_at = self.seams.clock()
@@ -509,19 +549,36 @@ class _Status:
             self.write(**fields)
 
 
-def _record(c: Comparison, arm: str, seed: int, **fields) -> dict:
+def _record(arm: str, seed: int, **fields) -> dict:
     return {"label": plan.label(arm, seed), "arm": arm, "seed": seed, "ran": False, "exit": None, "minutes": None,
             "stopped_for": None, "complete": False, "run_dir": None, "sampler": None, **fields}
 
 
-def _watch(c, seams, label, trainer, children, folder, config, definition_id, requested, manifest,
-           file, peaks, status, log_path) -> tuple[str | None, Sample | None]:
+@dataclass
+class _Run:
+    """What the watch over one run reads and writes."""
+
+    c: Comparison
+    seams: Seams
+    label: str
+    folder: Path
+    requested: dict
+    manifest: dict[str, str]
+    file: TelemetryFile
+    status: _Status
+    log_path: Path
+    children: _Children = field(default_factory=_Children)
+    peaks: Peaks = field(default_factory=Peaks)
+
+
+def _watch(run: _Run, trainer: subprocess.Popen) -> tuple[str | None, Sample | None]:
+    c, seams, folder = run.c, run.seams, run.folder
     started = seams.clock()
     grown_at, size_seen = started, -1
     step, step_time = 0, None
     sampler_checked = split_checked = False
     sample = None
-    with open(log_path, encoding="utf-8", errors="replace") as reader:
+    with open(run.log_path, encoding="utf-8", errors="replace") as reader:
         while trainer.poll() is None:
             seams.sleep(seams.poll_s)
             now = seams.clock()
@@ -533,14 +590,13 @@ def _watch(c, seams, label, trainer, children, folder, config, definition_id, re
                     step, step_time = int(event.get("step", step)), event.get("step_time")
                 except (ValueError, TypeError, AttributeError):
                     continue
-            for proc in children.procs:
-                children.note(proc)
-            ram = seams.available_ram_bytes()
-            status.ram(ram)
-            sample = Sample(now - started, step, step_time, seams.read_card(), ram / MIB, children.rss_bytes() / MIB)
-            peaks.add(sample)
-            size = log_path.stat().st_size + ((folder / _LOG_GROWTH).stat().st_size
-                                              if (folder / _LOG_GROWTH).exists() else 0)
+            for proc in run.children.procs:
+                run.children.note(proc)
+            sample = Sample(now - started, step, step_time, seams.read_card(), seams.available_ram_bytes() / MIB,
+                            run.children.rss_bytes() / MIB)
+            run.peaks.add(sample)
+            size = run.log_path.stat().st_size + ((folder / _LOG_GROWTH).stat().st_size
+                                                  if (folder / _LOG_GROWTH).exists() else 0)
             if size != size_seen:
                 size_seen, grown_at = size, now
             stop = None
@@ -548,92 +604,84 @@ def _watch(c, seams, label, trainer, children, folder, config, definition_id, re
                 logged = logged_config(folder)
                 if logged is not None:  # else still being written: look again
                     sampler_checked = True
-                    stop = facts_module.sampler_mismatch(logged, requested["effective_sampler"])
+                    stop = facts_module.sampler_mismatch(logged, run.requested["effective_sampler"])
             if not stop and not split_checked and (folder / vc.SPLIT_FILE).exists():
-                if _read_json(folder / vc.SPLIT_FILE) is not None:
-                    split_checked = True
-                    stop = split_problem(folder, c, config, definition_id, manifest, record=False)
+                problem = split_problem(folder, c, run.requested, run.manifest, record=False)
+                if problem != UNREADABLE_SPLIT:  # else still being written: look again
+                    split_checked, stop = True, problem
             stop = stop or telemetry.breach(sample, c.limits, now - grown_at)
             sample.note = stop or ""
-            file.row(sample)
-            fields = {"running": label, "minutes": round((now - started) / 60, 1), "step": step, "stopping": stop}
+            run.file.row(sample)
+            fields = {"running": run.label, "minutes": round((now - started) / 60, 1), "step": step,
+                      "stopping": stop}
             if stop:
-                status.write(**fields)
+                run.status.write(**fields)
                 return stop, sample
-            status.maybe(**fields)
+            run.status.maybe(**fields)
     return None, sample
 
 
-def run_one(c: Comparison, arm: str, seed: int, definition_id: str, requested_identity: dict, seams: Seams,
+def run_one(c: Comparison, arm: str, seed: int, requested: dict, manifest: dict[str, str], seams: Seams,
             status: _Status | None = None) -> dict:
     """Train one arm at one seed beside the user's backend; -> the run's record."""
     label = plan.label(arm, seed)
     status = status or _Status(c, seams)
     refusal = preflight(c, seams)
     if refusal:
-        return _record(c, arm, seed, stopped_for=f"before the run: {refusal}")
-    config = {**requested_identity["config"], **plan.run_names(c, arm, seed)}
-    folder = run_dir(c, label, definition_id)
-    manifest = isolation.read_manifest(c.work_dir / isolation.DATASET_FOLDER)
+        return _record(arm, seed, stopped_for=f"before the run: {refusal}")
+    definition_id = requested["definition_id"]
+    config = {**requested["config"], **plan.run_names(c, arm, seed)}
     db_path = _db_folder(c) / f"{label}-{datetime.datetime.now():%Y%m%dT%H%M%S%f}.db"
-    isolation.copy_database(seams.user_db, db_path, requested_identity["dataset"],
-                            c.work_dir / isolation.DATASET_FOLDER)
+    isolation.copy_database(seams.user_db, db_path, requested["dataset"], c.work_dir / isolation.DATASET_FOLDER)
     env = isolation.child_env(c, db_path)
     (c.work_dir / "logs").mkdir(parents=True, exist_ok=True)
-    isolation.write_json(_log(c, label, "identity.json"), requested_identity)
-    file = telemetry.TelemetryFile(_log(c, label, "telemetry.csv"))
-    file.start()
-    file.row(Sample(0.0, 0, None, seams.read_card(), seams.available_ram_bytes() / MIB, 0.0,
-                    note="before the trainer starts"))
-    peaks = telemetry.Peaks()
-    children = _Children()
-    log_path = _log(c, label, "log")
+    isolation.write_json(_log(c, label, "identity.json"), requested)
+    run = _Run(c, seams, label, run_dir(c, label, definition_id), requested, manifest,
+               TelemetryFile(_log(c, label, "telemetry.csv")), status, _log(c, label, "log"), peaks=status.new_run())
+    run.file.start()
+    run.file.row(Sample(0.0, 0, None, seams.read_card(), seams.available_ram_bytes() / MIB, 0.0,
+                        note="before the trainer starts"))
     started = seams.clock()
     stopped_for, exit_code, last, ended = None, None, None, "the runner failed"
-    backend_log = open(_log(c, label, "backend.log"), "w", encoding="utf-8", errors="replace")  # noqa: SIM115
-    trainer_log = open(log_path, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
+    backend_log_path = _log(c, label, "backend.log")
+    backend_log = open(backend_log_path, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
+    trainer_log = open(run.log_path, "w", encoding="utf-8", errors="replace")  # noqa: SIM115
     try:
-        backend = children.start(seams.backend_argv(c), env, backend_log, c.cpu_affinity)
-        stopped_for = _wait_ready(c, seams, backend, requested_identity["dataset"], _log(c, label, "backend.log"))
+        backend = run.children.start(seams.backend_argv(c), env, backend_log, c.cpu_affinity)
+        stopped_for = _wait_ready(c, seams, backend, requested["dataset"], backend_log_path)
         if stopped_for is None:
-            trainer = children.start(seams.trainer_argv(c, definition_id, config), env, trainer_log, c.cpu_affinity)
-            stopped_for, last = _watch(c, seams, label, trainer, children, folder, config, definition_id,
-                                       requested_identity, manifest, file, peaks, status, log_path)
+            trainer = run.children.start(seams.trainer_argv(c, definition_id, config), env, trainer_log,
+                                         c.cpu_affinity)
+            stopped_for, last = _watch(run, trainer)
             exit_code = trainer.poll()
         ended = None
     finally:
-        children.stop()
+        run.children.stop()
         backend_log.close()
         trainer_log.close()
         if ended:  # an exception is on its way out: the file still says how the run ended
-            file.row(Sample(seams.clock() - started, 0, None, None, 0.0, 0.0, note=f"ended: {ended}"))
+            run.file.row(Sample(seams.clock() - started, 0, None, None, 0.0, 0.0, note=f"ended: {ended}"))
     port_free = _wait_port_free(c, seams)
     if exit_code is None and stopped_for is None:
         exit_code = -1
-    complete = folder.exists() and is_complete(folder, c)
+    folder = run.folder
+    records = metrics(folder)
+    complete = folder.exists() and is_complete(folder, c, records)
     if stopped_for is None:
-        if exit_code != 0:
-            stopped_for = f"the trainer exited with {exit_code}"
-        elif not folder.exists():
-            stopped_for = "the run wrote no run folder"
-        elif not complete:
-            steps = [r.get("step") for r in metrics(folder)]
-            stopped_for = f"incomplete metrics: passes {steps} of {plan.passes(c.steps, c.validation.every)}"
-        else:
-            stopped_for = _sampler_and_seed(folder, c, label, requested_identity) or split_problem(
-                folder, c, config, definition_id, manifest)
+        stopped_for = (f"the trainer exited with {exit_code}" if exit_code != 0
+                       else finished_run_problem(folder, c, label, requested, manifest, records))
     final = last or Sample(seams.clock() - started, 0, None, None, seams.available_ram_bytes() / MIB, 0.0)
     final.note = f"ended: {stopped_for or 'finished'}"
-    file.row(final)
+    run.file.row(final)
     write_verdict(c, label, stopped_for is None, stopped_for)
     logged = logged_config(folder) if folder.exists() else None
     return _record(
-        c, arm, seed, ran=True, exit=exit_code, minutes=round((seams.clock() - started) / 60, 1),
+        arm, seed, ran=True, exit=exit_code, minutes=round((seams.clock() - started) / 60, 1),
         stopped_for=stopped_for, complete=complete, run_dir=str(folder) if folder.exists() else None,
-        sampler={"effective": requested_identity["effective_sampler"],
+        sampler={"effective": requested["effective_sampler"],
                  "logged": facts_module.canonical_sampler(logged) if logged else None,
-                 "applied_seed": applied_seed(log_path)},
-        port_free=port_free, **peaks.summary(),
+                 "applied_seed": applied_seed(run.log_path)},
+        port_free=port_free, **run.peaks.summary(),
     )
 
 
@@ -645,20 +693,22 @@ def _append(c: Comparison, record: dict) -> None:
         out.write(json.dumps(record, default=str) + "\n")
 
 
-def existing_run(c: Comparison, label: str, folder: Path, requested: dict, definition_id: str,
+def existing_run(c: Comparison, label: str, folder: Path, requested: dict,
                  manifest: dict[str, str]) -> tuple[str, str | None]:
     """What the queue does with a run already on disk: ("new" | "reuse" | "partial" | "refuse", why).
     A run of another identity is refused whether or not it finished: it is never trained over."""
     if not (folder.exists() or any((c.work_dir / "logs").glob(f"{label}.*"))):
         return "new", None
     recorded = _read_json(_log(c, label, "identity.json"))
-    difference = plan.identity_difference(recorded, requested) if recorded is not None else []
-    if difference:
-        return "refuse", f"it ran another experiment: its identity differs in {', '.join(difference)}"
-    if folder.exists() and is_complete(folder, c):
-        why = reusable(folder, c, label, requested, definition_id, manifest)
-        return ("refuse", why) if why else ("reuse", None)
-    return "partial", None
+    identity = _identity_problem(recorded, requested)
+    if recorded is not None and identity:
+        return "refuse", identity
+    records = metrics(folder)
+    if not (folder.exists() and is_complete(folder, c, records)):
+        return "partial", None
+    why = identity or _verdict_problem(c, label) or finished_run_problem(folder, c, label, requested, manifest,
+                                                                         records)
+    return ("refuse", why) if why else ("reuse", None)
 
 
 def run_queue(c: Comparison, seams: Seams, prepared: Prepared | None = None) -> str | None:
@@ -676,16 +726,16 @@ def run_queue(c: Comparison, seams: Seams, prepared: Prepared | None = None) -> 
         label = plan.label(arm, seed)
         folder = run_dir(c, label, prepared.definition_id)
         requested = prepared.requested[label]
-        state, why = existing_run(c, label, folder, requested, prepared.definition_id, prepared.manifest)
+        state, why = existing_run(c, label, folder, requested, prepared.manifest)
         if state == "refuse":
             stop = f"{label} (run earlier): {why}"
             break
         if state == "reuse":
-            _append(c, _record(c, arm, seed, reused=True, complete=True, run_dir=str(folder)))
+            _append(c, _record(arm, seed, reused=True, complete=True, run_dir=str(folder)))
             continue
         if state == "partial":
             move_aside(c, label, folder)
-        record = run_one(c, arm, seed, prepared.definition_id, requested, seams, status)
+        record = run_one(c, arm, seed, requested, prepared.manifest, seams, status)
         _append(c, record)
         if record["stopped_for"]:
             stop = f"{label}: {record['stopped_for']}"

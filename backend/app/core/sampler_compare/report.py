@@ -54,17 +54,17 @@ def _settings(c: Comparison, definition_id: str) -> dict[str, Any]:
     }
 
 
-def _rows(c: Comparison, facts: dict, requested: dict, definition_id: str) -> tuple[list[dict], list, list[str]]:
+def _rows(c: Comparison, prepared: runner.Prepared) -> tuple[list[dict], list, list[str]]:
     """(rows, accepted (arm, folder) pairs, refusals) over the queue."""
-    target = c.work_dir / isolation.DATASET_FOLDER
-    manifest = isolation.read_manifest(target) if isolation.manifest_path(target).exists() else {}
     last = _last_runs(c)
     rows, accepted, refusals = [], [], []
     for arm, seed in plan.queue(c):
         name = plan.label(arm, seed)
-        folder = runner.run_dir(c, name, definition_id)
-        finished = folder.exists() and runner.is_complete(folder, c)
-        why = runner.reusable(folder, c, name, requested[name], definition_id, manifest) if finished else None
+        folder = runner.run_dir(c, name, prepared.definition_id)
+        records = runner.metrics(folder)
+        finished = folder.exists() and runner.is_complete(folder, c, records)
+        why = runner.reusable(folder, c, name, prepared.requested[name], prepared.manifest, records) \
+            if finished else None
         if finished and why:
             refusals.append(f"{name}: {why}")
         elif finished:
@@ -74,7 +74,7 @@ def _rows(c: Comparison, facts: dict, requested: dict, definition_id: str) -> tu
             "label": name, "arm": arm, "seed": seed, "finished": finished, "accepted": finished and why is None,
             "refused": why, "run_dir": str(folder) if folder.exists() else None,
             **{key: record.get(key) for key in _PEAKS},
-            "sampler": sampler_text(facts, arm),
+            "sampler": sampler_text(prepared.facts, arm),
         })
     return rows, accepted, refusals
 
@@ -117,10 +117,9 @@ def _text(out: dict) -> str:
     return "\n".join(lines) + "\n"
 
 
-def write_report(c: Comparison, queue_stop: str | None, facts: dict, requested: dict[str, dict],
-                 definition_id: str) -> int:
+def write_report(c: Comparison, queue_stop: str | None, prepared: runner.Prepared) -> int:
     """Write ``report.json`` and ``report.txt``; -> 0 with a comparison, 1 without."""
-    rows, accepted, refusals = _rows(c, facts, requested, definition_id)
+    rows, accepted, refusals = _rows(c, prepared)
     result, compare_error = None, None
     arms = {arm for arm, _ in accepted}
     if refusals:
@@ -139,7 +138,7 @@ def write_report(c: Comparison, queue_stop: str | None, facts: dict, requested: 
     out = {
         "version": REPORT_VERSION,
         "written": f"{datetime.datetime.now():%Y-%m-%d %H:%M:%S}",
-        "settings": _settings(c, definition_id),
+        "settings": _settings(c, prepared.definition_id),
         "queue_stop": queue_stop,
         "runs": rows,
         "floor": result["floor"] if result else None,

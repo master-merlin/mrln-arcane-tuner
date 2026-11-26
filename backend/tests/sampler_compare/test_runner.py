@@ -1,16 +1,25 @@
-"""One run and the queue, against the fake trainer and backend as real child processes."""
-import dataclasses
+"""One run and the queue, against the fake trainer and backend as real child processes. A test
+that only needs finished runs on disk places them (``World.place_finished``) instead of training."""
 import json
+import re
 import socket
 import time
+from pathlib import Path
 
 import psutil
 import pytest
 
+from app.core.naming import model_part_from_definition_id
 from app.core.sampler_compare import isolation, plan, runner
+from app.core.sampler_compare.runner import port_taken
 from app.core.sampler_compare.telemetry import Card
+from app.engine.core import validation_compare as vc
+from app.engine.core.pipeline.validation_pass import is_due
 
-from .conftest import DEFINITION, GIB, FakeClock, port_taken, started_pids
+from . import fake_trainer
+from .conftest import DEFINITION, GIB, FakeClock, started_pids
+
+QUEUE = ["uniform_s42", "radc_s42", "uniform_s43", "radc_s43"]
 
 
 def _records(c):
@@ -35,33 +44,42 @@ def _run_all(world, c=None, **seams):
     return c, runner.run_queue(c, world.seams(**seams))
 
 
-def test_a_queue_of_two_arms_and_two_seeds_runs_to_the_end(world):
-    c, stop = _run_all(world)
+# ── A whole queue, trained once ─────────────────────────────────────────────
+
+
+def test_a_queue_of_two_arms_and_two_seeds_runs_to_the_end(ran_queue):
+    world, c, stop = ran_queue
     assert stop is None
     records = _records(c)
-    assert [r["label"] for r in records] == ["uniform_s42", "radc_s42", "uniform_s43", "radc_s43"]
+    assert [r["label"] for r in records] == QUEUE
     assert all(r["complete"] and r["stopped_for"] is None and r["ran"] for r in records)
     assert world.trainer_starts == 4
     status = json.loads((c.work_dir / "status.json").read_text(encoding="utf-8"))
     assert status["version"] == 1 and status["queue_stop"] is None
 
 
-def test_the_trainer_and_the_backend_get_the_comparison_port(world):
-    c = world.comparison(arms={"uniform": {"timestep_sampling": "uniform"}, "radc": {"timestep_sampling": "radc"}},
-                         seeds=[42, 43])
-    runner.run_queue(c, world.seams())
-    assert _events(c, "uniform_s42", "fake_trainer_started")[0]["port"] == str(c.port)
-    assert _events(c, "uniform_s42", "fake_backend_started", "backend.log")[0]["port"] == str(c.port)
+def test_the_trainer_and_the_backend_get_the_comparison_port(ran_queue):
+    _, c, _ = ran_queue
     started = _events(c, "uniform_s42", "fake_trainer_started")[0]
+    assert started["port"] == str(c.port)
+    assert _events(c, "uniform_s42", "fake_backend_started", "backend.log")[0]["port"] == str(c.port)
     assert started["db"].startswith(str(c.work_dir))
     assert started["offline"] == "1"
 
 
-def test_the_telemetry_file_has_a_row_before_the_trainer_starts(world):
-    c, _ = _run_all(world)
+def test_the_telemetry_file_has_a_row_before_the_trainer_starts(ran_queue):
+    _, c, _ = ran_queue
     assert _events(c, "uniform_s42", "fake_trainer_started")[0]["telemetry_lines"] >= 2
     lines = (c.work_dir / "logs" / "uniform_s42.telemetry.csv").read_text(encoding="utf-8").splitlines()
     assert lines[-1].endswith("ended: finished")
+
+
+def test_the_identity_is_on_disk_before_the_trainer_starts(ran_queue):
+    _, c, _ = ran_queue
+    assert _events(c, "uniform_s42", "fake_trainer_started")[0]["identity_found"] is True
+
+
+# ── Before a run ────────────────────────────────────────────────────────────
 
 
 def test_a_taken_port_is_refused_and_its_owner_untouched(world):
@@ -82,9 +100,8 @@ def test_a_power_limit_other_than_the_configured_one_refuses_the_run(world):
     c, stop = _run_all(world)
     assert "the power limit reads 450 W, not 500 W" in stop
     assert world.trainer_starts == 0
-    limits = {**json.loads(json.dumps(dataclasses.asdict(c.limits))), "power_limit_w": None}
-    c2 = world.comparison(limits=limits, work_dir=str(world.root / "work2"))
-    assert runner.run_queue(c2, world.seams()) is None
+    limits = {**json.loads(json.dumps(vars(c.limits))), "power_limit_w": None}
+    assert runner.preflight(world.comparison(limits=limits), world.seams()) is None
 
 
 def test_a_busy_card_is_waited_for_then_refused(world):
@@ -96,9 +113,13 @@ def test_a_busy_card_is_waited_for_then_refused(world):
     assert world.trainer_starts == 0
 
 
-def _assert_all_gone(c, label):
-    pids = started_pids(c.work_dir / "logs" / f"{label}.log", "fake_trainer_started")
-    pids += started_pids(c.work_dir / "logs" / f"{label}.backend.log", "fake_backend_started")
+# ── A stop leaves nothing running ───────────────────────────────────────────
+
+
+def _assert_all_gone(c, label, trainer=True):
+    pids = started_pids(c.work_dir / "logs" / f"{label}.backend.log", "fake_backend_started")
+    if trainer:
+        pids += started_pids(c.work_dir / "logs" / f"{label}.log", "fake_trainer_started")
     assert pids
     deadline = time.monotonic() + 10
     while any(psutil.pid_exists(p) and psutil.Process(p).status() != psutil.STATUS_ZOMBIE for p in pids):
@@ -107,57 +128,88 @@ def _assert_all_gone(c, label):
     assert not port_taken(c.port)
 
 
-@pytest.mark.parametrize("phase", ["backend_never_answers", "trainer_exit1", "trainer_hangs_hot", "read_card_raises"])
-def test_no_child_survives_a_stop_at_any_phase(world, monkeypatch, phase):
-    seams = {}
-    if phase == "backend_never_answers":
-        monkeypatch.setenv("FAKE_BACKEND", "never_answers")
-        clock = FakeClock(scale=2000.0)  # a refused connection takes its own seconds on some hosts
-        seams = {"clock": clock.clock, "sleep": clock.sleep}
-    elif phase == "trainer_exit1":
-        world.default_mode = "exit1"
-    elif phase == "trainer_hangs_hot":
-        world.default_mode = "hang"
-        readings = iter([world.card] + [world.card] * 30)
-        seams = {"read_card": lambda: next(readings, Card(1000, 99.0, 100.0, 500.0))}
-    else:
-        calls = {"n": 0}
+def test_no_child_survives_a_backend_that_never_answers(world, monkeypatch):
+    monkeypatch.setenv("FAKE_BACKEND", "never_answers")
+    c, stop = _run_all(world, ready_wait_s=3)  # real seconds: the backend gets to start, then is given up
+    assert "did not answer within 0.05 min" in stop
+    assert world.trainer_starts == 0
+    _assert_all_gone(c, "uniform_s42", trainer=False)
 
-        def read_card():
-            calls["n"] += 1
-            if calls["n"] > 3:
-                raise RuntimeError("the card reader broke")
-            return world.card
 
-        world.default_mode = "hang"
-        seams = {"read_card": read_card}
+def test_no_child_survives_a_trainer_that_fails(world):
+    world.default_mode = "exit1"
+    c, stop = _run_all(world)
+    assert "the trainer exited with 1" in stop
+    _assert_all_gone(c, "uniform_s42")
+
+
+def test_no_child_survives_a_hot_card(world):
+    world.default_mode = "hang"
+    readings = iter([world.card] * 31)
+    c, stop = _run_all(world, read_card=lambda: next(readings, Card(1000, 99.0, 100.0, 500.0)))
+    assert "the card reads 99 C, over 94 C" in stop
+    _assert_all_gone(c, "uniform_s42")
+
+
+def test_no_child_survives_a_card_reader_that_raises(world):
+    calls = {"n": 0}
+
+    def read_card():
+        calls["n"] += 1
+        if calls["n"] > 3:
+            raise RuntimeError("the card reader broke")
+        return world.card
+
+    world.default_mode = "hang"
     c = world.comparison()
-    if phase == "read_card_raises":
-        with pytest.raises(RuntimeError, match="the card reader broke"):
-            runner.run_queue(c, world.seams(**seams))
-    else:
-        stop = runner.run_queue(c, world.seams(**seams))
-        assert stop is not None
-        if phase == "backend_never_answers":
-            assert "did not answer" in stop
-        elif phase == "trainer_exit1":
-            assert "the trainer exited with 1" in stop
-        else:
-            assert "the card reads 99 C, over 94 C" in stop
-    if phase == "backend_never_answers":
-        pids = started_pids(c.work_dir / "logs" / "uniform_s42.backend.log", "fake_backend_started")
-        assert pids and not any(psutil.pid_exists(p) for p in pids)
-        assert world.trainer_starts == 0
-    else:
-        _assert_all_gone(c, "uniform_s42")
+    with pytest.raises(RuntimeError, match="the card reader broke"):
+        runner.run_queue(c, world.seams(read_card=read_card))
+    _assert_all_gone(c, "uniform_s42")
 
 
 def test_a_stalled_run_is_stopped(world):
     world.default_mode = "hang"
-    clock = FakeClock(scale=200.0)
-    c, stop = _run_all(world, clock=clock.clock, sleep=clock.sleep)
+    clock = FakeClock(scale=500.0)
+    # The fast clock is for the stall limit; the backend's start keeps its real seconds.
+    c, stop = _run_all(world, clock=clock.clock, sleep=clock.sleep, ready_wait_s=1e9)
     assert "no log output for 15 min" in stop
     _assert_all_gone(c, "uniform_s42")
+
+
+class _Alive:
+    returncode = None
+
+    def poll(self):
+        return None
+
+
+def test_the_ready_wait_asks_nothing_before_the_port_is_bound(world, monkeypatch, tmp_path):
+    def no_request(*args, **kwargs):
+        raise AssertionError("a request went to a port nothing listens on")
+
+    monkeypatch.setattr(runner.urllib.request, "urlopen", no_request)
+    clock = FakeClock(scale=1.0)
+    seams = world.seams(port_taken=lambda port: False, clock=clock.clock, sleep=clock.sleep, ready_wait_s=60,
+                        poll_s=5)
+    why = runner._wait_ready(world.comparison(), seams, _Alive(), "Cars", tmp_path / "backend.log")
+    assert why == f"the comparison's backend did not answer within 1 min; see {tmp_path / 'backend.log'}"
+    assert 60 <= clock.now < 61
+
+
+def test_the_port_wait_runs_on_the_seams_clock(world):
+    clock = FakeClock(scale=10.0)
+    asked = []
+    seams = world.seams(port_taken=lambda port: asked.append(port) or True, clock=clock.clock, sleep=clock.sleep)
+    c = world.comparison()
+    assert runner._wait_port_free(c, seams) is False
+    assert runner.PORT_FREE_WAIT_S <= clock.now < runner.PORT_FREE_WAIT_S + 3
+    clock.now, asked[:] = 0.0, []
+    free = world.seams(port_taken=lambda port: asked.append(port) or False, clock=clock.clock, sleep=clock.sleep)
+    assert runner._wait_port_free(c, free) is True
+    assert asked == [c.port] and clock.now == 0.0
+
+
+# ── What a run measured ─────────────────────────────────────────────────────
 
 
 def test_a_run_with_another_sampler_stops_the_queue(world):
@@ -168,11 +220,13 @@ def test_a_run_with_another_sampler_stops_the_queue(world):
 
 
 def test_a_run_whose_split_differs_from_the_first_stops_the_queue(world):
+    c = world.comparison()
+    world.place_finished(c, "uniform", 42)
     world.modes["radc_s42"] = "other_split"
-    c, stop = _run_all(world)
+    stop = runner.run_queue(c, world.seams())
     assert stop.startswith("radc_s42: ")
     assert "not the same measurement as" in stop
-    assert world.trainer_starts == 2
+    assert world.trainer_starts == 1
 
 
 def test_a_split_without_content_digests_stops_the_queue(world):
@@ -192,100 +246,6 @@ def test_a_split_naming_no_model_stops_the_queue(world):
     world.default_mode = "no_model"
     c, stop = _run_all(world)
     assert "its split names no model" in stop
-
-
-def test_a_skipped_complete_run_gets_the_same_split_check(world):
-    c, stop = _run_all(world)
-    assert stop is None
-    radc =runner.run_dir(c, "radc_s42", DEFINITION)
-    content = json.loads((radc / "validation_split.json").read_text(encoding="utf-8"))
-    names = sorted(p.name for p in (c.work_dir / isolation.DATASET_FOLDER).glob("*.png"))
-    held = names[-len(content["holdout"]):]
-    content["holdout"] = [f"Cars/{n}" for n in held]
-    for item, name in zip(content["representatives"], held, strict=True):
-        item["key"] = f"Cars/{name}"
-        item["sha256"] = json.loads((c.work_dir / "data" / "manifest.json").read_text())["files"][name]
-    (radc / "validation_split.json").write_text(json.dumps(content), encoding="utf-8")
-    starts = world.trainer_starts
-    stop = runner.run_queue(c, world.seams())
-    assert world.trainer_starts == starts
-    assert "radc_s42" in stop and "not the same measurement as" in stop
-
-
-def test_the_first_run_cannot_replace_the_recorded_measurement(world):
-    c, _ = _run_all(world)
-    recorded = (c.work_dir / "comparison.json").read_bytes()
-    uniform = runner.run_dir(c, "uniform_s42", DEFINITION)
-    content = json.loads((uniform / "validation_split.json").read_text(encoding="utf-8"))
-    content["global_triggerword"] = "changed"
-    (uniform / "validation_split.json").write_text(json.dumps(content), encoding="utf-8")
-    stop = runner.run_queue(c, world.seams())
-    assert stop is not None and "uniform_s42" in stop
-    assert (c.work_dir / "comparison.json").read_bytes() == recorded
-
-
-def _folders(c):
-    return {p.name: sorted(x.name for x in p.iterdir()) for p in (c.work_dir / "runs").iterdir()}
-
-
-def test_a_changed_reference_setting_refuses_the_finished_runs(world):
-    c, stop = _run_all(world)
-    assert stop is None
-    before = _folders(c)
-    world.set_base(learning_rate=0.0002)
-    starts = world.trainer_starts
-    stop = runner.run_queue(c, world.seams())
-    assert world.trainer_starts == starts
-    assert "uniform_s42" in stop and "config.learning_rate" in stop
-    assert _folders(c) == before
-
-
-@pytest.mark.parametrize(
-    ("change", "key"),
-    [
-        ({"steps": 1000}, "config.max_train_steps"),
-        ({"validation": {"every": 250, "noise_draws": 4, "holdout_fraction": 0.3, "split_seed": 0}},
-         "config.validation_every_n_steps"),
-        ({"validation": {"every": 500, "noise_draws": 1, "holdout_fraction": 0.3, "split_seed": 0}},
-         "config.validation_noise_draws"),
-        ({"validation": {"every": 500, "noise_draws": 4, "holdout_fraction": 0.2, "split_seed": 0}},
-         "config.validation_holdout_fraction"),
-        ({"arms": {"uniform": {"timestep_sampling": "uniform"},
-                   "radc": {"timestep_sampling": "radc", "radc_start": 0.9, "radc_end": 0.2}}}, "config.radc_end"),
-    ],
-)
-def test_a_changed_arm_seed_steps_or_validation_refuses_the_finished_run(world, change, key):
-    c, stop = _run_all(world)
-    assert stop is None
-    starts = world.trainer_starts
-    changed = world.comparison(**change)
-    stop = runner.run_queue(changed, world.seams())
-    assert world.trainer_starts == starts
-    assert key in stop
-
-
-def test_a_finished_run_without_an_identity_is_refused(world):
-    c = world.comparison()
-    world.place_finished(c, "uniform", 42, identity=False)
-    stop = runner.run_queue(c, world.seams())
-    assert world.trainer_starts == 0
-    assert "uniform_s42" in stop and "no recorded identity" in stop
-
-
-def test_an_unchanged_experiment_reuses_its_finished_runs(world):
-    c, stop = _run_all(world)
-    assert stop is None
-    starts = world.trainer_starts
-    assert runner.run_queue(c, world.seams()) is None
-    assert world.trainer_starts == starts
-    reused = [r for r in _records(c) if r.get("reused")]
-    assert [r["label"] for r in reused] == ["uniform_s42", "radc_s42", "uniform_s43", "radc_s43"]
-    assert all(r["complete"] for r in reused)
-
-
-def test_the_identity_is_on_disk_before_the_trainer_starts(world):
-    c, _ = _run_all(world)
-    assert _events(c, "uniform_s42", "fake_trainer_started")[0]["identity_found"] is True
 
 
 def test_every_run_recording_the_same_wrong_split_seed_is_refused(world):
@@ -323,10 +283,102 @@ def test_a_metrics_record_with_another_draw_count_is_refused(world):
     assert "records noise_draws 1, not 4" in stop and "metrics" in stop
 
 
+def test_a_run_that_ends_without_every_pass_is_incomplete(world):
+    world.default_mode = "partial"
+    c, stop = _run_all(world)
+    assert stop == "uniform_s42: incomplete metrics: passes [0, 500] of [0, 500, 1000, 1500, 1999]"
+    assert _records(c)[0]["complete"] is False
+
+
+def test_the_run_applied_its_own_seed(world):
+    world.default_mode = "wrong_seed"
+    c, stop = _run_all(world)
+    assert stop == "uniform_s42: the run applied seed 7, not 42"
+
+
+# ── Finished runs on disk ───────────────────────────────────────────────────
+
+
+def test_a_skipped_complete_run_gets_the_same_split_check(world):
+    c = world.comparison()
+    world.place_all(c, modes={"radc_s42": "other_split"})
+    stop = runner.run_queue(c, world.seams())
+    assert world.trainer_starts == 0
+    assert "radc_s42" in stop and "not the same measurement as" in stop
+
+
+def test_the_first_run_cannot_replace_the_recorded_measurement(world):
+    c = world.comparison()
+    world.place_all(c)
+    assert runner.run_queue(c, world.seams()) is None
+    recorded = (c.work_dir / "comparison.json").read_bytes()
+    uniform = runner.run_dir(c, "uniform_s42", DEFINITION)
+    content = json.loads((uniform / "validation_split.json").read_text(encoding="utf-8"))
+    content["global_triggerword"] = "changed"
+    (uniform / "validation_split.json").write_text(json.dumps(content), encoding="utf-8")
+    stop = runner.run_queue(c, world.seams())
+    assert stop is not None and "uniform_s42" in stop
+    assert (c.work_dir / "comparison.json").read_bytes() == recorded
+    assert world.trainer_starts == 0
+
+
+def _folders(c):
+    return {p.name: sorted(x.name for x in p.iterdir()) for p in (c.work_dir / "runs").iterdir()}
+
+
+def test_a_changed_reference_setting_refuses_the_finished_runs(world):
+    c = world.comparison()
+    world.place_all(c)
+    before = _folders(c)
+    world.set_base(learning_rate=0.0002)
+    stop = runner.run_queue(c, world.seams())
+    assert world.trainer_starts == 0
+    assert "uniform_s42" in stop and "config.learning_rate" in stop
+    assert _folders(c) == before
+
+
+@pytest.mark.parametrize(
+    ("change", "key"),
+    [
+        ({"steps": 1000}, "config.max_train_steps"),
+        ({"validation": {"every": 250, "noise_draws": 4, "holdout_fraction": 0.3, "split_seed": 0}},
+         "config.validation_every_n_steps"),
+        ({"validation": {"every": 500, "noise_draws": 1, "holdout_fraction": 0.3, "split_seed": 0}},
+         "config.validation_noise_draws"),
+        ({"validation": {"every": 500, "noise_draws": 4, "holdout_fraction": 0.2, "split_seed": 0}},
+         "config.validation_holdout_fraction"),
+        ({"arms": {"uniform": {"timestep_sampling": "uniform"},
+                   "radc": {"timestep_sampling": "radc", "radc_start": 0.9, "radc_end": 0.2}}}, "config.radc_end"),
+    ],
+)
+def test_a_changed_arm_seed_steps_or_validation_refuses_the_finished_run(world, change, key):
+    world.place_all(world.comparison())
+    stop = runner.run_queue(world.comparison(**change), world.seams())
+    assert world.trainer_starts == 0
+    assert key in stop
+
+
+def test_a_finished_run_without_an_identity_is_refused(world):
+    c = world.comparison()
+    world.place_finished(c, "uniform", 42, identity=False)
+    stop = runner.run_queue(c, world.seams())
+    assert world.trainer_starts == 0
+    assert "uniform_s42" in stop and "no recorded identity" in stop
+
+
+def test_an_unchanged_experiment_reuses_its_finished_runs(world):
+    c = world.comparison()
+    world.place_all(c)
+    assert runner.run_queue(c, world.seams()) is None
+    assert world.trainer_starts == 0
+    reused = [r for r in _records(c) if r.get("reused")]
+    assert [r["label"] for r in reused] == QUEUE
+    assert all(r["complete"] for r in reused)
+
+
 def test_the_same_wrong_split_is_refused_before_a_reuse(world):
     c = world.comparison()
-    for arm, seed in plan.queue(c):
-        world.place_finished(c, arm, seed, mode="wrong_split_seed")
+    world.place_all(c, mode="wrong_split_seed")
     stop = runner.run_queue(c, world.seams())
     assert world.trainer_starts == 0
     assert "split_seed" in stop
@@ -373,7 +425,9 @@ def test_a_partial_run_is_moved_aside_never_appended_to(world):
     c, stop = _run_all(world)
     assert "incomplete" in stop
     world.default_mode = "ok"
+    world.place_all(c, skip={"uniform_s42"})
     assert runner.run_queue(c, world.seams()) is None
+    assert world.trainer_starts == 2
     partial = list((c.work_dir / "partial").iterdir())
     assert len(partial) == 1
     moved = sorted(p.name for p in partial[0].iterdir())
@@ -384,22 +438,49 @@ def test_a_partial_run_is_moved_aside_never_appended_to(world):
     assert steps == plan.passes(c.steps, c.validation.every)
 
 
-def test_a_run_that_ends_without_every_pass_is_incomplete(world):
-    world.default_mode = "partial"
-    c, stop = _run_all(world)
-    assert stop == "uniform_s42: incomplete metrics: passes [0, 500] of [0, 500, 1000, 1500, 1999]"
-    assert _records(c)[0]["complete"] is False
-
-
-def test_the_run_applied_its_own_seed(world):
-    world.default_mode = "wrong_seed"
-    c, stop = _run_all(world)
-    assert stop == "uniform_s42: the run applied seed 7, not 42"
-
-
 def test_the_status_file_carries_the_lowest_ram_between_writes(world):
+    c = world.comparison()
+    world.place_all(c, skip={"uniform_s42"})
     readings = iter([50 * GIB, 50 * GIB, 20 * GIB])
-    c, stop = _run_all(world, available_ram_bytes=lambda: next(readings, 40 * GIB))
-    assert stop is None
+    stop = runner.run_queue(c, world.seams(available_ram_bytes=lambda: next(readings, 40 * GIB)))
+    assert stop is None and world.trainer_starts == 1
     status = json.loads((c.work_dir / "status.json").read_text(encoding="utf-8"))
     assert status["min_available_ram_gib"] == 20.0
+
+
+# ── Facts the runner copies from the product ────────────────────────────────
+
+
+def test_the_fake_trainer_runs_the_products_passes():
+    config = {"max_train_steps": 2000, "validation_every_n_steps": 500}
+    assert fake_trainer.passes(config) == [s for s in range(2000) if is_due(s, 500, 2000)]
+
+
+def test_the_run_folder_is_the_one_the_trainer_writes(world):
+    c = world.comparison()
+    names = plan.run_names(c, "radc", 42)
+    expected = runner.BACKEND / "app" / "engine" / "core" / "pipeline" / "pipeline_optimization.py"
+    source = expected.read_text(encoding="utf-8")
+    assert re.search(r'run_name = f"\{lora_name\}_\{model_part\}"', source)
+    assert "os.path.join(output_root, run_name)" in source
+    folder = runner.run_dir(c, "radc_s42", DEFINITION)
+    assert folder == Path(names["output_dir"]) / f"{names['lora_name']}_{model_part_from_definition_id(DEFINITION)}"
+
+
+def _split(**changes):
+    split = {"representatives": [{"key": "Cars/a.png", "path": "D:/x/a.png", "sha256": "1" * 64}],
+             "holdout": ["Cars/a.png"], "split_seed": 0, "global_triggerword": "", "noise_draws": 4}
+    return json.dumps({**split, **changes})
+
+
+@pytest.mark.parametrize(
+    "changes",
+    [{}, {"noise_draws": 1}, {"representatives": [{"key": "Cars/a.png", "path": "E:/moved/a.png", "sha256": "1" * 64}]},
+     {"split_seed": 1}, {"holdout": ["Cars/b.png"]}, {"global_triggerword": "ohwx"},
+     {"representatives": [{"key": "Cars/a.png", "path": "D:/x/a.png", "sha256": "2" * 64}]}],
+    ids=["same", "draws", "moved", "seed", "holdout", "trigger", "digest"],
+)
+def test_the_recorded_measurement_digest_agrees_with_same_measurement(changes):
+    earlier, content = _split(), _split(**changes)
+    assert (runner._measured_digest(earlier) == runner._measured_digest(content)) == \
+        vc.same_measurement(earlier, content)

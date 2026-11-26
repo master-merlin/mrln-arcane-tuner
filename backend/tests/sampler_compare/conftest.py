@@ -11,8 +11,10 @@ from pathlib import Path
 import pytest
 
 from app.core.sampler_compare import facts as facts_module
-from app.core.sampler_compare import isolation, plan
+from app.core.sampler_compare import isolation, plan, runner
+from app.core.sampler_compare.runner import port_taken
 from app.core.sampler_compare.telemetry import Card
+from app.engine.strategies.timestep_keys import TIMESTEP_SCHEMA_DEFAULTS
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
@@ -67,12 +69,6 @@ def free_port() -> int:
         return probe.getsockname()[1]
 
 
-def port_taken(port: int) -> bool:
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
-        probe.settimeout(1)
-        return probe.connect_ex(("127.0.0.1", port)) == 0
-
-
 class FakeClock:
     """A clock that moves ``scale`` times faster than the sleeps it is asked for."""
 
@@ -90,16 +86,13 @@ class FakeClock:
 
 def fake_facts(definition_id: str, arms: dict, env: dict) -> dict:
     """The facts for a definition that declares nothing: the arm's keys over the schema defaults."""
-    defaults = plan.timestep_source()["TIMESTEP_SCHEMA_DEFAULTS"]
     resolved = {}
     for arm, settings in arms.items():
         given = facts_module.canonical_sampler(settings)
-        resolved[arm] = {
-            "effective": {**defaults, **given},
-            "source": {key: "arm" if key in given else "schema" for key in {**defaults, **given}},
-        }
-    return {"timestep_keys": sorted(plan.timestep_keys_from_source()), "api_port": int(env["PORT"]),
-            "arms": resolved}
+        effective = {**TIMESTEP_SCHEMA_DEFAULTS, **given}
+        resolved[arm] = {"effective": effective,
+                         "source": {key: "arm" if key in given else "schema" for key in effective}}
+    return {"api_port": int(env["PORT"]), "arms": resolved}
 
 
 class World:
@@ -126,6 +119,7 @@ class World:
         self.default_mode = "ok"
 
     def write_db(self, extra_jobs: dict | None = None) -> None:
+        self._prepared: list[tuple[plan.Comparison, runner.Prepared]] = []  # the reference job may change
         if self.db.exists():
             self.db.unlink()
         db = sqlite3.connect(self.db)
@@ -160,8 +154,6 @@ class World:
         return [sys.executable, str(HERE / "fake_backend.py")]
 
     def seams(self, **overrides):
-        from app.core.sampler_compare.runner import Seams
-
         values = dict(
             read_card=lambda: self.card,
             available_ram_bytes=lambda: self.ram,
@@ -176,13 +168,27 @@ class World:
             poll_s=0.05,
         )
         values.update(overrides)
-        return Seams(**values)
+        return runner.Seams(**values)
+
+    def prepared(self, c) -> runner.Prepared:
+        """``runner.prepare(c, copy=True)``, once per comparison while the reference job stands."""
+        for known, prepared in self._prepared:
+            if known == c:
+                return prepared
+        prepared = runner.prepare(c, self.seams(), copy=True)
+        self._prepared.append((c, prepared))
+        return prepared
+
+    def place_all(self, c, mode="ok", modes=None, skip=()):
+        """Every run of ``c``'s queue placed finished (``modes``: label -> mode), but ``skip``."""
+        for arm, seed in plan.queue(c):
+            name = plan.label(arm, seed)
+            if name not in skip:
+                self.place_finished(c, arm, seed, mode=(modes or {}).get(name, mode))
 
     def place_finished(self, c, arm, seed, mode="ok", accepted=True, stopped_for=None, identity=True):
         """A finished run on disk, as the queue leaves one: run files, its log, identity and verdict."""
-        from app.core.sampler_compare import runner
-
-        prepared = runner.prepare(c, self.seams(), copy=True)
+        prepared = self.prepared(c)
         name = plan.label(arm, seed)
         requested = prepared.requested[name]
         config = {**requested["config"], **plan.run_names(c, arm, seed)}
@@ -200,6 +206,14 @@ class World:
 @pytest.fixture
 def world(tmp_path):
     return World(tmp_path)
+
+
+@pytest.fixture(scope="module")
+def ran_queue(tmp_path_factory):
+    """One whole queue, trained by the fake trainer, for the tests that only read what it left."""
+    world = World(tmp_path_factory.mktemp("ran"))
+    c = world.comparison()
+    return world, c, runner.run_queue(c, world.seams())
 
 
 def started_pids(log: Path, event: str) -> list[int]:

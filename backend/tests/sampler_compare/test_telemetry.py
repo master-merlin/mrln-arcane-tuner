@@ -1,6 +1,5 @@
 """The card reading, the telemetry file and the stop limits."""
 import os
-import subprocess
 
 import pytest
 
@@ -17,33 +16,50 @@ def _sample(card=Card(4801, 56.0, 300.0, 500.0), elapsed=60.0, ram_gib=50.0, ste
                   available_ram_mib=ram_gib * GIB_MIB, rss_mib=2048, note="")
 
 
-def test_a_decimal_temperature_parses():
-    assert telemetry.parse_card("4801, 56.22, 32.55, 500.00") == Card(4801, 56.22, 32.55, 500.0)
+def _health(temperature=56, power=32.55, limit=500.0, readable=True):
+    """A ``gpu_health.read_gpu_health`` reading, with the fields the card file needs."""
+    return {"readable": readable, "temperature_c": temperature, "power_draw_w": power, "power_limit_w": limit}
+
+
+def _reader(reading, vram=4801):
+    asked = []
+
+    def health(index):
+        asked.append(("health", index))
+        return reading
+
+    def memory(index):
+        asked.append(("vram", index))
+        return vram
+
+    return health, memory, asked
+
+
+def test_a_reading_of_the_card_it_is_given_becomes_a_card():
+    health, memory, asked = _reader(_health())
+    assert telemetry.read_card(1, health=health, vram=memory) == Card(4801, 56.0, 32.55, 500.0)
+    assert asked == [("health", 1), ("vram", 1)]
 
 
 def test_a_field_the_card_does_not_offer_is_none():
-    assert telemetry.parse_card("4801, 56, [N/A], [N/A]") == Card(4801, 56.0, None, None)
+    health, memory, _ = _reader(_health(power=None, limit=None))
+    assert telemetry.read_card(0, health=health, vram=memory) == Card(4801, 56.0, None, None)
 
 
-@pytest.mark.parametrize("line", ["", "NVIDIA-SMI has failed", "a, b, c, d", "4801, 56"])
-def test_a_garbled_line_is_no_reading(line):
-    assert telemetry.parse_card(line) is None
+@pytest.mark.parametrize(
+    ("reading", "vram"),
+    [(None, 4801), ({"readable": False, "error": "GPU is lost"}, 4801), (_health(temperature=None), 4801),
+     (_health(), None)],
+    ids=["no-nvml", "card-lost", "no-temperature", "no-memory"],
+)
+def test_an_unreadable_card_is_no_reading(reading, vram):
+    health, memory, _ = _reader(reading, vram)
+    assert telemetry.read_card(0, health=health, vram=memory) is None
 
 
-@pytest.mark.parametrize("error", [subprocess.TimeoutExpired("nvidia-smi", 30), FileNotFoundError("nvidia-smi")])
-def test_a_reader_that_times_out_or_is_missing_is_no_reading(error):
-    def run(*args, **kwargs):
-        assert kwargs["timeout"] == 30
-        raise error
-
-    assert telemetry.read_card(run=run) is None
-
-
-def test_a_reader_reads_the_first_line():
-    def run(*args, **kwargs):
-        return subprocess.CompletedProcess(args, 0, stdout="4801, 56.22, 32.55, 500.00\n100, 30, 20, 300\n")
-
-    assert telemetry.read_card(run=run) == Card(4801, 56.22, 32.55, 500.0)
+def test_without_nvml_the_memory_is_no_reading(monkeypatch):
+    monkeypatch.setattr(telemetry.gpu_health, "nvml_ready", lambda: False)
+    assert telemetry.vram_used_mib(0) is None
 
 
 def test_the_file_has_a_header_and_a_row_once_started(tmp_path):

@@ -8,11 +8,15 @@ import torch
 
 from app.core.sampler_compare import facts
 from app.engine.models.registry import registry
+from app.engine.strategies import timestep_keys
 from app.engine.strategies.timestep_sampling import (
+    _PARAMETER_ALIASES,
     TIMESTEP_PARAMETERS,
     TIMESTEP_SCHEMA_DEFAULTS,
     TimestepSampler,
     apply_family_timestep_defaults,
+    timestep_setting,
+    validate_fixed_sigmas,
 )
 
 
@@ -26,8 +30,29 @@ def _arm(definition_id, arm):
 
 
 def test_the_timestep_keys_are_the_products_own():
-    got = facts.facts_here("moss-image-base", {"a": {}})["timestep_keys"]
-    assert set(got) == {"timestep_sampling", *TIMESTEP_PARAMETERS, "logit_normal_mean", "logit_normal_std"}
+    assert timestep_keys.TIMESTEP_KEYS == {"timestep_sampling", *TIMESTEP_PARAMETERS, "logit_normal_mean",
+                                           "logit_normal_std"}
+    assert timestep_keys.PARAMETER_ALIASES is _PARAMETER_ALIASES
+    assert timestep_keys.TIMESTEP_SCHEMA_DEFAULTS is TIMESTEP_SCHEMA_DEFAULTS
+
+
+@pytest.mark.parametrize("key", sorted(TIMESTEP_SCHEMA_DEFAULTS))
+def test_the_canonical_reading_of_each_key_is_the_samplers(key):
+    value = "uniform" if key == "timestep_sampling" else "0.25"
+    read = timestep_setting({key: value}, key)
+    assert facts.canonical_sampler({key: value}) == {key: read if key == "timestep_sampling" else float(read)}
+
+
+def test_the_canonical_reading_of_fixed_sigmas_is_the_samplers():
+    given = [0.5, "0.25"]
+    assert facts.canonical_sampler({"fixed_sigmas": given}) == {"fixed_sigmas": validate_fixed_sigmas(given)}
+
+
+@pytest.mark.parametrize(("key", "alias"), [(k, a) for k, names in _PARAMETER_ALIASES.items() for a in names])
+def test_an_older_name_counts_as_set_the_way_the_sampler_counts_it(key, alias):
+    config = {"timestep_sampling": "logit_normal", alias: 0.25}
+    assert facts.canonical_sampler(config)[key] == 0.25
+    assert key not in apply_family_timestep_defaults(registry.get_definition("moss-image-base"), dict(config))
 
 
 def test_the_family_default_arm_is_the_definitions_own_draw():

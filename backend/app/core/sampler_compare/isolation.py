@@ -2,8 +2,8 @@
 its work folder, so its backend and trainer never write into the user's.
 
 Shared and only read: the code checkout, the Python environment, the model weights. Every file
-written here goes through a fresh name and ``os.replace``, so a link in the target is replaced,
-never written through.
+written here goes through a fresh name and ``os.replace`` (``fresh_write``), so a link in the
+target is replaced, never written through.
 """
 from __future__ import annotations
 
@@ -11,11 +11,13 @@ import hashlib
 import json
 import os
 import sqlite3
-import tempfile
+import time
+from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import Any, BinaryIO
 
-from app.core.sampler_compare.plan import Comparison
+from app.core.dataset.fresh_write import replace_with_fresh_file
+from app.core.sampler_compare.plan import Comparison, ConfigError
 
 # Every path seam the backend reads, and where a comparison's children find it under the work
 # folder. The database is copied afresh for each run into the folder named here: a killed
@@ -30,24 +32,42 @@ DATASET_FOLDER = "data/dataset"
 MANIFEST_VERSION = 1
 _LEFT_BEHIND = frozenset({".cache", ".thumbnails"})  # rebuilt in the copy, never copied
 _ACTIVE = ("pending", "running", "paused")
+_CHUNK_BYTES = 1 << 20
+# Windows refuses a rename while a process holds the file (access denied 5, sharing violation 32):
+# the bound ``safe_save.retry_file_lock`` waits out, which imports torch and so can't be used here.
+_LOCK_WINERRORS = frozenset({5, 32})
+_LOCK_BACKOFF_S = (0.2, 0.5, 1.0, 2.0, 4.0, 8.0)
+
+
+def _write_fresh(path: Path, fill: Callable[[BinaryIO], None]) -> None:
+    """``fill`` a fresh file beside ``path`` and move it onto ``path``; a Windows file lock is
+    waited out within ``_LOCK_BACKOFF_S``, any other error raises at once."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    for delay in (*_LOCK_BACKOFF_S, None):
+        try:
+            with replace_with_fresh_file(path) as out:
+                fill(out)
+            return
+        except PermissionError as exc:
+            if delay is None or getattr(exc, "winerror", None) not in _LOCK_WINERRORS:
+                raise
+            time.sleep(delay)
 
 
 def write_bytes(path: Path, data: bytes) -> None:
-    """Write ``path`` through a temp file beside it and ``os.replace``."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    handle, temp = tempfile.mkstemp(prefix=f".{path.name}.", suffix=".tmp", dir=path.parent)
-    try:
-        with os.fdopen(handle, "wb") as out:
-            out.write(data)
-        os.replace(temp, path)
-    except BaseException:
-        if os.path.exists(temp):
-            os.remove(temp)
-        raise
+    _write_fresh(path, lambda out: out.write(data))
 
 
 def write_json(path: Path, content: Any) -> None:
     write_bytes(path, (json.dumps(content, indent=2, default=str) + "\n").encode("utf-8"))
+
+
+def read_only(db: Path) -> sqlite3.Connection:
+    """The user's database at ``db``, opened read-only."""
+    if not Path(db).exists():
+        raise ConfigError(f"the database {db} does not exist")
+    return sqlite3.connect(f"{Path(db).resolve().as_uri()}?mode=ro", uri=True)
 
 
 def child_env(c: Comparison, db_path: Path) -> dict[str, str]:
@@ -81,6 +101,23 @@ def _file_digest(path: Path) -> str:
         return hashlib.file_digest(source, "sha256").hexdigest()
 
 
+def _copy_hashed(source: Path, target: Path) -> str:
+    """Copy ``source`` to ``target`` and hash it in the same pass; -> its sha256."""
+    digest = ""
+
+    def fill(out: BinaryIO) -> None:
+        nonlocal digest
+        hashed = hashlib.sha256()
+        with open(source, "rb") as reader:
+            while chunk := reader.read(_CHUNK_BYTES):
+                hashed.update(chunk)
+                out.write(chunk)
+        digest = hashed.hexdigest()
+
+    _write_fresh(target, fill)
+    return digest
+
+
 def _dataset_files(source: Path) -> list[str]:
     names = []
     for folder, dirs, files in os.walk(source):
@@ -99,24 +136,25 @@ def manifest_path(target: Path) -> Path:
     return target.parent / "manifest.json"
 
 
-def copy_dataset(source: Path, target: Path) -> dict[str, str]:
+def copy_dataset(source: Path, target: Path, copy: bool = True) -> dict[str, str]:
     """Copy the dataset without its caches; -> its manifest. A copy made before is kept, but only
-    while the source still holds the same content."""
+    while the source still holds the same content. Without ``copy`` nothing is written: the
+    manifest is the earlier copy's (checked the same way) or the source's own."""
     source, target = Path(source), Path(target)
     if not source.is_dir():
         raise RuntimeError(f"the dataset folder {source} does not exist")
     recorded_path = manifest_path(target)
-    fresh = source_manifest(source)
     if recorded_path.exists():
-        recorded = json.loads(recorded_path.read_text(encoding="utf-8"))["files"]
-        if recorded != fresh:
+        recorded = read_manifest(target)
+        if source_manifest(source) != recorded:
             raise RuntimeError(
                 f"the dataset changed since this comparison began: {source} no longer holds what "
                 f"{recorded_path} recorded; start a comparison of another name"
             )
         return recorded
-    for name in fresh:
-        write_bytes(target / name, (source / name).read_bytes())
+    if not copy:
+        return source_manifest(source)
+    fresh = {name: _copy_hashed(source / name, target / name) for name in _dataset_files(source)}
     write_json(recorded_path, {"version": MANIFEST_VERSION, "source": str(source), "files": fresh})
     return fresh
 
@@ -129,7 +167,7 @@ def copy_database(source: Path, target: Path, dataset: str, dataset_path: Path) 
     """A copy of the user's database (opened read-only) that knows only the comparison's dataset,
     at the copy's path, and has no job that could start or resume."""
     target.parent.mkdir(parents=True, exist_ok=True)
-    reader = sqlite3.connect(f"{Path(source).resolve().as_uri()}?mode=ro", uri=True)
+    reader = read_only(source)
     temp = target.with_name(f".{target.name}.tmp")
     try:
         writer = sqlite3.connect(temp)

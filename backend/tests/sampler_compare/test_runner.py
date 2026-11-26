@@ -86,6 +86,28 @@ def test_the_identity_is_on_disk_before_the_trainer_starts(ran_queue):
 # ── Before a run ────────────────────────────────────────────────────────────
 
 
+def test_the_fake_backend_outlasts_the_runners_port_probe(world, tmp_path):
+    """The readiness wait probes the port with a plain bind (``port_taken``) while the backend
+    starts; a backend binding in that instant must wait it out, as it does once the probe closes."""
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", world.port))  # what restart_launcher.port_is_free holds for an instant
+    env = {**os.environ, "PORT": str(world.port), "MRLN_DB_PATH": str(world.db)}
+    backend = subprocess.Popen([sys.executable, str(Path(fake_trainer.__file__).with_name("fake_backend.py"))],
+                               env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+    try:
+        time.sleep(0.5)
+        assert backend.poll() is None, backend.stdout.read()
+        probe.close()
+        deadline = time.monotonic() + 30
+        while not port_taken(world.port):
+            assert backend.poll() is None and time.monotonic() < deadline, backend.stdout.read()
+            time.sleep(0.05)
+    finally:
+        probe.close()
+        backend.kill()
+        backend.wait(timeout=30)
+
+
 def test_a_taken_port_is_refused_and_its_owner_untouched(world):
     owner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     owner.bind(("127.0.0.1", world.port))

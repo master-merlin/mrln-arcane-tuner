@@ -48,13 +48,38 @@ def _started(port: int) -> None:
     sys.stdout.flush()
 
 
+class _Server(ThreadingHTTPServer):
+    # No SO_REUSEADDR, as uvicorn binds on Windows: there a reuse bind meeting the runner's plain
+    # port probe fails with WinError 10013 instead of "in use".
+    allow_reuse_address = False
+
+
+BIND_WAIT_S = 10.0
+BIND_POLL_S = 0.02
+
+
+def _bind(port: int) -> ThreadingHTTPServer:
+    """The server on ``port``; the runner's readiness probe binds it for an instant, so a bind
+    refused as in use is tried again within ``BIND_WAIT_S``."""
+    deadline = time.monotonic() + BIND_WAIT_S
+    while True:
+        try:
+            return _Server(("127.0.0.1", port), Handler)
+        except OSError as exc:
+            if getattr(exc, "winerror", None) not in (10048, 10013) and exc.errno not in (98, 48):
+                raise
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(BIND_POLL_S)
+
+
 def main() -> int:
     port = int(os.environ["PORT"])
     if os.environ.get("FAKE_BACKEND") == "never_answers":
         _started(port)
         while True:
             time.sleep(1)
-    server = ThreadingHTTPServer(("127.0.0.1", port), Handler)  # bound before it says it started
+    server = _bind(port)  # bound before it says it started
     _started(port)
     server.serve_forever()
     return 0

@@ -34,6 +34,7 @@ METADATA_SNAPSHOT = "data/metadata.db"
 OWNER_RECORD = "data/dataset-owner.json"  # which folder the comparison made its dataset copy in
 MANIFEST_VERSION = 1
 _LEFT_BEHIND = frozenset({".cache", ".thumbnails"})  # rebuilt in the copy, never copied
+_RECREATED_FOLDER = "masked"  # copied, but a job may recreate it in the copy (``_recreated``)
 _ACTIVE = ("pending", "running", "paused")
 _CHUNK_BYTES = 1 << 20
 # Windows refuses a rename while a process holds the file (access denied 5, sharing violation 32):
@@ -233,17 +234,26 @@ def copy_dataset(source: Path, work_dir: Path, copy: bool = True) -> dict[str, s
     return fresh
 
 
+def _recreated(name: str) -> bool:
+    """A file the trainer itself writes into the dataset as it trains: the masked pictures a job
+    with ``recreate_masks`` makes again from ``masks/`` (``MaskingService.mass_apply`` writes
+    ``masked/<stem>.jpg``), which every arm recreates the same way from the checked masks."""
+    return name.startswith(f"{_RECREATED_FOLDER}/") and "/" not in name[len(_RECREATED_FOLDER) + 1:]
+
+
 def copy_problem(work_dir: Path, manifest: dict[str, str]) -> str | None:
     """Why the work folder's dataset copy no longer holds exactly ``manifest`` (a file changed,
-    missing or added; the caches the runs build aside), or None. Nothing is written or deleted:
+    missing or added; the caches the runs build and the masked pictures they recreate aside, though
+    a recreated picture may not go missing), or None. Nothing is written or deleted:
     arms that trained earlier read the copy as it was, so a changed copy is refused, never redone."""
     target = Path(work_dir) / DATASET_FOLDER
     if not target.is_dir():
         return f"the dataset copy {target} is gone"
     actual = source_manifest(target)
-    differences = ([f"changed {n}" for n in sorted(manifest) if n in actual and actual[n] != manifest[n]]
+    differences = ([f"changed {n}" for n in sorted(manifest)
+                    if n in actual and actual[n] != manifest[n] and not _recreated(n)]
                    + [f"missing {n}" for n in sorted(manifest) if n not in actual]
-                   + [f"extra {n}" for n in sorted(actual) if n not in manifest])
+                   + [f"extra {n}" for n in sorted(actual) if n not in manifest and not _recreated(n)])
     if not differences:
         return None
     shown = ", ".join(differences[:10]) + (f" and {len(differences) - 10} more" if len(differences) > 10 else "")

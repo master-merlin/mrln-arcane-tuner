@@ -171,6 +171,24 @@ def test_a_changed_copy_is_refused_on_resume(tmp_path, change, named, copy):
     assert _tree(target) == before
 
 
+def test_masked_pictures_the_trainer_recreates_in_the_copy_are_no_change(tmp_path):
+    source = _dataset(tmp_path / "Cars")
+    (source / "masks").mkdir()
+    (source / "masks" / "img0.png").write_bytes(b"a mask")
+    (source / "masked").mkdir()
+    (source / "masked" / "img0.jpg").write_bytes(b"masked at the source's opacity")
+    work = tmp_path / "work"
+    manifest = isolation.copy_dataset(source, work)
+    assert "masked/img0.jpg" in manifest  # copied as the source has it
+    masked = work / isolation.DATASET_FOLDER / "masked"
+    (masked / "img0.jpg").write_bytes(b"recreated at the job's opacity")  # MaskingService.mass_apply
+    (masked / "img1.jpg").write_bytes(b"recreated for a mask added since")
+    assert isolation.copy_problem(work, manifest) is None
+    assert isolation.copy_dataset(source, work) == manifest
+    (work / isolation.DATASET_FOLDER / "masks" / "img0.png").write_bytes(b"an edited mask")
+    assert "changed masks/img0.png" in isolation.copy_problem(work, manifest)
+
+
 def test_a_copy_with_only_its_caches_added_is_kept(tmp_path):
     source = _dataset(tmp_path / "Cars")
     work = tmp_path / "work"

@@ -421,6 +421,38 @@ the same output folder and appends to its history, so a resume from an earlier
 checkpoint repeats steps: resume into a fresh output folder when you mean to
 compare runs (a new job under another LoRA name, resuming from the checkpoint).
 
+**Comparing timestep samplers in one command.** `backend\scripts\compare_samplers.py`
+trains and compares the runs for you. Copy `backend\scripts\compare_samplers.example.json`,
+set `reference_job` to the id of a finished job, and name the arms (each a set of
+timestep keys; `{}` is the model's own default draw), two or more `seeds`, the
+validation cadence, a `port` of its own and the `limits` that stop a run:
+
+```
+backend\venv\Scripts\python.exe backend\scripts\compare_samplers.py my-comparison.json --dry-run
+backend\venv\Scripts\python.exe backend\scripts\compare_samplers.py my-comparison.json
+```
+
+Every run trains the reference job's settings with only the sampler and the seed
+changed (seed by seed, the arms in config order), so an arm never inherits the
+reference job's own sampler. It runs beside your backend without touching it: each
+run gets a backend of its own on the configured port, and works on copies of the
+dataset (without its caches), database and settings in the work folder
+(`backend\outputs\sampler_compare\<name>` unless `work_dir` says otherwise). Model
+weights are only read: a missing one fails the run unless `allow_downloads` is
+true. A run stops, with both of its processes ended, when the card runs hotter,
+fuller or longer than the limits, the host runs short of RAM, the log stalls, or
+the run used another sampler or split than asked for; `logs\<run>.telemetry.csv`
+holds a row every few seconds. On a host with two or more cards, set
+`CUDA_VISIBLE_DEVICES` to the one card to train on and `CUDA_DEVICE_ORDER=PCI_BUS_ID`
+before you start, or no run starts: the card watched must be the one the trainer
+uses. `report.txt` then gives the noise floor and every
+pair's verdict, and a row per run. `--dry-run` checks the config, the reference
+job, the port and the card and starts nothing; `--report-only` writes the report
+over the runs that finished. A finished run is reused only while everything that
+sets its result is unchanged: change the reference job, the steps, the validation
+or an arm, and the next start trains nothing and names each run with the key that
+differs.
+
 **What it doesn't take.** Validation works on standard image datasets. Video,
 audio and paired-edit datasets, adaptive targeting's rebuild action, and the
 SDXL, HiDream-O1, WAN 2.2 and Bernini-R families stop the job at the start, with

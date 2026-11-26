@@ -1,0 +1,33 @@
+{
+  "version": 1,
+  "name": "my-sampler-comparison",
+  "reference_job": "replace-with-the-id-of-a-finished-job",
+  "arms": {
+    "uniform": {"timestep_sampling": "uniform"},
+    "logit_normal": {"timestep_sampling": "logit_normal", "logit_normal_mu": 0.0, "logit_normal_sigma": 1.0},
+    "radc": {
+      "timestep_sampling": "radc",
+      "radc_start": 0.9,
+      "radc_end": 0.3,
+      "radc_width": 0.5,
+      "radc_res_influence": 0.15,
+      "radc_uniform_prob": 0.0
+    },
+    "family_default": {}
+  },
+  "seeds": [42, 43],
+  "steps": 2000,
+  "validation": {"every": 500, "noise_draws": 4, "holdout_fraction": 0.3, "split_seed": 0},
+  "port": 8001,
+  "limits": {
+    "temperature_c": 94,
+    "vram_mib": 88000,
+    "free_ram_gib": 10,
+    "stall_minutes": 15,
+    "run_minutes": 120,
+    "idle_vram_mib": 20000,
+    "idle_wait_minutes": 30,
+    "power_limit_w": null
+  },
+  "allow_downloads": false
+}

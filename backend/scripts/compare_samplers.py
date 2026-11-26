@@ -74,7 +74,8 @@ def dry_run(c: plan.Comparison, seams: runner.Seams) -> int:
         work = c.work_dir
         _say(f"copy plan: dataset {prepared.dataset!r} from {prepared.source} ({len(prepared.manifest)} files, "
              f"without .cache and .thumbnails) -> {work / isolation.DATASET_FOLDER}; database {seams.user_db} "
-             f"(read-only) -> {work / isolation.ISOLATED_PATHS['MRLN_DB_PATH']}/<run>.db for each run; settings "
+             f"(read-only) -> {work / isolation.METADATA_SNAPSHOT} once, and from it "
+             f"{work / isolation.ISOLATED_PATHS['MRLN_DB_PATH']}/<run>.db for each run; settings "
              f"{seams.user_settings} -> {work / isolation.ISOLATED_PATHS['MRLN_SETTINGS_PATH']}; server log -> "
              f"{work / isolation.ISOLATED_PATHS['MRLN_SERVER_LOG_PATH']}; runs -> {work / 'runs'}")
         for arm, seed in plan.queue(c):

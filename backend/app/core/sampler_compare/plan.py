@@ -275,15 +275,18 @@ def run_config(base: dict, c: Comparison, arm: str, seed: int) -> dict:
 
 
 def identity(c: Comparison, definition_id: str, dataset_digest: str, config: dict, effective: dict,
-             model_source: dict) -> dict:
+             model_source: dict, metadata_digest: str) -> dict:
     """What sets a run's result: a finished run is reused only for an equal identity.
-    ``model_source`` is where the weights load from (``isolation.model_source``)."""
+    ``model_source`` is where the weights load from (``isolation.model_source``);
+    ``metadata_digest`` the dataset's rows in the comparison's metadata snapshot
+    (``isolation.dataset_metadata_digest``)."""
     content = {
         "version": IDENTITY_VERSION,
         "definition_id": definition_id,
         "model_source": model_source,
         "dataset": dataset_name(config),
         "dataset_digest": dataset_digest,
+        "dataset_metadata_digest": metadata_digest,
         "config": {k: v for k, v in config.items() if k not in NAME_AND_PATH_KEYS},
         "effective_sampler": effective,
         "passes": passes(c.steps, c.validation.every),

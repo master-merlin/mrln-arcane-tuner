@@ -154,11 +154,11 @@ class Prepared:
 
 
 def requested_identities(c: Comparison, base: dict, definition_id: str, facts: dict,
-                         dataset_digest: str, model_source: dict) -> dict[str, dict]:
+                         dataset_digest: str, model_source: dict, metadata_digest: str) -> dict[str, dict]:
     """label -> the identity each run of the queue is asked for now."""
     return {
         plan.label(arm, seed): plan.identity(c, definition_id, dataset_digest, plan.run_config(base, c, arm, seed),
-                                             facts["arms"][arm]["effective"], model_source)
+                                             facts["arms"][arm]["effective"], model_source, metadata_digest)
         for arm, seed in plan.queue(c)
     }
 
@@ -174,8 +174,14 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
     dataset = plan.dataset_name(plan.run_config(base, c, first_arm, first_seed))
     source = source_dataset(seams.user_db, dataset)
     manifest = isolation.copy_dataset(source, c.work_dir, copy=copy)
+    snapshot = c.work_dir / isolation.METADATA_SNAPSHOT
     if copy:
-        facts = seams.facts(definition_id, c.arms, isolation.child_env(c, _db_folder(c) / "facts.db"))
+        snapshot = isolation.snapshot_database(seams.user_db, c.work_dir, dataset)
+    elif not snapshot.exists():  # what the first launch would take
+        snapshot = seams.user_db
+    metadata_digest = isolation.dataset_metadata_digest(snapshot, dataset)
+    if copy:
+        facts =seams.facts(definition_id, c.arms, isolation.child_env(c, _db_folder(c) / "facts.db"))
     else:  # nothing is written into the work folder: the fact child's stores go to a scratch folder
         with tempfile.TemporaryDirectory(prefix="sampler-compare-", ignore_cleanup_errors=True) as scratch:
             root = Path(scratch)
@@ -185,7 +191,8 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
         raise ConfigError(f"the trainer's loopback calls would go to port {facts['api_port']}, not {c.port}")
     digest = isolation.dataset_digest(manifest)
     return Prepared(definition_id, dataset, source, facts, manifest,
-                    requested_identities(c, base, definition_id, facts, digest, model_source), settings)
+                    requested_identities(c, base, definition_id, facts, digest, model_source, metadata_digest),
+                    settings)
 
 
 # ── A run's files ───────────────────────────────────────────────────────────
@@ -680,7 +687,9 @@ def run_one(c: Comparison, arm: str, seed: int, requested: dict, manifest: dict[
     definition_id = requested["definition_id"]
     config = {**requested["config"], **plan.run_names(c, arm, seed)}
     db_path = _db_folder(c) / f"{label}-{datetime.datetime.now():%Y%m%dT%H%M%S%f}.db"
-    isolation.copy_database(seams.user_db, db_path, requested["dataset"], c.work_dir / isolation.DATASET_FOLDER)
+    # From the comparison's snapshot, never the live database: every arm sees the same metadata.
+    isolation.copy_database(c.work_dir / isolation.METADATA_SNAPSHOT, db_path, requested["dataset"],
+                            c.work_dir / isolation.DATASET_FOLDER)
     env = isolation.child_env(c, db_path)
     (c.work_dir / "logs").mkdir(parents=True, exist_ok=True)
     isolation.write_json(_log(c, label, "identity.json"), requested)

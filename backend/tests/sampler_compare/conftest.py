@@ -127,6 +127,10 @@ class World:
         db.execute("create table job_history (id text primary key, status text, config text, definition_id text)")
         db.execute("insert into datasets values ('d1', 'Cars', ?)", (str(self.dataset),))
         db.execute("insert into datasets values ('d2', 'Other', ?)", (str(self.root / "other"),))
+        db.execute("create table media_items (id integer primary key autoincrement, dataset_id text not null, "
+                   "rel_path text not null, enabled integer not null default 1)")
+        for i in range(20):
+            db.execute("insert into media_items (dataset_id, rel_path) values ('d1', ?)", (f"img{i:02d}.png",))
         db.execute("insert into job_history values ('job-1', 'completed', ?, ?)", (json.dumps(self.base), DEFINITION))
         db.execute("insert into job_history values ('job-0', 'running', '{}', ?)", (DEFINITION,))
         for job_id, config in (extra_jobs or {}).items():
@@ -137,6 +141,13 @@ class World:
     def set_base(self, **changes) -> None:
         self.base.update(changes)
         self.write_db()
+
+    def disable_image(self, rel_path: str) -> None:
+        """The user's live backend switches one picture off, as its UI does; the files stay."""
+        db = sqlite3.connect(self.db)
+        db.execute("update media_items set enabled=0 where rel_path=?", (rel_path,))
+        db.commit()
+        db.close()
 
     def set_settings(self, content: dict) -> None:
         """The user's settings file now holds ``content`` (the prepared runs are read afresh)."""

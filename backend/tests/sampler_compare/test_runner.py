@@ -4,6 +4,7 @@ import json
 import os
 import re
 import socket
+import sqlite3
 import subprocess
 import sys
 import time
@@ -171,7 +172,11 @@ def test_no_child_survives_a_card_reader_that_raises(world):
 
 
 def test_a_run_that_raises_leaves_its_verdict_its_record_and_a_final_status(world, monkeypatch):
-    def broken(*args, **kwargs):
+    real_copy = runner.isolation.copy_database
+
+    def broken(source, target, *args, **kwargs):
+        if Path(target).name == Path(isolation.METADATA_SNAPSHOT).name:  # the comparison's snapshot is taken
+            return real_copy(source, target, *args, **kwargs)
         raise RuntimeError("the database copy broke")
 
     monkeypatch.setattr(runner.isolation, "copy_database", broken)
@@ -499,6 +504,54 @@ def test_a_changed_model_source_refuses_the_finished_runs(world, tmp_path, chang
     assert "uniform_s42" in stop and f"model_source.{change}" in stop
     assert _folders(c) == before
     assert (settings_copy.read_bytes() if settings_copy.exists() else None) == copied_before
+
+
+def _enabled(db_path):
+    db = sqlite3.connect(db_path)
+    try:
+        return db.execute("select count(*) from media_items where enabled=1").fetchone()[0]
+    finally:
+        db.close()
+
+
+def test_every_arm_trains_on_one_metadata_snapshot(world):
+    real_argv = world.trainer_argv
+
+    def argv(c, definition_id, config):
+        if world.trainer_starts == 1:  # after the first arm: the live backend switches a picture off
+            world.disable_image("img03.png")
+        return real_argv(c, definition_id, config)
+
+    c = world.comparison()
+    stop = runner.run_queue(c, world.seams(trainer_argv=argv))
+    assert stop is None and world.trainer_starts == 4
+    assert _enabled(world.db) == 19
+    run_dbs = sorted(p for p in (c.work_dir / "data" / "db").glob("*_s*.db"))
+    assert len(run_dbs) == 4
+    assert [_enabled(p) for p in run_dbs] == [20, 20, 20, 20]
+
+
+def test_a_resume_trains_on_the_first_metadata_snapshot(world):
+    c = world.comparison()
+    world.place_all(c, skip={"radc_s43"})
+    world.disable_image("img03.png")
+    world._prepared = []
+    stop = runner.run_queue(c, world.seams())
+    assert stop is None and world.trainer_starts == 1
+    assert [_enabled(p) for p in (c.work_dir / "data" / "db").glob("radc_s43*.db")] == [20]
+
+
+def test_a_replaced_metadata_snapshot_refuses_the_finished_runs(world):
+    c = world.comparison()
+    world.place_all(c)
+    before = _folders(c)
+    world.disable_image("img03.png")
+    world._prepared = []
+    (c.work_dir / isolation.METADATA_SNAPSHOT).unlink()
+    stop = runner.run_queue(c, world.seams())
+    assert world.trainer_starts == 0
+    assert "uniform_s42" in stop and "dataset_metadata_digest" in stop
+    assert _folders(c) == before
 
 
 def test_every_refused_finished_run_is_named_before_anything_trains(world):

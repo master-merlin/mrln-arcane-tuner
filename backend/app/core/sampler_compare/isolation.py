@@ -29,6 +29,7 @@ ISOLATED_PATHS: dict[str, str] = {
     "MRLN_SERVER_LOG_PATH": "data/server.log",
 }
 DATASET_FOLDER = "data/dataset"
+METADATA_SNAPSHOT = "data/metadata.db"
 MANIFEST_VERSION = 1
 _LEFT_BEHIND = frozenset({".cache", ".thumbnails"})  # rebuilt in the copy, never copied
 _ACTIVE = ("pending", "running", "paused")
@@ -255,6 +256,36 @@ def copy_database(source: Path, target: Path, dataset: str, dataset_path: Path) 
         reader.close()
         if temp.exists():
             temp.unlink()
+
+
+def snapshot_database(source: Path, work_dir: Path, dataset: str) -> Path:
+    """The comparison's one copy of the user's database (``copy_database``), taken at its first
+    launch and never replaced: every run's database is copied from it, so the live backend's later
+    changes (a picture switched off, a caption edited) reach no arm. -> its path."""
+    path = Path(work_dir) / METADATA_SNAPSHOT
+    if not path.exists():
+        copy_database(source, path, dataset, Path(work_dir) / DATASET_FOLDER)
+    return path
+
+
+def dataset_metadata_digest(db: Path, dataset: str) -> str:
+    """The sha256 of ``dataset``'s rows in ``db`` (its ``datasets`` row without its path, and every
+    ``media_items`` row of it without its row id): what the backend serves the trainer about the
+    dataset beside its files."""
+    conn = read_only(db)
+    try:
+        conn.row_factory = sqlite3.Row
+        row = conn.execute("select * from datasets where name=?", (dataset,)).fetchone()
+        if row is None:
+            raise RuntimeError(f"the database {db} has no dataset named {dataset!r}")
+        content: dict[str, Any] = {"dataset": {k: row[k] for k in row.keys() if k != "path"}}
+        tables = {name for (name,) in conn.execute("select name from sqlite_master where type='table'")}
+        if "media_items" in tables:
+            items = conn.execute("select * from media_items where dataset_id=? order by rel_path", (row["id"],))
+            content["media_items"] = [{k: item[k] for k in item.keys() if k != "id"} for item in items]
+    finally:
+        conn.close()
+    return hashlib.sha256(json.dumps(content, sort_keys=True, default=str).encode("utf-8")).hexdigest()
 
 
 def read_settings(source: Path) -> bytes | None:

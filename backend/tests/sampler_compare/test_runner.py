@@ -462,6 +462,45 @@ def test_a_changed_reference_setting_refuses_the_finished_runs(world):
     assert _folders(c) == before
 
 
+def _local_override(folder):
+    return {"models": {"overrides": {DEFINITION: {"source_type": "local_diffusers", "local_path": str(folder)}}}}
+
+
+def _weights(folder, content=b"weights A"):
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / "transformer.safetensors").write_bytes(content)
+    return folder
+
+
+@pytest.mark.parametrize("change", ["local_path", "weights", "source_type", "local_files_only"])
+def test_a_changed_model_source_refuses_the_finished_runs(world, tmp_path, change):
+    model_a = _weights(tmp_path / "model-a")
+    world.set_settings(_local_override(model_a))
+    c = world.comparison()
+    world.place_all(c)
+    before = _folders(c)
+    if change == "local_path":
+        changed = _local_override(_weights(tmp_path / "model-b", b"weights B"))
+    elif change == "weights":
+        _weights(model_a, b"other weights, same folder")
+        changed = _local_override(model_a)
+    elif change == "source_type":
+        changed = {"models": {"overrides": {}}}
+    else:
+        world.set_settings({"models": {"overrides": {}}})
+        world.place_all(c := world.comparison())
+        before = _folders(c)
+        changed = {"models": {"global_offline_mode": True, "overrides": {}}}
+    world.set_settings(changed)
+    settings_copy = c.work_dir / isolation.ISOLATED_PATHS["MRLN_SETTINGS_PATH"]
+    copied_before = settings_copy.read_bytes() if settings_copy.exists() else None
+    stop = runner.run_queue(c, world.seams())
+    assert world.trainer_starts == 0
+    assert "uniform_s42" in stop and f"model_source.{change}" in stop
+    assert _folders(c) == before
+    assert (settings_copy.read_bytes() if settings_copy.exists() else None) == copied_before
+
+
 def test_every_refused_finished_run_is_named_before_anything_trains(world):
     c = world.comparison()
     world.place_all(c, skip={"uniform_s42"})

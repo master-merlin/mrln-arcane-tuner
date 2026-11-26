@@ -257,8 +257,55 @@ def copy_database(source: Path, target: Path, dataset: str, dataset_path: Path) 
             temp.unlink()
 
 
+def read_settings(source: Path) -> bytes | None:
+    """The user's settings file as it is now (the HF token, model overrides); None on a first launch."""
+    return Path(source).read_bytes() if Path(source).exists() else None
+
+
+def write_settings(content: bytes | None, target: Path) -> None:
+    """The comparison's settings copy holds ``content``; a first launch's settings are empty."""
+    write_bytes(target, b"{}\n" if content is None else content)
+
+
 def copy_settings(source: Path, target: Path) -> None:
-    """A copy of the user's settings (the HF token, model overrides); none on a first launch."""
-    if not Path(source).exists():
-        return
-    write_bytes(target, Path(source).read_bytes())
+    """A copy of the user's settings; none on a first launch."""
+    content = read_settings(source)
+    if content is not None:
+        write_settings(content, target)
+
+
+def _weights_fingerprint(folder: Path) -> str:
+    """The sha256 over every file's relative name, size and modification time under ``folder``:
+    weights swapped or rewritten in place change it, without reading gigabytes."""
+    folder = Path(folder)
+    if not folder.is_dir():
+        return f"missing: {folder}"
+    lines = []
+    for here, dirs, files in os.walk(folder, followlinks=True):
+        dirs.sort()
+        for name in sorted(files):
+            path = Path(here) / name
+            stat = path.stat()
+            lines.append(f"{path.relative_to(folder).as_posix()}:{stat.st_size}:{stat.st_mtime_ns}")
+    return hashlib.sha256("\n".join(lines).encode("utf-8")).hexdigest()
+
+
+def model_source(settings: bytes | None, definition_id: str) -> dict[str, Any]:
+    """Where the trainer loads ``definition_id``'s weights from under ``settings`` (the bytes of a
+    settings file): ``ModelOverrideManager.resolve_effective_source``'s answer (a test pins the
+    two agreeing; that module's settings are the process-wide file), plus a fingerprint of a local
+    weight folder."""
+    from app.core.schemas.model_overrides import ModelSettings, ModelSourceType
+
+    try:  # a pydantic refusal is a ValueError too
+        raw = json.loads(settings.decode("utf-8")) if settings else {}
+        models = ModelSettings.model_validate((raw.get("models") if isinstance(raw, dict) else None) or {})
+    except ValueError as exc:
+        raise ConfigError(f"the settings file's model sources can't be read: {exc}") from None
+    override = models.overrides.get(definition_id)
+    if not override or override.source_type == ModelSourceType.HF_HUB:
+        offline = models.global_offline_mode or (override.skip_update if override else False)
+        return {"source_type": ModelSourceType.HF_HUB.value, "local_path": None, "local_files_only": offline,
+                "weights": None}
+    return {"source_type": override.source_type.value, "local_path": override.local_path,
+            "local_files_only": False, "weights": _weights_fingerprint(Path(override.local_path))}

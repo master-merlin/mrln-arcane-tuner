@@ -1,5 +1,6 @@
 """The comparison's own database, settings, server log and dataset copy."""
 import hashlib
+import json
 import os
 import re
 import sqlite3
@@ -291,6 +292,44 @@ def test_a_link_inside_the_dataset_copy_is_refused_and_never_followed(tmp_path):
     with pytest.raises(RuntimeError, match="refusing the dataset copy"):
         isolation.copy_dataset(source, work)
     assert _tree(source) == before
+
+
+@pytest.mark.parametrize("models", [
+    None,
+    {},
+    {"global_offline_mode": True},
+    {"overrides": {"moss-image-base": {"source_type": "hf_hub", "skip_update": True}}},
+    {"overrides": {"moss-image-base": {"source_type": "local_diffusers", "local_path": "LOCAL"}}},
+    {"overrides": {"moss-image-base": {"source_type": "local_safetensors", "local_path": "LOCAL"}}},
+    {"overrides": {"other-model": {"source_type": "local_diffusers", "local_path": "LOCAL"}}},
+])
+def test_the_model_source_is_the_products_own_resolution(tmp_path, monkeypatch, models):
+    from app.core.schemas.model_overrides import ModelSettings
+    from app.engine.utils.model_override_manager import ModelOverrideManager
+
+    local = tmp_path / "weights"
+    local.mkdir()
+    (local / "model.safetensors").write_bytes(b"weights")
+    models = json.loads(json.dumps(models).replace("LOCAL", local.as_posix())) if models is not None else None
+    settings = None if models is None else json.dumps({"models": models}).encode("utf-8")
+    monkeypatch.setattr(ModelOverrideManager, "_load", staticmethod(lambda: ModelSettings.model_validate(models or {})))
+    source_type, local_path, local_files_only = ModelOverrideManager.resolve_effective_source("moss-image-base")
+    resolved = isolation.model_source(settings, "moss-image-base")
+    assert (resolved["source_type"], resolved["local_path"], resolved["local_files_only"]) == (
+        source_type.value, local_path, local_files_only)
+    assert (resolved["weights"] is None) == (local_path is None)
+
+
+def test_the_model_source_follows_the_weights_in_a_local_folder(tmp_path):
+    local = tmp_path / "weights"
+    (local / "transformer").mkdir(parents=True)
+    (local / "transformer" / "model.safetensors").write_bytes(b"weights A")
+    settings = json.dumps({"models": {"overrides": {"m": {"source_type": "local_diffusers",
+                                                           "local_path": str(local)}}}}).encode("utf-8")
+    first = isolation.model_source(settings, "m")
+    assert isolation.model_source(settings, "m") == first
+    (local / "transformer" / "model.safetensors").write_bytes(b"weights B, longer")
+    assert isolation.model_source(settings, "m")["weights"] != first["weights"]
 
 
 def test_the_dataset_digest_follows_content_not_order():

@@ -138,6 +138,11 @@ class World:
         self.base.update(changes)
         self.write_db()
 
+    def set_settings(self, content: dict) -> None:
+        """The user's settings file now holds ``content`` (the prepared runs are read afresh)."""
+        self.settings.write_text(json.dumps(content), encoding="utf-8")
+        self._prepared = []
+
     def comparison(self, **changes) -> plan.Comparison:
         changes.setdefault("port", self.port)
         return plan.load_comparison(write_config(self.root, **changes))

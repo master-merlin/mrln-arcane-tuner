@@ -274,11 +274,14 @@ def run_config(base: dict, c: Comparison, arm: str, seed: int) -> dict:
     return config
 
 
-def identity(c: Comparison, definition_id: str, dataset_digest: str, config: dict, effective: dict) -> dict:
-    """What sets a run's result: a finished run is reused only for an equal identity."""
+def identity(c: Comparison, definition_id: str, dataset_digest: str, config: dict, effective: dict,
+             model_source: dict) -> dict:
+    """What sets a run's result: a finished run is reused only for an equal identity.
+    ``model_source`` is where the weights load from (``isolation.model_source``)."""
     content = {
         "version": IDENTITY_VERSION,
         "definition_id": definition_id,
+        "model_source": model_source,
         "dataset": dataset_name(config),
         "dataset_digest": dataset_digest,
         "config": {k: v for k, v in config.items() if k not in NAME_AND_PATH_KEYS},

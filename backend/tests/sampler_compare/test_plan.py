@@ -181,11 +181,15 @@ def test_a_run_never_stores_a_quantized_copy(tmp_path, base):
     assert config["store_quantized_version"] is False
 
 
-def _identity(c, base=BASE, arm="radc", seed=42, definition="moss-image-base", digest="a", effective=None):
+_HUB = {"source_type": "hf_hub", "local_path": None, "local_files_only": False, "weights": None}
+
+
+def _identity(c, base=BASE, arm="radc", seed=42, definition="moss-image-base", digest="a", effective=None,
+              model_source=None):
     config = plan.run_config(base, c, arm, seed)
     if effective is None:
         effective = {k: v for k, v in config.items() if k in TIMESTEP_KEYS}
-    return plan.identity(c, definition, digest, config, effective)
+    return plan.identity(c, definition, digest, config, effective, model_source or _HUB)
 
 
 def _with_validation(c, **changes):
@@ -204,6 +208,7 @@ def _with_validation(c, **changes):
         ("radc_end", ["config.radc_end", "effective_sampler.radc_end"]),
         ("definition", ["definition_id"]),
         ("digest", ["dataset_digest"]),
+        ("model_source", ["model_source.local_path", "model_source.source_type", "model_source.weights"]),
         ("version", ["version"]),
     ],
 )
@@ -229,6 +234,9 @@ def test_an_identity_names_everything_that_sets_the_result(tmp_path, monkeypatch
         requested = _identity(c, definition="moss-image-sft")
     elif change == "digest":
         requested = _identity(c, digest="b")
+    elif change == "model_source":
+        requested = _identity(c, model_source={**_HUB, "source_type": "local_diffusers", "local_path": "D:/b",
+                                               "weights": "f" * 64})
     else:
         monkeypatch.setattr(plan, "IDENTITY_VERSION", 2)
         requested = _identity(c)

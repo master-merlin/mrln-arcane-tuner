@@ -150,28 +150,31 @@ class Prepared:
     facts: dict
     manifest: dict[str, str]
     requested: dict[str, dict]
+    settings: bytes | None = None  # the user's settings as read once; the runs' copy is written from these
 
 
 def requested_identities(c: Comparison, base: dict, definition_id: str, facts: dict,
-                         dataset_digest: str) -> dict[str, dict]:
+                         dataset_digest: str, model_source: dict) -> dict[str, dict]:
     """label -> the identity each run of the queue is asked for now."""
     return {
         plan.label(arm, seed): plan.identity(c, definition_id, dataset_digest, plan.run_config(base, c, arm, seed),
-                                             facts["arms"][arm]["effective"])
+                                             facts["arms"][arm]["effective"], model_source)
         for arm, seed in plan.queue(c)
     }
 
 
 def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
-    """Read the reference job, copy (or, without ``copy``, only hash) the dataset, ask the product
-    for its facts, and resolve every run's requested identity."""
+    """Read the reference job and the user's settings, copy (or, without ``copy``, only hash) the
+    dataset, ask the product for its facts, and resolve every run's requested identity. The
+    settings copy is written later (``run_queue``), once no finished run is refused."""
     base, definition_id = read_reference(seams.user_db, c.reference_job)
+    settings = isolation.read_settings(seams.user_settings)
+    model_source = isolation.model_source(settings, definition_id)
     first_arm, first_seed = plan.queue(c)[0]
     dataset = plan.dataset_name(plan.run_config(base, c, first_arm, first_seed))
     source = source_dataset(seams.user_db, dataset)
     manifest = isolation.copy_dataset(source, c.work_dir, copy=copy)
     if copy:
-        isolation.copy_settings(seams.user_settings, c.work_dir / isolation.ISOLATED_PATHS["MRLN_SETTINGS_PATH"])
         facts = seams.facts(definition_id, c.arms, isolation.child_env(c, _db_folder(c) / "facts.db"))
     else:  # nothing is written into the work folder: the fact child's stores go to a scratch folder
         with tempfile.TemporaryDirectory(prefix="sampler-compare-", ignore_cleanup_errors=True) as scratch:
@@ -182,7 +185,7 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
         raise ConfigError(f"the trainer's loopback calls would go to port {facts['api_port']}, not {c.port}")
     digest = isolation.dataset_digest(manifest)
     return Prepared(definition_id, dataset, source, facts, manifest,
-                    requested_identities(c, base, definition_id, facts, digest))
+                    requested_identities(c, base, definition_id, facts, digest, model_source), settings)
 
 
 # ── A run's files ───────────────────────────────────────────────────────────
@@ -768,6 +771,8 @@ def run_queue(c: Comparison, seams: Seams, prepared: Prepared | None = None) -> 
         status.write(running=None, queue_stop=str(exc))
         return str(exc)
     stop = refused_runs(c, prepared)
+    if stop is None:  # the settings the identities were resolved from, and no others
+        isolation.write_settings(prepared.settings, c.work_dir / isolation.ISOLATED_PATHS["MRLN_SETTINGS_PATH"])
     for arm, seed in plan.queue(c) if stop is None else ():
         label = plan.label(arm, seed)
         folder = run_dir(c, label, prepared.definition_id)

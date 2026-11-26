@@ -20,6 +20,7 @@ from app.engine.strategies.timestep_keys import PARAMETER_ALIASES, TIMESTEP_PARA
 
 MARKER = "SAMPLER-COMPARE-FACTS "
 CHILD_TIMEOUT_S = 300
+DOWNLOAD_TIMEOUT_S = 6 * 3600  # a missing model of tens of GB on a slow line, still bounded
 KILL_WAIT_S = 30
 _TOLERANCE = 1e-9
 
@@ -153,7 +154,34 @@ def facts_in_child(definition_id: str, arms: dict[str, dict], env: dict[str, str
     raise RuntimeError(f"the product facts child printed no facts: {stdout[-1500:]}")
 
 
+def prefetch_here(definition_id: str) -> None:
+    """Download what the definition loads from the hub and the cache lacks, the product's way
+    (``ModelPathResolver.ensure_definition_cached``, which leaves a local override alone)."""
+    from app.engine.models.registry import registry
+    from app.engine.utils.model_utils import ModelPathResolver
+
+    registry.initialize()
+    definition = registry.get_definition(definition_id)
+    if definition is None:
+        raise ValueError(f"no model definition {definition_id!r}")
+    ModelPathResolver.ensure_definition_cached(definition)
+
+
+def prefetch_in_child(definition_id: str, env: dict[str, str], python: str) -> None:
+    """``prefetch_here`` in a child of ``python`` under ``env``, bounded by ``DOWNLOAD_TIMEOUT_S``."""
+    argv = [python, "-m", "app.core.sampler_compare.facts", "--prefetch", definition_id]
+    try:
+        code, _, stderr = run_child(argv, env, DOWNLOAD_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise RuntimeError(f"the weight download did not finish within {DOWNLOAD_TIMEOUT_S / 3600:g} h") from None
+    if code != 0:
+        raise RuntimeError(f"the weight download exited with {code}: {stderr[-1500:]}")
+
+
 def main(argv: list[str]) -> int:
+    if argv[:1] == ["--prefetch"]:
+        prefetch_here(argv[1])
+        return 0
     definition_id, arms = argv
     sys.stdout.write(MARKER + json.dumps(facts_here(definition_id, json.loads(arms))) + "\n")
     sys.stdout.flush()

@@ -595,6 +595,54 @@ def test_a_hub_snapshot_moved_between_arms_stops_the_queue(world, tmp_path, monk
     assert stop.startswith("radc_s42: before the run:") and "model_source.revision" in stop
 
 
+def test_permitted_downloads_finish_before_the_identities_are_fixed(world, tmp_path, monkeypatch):
+    cache = _hub_world(world, tmp_path, monkeypatch)
+    for entry in cache.iterdir():  # an empty cache: the component is not downloaded yet
+        os.rename(entry, tmp_path / entry.name)
+    prefetched = []
+
+    def download(definition_id, env):  # ModelPathResolver.ensure_definition_cached, online
+        prefetched.append((definition_id, env.get("HF_HUB_OFFLINE"), Path(env["MRLN_SETTINGS_PATH"]).read_bytes()))
+        hub_snapshot(cache, "org/base", "a" * 40)
+
+    real_argv = world.trainer_argv
+
+    def argv(c, definition_id, config):  # a trainer with downloads on fetches what is missing
+        if not (cache / "models--org--base").exists():
+            hub_snapshot(cache, "org/base", "a" * 40)
+        return real_argv(c, definition_id, config)
+
+    c = world.comparison(allow_downloads=True)
+    stop = runner.run_queue(c, world.seams(prefetch=download, trainer_argv=argv))
+    assert stop is None and world.trainer_starts == 4
+    assert prefetched == [(DEFINITION, None, world.settings.read_bytes())]
+    identity = json.loads((c.work_dir / "logs" / "radc_s43.identity.json").read_text(encoding="utf-8"))
+    assert identity["model_source"]["revision"] == {HUB_PATH: "a" * 40}
+
+
+def test_nothing_is_downloaded_unless_the_config_allows_it(world, tmp_path, monkeypatch):
+    _hub_world(world, tmp_path, monkeypatch)
+
+    def download(definition_id, env):
+        raise AssertionError("a download without allow_downloads")
+
+    c = world.comparison()
+    world.place_all(c)
+    assert runner.run_queue(c, world.seams(prefetch=download)) is None
+
+
+def test_a_fully_local_override_does_not_follow_the_hub_cache(world, tmp_path, monkeypatch):
+    cache = _hub_world(world, tmp_path, monkeypatch)
+    weights = _weights(tmp_path / "local-model")
+    world.set_settings({"models": {"overrides": {DEFINITION: {"source_type": "local_safetensors",
+                                                              "local_path": str(weights)}}}})
+    c = world.comparison()
+    world.place_all(c)
+    world._prepared = []
+    hub_snapshot(cache, "org/base", "b" * 40)  # the definition's unused hub entry moves on
+    assert runner.run_queue(c, world.seams()) is None and world.trainer_starts == 0
+
+
 def _enabled(db_path):
     db = sqlite3.connect(db_path)
     try:

@@ -41,6 +41,14 @@ def test_the_hub_paths_are_every_component_the_loader_fetches(definition_id):
     assert facts.facts_here(definition_id, {"a": {}})["hub_paths"] == wanted
 
 
+def test_the_download_child_names_a_definition_it_cannot_fetch(tmp_path):
+    env = {**os.environ, "HF_HUB_OFFLINE": "1", "MRLN_SETTINGS_PATH": str(tmp_path / "settings.json"),
+           "MRLN_DB_PATH": str(tmp_path / "db" / "x.db"), "MRLN_SERVER_LOG_PATH": str(tmp_path / "server.log"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    with pytest.raises(RuntimeError, match="(?s)the weight download exited with .*no-such-model"):
+        facts.prefetch_in_child("no-such-model", env, sys.executable)
+
+
 def test_the_timestep_keys_are_the_products_own():
     assert timestep_keys.TIMESTEP_KEYS == {"timestep_sampling", *TIMESTEP_PARAMETERS, "logit_normal_mean",
                                            "logit_normal_std"}

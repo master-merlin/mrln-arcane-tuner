@@ -93,6 +93,8 @@ class Seams:
     user_db: Path
     user_settings: Path
     port_answers: Callable[[int], bool] = port_answers  # the only probe once a backend is started
+    # (definition_id, env): downloads what the cache lacks, with ``allow_downloads`` only (``prepare``)
+    prefetch: Callable[[str, dict], None] | None = None
     poll_s: float = 3.0
     ready_wait_s: float = READY_WAIT_S
     card_problem: str | None = None  # why the card read can't be told to be the trainer's
@@ -119,6 +121,7 @@ class Seams:
             trainer_argv=trainer_argv,
             port_taken=port_taken,
             facts=lambda definition_id, arms, env: facts_module.facts_in_child(definition_id, arms, env, python),
+            prefetch=lambda definition_id, env: facts_module.prefetch_in_child(definition_id, env, python),
             user_db=Path(DatabaseEngine().db_path),  # where the backend's own engine looks; opens nothing
             user_settings=Path(port_resolver.settings_path()),
             card_problem=card_problem,
@@ -279,11 +282,24 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
                 c, root / isolation.ISOLATED_PATHS["MRLN_DB_PATH"] / "facts.db", root=root))
     if int(facts["api_port"]) != c.port:
         raise ConfigError(f"the trainer's loopback calls would go to port {facts['api_port']}, not {c.port}")
+    if copy and c.allow_downloads and seams.prefetch is not None:
+        _prefetch(c, seams, definition_id, settings)
     model_source = isolation.model_source(settings, definition_id, facts["hub_paths"])
     digest = isolation.dataset_digest(manifest)
     return Prepared(definition_id, dataset, source, facts, manifest,
                     requested_identities(c, base, definition_id, facts, digest, model_source, metadata_digest),
                     settings)
+
+
+def _prefetch(c: Comparison, seams: Seams, definition_id: str, settings: bytes | None) -> None:
+    """With ``allow_downloads``, every missing weight is downloaded before the identities record the
+    cached snapshots, under the same settings (model overrides) the runs get; the snapshots recorded
+    then are checked before every arm (``isolation.model_source_problem``)."""
+    with tempfile.TemporaryDirectory(prefix="sampler-compare-", ignore_cleanup_errors=True) as scratch:
+        root = Path(scratch)
+        isolation.write_settings(settings, root / isolation.ISOLATED_PATHS["MRLN_SETTINGS_PATH"])
+        seams.prefetch(definition_id, isolation.child_env(
+            c, root / isolation.ISOLATED_PATHS["MRLN_DB_PATH"] / "prefetch.db", root=root))
 
 
 # ── A run's files ───────────────────────────────────────────────────────────

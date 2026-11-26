@@ -447,8 +447,11 @@ def model_source(settings: bytes | None, definition_id: str, hub_paths: list[str
     except ValueError as exc:
         raise ConfigError(f"the settings file's model sources can't be read: {exc}") from None
     cache = hub_cache() if cache is None else Path(cache)
-    hub = {"hub_paths": list(hub_paths), "revision": {path: _hub_revision(path, cache) for path in hub_paths}}
     override = models.overrides.get(definition_id)
+    # A local safetensors folder is loaded whole from disk, every component found in it
+    # (``_resolve_safetensors_component``): no hub snapshot is read, so none is recorded.
+    used = () if override and override.source_type == ModelSourceType.LOCAL_SAFETENSORS else hub_paths
+    hub = {"hub_paths": list(hub_paths), "revision": {path: _hub_revision(path, cache) for path in used}}
     if not override or override.source_type == ModelSourceType.HF_HUB:
         offline = models.global_offline_mode or (override.skip_update if override else False)
         return {"source_type": ModelSourceType.HF_HUB.value, "local_path": None, "local_files_only": offline,

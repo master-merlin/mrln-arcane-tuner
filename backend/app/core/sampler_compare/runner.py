@@ -283,24 +283,16 @@ def _mask_rebuild(c: Comparison, seams: Seams, base: dict) -> Callable[[Path], N
 
 
 def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
-    """Read the reference job and the user's settings, copy (or, without ``copy``, only hash) the
-    dataset, ask the product for its facts, and resolve every run's requested identity. The
-    settings copy is written later (``run_queue``), once no finished run is refused."""
+    """Read the reference job and the user's settings, ask the product for its facts (which refuse
+    a definition no comparison can train), then copy (or, without ``copy``, only hash) the dataset
+    and resolve every run's requested identity. The settings copy is written later
+    (``run_queue``), once no finished run is refused."""
     base, definition_id = read_reference(seams.user_db, c.reference_job)
     settings = isolation.read_settings(seams.user_settings)
     first_arm, first_seed = plan.queue(c)[0]
     first_config = plan.run_config(base, c, first_arm, first_seed)
     dataset = plan.dataset_name(first_config)
     source = source_dataset(seams.user_db, dataset)
-    manifest = isolation.copy_dataset(source, c.work_dir, copy=copy,
-                                      rebuild=_mask_rebuild(c, seams, base) if copy else None,
-                                      recipe=isolation.mask_recipe(_mask_opacity(base)))
-    snapshot = c.work_dir / isolation.METADATA_SNAPSHOT
-    if copy:
-        snapshot = isolation.snapshot_database(seams.user_db, c.work_dir, dataset)
-    elif not snapshot.exists():  # what the first launch would take
-        snapshot = seams.user_db
-    metadata_digest = isolation.dataset_metadata_digest(snapshot, dataset)
     if copy:
         facts = seams.facts(definition_id, c.arms, isolation.child_env(c, _db_folder(c) / "facts.db"))
     else:  # nothing is written into the work folder: the fact child's stores go to a scratch folder
@@ -310,6 +302,15 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
                 c, root / isolation.ISOLATED_PATHS["MRLN_DB_PATH"] / "facts.db", root=root))
     if int(facts["api_port"]) != c.port:
         raise ConfigError(f"the trainer's loopback calls would go to port {facts['api_port']}, not {c.port}")
+    manifest = isolation.copy_dataset(source, c.work_dir, copy=copy,
+                                      rebuild=_mask_rebuild(c, seams, base) if copy else None,
+                                      recipe=isolation.mask_recipe(_mask_opacity(base)))
+    snapshot = c.work_dir / isolation.METADATA_SNAPSHOT
+    if copy:
+        snapshot = isolation.snapshot_database(seams.user_db, c.work_dir, dataset)
+    elif not snapshot.exists():  # what the first launch would take
+        snapshot = seams.user_db
+    metadata_digest = isolation.dataset_metadata_digest(snapshot, dataset)
     if copy and c.allow_downloads and seams.prefetch is not None:
         _prefetch(c, seams, definition_id, settings)
     model_source = isolation.model_source(settings, definition_id, facts["hub_paths"],

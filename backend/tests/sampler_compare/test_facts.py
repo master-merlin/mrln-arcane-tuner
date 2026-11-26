@@ -28,6 +28,10 @@ def _registry():
     registry.initialize()
 
 
+# Samples with flow-matching timesteps, but its trainer declares no validation timestep domain.
+NO_VALIDATION = "hidream_o1_image"
+
+
 def _arm(definition_id, arm):
     return facts.facts_here(definition_id, {"a": arm})["arms"]["a"]
 
@@ -38,7 +42,14 @@ def test_the_hub_paths_are_every_component_the_loader_fetches(definition_id):
     wanted = sorted({c.path for c in definition.components.values()
                      if isinstance(getattr(c, "path", None), str) and c.path.startswith("huggingface:")})
     assert wanted  # both definitions load from the hub
-    assert facts.facts_here(definition_id, {"a": {}})["hub_paths"] == wanted
+    assert facts.hub_paths(definition) == wanted
+
+
+def test_the_facts_carry_both_hub_path_lists():
+    definition = registry.get_definition("moss-image-base")
+    got = facts.facts_here("moss-image-base", {"a": {}})
+    assert got["hub_paths"] == facts.hub_paths(definition)
+    assert got["local_hub_paths"] == facts.loader_hub_paths(definition)
 
 
 def test_every_family_has_the_one_loader_the_prefetch_builds():
@@ -54,7 +65,7 @@ def test_every_family_has_the_one_loader_the_prefetch_builds():
 def test_a_local_diffusers_root_still_loads_its_explicit_components_from_the_hub():
     definition = registry.get_definition("sdxl_base_1.0")
     wanted = sorted({definition.components["unet"].path, definition.components["vae"].path})
-    assert facts.facts_here("sdxl_base_1.0", {"a": {}})["local_hub_paths"] == wanted
+    assert facts.loader_hub_paths(definition) == wanted
 
 
 def test_the_prefetch_follows_the_loader_under_a_local_diffusers_root(monkeypatch):
@@ -121,7 +132,8 @@ def test_the_family_default_arm_is_the_definitions_own_draw():
 
 
 def test_a_definition_that_declares_nothing_gets_the_schema_defaults():
-    arm = _arm("sdxl_base_1.0", {})
+    assert apply_family_timestep_defaults(registry.get_definition("flux1-dev"), {}) == {}
+    arm = _arm("flux1-dev", {})
     assert arm["effective"] == TIMESTEP_SCHEMA_DEFAULTS
     assert arm["effective"]["logit_normal_mu"] == 0.0 and arm["effective"]["logit_normal_sigma"] == 1.0
     assert set(arm["source"].values()) == {"schema"}
@@ -232,3 +244,67 @@ def test_a_child_past_its_time_is_ended_with_everything_it_started(tmp_path):
 def test_an_unknown_definition_is_an_error_naming_it():
     with pytest.raises(ValueError, match="no-such-model"):
         facts.facts_here("no-such-model", {"a": {}})
+
+
+def test_a_definition_that_draws_its_own_timesteps_is_refused_naming_why():
+    from app.engine.core.archetypes import resolve_capabilities
+
+    assert not resolve_capabilities(registry.get_definition("sdxl_base_1.0"))["capabilities"][
+        "supports_flow_timestep_sampling"]
+    with pytest.raises(ValueError, match="sdxl_base_1.0 declares no flow-matching timestep sampling"):
+        facts.facts_here("sdxl_base_1.0", {"a": {"timestep_sampling": "radc"}})
+
+
+def test_a_definition_without_validation_is_refused_with_the_products_reason(monkeypatch):
+    from app.engine.core.pipeline import validation_split
+
+    calls = []
+    real = validation_split.refusal_reason
+
+    def noting(*args):
+        calls.append(args[1])
+        return real(*args)
+
+    monkeypatch.setattr(validation_split, "refusal_reason", noting)
+    with pytest.raises(ValueError, match="Validation is unavailable for the .* family in this version"):
+        facts.facts_here(NO_VALIDATION, {"a": {}})
+    assert calls == [None]
+
+
+def test_the_dry_runs_facts_child_refuses_a_definition_it_cannot_compare(tmp_path):
+    settings = tmp_path / "settings.json"
+    settings.write_text("{}", encoding="utf-8")
+    env = {**os.environ, "MRLN_SETTINGS_PATH": str(settings), "MRLN_SERVER_LOG_PATH": str(tmp_path / "server.log"),
+           "PYTHONDONTWRITEBYTECODE": "1"}
+    with pytest.raises(RuntimeError, match="(?s)exited with .*declares no flow-matching timestep sampling"):
+        facts.facts_in_child("sdxl_base_1.0", {"a": {"timestep_sampling": "radc"}}, env, sys.executable)
+
+
+def _hf_world(monkeypatch, external):
+    from app.core import hf_auth
+    from app.core.schemas.model_overrides import ModelSettings, ModelSourceType
+    from app.engine.utils.model_override_manager import ModelOverrideManager
+    from app.engine.utils.model_utils import ModelPathResolver
+
+    for var in ("HF_TOKEN", "HUGGING_FACE_HUB_TOKEN"):
+        monkeypatch.delenv(var, raising=False)
+    monkeypatch.setattr(hf_auth, "_EXTERNAL_HF_TOKEN", external)
+    monkeypatch.setattr(ModelOverrideManager, "get_all", staticmethod(lambda: ModelSettings(hf_token="saved-token")))
+    monkeypatch.setattr(ModelOverrideManager, "resolve_effective_source", staticmethod(
+        lambda definition_id: (ModelSourceType.HF_HUB, None, False)))
+    seen = []
+    monkeypatch.setattr(ModelPathResolver, "ensure_definition_cached", staticmethod(
+        lambda definition: seen.append((os.environ.get("HF_TOKEN"), os.environ.get("HUGGING_FACE_HUB_TOKEN")))))
+    return seen
+
+
+def test_the_prefetch_downloads_with_the_token_saved_in_settings(monkeypatch):
+    seen = _hf_world(monkeypatch, external="")
+    facts.prefetch_here("moss-image-base")
+    assert seen == [("saved-token", "saved-token")]
+
+
+def test_an_environment_token_still_wins_over_the_saved_one_in_the_prefetch(monkeypatch):
+    seen = _hf_world(monkeypatch, external="env-token")
+    facts.prefetch_here("moss-image-base")
+    assert seen == [("env-token", "env-token")]

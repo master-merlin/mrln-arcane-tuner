@@ -74,8 +74,35 @@ def sampler_mismatch(logged_config: dict, effective: dict) -> str | None:
     return None
 
 
+def refusal(definition: Any) -> str | None:
+    """Why no comparison can train ``definition``, or None: the product's own checks, as its
+    trainer would make them once the weights are loaded. A definition whose trainer draws its own
+    timesteps (``supports_flow_timestep_sampling`` off) takes no sampler setting, and every arm
+    measures validation loss, which ``validation_split.refusal_reason`` refuses without the
+    trainer's ``validation_timestep_domain``."""
+    from app.engine.core.noise_map import NO_FLOW_SAMPLING, capabilities
+    from app.engine.core.pipeline import validation_split
+    from app.engine.models.registry import registry
+
+    if not capabilities(definition).get("supports_flow_timestep_sampling", True):
+        return f"{definition.id} {NO_FLOW_SAMPLING}; no sampler can be compared on it"
+    family = registry.get_family_class(definition.family)(definition, {})
+    trainer = family.get_trainer_class()
+    return validation_split.refusal_reason(getattr(family, "family_name", None) or definition.family,
+                                           getattr(trainer, "validation_timestep_domain", None), [], {}, {})
+
+
+def hub_paths(definition: Any) -> list[str]:
+    """Every component the loader fetches from the hub (``ModelPathResolver``'s ``huggingface:``
+    paths, as ``model_utils`` prefetches them): ``isolation.model_source`` records each one's
+    cached snapshot."""
+    return sorted({c.path for c in definition.components.values()
+                   if isinstance(getattr(c, "path", None), str) and c.path.startswith("huggingface:")})
+
+
 def facts_here(definition_id: str, arms: dict[str, dict]) -> dict:
-    """The facts, resolved in this process (it imports the engine, and with it torch)."""
+    """The facts, resolved in this process (it imports the engine, and with it torch). A definition
+    no comparison can train (``refusal``) raises ``ValueError`` naming why."""
     from app.engine.core.pipeline.pipeline_data import _resolve_api_port
     from app.engine.models.registry import registry
     from app.engine.strategies.timestep_sampling import apply_family_timestep_defaults
@@ -84,6 +111,9 @@ def facts_here(definition_id: str, arms: dict[str, dict]) -> dict:
     definition = registry.get_definition(definition_id)
     if definition is None:
         raise ValueError(f"no model definition {definition_id!r}")
+    reason = refusal(definition)
+    if reason:
+        raise ValueError(f"the comparison can't train {definition_id}: {reason}")
     resolved = {}
     for arm, settings in arms.items():
         given = canonical_sampler(settings)
@@ -99,11 +129,7 @@ def facts_here(definition_id: str, arms: dict[str, dict]) -> dict:
                 effective[key] = _canonical_value(key, TIMESTEP_SCHEMA_DEFAULTS[key])
                 source[key] = "schema"
         resolved[arm] = {"effective": effective, "source": source}
-    # Every component the loader fetches from the hub (``ModelPathResolver``'s ``huggingface:`` paths,
-    # as ``model_utils`` prefetches them): ``isolation.model_source`` records each one's cached snapshot.
-    hub_paths = sorted({c.path for c in definition.components.values()
-                        if isinstance(getattr(c, "path", None), str) and c.path.startswith("huggingface:")})
-    return {"api_port": _resolve_api_port(), "arms": resolved, "hub_paths": hub_paths,
+    return {"api_port": _resolve_api_port(), "arms": resolved, "hub_paths": hub_paths(definition),
             "local_hub_paths": loader_hub_paths(definition)}
 
 
@@ -203,12 +229,15 @@ def loader_hub_paths(definition: Any) -> list[str]:
 def prefetch_here(definition_id: str) -> None:
     """Download what the definition loads from the hub and the cache lacks, the product's way
     (``ModelPathResolver.ensure_definition_cached``, which leaves a local override alone), and
-    under a local Diffusers root the hub components its loader still resolves (``loader_hub_paths``)."""
+    under a local Diffusers root the hub components its loader still resolves (``loader_hub_paths``).
+    The hub token is applied first, as the backend and the trainer apply it at their start."""
+    from app.core.hf_auth import apply_hf_auth
     from app.core.schemas.model_overrides import ModelSourceType
     from app.engine.models.registry import registry
     from app.engine.utils.model_override_manager import ModelOverrideManager
     from app.engine.utils.model_utils import ModelPathResolver
 
+    apply_hf_auth(ModelOverrideManager.get_all().hf_token)
     registry.initialize()
     definition = registry.get_definition(definition_id)
     if definition is None:

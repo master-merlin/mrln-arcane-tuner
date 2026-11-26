@@ -729,14 +729,15 @@ def test_a_retry_after_a_failed_start_under_another_mask_recipe_is_refused(world
     def rebuild(target, opacity, env):
         calls.append(opacity)
 
-    def no_facts(*args):
-        raise RuntimeError("the facts child failed")
+    def no_download(*args):
+        raise RuntimeError("the weight download failed")
 
-    c = world.comparison()
-    assert runner.run_queue(c, world.seams(rebuild_masks=rebuild, facts=no_facts)) == "the facts child failed"
+    c = world.comparison(allow_downloads=True)
+    assert runner.run_queue(c, world.seams(rebuild_masks=rebuild, prefetch=no_download)) == \
+        "the weight download failed"
     assert calls == [0.0] and isolation.manifest_path(c.work_dir / isolation.DATASET_FOLDER).exists()
     world.set_base(datasets=[{**world.base["datasets"][0], **retry}])
-    stop = runner.run_queue(c, world.seams(rebuild_masks=rebuild))
+    stop = runner.run_queue(c, world.seams(rebuild_masks=rebuild, prefetch=lambda *args: None))
     assert named in stop and "start a comparison of another name" in stop
     assert calls == [0.0] and world.trainer_starts == 0 and world.backend_starts == 0
     with pytest.raises(RuntimeError, match=named):  # the report's reading, which copies nothing
@@ -750,13 +751,33 @@ def test_a_retry_after_a_failed_start_under_the_same_mask_recipe_reuses_the_copy
     def rebuild(target, opacity, env):
         calls.append(opacity)
 
-    def no_facts(*args):
-        raise RuntimeError("the facts child failed")
+    def no_download(*args):
+        raise RuntimeError("the weight download failed")
 
-    c = world.comparison()
-    runner.run_queue(c, world.seams(rebuild_masks=rebuild, facts=no_facts))
-    assert runner.run_queue(c, world.seams(rebuild_masks=rebuild)) is None
+    c = world.comparison(allow_downloads=True)
+    runner.run_queue(c, world.seams(rebuild_masks=rebuild, prefetch=no_download))
+    assert runner.run_queue(c, world.seams(rebuild_masks=rebuild, prefetch=lambda *args: None)) is None
     assert calls == [0.0] and world.trainer_starts == 4
+
+
+def test_a_definition_the_product_cannot_compare_is_refused_before_the_copy_or_a_download(world):
+    from app.core.sampler_compare import facts as facts_module
+
+    def product_facts(definition_id, arms, env):  # the product's own checks, as its child runs them
+        try:
+            return facts_module.facts_here("sdxl_base_1.0", arms)
+        except ValueError as exc:
+            raise RuntimeError(f"the product facts child exited with 1: {exc}") from None
+
+    def download(*args):
+        raise AssertionError("a download for a definition the comparison refuses")
+
+    c = world.comparison(allow_downloads=True)
+    stop = runner.run_queue(c, world.seams(facts=product_facts, prefetch=download))
+    assert "declares no flow-matching timestep sampling" in stop
+    assert not (c.work_dir / isolation.DATASET_FOLDER).exists()
+    assert not (c.work_dir / isolation.METADATA_SNAPSHOT).exists()
+    assert world.trainer_starts == 0 and world.backend_starts == 0
 
 
 def test_a_job_without_mask_recreation_rebuilds_nothing(world):

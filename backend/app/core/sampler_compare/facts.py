@@ -103,7 +103,8 @@ def facts_here(definition_id: str, arms: dict[str, dict]) -> dict:
     # as ``model_utils`` prefetches them): ``isolation.model_source`` records each one's cached snapshot.
     hub_paths = sorted({c.path for c in definition.components.values()
                         if isinstance(getattr(c, "path", None), str) and c.path.startswith("huggingface:")})
-    return {"api_port": _resolve_api_port(), "arms": resolved, "hub_paths": hub_paths}
+    return {"api_port": _resolve_api_port(), "arms": resolved, "hub_paths": hub_paths,
+            "local_hub_paths": loader_hub_paths(definition)}
 
 
 def kill_all(processes: list[psutil.Process], wait_s: float) -> None:
@@ -157,10 +158,55 @@ def facts_in_child(definition_id: str, arms: dict[str, dict], env: dict[str, str
     raise RuntimeError(f"the product facts child printed no facts: {stdout[-1500:]}")
 
 
+def _family_loader(definition: Any) -> Any:
+    """The family's own component loader (the one ``GenericComponentLoader`` subclass its
+    ``loader`` module defines, which its trainer builds), on the CPU; nothing is loaded."""
+    import importlib
+    import inspect
+
+    from app.engine.core.pipeline.loader_base import GenericComponentLoader
+
+    module = importlib.import_module(f"app.engine.models.families.{definition.family}.loader")
+    found = [cls for _, cls in inspect.getmembers(module, inspect.isclass)
+             if issubclass(cls, GenericComponentLoader) and cls.__module__ == module.__name__]
+    if len(found) != 1:
+        raise RuntimeError(f"family {definition.family} defines {len(found)} component loaders, not one")
+    return found[0]("cpu")
+
+
+def loader_hub_paths(definition: Any) -> list[str]:
+    """The ``huggingface:`` paths the family's loader still resolves from the hub under a local
+    Diffusers root: its own ``_resolve_component_path`` for every component of its manifest, run
+    against an empty stand-in root, with ``ModelPathResolver.resolve`` only noting hub paths."""
+    import tempfile
+
+    from app.engine.utils.model_utils import ModelPathResolver
+
+    loader, seen = _family_loader(definition), set()
+    real = ModelPathResolver.resolve
+    with tempfile.TemporaryDirectory(prefix="sampler-compare-root-") as root:
+        def noting(path_str, base_dir=None, *, local_files_only=False):
+            if isinstance(path_str, str) and path_str.startswith("huggingface:"):
+                seen.add(path_str)
+                return os.path.join(root, "hub")
+            return real(path_str, base_dir, local_files_only=local_files_only)
+
+        ModelPathResolver.resolve = staticmethod(noting)
+        try:
+            for spec in loader.get_component_manifest(definition):
+                loader._resolve_component_path(spec, definition, root)
+        finally:
+            ModelPathResolver.resolve = staticmethod(real)
+    return sorted(seen)
+
+
 def prefetch_here(definition_id: str) -> None:
     """Download what the definition loads from the hub and the cache lacks, the product's way
-    (``ModelPathResolver.ensure_definition_cached``, which leaves a local override alone)."""
+    (``ModelPathResolver.ensure_definition_cached``, which leaves a local override alone), and
+    under a local Diffusers root the hub components its loader still resolves (``loader_hub_paths``)."""
+    from app.core.schemas.model_overrides import ModelSourceType
     from app.engine.models.registry import registry
+    from app.engine.utils.model_override_manager import ModelOverrideManager
     from app.engine.utils.model_utils import ModelPathResolver
 
     registry.initialize()
@@ -168,6 +214,10 @@ def prefetch_here(definition_id: str) -> None:
     if definition is None:
         raise ValueError(f"no model definition {definition_id!r}")
     ModelPathResolver.ensure_definition_cached(definition)
+    source_type, _, _ = ModelOverrideManager.resolve_effective_source(definition.id)
+    if source_type == ModelSourceType.LOCAL_DIFFUSERS:
+        for path in loader_hub_paths(definition):
+            ModelPathResolver.resolve(path, local_files_only=False)
 
 
 def prefetch_in_child(definition_id: str, env: dict[str, str], python: str) -> None:

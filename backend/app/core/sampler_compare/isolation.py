@@ -420,7 +420,7 @@ def _hub_revision(path: str, cache: Path) -> str:
 
 
 def model_source(settings: bytes | None, definition_id: str, hub_paths: list[str] | tuple = (),
-                 cache: Path | None = None) -> dict[str, Any]:
+                 cache: Path | None = None, local_hub_paths: list[str] | tuple = ()) -> dict[str, Any]:
     """Where the trainer loads ``definition_id``'s weights from under ``settings`` (the bytes of a
     settings file): ``ModelOverrideManager.resolve_effective_source``'s answer (a test pins the
     two agreeing; that module's settings are the process-wide file), a fingerprint of a local
@@ -436,9 +436,14 @@ def model_source(settings: bytes | None, definition_id: str, hub_paths: list[str
     cache = hub_cache() if cache is None else Path(cache)
     override = models.overrides.get(definition_id)
     # A local safetensors folder is loaded whole from disk, every component found in it
-    # (``_resolve_safetensors_component``): no hub snapshot is read, so none is recorded.
-    used = () if override and override.source_type == ModelSourceType.LOCAL_SAFETENSORS else hub_paths
-    hub = {"hub_paths": list(hub_paths), "revision": {path: _hub_revision(path, cache) for path in used}}
+    # (``_resolve_safetensors_component``): no hub snapshot is read, so none is recorded. Under a
+    # local Diffusers root the loader still takes some components from the hub (``local_hub_paths``,
+    # ``facts.loader_hub_paths``); only those are.
+    source_type = override.source_type if override else ModelSourceType.HF_HUB
+    used = {ModelSourceType.LOCAL_SAFETENSORS: (), ModelSourceType.LOCAL_DIFFUSERS: local_hub_paths}.get(
+        source_type, hub_paths)
+    hub = {"hub_paths": list(hub_paths), "local_hub_paths": list(local_hub_paths),
+           "revision": {path: _hub_revision(path, cache) for path in used}}
     if not override or override.source_type == ModelSourceType.HF_HUB:
         offline = models.global_offline_mode or (override.skip_update if override else False)
         return {"source_type": ModelSourceType.HF_HUB.value, "local_path": None, "local_files_only": offline,
@@ -450,6 +455,7 @@ def model_source(settings: bytes | None, definition_id: str, hub_paths: list[str
 def model_source_problem(settings_path: Path, definition_id: str, recorded: dict[str, Any]) -> str | None:
     """Why the weights a run would load now are not the ``recorded`` model source, or None."""
     now = json.loads(json.dumps(model_source(read_settings(settings_path), definition_id,
-                                             recorded.get("hub_paths") or ())))
+                                             recorded.get("hub_paths") or (),
+                                             local_hub_paths=recorded.get("local_hub_paths") or ())))
     changed = [f"model_source.{key}" for key in sorted(set(now) | set(recorded)) if now.get(key) != recorded.get(key)]
     return f"the model's weights changed since the comparison began: {', '.join(changed)}" if changed else None

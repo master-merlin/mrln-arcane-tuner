@@ -620,6 +620,36 @@ def test_permitted_downloads_finish_before_the_identities_are_fixed(world, tmp_p
     assert identity["model_source"]["revision"] == {HUB_PATH: "a" * 40}
 
 
+HUB_VAE = "huggingface:org/vae"
+
+
+def test_a_local_diffusers_root_downloads_its_hub_components_before_the_identities(world, tmp_path, monkeypatch):
+    cache = _hub_world(world, tmp_path, monkeypatch)
+    for entry in cache.iterdir():  # an empty cache
+        os.rename(entry, tmp_path / entry.name)
+    world.facts = lambda definition_id, arms, env: {**fake_facts(definition_id, arms, env),
+                                                    "hub_paths": [HUB_PATH, HUB_VAE], "local_hub_paths": [HUB_VAE]}
+    local = _weights(tmp_path / "local-diffusers")
+    world.set_settings({"models": {"overrides": {DEFINITION: {"source_type": "local_diffusers",
+                                                              "local_path": str(local)}}}})
+
+    def download(definition_id, env):  # facts.prefetch_here: the loader's hub components under the local root
+        hub_snapshot(cache, "org/vae", "c" * 40)
+
+    real_argv = world.trainer_argv
+
+    def argv(c, definition_id, config):  # the trainer's loader fetches the VAE it lacks
+        if not (cache / "models--org--vae").exists():
+            hub_snapshot(cache, "org/vae", "c" * 40)
+        return real_argv(c, definition_id, config)
+
+    c = world.comparison(allow_downloads=True)
+    stop = runner.run_queue(c, world.seams(prefetch=download, trainer_argv=argv))
+    assert stop is None and world.trainer_starts == 4
+    identity = json.loads((c.work_dir / "logs" / "radc_s43.identity.json").read_text(encoding="utf-8"))
+    assert identity["model_source"]["revision"] == {HUB_VAE: "c" * 40}  # the unused hub root is not recorded
+
+
 def test_nothing_is_downloaded_unless_the_config_allows_it(world, tmp_path, monkeypatch):
     _hub_world(world, tmp_path, monkeypatch)
 

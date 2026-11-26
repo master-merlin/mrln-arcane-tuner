@@ -41,6 +41,40 @@ def test_the_hub_paths_are_every_component_the_loader_fetches(definition_id):
     assert facts.facts_here(definition_id, {"a": {}})["hub_paths"] == wanted
 
 
+def test_every_family_has_the_one_loader_the_prefetch_builds():
+    from app.engine.core.pipeline.loader_base import GenericComponentLoader
+
+    families = {}
+    for definition in registry._definitions.values():
+        families.setdefault(definition.family, definition)
+    for family, definition in sorted(families.items()):
+        assert isinstance(facts._family_loader(definition), GenericComponentLoader), family
+
+
+def test_a_local_diffusers_root_still_loads_its_explicit_components_from_the_hub():
+    definition = registry.get_definition("sdxl_base_1.0")
+    wanted = sorted({definition.components["unet"].path, definition.components["vae"].path})
+    assert facts.facts_here("sdxl_base_1.0", {"a": {}})["local_hub_paths"] == wanted
+
+
+def test_the_prefetch_follows_the_loader_under_a_local_diffusers_root(monkeypatch):
+    from app.core.schemas.model_overrides import ModelSourceType
+    from app.engine.utils.model_override_manager import ModelOverrideManager
+    from app.engine.utils.model_utils import ModelPathResolver
+
+    resolved, cached = [], []
+    monkeypatch.setattr(ModelOverrideManager, "resolve_effective_source", staticmethod(
+        lambda definition_id: (ModelSourceType.LOCAL_DIFFUSERS, "D:/local/sdxl", False)))
+    monkeypatch.setattr(ModelPathResolver, "ensure_definition_cached", staticmethod(cached.append))
+    monkeypatch.setattr(ModelPathResolver, "resolve", staticmethod(
+        lambda path, base_dir=None, *, local_files_only=False: resolved.append((path, local_files_only))))
+    facts.prefetch_here("sdxl_base_1.0")
+    definition = registry.get_definition("sdxl_base_1.0")
+    assert len(cached) == 1  # the product's own prefetch still runs (it skips a local root)
+    assert sorted(resolved) == sorted({(definition.components["unet"].path, False),
+                                       (definition.components["vae"].path, False)})
+
+
 def test_the_download_child_names_a_definition_it_cannot_fetch(tmp_path):
     env = {**os.environ, "HF_HUB_OFFLINE": "1", "MRLN_SETTINGS_PATH": str(tmp_path / "settings.json"),
            "MRLN_DB_PATH": str(tmp_path / "db" / "x.db"), "MRLN_SERVER_LOG_PATH": str(tmp_path / "server.log"),

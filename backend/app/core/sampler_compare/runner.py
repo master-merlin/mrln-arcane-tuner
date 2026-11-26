@@ -304,7 +304,8 @@ def prepare(c: Comparison, seams: Seams, copy: bool) -> Prepared:
         raise ConfigError(f"the trainer's loopback calls would go to port {facts['api_port']}, not {c.port}")
     if copy and c.allow_downloads and seams.prefetch is not None:
         _prefetch(c, seams, definition_id, settings)
-    model_source = isolation.model_source(settings, definition_id, facts["hub_paths"])
+    model_source = isolation.model_source(settings, definition_id, facts["hub_paths"],
+                                          local_hub_paths=facts.get("local_hub_paths") or ())
     digest = isolation.dataset_digest(manifest)
     return Prepared(definition_id, dataset, source, facts, manifest,
                     requested_identities(c, base, definition_id, facts, digest, model_source, metadata_digest),

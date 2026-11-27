@@ -7,6 +7,8 @@ import torch
 import transformers
 from huggingface_hub.constants import HF_HUB_CACHE
 
+from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
+
 
 def test_transformers_is_5_14_1():
     """The pin is exact: LTX-2.5's encoder config declares 5.14.1 and it is the
@@ -212,14 +214,12 @@ _YOUTU_PROCESSOR_FILES = _YOUTU_CONFIG_FILES + (
 )
 
 
-def _youtu_snapshot_dir() -> pathlib.Path:
-    """The pinned snapshot in the real hub cache. Resolved the way
-    huggingface_hub itself does (respects HF_HOME/HF_HUB_CACHE), never a
-    machine-specific literal path."""
-    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
-
+def _youtu_snapshot_dir(cache: str | pathlib.Path = HF_HUB_CACHE) -> pathlib.Path:
+    """The pinned snapshot in a hub cache, by default the real one, resolved
+    the way huggingface_hub itself does (respects HF_HOME/HF_HUB_CACHE), never
+    a machine-specific literal path."""
     return (
-        pathlib.Path(HF_HUB_CACHE)
+        pathlib.Path(cache)
         / "models--tencent--Youtu-VL-4B-Instruct"
         / "snapshots"
         / YOUTU_VL_REVISION
@@ -233,10 +233,7 @@ def _youtu_snapshot_has(*names: str) -> bool:
     return all((snapshot / name).is_file() for name in names)
 
 
-def _skip_reason() -> str:
-    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
-
-    return f"Youtu-VL snapshot {YOUTU_VL_REVISION} not in the local HF cache"
+_SKIP_REASON = f"Youtu-VL snapshot {YOUTU_VL_REVISION} not in the local HF cache"
 
 
 def test_the_youtu_snapshot_probe_is_false_for_a_missing_file():
@@ -245,14 +242,13 @@ def test_the_youtu_snapshot_probe_is_false_for_a_missing_file():
     assert _youtu_snapshot_has("no-such-file.bin") is False
 
 
-@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_PROCESSOR_FILES), reason=_skip_reason())
+@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_PROCESSOR_FILES), reason=_SKIP_REASON)
 def test_youtu_vl_processor_loads_with_the_shim():
     """Observable output: AutoProcessor returns a real YoutuVLProcessor.
     Without the shim this raises ImportError inside tencent's remote code."""
     from transformers import AutoProcessor
 
     from app.core.captioning.compat.transformers5 import install_transformers5_compat
-    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
 
     install_transformers5_compat()
     proc = AutoProcessor.from_pretrained(
@@ -265,7 +261,7 @@ def test_youtu_vl_processor_loads_with_the_shim():
     assert type(proc).__name__ == "YoutuVLProcessor"
 
 
-@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_PROCESSOR_FILES), reason=_skip_reason())
+@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_PROCESSOR_FILES), reason=_SKIP_REASON)
 def test_the_youtu_snapshot_lists_cover_what_each_load_reads(empty_hub_cache):
     """Both real-cache loads succeed from a snapshot holding ONLY the listed
     files (no weights, no `refs/`). A file a load needs that the lists lack
@@ -281,10 +277,8 @@ def test_the_youtu_snapshot_lists_cover_what_each_load_reads(empty_hub_cache):
     import subprocess
     import sys
 
-    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
-
     real = _youtu_snapshot_dir()
-    copy = empty_hub_cache / "models--tencent--Youtu-VL-4B-Instruct" / "snapshots" / YOUTU_VL_REVISION
+    copy = _youtu_snapshot_dir(empty_hub_cache)
     copy.mkdir(parents=True)
     for name in _YOUTU_PROCESSOR_FILES:
         shutil.copyfile(real / name, copy / name)
@@ -378,7 +372,7 @@ def test_rope_default_shim_reads_a_transformers5_config():
     assert torch.allclose(inv_freq, expected, rtol=1e-5)
 
 
-@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_CONFIG_FILES), reason=_skip_reason())
+@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_CONFIG_FILES), reason=_SKIP_REASON)
 def test_youtu_vl_config_normalisation_neutralises_rope_scaling():
     """Pin the exact precondition that stops `KeyError: 'factor'` in the remote
     `YoutuMLAttention.__init__`: after the normalisation `load()` applies,
@@ -390,8 +384,6 @@ def test_youtu_vl_config_normalisation_neutralises_rope_scaling():
     from transformers import AutoConfig
 
     from app.core.captioning.compat.transformers5 import install_transformers5_compat
-
-    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
 
     install_transformers5_compat()
 
@@ -814,8 +806,6 @@ def test_youtu_vl_revision_is_a_full_commit_hash():
     """A branch name or a short hash is no pin: the hub resolves it through
     `refs/`, which moves. Only a full commit hash names one reviewed tree."""
     import re
-
-    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
 
     assert re.fullmatch(r"[0-9a-f]{40}", YOUTU_VL_REVISION)
 

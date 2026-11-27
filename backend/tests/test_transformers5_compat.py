@@ -7,7 +7,11 @@ import torch
 import transformers
 from huggingface_hub.constants import HF_HUB_CACHE
 
-from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
+from app.core.captioning.models.youtu_vl import (
+    YOUTU_VL_LOAD_FILES,
+    YOUTU_VL_REVISION,
+    YOUTU_VL_REVISIONS,
+)
 
 
 def test_transformers_is_5_14_1():
@@ -198,31 +202,25 @@ def test_youtu_vl_shim_is_still_required():
     )
 
 
-#: What each real-cache load reads from the pinned snapshot, remote code and
-#: its relative imports included (the snapshot's `auto_map` and `from .x
-#: import` lines). `test_the_youtu_snapshot_lists_cover_what_each_load_reads`
-#: proves the lists are complete; a test skips unless all of its list is there.
-_YOUTU_CONFIG_FILES = ("config.json", "configuration_youtu_vl.py", "configuration_siglip2.py")
-_YOUTU_PROCESSOR_FILES = _YOUTU_CONFIG_FILES + (
-    "preprocessor_config.json",
-    "processing_youtu_vl.py",
-    "image_processing_siglip2_fast.py",
-    "tokenizer.json",
-    "tokenizer_config.json",
-    "special_tokens_map.json",
-    "chat_template.json",
-)
+#: The load files that are not weight shards: what the real-cache tests read
+#: and the fresh-process tests copy (none reads or copies a shard).
+#: `test_the_youtu_snapshot_lists_cover_what_each_load_reads` and
+#: `test_the_load_file_list_covers_what_the_reviewed_snapshot_names` prove
+#: the list complete; a real-cache test skips unless all of it is there.
+_YOUTU_NON_WEIGHT_FILES = tuple(n for n in YOUTU_VL_LOAD_FILES if not n.endswith(".safetensors"))
 
 
-def _youtu_snapshot_dir(cache: str | pathlib.Path = HF_HUB_CACHE) -> pathlib.Path:
-    """The pinned snapshot in a hub cache, by default the real one, resolved
-    the way huggingface_hub itself does (respects HF_HOME/HF_HUB_CACHE), never
-    a machine-specific literal path."""
+def _youtu_snapshot_dir(
+    cache: str | pathlib.Path = HF_HUB_CACHE, revision: str = YOUTU_VL_REVISION
+) -> pathlib.Path:
+    """A Youtu-VL snapshot in a hub cache, by default the pinned one in the
+    real cache, resolved the way huggingface_hub itself does (respects
+    HF_HOME/HF_HUB_CACHE), never a machine-specific literal path."""
     return (
         pathlib.Path(cache)
         / "models--tencent--Youtu-VL-4B-Instruct"
         / "snapshots"
-        / YOUTU_VL_REVISION
+        / revision
     )
 
 
@@ -242,7 +240,7 @@ def test_the_youtu_snapshot_probe_is_false_for_a_missing_file():
     assert _youtu_snapshot_has("no-such-file.bin") is False
 
 
-@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_PROCESSOR_FILES), reason=_SKIP_REASON)
+@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_NON_WEIGHT_FILES), reason=_SKIP_REASON)
 def test_youtu_vl_processor_loads_with_the_shim():
     """Observable output: AutoProcessor returns a real YoutuVLProcessor.
     Without the shim this raises ImportError inside tencent's remote code."""
@@ -261,47 +259,72 @@ def test_youtu_vl_processor_loads_with_the_shim():
     assert type(proc).__name__ == "YoutuVLProcessor"
 
 
-@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_PROCESSOR_FILES), reason=_SKIP_REASON)
-def test_the_youtu_snapshot_lists_cover_what_each_load_reads(empty_hub_cache):
-    """Both real-cache loads succeed from a snapshot holding ONLY the listed
-    files (no weights, no `refs/`). A file a load needs that the lists lack
-    fails here, instead of failing a later run on a machine with a partial
-    snapshot that the skip gate let through.
+def _reviewed_source_snapshot() -> pathlib.Path | None:
+    """A snapshot in the real cache, of any reviewed revision, holding every
+    non-weight load file; None when there is none. Read only."""
+    for revision in YOUTU_VL_REVISIONS:
+        snapshot = _youtu_snapshot_dir(revision=revision)
+        if all((snapshot / name).is_file() for name in _YOUTU_NON_WEIGHT_FILES):
+            return snapshot
+    return None
 
-    The loads run in a fresh interpreter with an empty dynamic-modules cache
-    too: transformers fetches a remote file's relative imports only when the
-    modules cache lacks them, and this process may already have imported the
-    remote code, so either would hide a missing name."""
-    import os
+
+_NO_REVIEWED_SNAPSHOT = "no reviewed Youtu-VL snapshot with every non-weight load file in the local HF cache"
+
+
+def _copy_non_weight_files(cache: pathlib.Path, revision: str) -> pathlib.Path:
+    """Copy the non-weight load files of the real reviewed snapshot into
+    *cache* under *revision*; return the new snapshot folder."""
     import shutil
+
+    source = _reviewed_source_snapshot()
+    copy = _youtu_snapshot_dir(cache, revision)
+    copy.mkdir(parents=True)
+    for name in _YOUTU_NON_WEIGHT_FILES:
+        shutil.copyfile(source / name, copy / name)
+    return copy
+
+
+#: Loads the config, the processor and the model class at *revision* from the
+#: cache alone. The youtu_vl module is imported first: it installs what the
+#: remote modeling code imports (the pydensecrf stand-in) before that code runs.
+_YOUTU_LOAD_PROBE = (
+    "import app.core.captioning.models.youtu_vl as yv\n"
+    "from transformers import AutoConfig, AutoProcessor\n"
+    "from transformers.dynamic_module_utils import get_class_from_dynamic_module\n"
+    "from app.core.captioning.compat.transformers5 import install_transformers5_compat\n"
+    "install_transformers5_compat()\n"
+    "rev = %r\n"
+    "kw = dict(revision=rev, trust_remote_code=True, local_files_only=True)\n"
+    "config = AutoConfig.from_pretrained(yv.YOUTU_VL_REPO_ID, **kw)\n"
+    "print('LOADED', type(config).__name__)\n"
+    "print('LOADED', type(AutoProcessor.from_pretrained(yv.YOUTU_VL_REPO_ID, backend='torchvision', **kw)).__name__)\n"
+    "cls = get_class_from_dynamic_module(config.auto_map['AutoModelForCausalLM'], yv.YOUTU_VL_REPO_ID,"
+    " revision=rev, local_files_only=True)\n"
+    "print('LOADED', cls.__name__)\n"
+)
+
+
+def _run_fresh(probe: str, cache: pathlib.Path) -> list[str]:
+    """Run *probe* in a fresh interpreter on *cache* and an empty dynamic-modules
+    cache; return its ``LOADED`` / ``RESOLVED`` lines.
+
+    Fresh, because transformers fetches a remote file's relative imports only
+    when the modules cache lacks them, and this process may already have
+    imported the remote code: either would hide a missing name."""
+    import os
     import subprocess
     import sys
 
-    real = _youtu_snapshot_dir()
-    copy = _youtu_snapshot_dir(empty_hub_cache)
-    copy.mkdir(parents=True)
-    for name in _YOUTU_PROCESSOR_FILES:
-        shutil.copyfile(real / name, copy / name)
-
-    probe = (
-        "from transformers import AutoConfig, AutoProcessor\n"
-        "from app.core.captioning.compat.transformers5 import install_transformers5_compat\n"
-        "install_transformers5_compat()\n"
-        "kw = dict(revision=%r, trust_remote_code=True, local_files_only=True)\n"
-        "repo = 'tencent/Youtu-VL-4B-Instruct'\n"
-        "print('LOADED', type(AutoConfig.from_pretrained(repo, **kw)).__name__)\n"
-        "print('LOADED', type(AutoProcessor.from_pretrained(repo, backend='torchvision', **kw)).__name__)\n"
-    ) % YOUTU_VL_REVISION
     env = {
         **os.environ,
-        "HF_HUB_CACHE": str(empty_hub_cache),
-        "HF_MODULES_CACHE": str(empty_hub_cache.parent / "modules"),
+        "HF_HUB_CACHE": str(cache),
+        "HF_MODULES_CACHE": str(cache.parent / "modules"),
         "PYTHONDONTWRITEBYTECODE": "1",
     }
-    backend_root = pathlib.Path(__file__).resolve().parents[1]
     result = subprocess.run(
         [sys.executable, "-c", probe],
-        cwd=backend_root,
+        cwd=pathlib.Path(__file__).resolve().parents[1],
         env=env,
         capture_output=True,
         text=True,
@@ -309,8 +332,106 @@ def test_the_youtu_snapshot_lists_cover_what_each_load_reads(empty_hub_cache):
     )
     assert result.returncode == 0, result.stderr[-4000:]
     # The app's logging also writes to stdout; only the probe's lines count.
-    loaded = [line.split()[1] for line in result.stdout.splitlines() if line.startswith("LOADED ")]
-    assert loaded == ["YoutuVLConfig", "YoutuVLProcessor"]
+    return [line for line in result.stdout.splitlines() if line.startswith(("LOADED ", "RESOLVED "))]
+
+
+@pytest.mark.skipif(_reviewed_source_snapshot() is None, reason=_NO_REVIEWED_SNAPSHOT)
+def test_the_youtu_snapshot_lists_cover_what_each_load_reads(empty_hub_cache):
+    """The config, processor and model-class loads succeed from a snapshot
+    holding ONLY the non-weight load files (no `refs/`). A file a load needs
+    that `YOUTU_VL_LOAD_FILES` lacks fails here, instead of failing a later
+    offline load from a snapshot the cache check called whole."""
+    _copy_non_weight_files(empty_hub_cache, YOUTU_VL_REVISION)
+
+    loaded = _run_fresh(_YOUTU_LOAD_PROBE % YOUTU_VL_REVISION, empty_hub_cache)
+    assert loaded == [
+        "LOADED YoutuVLConfig",
+        "LOADED YoutuVLProcessor",
+        "LOADED YoutuVLForConditionalGeneration",
+    ]
+
+
+@pytest.mark.skipif(_reviewed_source_snapshot() is None, reason=_NO_REVIEWED_SNAPSHOT)
+def test_the_load_file_list_covers_what_the_reviewed_snapshot_names():
+    """An oracle for `YOUTU_VL_LOAD_FILES` that is not the list: the names a
+    full load reads, derived from the reviewed snapshot's own files (the
+    weight index, the `auto_map` entries and their relative imports), plus
+    the fixed names transformers reads. Reads no weight shard."""
+    import json
+    import re
+
+    snapshot = _reviewed_source_snapshot()
+
+    def read_json(name):
+        return json.loads((snapshot / name).read_text(encoding="utf-8"))
+
+    derived = {"config.json", "preprocessor_config.json", "model.safetensors.index.json"}
+    derived |= set(read_json("model.safetensors.index.json")["weight_map"].values())
+    # What transformers reads by fixed name, written out here.
+    derived |= {
+        "generation_config.json",
+        "tokenizer.json",
+        "tokenizer_config.json",
+        "special_tokens_map.json",
+        "chat_template.json",
+    }
+
+    pending = []
+    for name in ("config.json", "preprocessor_config.json"):
+        for ref in read_json(name).get("auto_map", {}).values():
+            for one in ref if isinstance(ref, list) else [ref]:
+                if one:
+                    pending.append(one.split("--")[-1].split(".")[0])
+    # The relative-import patterns transformers' own dynamic loader follows.
+    relative = re.compile(r"^\s*(?:from\s+\.(\S+)\s+import|import\s+\.(\S+)\s*$)", re.MULTILINE)
+    modules = set()
+    while pending:
+        module = pending.pop()
+        if module in modules:
+            continue
+        modules.add(module)
+        source = (snapshot / f"{module}.py").read_text(encoding="utf-8")
+        pending.extend(a or b for a, b in relative.findall(source))
+    assert modules == {
+        "configuration_youtu_vl",
+        "modeling_youtu_vl",
+        "processing_youtu_vl",
+        "image_processing_siglip2_fast",
+        "configuration_siglip2",
+        "modeling_siglip2",
+    }
+    derived |= {f"{module}.py" for module in modules}
+
+    assert len(derived) == 17
+    assert derived <= set(YOUTU_VL_LOAD_FILES), sorted(derived - set(YOUTU_VL_LOAD_FILES))
+
+
+@pytest.mark.skipif(_reviewed_source_snapshot() is None, reason=_NO_REVIEWED_SNAPSHOT)
+def test_a_cache_holding_only_the_older_hash_loads_offline_in_a_fresh_process(empty_hub_cache):
+    """A cache filled before the newest reviewed commit existed holds only the
+    older hash, with `refs/main` pointing elsewhere. Offline, the load picks
+    that snapshot as whole and reads all three classes from it. The shards are
+    empty placeholders: the choice reads presence, and no class load opens them."""
+    older = "8d30a0e49662a1d628a472b12df264dbcd768753"
+    copy = _copy_non_weight_files(empty_hub_cache, older)
+    for name in YOUTU_VL_LOAD_FILES:
+        if name.endswith(".safetensors"):
+            (copy / name).write_bytes(b"")
+    refs = copy.parents[1] / "refs"
+    refs.mkdir()
+    (refs / "main").write_text("c" * 40, encoding="utf-8")
+
+    probe = (
+        "import app.core.captioning.models.youtu_vl as yv\n"
+        "print('RESOLVED', yv.resolve_youtu_vl_revision())\n"
+    ) + _YOUTU_LOAD_PROBE % older
+    lines = _run_fresh(probe, empty_hub_cache)
+    assert lines == [
+        f"RESOLVED {(older, True)}",
+        "LOADED YoutuVLConfig",
+        "LOADED YoutuVLProcessor",
+        "LOADED YoutuVLForConditionalGeneration",
+    ]
 
 
 def test_rope_default_shim_produces_correct_inv_freq():
@@ -372,7 +493,7 @@ def test_rope_default_shim_reads_a_transformers5_config():
     assert torch.allclose(inv_freq, expected, rtol=1e-5)
 
 
-@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_CONFIG_FILES), reason=_SKIP_REASON)
+@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_NON_WEIGHT_FILES), reason=_SKIP_REASON)
 def test_youtu_vl_config_normalisation_neutralises_rope_scaling():
     """Pin the exact precondition that stops `KeyError: 'factor'` in the remote
     `YoutuMLAttention.__init__`: after the normalisation `load()` applies,

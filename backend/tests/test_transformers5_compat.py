@@ -712,6 +712,41 @@ def test_youtu_vl_load_refuses_a_changed_tied_weights_shape():
     hub.model_cls.from_pretrained.assert_not_called()
 
 
+def test_youtu_vl_revision_is_a_full_commit_hash():
+    """A branch name or a short hash is no pin: the hub resolves it through
+    `refs/`, which moves. Only a full commit hash names one reviewed tree."""
+    import re
+
+    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
+
+    assert re.fullmatch(r"[0-9a-f]{40}", YOUTU_VL_REVISION)
+
+
+@pytest.mark.usefixtures("empty_hub_cache")
+def test_youtu_vl_load_passes_the_pinned_revision_to_every_hub_call():
+    """All four hub calls of `load()` read the same pinned upstream commit:
+    a call left on `main` would run remote code nobody reviewed."""
+    from unittest.mock import MagicMock
+
+    from app.core.captioning.models.youtu_vl import YoutuVLModel
+    from tests.support.youtu_vl_doubles import youtu_vl_hub_doubles
+
+    with youtu_vl_hub_doubles(_persistent_rope_model()) as hub:
+        YoutuVLModel(service=MagicMock()).load()
+
+    calls = {
+        "AutoConfig.from_pretrained": hub.config_cls.from_pretrained,
+        "get_class_from_dynamic_module": hub.get_class,
+        "AutoModelForCausalLM.from_pretrained": hub.model_cls.from_pretrained,
+        "AutoProcessor.from_pretrained": hub.processor_cls.from_pretrained,
+    }
+    for label, mock in calls.items():
+        mock.assert_called_once()
+        args, kwargs = mock.call_args
+        assert "tencent/Youtu-VL-4B-Instruct" in (*args, *kwargs.values()), label
+        assert kwargs.get("revision") == "68d50d82df573c7282ecc1f06f1c9473252c9e72", label
+
+
 #: transformers 5.x deprecations. Kept as module state so the scan and its
 #: positive control below cannot drift apart -- a control that tests a
 #: different needle than the guard proves nothing about the guard.

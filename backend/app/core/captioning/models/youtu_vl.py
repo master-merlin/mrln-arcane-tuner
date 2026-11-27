@@ -28,6 +28,15 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_MAX_LONG_SIDE = 768
 
+YOUTU_VL_REPO_ID = "tencent/Youtu-VL-4B-Instruct"
+# The one upstream commit every load reads (a full hash: a branch name or short
+# hash resolves through refs/, which moves). load() runs this repo's remote code
+# and patches it by shape (`_tied_weights_keys`, the RoPE buffers), so a new
+# upstream commit is reviewed before the pin moves. Checked 2026-11-27 against
+# its parent 8d30a0e49662a1d628a472b12df264dbcd768753, the revision the
+# compat patches were written for: of the 27 files, only README.md differs.
+YOUTU_VL_REVISION = "68d50d82df573c7282ecc1f06f1c9473252c9e72"
+
 class YoutuVLModel(CaptionModel):
     """
     Implementation of tencent/Youtu-VL-4B-Instruct model.
@@ -59,8 +68,9 @@ class YoutuVLModel(CaptionModel):
 
         install_transformers5_compat()
 
-        model_id = "tencent/Youtu-VL-4B-Instruct"
-        logger.info("loading_youtu_vl", path=model_id)
+        model_id = YOUTU_VL_REPO_ID
+        revision = YOUTU_VL_REVISION
+        logger.info("loading_youtu_vl", path=model_id, revision=revision)
         
         # Use bfloat16 if supported, else float16
         dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
@@ -79,7 +89,7 @@ class YoutuVLModel(CaptionModel):
         # complete events still drive the frontend download indicator.
         from app.api.events.download_progress import with_progress
 
-        with with_progress(model_id=model_id, category="caption", repo_id=model_id):
+        with with_progress(model_id=model_id, category="caption", repo_id=model_id, revision=revision):
             # The cached config.json has no `rope_scaling` key. Under
             # transformers 4.57, that meant `config.rope_scaling is None` and
             # tencent's remote YoutuMLAttention.__init__ skipped its whole
@@ -107,7 +117,7 @@ class YoutuVLModel(CaptionModel):
             # unconditionally. compat/transformers5.install_transformers5_compat
             # (called from CaptionService.__init__, before this runs) restores
             # it with a faithful port of the deleted function.
-            config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+            config = AutoConfig.from_pretrained(model_id, trust_remote_code=True, revision=revision)
             if getattr(config, "rope_scaling", None) is not None:
                 config.rope_scaling = None
 
@@ -144,7 +154,7 @@ class YoutuVLModel(CaptionModel):
             from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
             model_cls = get_class_from_dynamic_module(
-                config.auto_map["AutoModelForCausalLM"], model_id
+                config.auto_map["AutoModelForCausalLM"], model_id, revision=revision
             )
             if isinstance(model_cls._tied_weights_keys, list):
                 if model_cls._tied_weights_keys != ["lm_head.weight"]:
@@ -158,6 +168,7 @@ class YoutuVLModel(CaptionModel):
 
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
+                revision=revision,
                 config=config,
                 dtype=dtype,
                 device_map="auto" if self.device == "cuda" else None,
@@ -169,6 +180,7 @@ class YoutuVLModel(CaptionModel):
 
             self.processor = AutoProcessor.from_pretrained(
                 model_id,
+                revision=revision,
                 trust_remote_code=True,
                 backend="torchvision",
             )

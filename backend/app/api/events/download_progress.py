@@ -274,16 +274,20 @@ def make_progress_tqdm(
 _CACHE_MARKER_FILES = ("model_index.json", "config.json")
 
 
-def _is_repo_cached(repo_id: str) -> bool:
+def _is_repo_cached(repo_id: str, revision: str | None = None) -> bool:
     """Best-effort: True when the repo's manifest is already in the HF cache,
     i.e. the model was downloaded before and loading it won't hit the network.
     Used to suppress a spurious download-bar flash on a pure cache hit (loading
-    cached shards from disk into VRAM is not a download)."""
+    cached shards from disk into VRAM is not a download).
+
+    ``revision`` is the one the loader asks for: a loader pinned to a commit
+    reads that snapshot whatever ``refs/main`` points at. ``None`` checks
+    ``main``."""
     try:
         from huggingface_hub import try_to_load_from_cache
 
         return any(
-            isinstance(try_to_load_from_cache(repo_id, name), str)
+            isinstance(try_to_load_from_cache(repo_id, name, revision=revision), str)
             for name in _CACHE_MARKER_FILES
         )
     except Exception:
@@ -293,6 +297,7 @@ def _is_repo_cached(repo_id: str) -> bool:
 @contextmanager
 def with_progress(
     *, model_id: str, category: str, repo_id: str | None = None,
+    revision: str | None = None,
 ) -> Generator[None, None, None]:
     """Wrap an HF download callsite to ensure starting/complete/error events fire.
 
@@ -310,8 +315,10 @@ def with_progress(
     already fully cached — no download happens, so flashing the download
     indicator would be misleading. Callers that can't cheaply know the repo
     (e.g. single-file fetches) omit it and keep the old always-emit behavior.
+    A caller pinned to a commit passes it as ``revision`` so the cache check
+    looks at the snapshot the load will read.
     """
-    if repo_id and _is_repo_cached(repo_id):
+    if repo_id and _is_repo_cached(repo_id, revision):
         yield
         return
 

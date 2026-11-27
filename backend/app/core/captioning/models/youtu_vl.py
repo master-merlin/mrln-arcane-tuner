@@ -28,6 +28,73 @@ logger = structlog.get_logger(__name__)
 
 DEFAULT_MAX_LONG_SIDE = 768
 
+YOUTU_VL_REPO_ID = "tencent/Youtu-VL-4B-Instruct"
+# The upstream commits a load may read, newest first, each a full hash (a
+# branch name or short hash resolves through refs/, which moves). load() runs
+# this repo's remote code and patches it by shape (`_tied_weights_keys`, the
+# RoPE buffers), so a new upstream commit is reviewed before it joins the list.
+# Checked 2026-11-27: of the 27 files, 68d50d82 differs from its parent
+# 8d30a0e4, the revision the compat patches were written for, only in
+# README.md.
+#
+# The rule (resolve_youtu_vl_revision): load the newest reviewed revision whose
+# snapshot holds every file of YOUTU_VL_LOAD_FILES, as it is, with no request;
+# with none whole, fetch the newest. refs/main is never read.
+#
+# The reviewed revisions are these two hashes. Older upstream revisions (for
+# example f0cd60da, from before SDPA attention support came in 8d30a0e4) run
+# different remote code and are never loaded: a cache holding only one of
+# those fetches the newest reviewed revision.
+YOUTU_VL_REVISIONS: tuple[str, ...] = (
+    "68d50d82df573c7282ecc1f06f1c9473252c9e72",
+    "8d30a0e49662a1d628a472b12df264dbcd768753",
+)
+YOUTU_VL_REVISION = YOUTU_VL_REVISIONS[0]
+
+# Every snapshot file a full load reads: the config, generation config and
+# processor files, the remote code named by `auto_map` with its relative
+# imports, the weight index and the shards it names. A snapshot missing any of
+# them is not whole: an offline load from it would die on the missing file.
+YOUTU_VL_LOAD_FILES: tuple[str, ...] = (
+    "config.json",
+    "generation_config.json",
+    "configuration_youtu_vl.py",
+    "configuration_siglip2.py",
+    "modeling_youtu_vl.py",
+    "modeling_siglip2.py",
+    "model.safetensors.index.json",
+    "model-00001-of-00003.safetensors",
+    "model-00002-of-00003.safetensors",
+    "model-00003-of-00003.safetensors",
+    "preprocessor_config.json",
+    "processing_youtu_vl.py",
+    "image_processing_siglip2_fast.py",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "chat_template.json",
+)
+
+
+def resolve_youtu_vl_revision() -> tuple[str, bool]:
+    """``(revision, complete)``: the newest reviewed revision whose cached
+    snapshot holds every load file, with ``True``; else the newest, with
+    ``False``. Asks the cache by full hash only and makes no request, so the
+    choice is the same online and offline. A cache it cannot read counts as
+    holding nothing, as the download indicator's own cache check does."""
+    from huggingface_hub import try_to_load_from_cache
+
+    try:
+        for revision in YOUTU_VL_REVISIONS:
+            if all(
+                isinstance(try_to_load_from_cache(YOUTU_VL_REPO_ID, name, revision=revision), str)
+                for name in YOUTU_VL_LOAD_FILES
+            ):
+                return revision, True
+    except Exception as exc:  # noqa: BLE001 — an unreadable cache is a miss, never a failed load
+        logger.warning("youtu_vl_cache_probe_failed", error=str(exc))
+    return YOUTU_VL_REVISIONS[0], False
+
 class YoutuVLModel(CaptionModel):
     """
     Implementation of tencent/Youtu-VL-4B-Instruct model.
@@ -59,8 +126,9 @@ class YoutuVLModel(CaptionModel):
 
         install_transformers5_compat()
 
-        model_id = "tencent/Youtu-VL-4B-Instruct"
-        logger.info("loading_youtu_vl", path=model_id)
+        model_id = YOUTU_VL_REPO_ID
+        revision, complete = resolve_youtu_vl_revision()
+        logger.info("loading_youtu_vl", path=model_id, revision=revision, cached=complete)
         
         # Use bfloat16 if supported, else float16
         dtype = torch.bfloat16 if torch.cuda.is_available() and torch.cuda.is_bf16_supported() else torch.float16
@@ -79,7 +147,14 @@ class YoutuVLModel(CaptionModel):
         # complete events still drive the frontend download indicator.
         from app.api.events.download_progress import with_progress
 
-        with with_progress(model_id=model_id, category="caption", repo_id=model_id):
+        # A whole cached snapshot loads with no download: hand the cache check
+        # its repo and revision. A partial one has a config.json and would pass
+        # that check while the missing files download, so the indicator shows.
+        cache_check = dict(repo_id=model_id, revision=revision) if complete else {}
+        # A whole snapshot also loads from the cache alone: no Hub request, so
+        # a flaky network cannot fail a load that needs nothing from it.
+        hub = dict(revision=revision, local_files_only=True) if complete else dict(revision=revision)
+        with with_progress(model_id=model_id, category="caption", **cache_check):
             # The cached config.json has no `rope_scaling` key. Under
             # transformers 4.57, that meant `config.rope_scaling is None` and
             # tencent's remote YoutuMLAttention.__init__ skipped its whole
@@ -107,7 +182,7 @@ class YoutuVLModel(CaptionModel):
             # unconditionally. compat/transformers5.install_transformers5_compat
             # (called from CaptionService.__init__, before this runs) restores
             # it with a faithful port of the deleted function.
-            config = AutoConfig.from_pretrained(model_id, trust_remote_code=True)
+            config = AutoConfig.from_pretrained(model_id, trust_remote_code=True, **hub)
             if getattr(config, "rope_scaling", None) is not None:
                 config.rope_scaling = None
 
@@ -144,7 +219,7 @@ class YoutuVLModel(CaptionModel):
             from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
             model_cls = get_class_from_dynamic_module(
-                config.auto_map["AutoModelForCausalLM"], model_id
+                config.auto_map["AutoModelForCausalLM"], model_id, **hub
             )
             if isinstance(model_cls._tied_weights_keys, list):
                 if model_cls._tied_weights_keys != ["lm_head.weight"]:
@@ -158,6 +233,7 @@ class YoutuVLModel(CaptionModel):
 
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
+                **hub,
                 config=config,
                 dtype=dtype,
                 device_map="auto" if self.device == "cuda" else None,
@@ -169,6 +245,7 @@ class YoutuVLModel(CaptionModel):
 
             self.processor = AutoProcessor.from_pretrained(
                 model_id,
+                **hub,
                 trust_remote_code=True,
                 backend="torchvision",
             )

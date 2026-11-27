@@ -27,6 +27,13 @@ What it does, per process:
   and is overridden for the same reason. Serial runs are diverted too — a
   serial ``pytest`` used to wipe the live ``backend/server.log`` — but the NAME
   is the serial one, so the per-worker suffix is the only thing xdist adds.
+* ``HF_HUB_OFFLINE=1``, assigned UNCONDITIONALLY for the same reason and before
+  anything imports ``huggingface_hub`` (it reads the flag once, at import). A
+  hub request from a test raises ``OfflineModeIsEnabled`` instead of reaching
+  the network or writing the shared cache, and every child process inherits
+  the flag. Reads from a warm cache still succeed, so a test that runs a loader
+  doubles the hub calls (``tests/support``) and uses ``empty_hub_cache``, or
+  skips without the snapshot it reads.
 * ``sys.path`` gets ``backend/`` so ``from tests.support…`` and ``from app…``
   resolve from every root (``--import-mode=importlib`` never adds it itself).
 * every test carrying ``@pytest.mark.xdist_group("<name>")`` holds the
@@ -48,6 +55,12 @@ import sys
 from pathlib import Path
 
 import pytest
+
+# No test reaches the Hugging Face hub or writes the shared cache from it.
+# ``huggingface_hub.constants`` reads ``HF_HUB_OFFLINE`` once, at import, so
+# this comes before every import below that could load it. Child processes a
+# test starts inherit it with the rest of the environment.
+os.environ["HF_HUB_OFFLINE"] = "1"
 
 _BACKEND = Path(__file__).resolve().parent
 if str(_BACKEND) not in sys.path:

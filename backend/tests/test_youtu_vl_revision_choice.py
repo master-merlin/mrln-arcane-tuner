@@ -13,7 +13,6 @@ import re
 from unittest.mock import MagicMock, patch
 
 import pytest
-import torch
 
 from app.api.events import download_progress as dp
 from app.core.captioning.models.youtu_vl import (
@@ -23,7 +22,7 @@ from app.core.captioning.models.youtu_vl import (
     YoutuVLModel,
     resolve_youtu_vl_revision,
 )
-from tests.support.youtu_vl_doubles import youtu_vl_hub_doubles
+from tests.support.youtu_vl_doubles import persistent_rope_model, youtu_vl_hub_doubles
 
 pytestmark = pytest.mark.usefixtures("empty_hub_cache")
 
@@ -54,21 +53,11 @@ def _point_refs_main(cache, revision):
     (refs / "main").write_text(revision, encoding="utf-8")
 
 
-class _PersistentRope(torch.nn.Module):
-    """One persistent `inv_freq` buffer: the RoPE repair has nothing to do."""
-
-    def __init__(self):
-        super().__init__()
-        self.register_buffer("inv_freq", torch.ones(4), persistent=True)
-
-
 def _load():
     """Run `load()` on the hub doubles; return (doubles, emitted statuses)."""
     emitted = []
-    model = torch.nn.Module()
-    model.rope = _PersistentRope()
     with patch.object(dp, "schedule_emit_from_thread", lambda p: emitted.append(p)), \
-         youtu_vl_hub_doubles(model) as hub:
+         youtu_vl_hub_doubles(persistent_rope_model()) as hub:
         YoutuVLModel(service=MagicMock()).load()
     return hub, [p.status for p in emitted]
 

@@ -20,6 +20,16 @@ import torch
 _MODULE = "app.core.captioning.models.youtu_vl"
 
 
+def persistent_rope_model() -> torch.nn.Module:
+    """A model tree whose RoPE buffer is persistent: nothing for ``load()``'s
+    RoPE repair to do. A bare MagicMock would not do: the repair raises when
+    the tree has no module with an ``inv_freq`` buffer at all."""
+    model = torch.nn.Module()
+    model.rotary_emb = torch.nn.Module()
+    model.rotary_emb.register_buffer("inv_freq", torch.ones(4))
+    return model
+
+
 @contextmanager
 def youtu_vl_hub_doubles(model: torch.nn.Module) -> Iterator[SimpleNamespace]:
     """Patch the four hub seams of ``load()``; ``model_cls.from_pretrained`` returns *model*.

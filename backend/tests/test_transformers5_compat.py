@@ -12,6 +12,7 @@ from app.core.captioning.models.youtu_vl import (
     YOUTU_VL_REVISION,
     YOUTU_VL_REVISIONS,
 )
+from tests.support.youtu_vl_doubles import persistent_rope_model
 
 
 def test_transformers_is_5_14_1():
@@ -879,14 +880,6 @@ def test_load_repairs_the_rope_buffers_of_the_model_it_just_built():
     assert rope.attention_scaling == expected_scaling
 
 
-def _persistent_rope_model() -> torch.nn.Module:
-    """A model tree whose RoPE buffer is persistent: nothing for the repair to do."""
-    model = torch.nn.Module()
-    model.rotary_emb = torch.nn.Module()
-    model.rotary_emb.register_buffer("inv_freq", torch.ones(4))
-    return model
-
-
 @pytest.mark.usefixtures("empty_hub_cache")
 def test_youtu_vl_load_normalises_the_config_and_the_tied_weights():
     """Every line of `load()` between the config and the model build, run
@@ -898,7 +891,7 @@ def test_youtu_vl_load_normalises_the_config_and_the_tied_weights():
     from app.core.captioning.models.youtu_vl import YoutuVLModel
     from tests.support.youtu_vl_doubles import youtu_vl_hub_doubles
 
-    with youtu_vl_hub_doubles(_persistent_rope_model()) as hub:
+    with youtu_vl_hub_doubles(persistent_rope_model()) as hub:
         YoutuVLModel(service=MagicMock()).load()
 
     built_with = hub.model_cls.from_pretrained.call_args.kwargs["config"]
@@ -916,7 +909,7 @@ def test_youtu_vl_load_refuses_a_changed_tied_weights_shape():
     from app.core.captioning.models.youtu_vl import YoutuVLModel
     from tests.support.youtu_vl_doubles import youtu_vl_hub_doubles
 
-    with youtu_vl_hub_doubles(_persistent_rope_model()) as hub:
+    with youtu_vl_hub_doubles(persistent_rope_model()) as hub:
         hub.dynamic_class._tied_weights_keys = ["other.weight"]
         with pytest.raises(RuntimeError, match="_tied_weights_keys changed"):
             YoutuVLModel(service=MagicMock()).load()
@@ -941,7 +934,7 @@ def test_youtu_vl_load_passes_the_pinned_revision_to_every_hub_call():
     from app.core.captioning.models.youtu_vl import YoutuVLModel
     from tests.support.youtu_vl_doubles import youtu_vl_hub_doubles
 
-    with youtu_vl_hub_doubles(_persistent_rope_model()) as hub:
+    with youtu_vl_hub_doubles(persistent_rope_model()) as hub:
         YoutuVLModel(service=MagicMock()).load()
 
     calls = {

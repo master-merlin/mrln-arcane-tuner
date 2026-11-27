@@ -154,3 +154,13 @@ def test_each_missing_load_file_makes_a_snapshot_incomplete(empty_hub_cache, mis
     _write_snapshot(empty_hub_cache, NEW, _without(missing))
 
     assert resolve_youtu_vl_revision() == (NEW, False)
+
+
+def test_an_unreadable_cache_counts_as_nothing_cached(empty_hub_cache):
+    """A cache folder that cannot be read (an ACL, a drive gone) makes no
+    snapshot whole; the load goes on to fetch the newest instead of dying in
+    the cache probe."""
+    _write_snapshot(empty_hub_cache, OLD, YOUTU_VL_LOAD_FILES)
+
+    with patch("huggingface_hub.try_to_load_from_cache", side_effect=PermissionError("denied")):
+        assert resolve_youtu_vl_revision() == (NEW, False)

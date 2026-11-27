@@ -30,9 +30,10 @@ What it does, per process:
 * ``HF_HUB_OFFLINE=1``, assigned UNCONDITIONALLY for the same reason and before
   anything imports ``huggingface_hub`` (it reads the flag once, at import). A
   hub request from a test raises ``OfflineModeIsEnabled`` instead of reaching
-  the network or the shared cache, and every child process inherits the flag.
-  Tests that run a loader double the hub calls (``tests/support``) or skip
-  without the snapshot they read.
+  the network or writing the shared cache, and every child process inherits
+  the flag. Reads from a warm cache still succeed, so a test that runs a loader
+  doubles the hub calls (``tests/support``) and uses ``empty_hub_cache``, or
+  skips without the snapshot it reads.
 * ``sys.path`` gets ``backend/`` so ``from tests.support…`` and ``from app…``
   resolve from every root (``--import-mode=importlib`` never adds it itself).
 * every test carrying ``@pytest.mark.xdist_group("<name>")`` holds the

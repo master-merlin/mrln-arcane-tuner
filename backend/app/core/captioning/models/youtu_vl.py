@@ -76,15 +76,19 @@ def resolve_youtu_vl_revision() -> tuple[str, bool]:
     """``(revision, complete)``: the newest reviewed revision whose cached
     snapshot holds every load file, with ``True``; else the newest, with
     ``False``. Asks the cache by full hash only and makes no request, so the
-    choice is the same online and offline."""
+    choice is the same online and offline. A cache it cannot read counts as
+    holding nothing, as the download indicator's own cache check does."""
     from huggingface_hub import try_to_load_from_cache
 
-    for revision in YOUTU_VL_REVISIONS:
-        if all(
-            isinstance(try_to_load_from_cache(YOUTU_VL_REPO_ID, name, revision=revision), str)
-            for name in YOUTU_VL_LOAD_FILES
-        ):
-            return revision, True
+    try:
+        for revision in YOUTU_VL_REVISIONS:
+            if all(
+                isinstance(try_to_load_from_cache(YOUTU_VL_REPO_ID, name, revision=revision), str)
+                for name in YOUTU_VL_LOAD_FILES
+            ):
+                return revision, True
+    except Exception as exc:  # noqa: BLE001 — an unreadable cache is a miss, never a failed load
+        logger.warning("youtu_vl_cache_probe_failed", error=str(exc))
     return YOUTU_VL_REVISIONS[0], False
 
 class YoutuVLModel(CaptionModel):

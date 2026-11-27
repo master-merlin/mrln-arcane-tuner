@@ -348,16 +348,27 @@ def _split_flag(argv: list[str], flag: str) -> tuple[int | None, str | None]:
     return None, None
 
 
+def server_reuses_address() -> bool:
+    """Whether the server's own socket has ``SO_REUSEADDR``: asyncio's ``create_server`` sets it
+    exactly when ``os.name == "posix" and sys.platform != "cygwin"`` (``asyncio/base_events.py``)."""
+    return os.name == "posix" and sys.platform != "cygwin"
+
+
 def port_is_free(host: str, port: int) -> bool:
     """True when a server could bind (host, port) right now.
 
     Asks the operating system rather than a process table: the question is
-    whether the replacement can bind, and only a bind answers it. No
-    ``SO_REUSEADDR`` — asyncio does not set it on Windows either, so this probe
-    fails exactly when uvicorn's own bind would.
+    whether the replacement can bind, and only a bind answers it. The probe
+    binds as the server does (``server_reuses_address``), so it fails exactly
+    when the server's own bind would. On POSIX that is with ``SO_REUSEADDR``:
+    a closed connection still waiting on the port blocks no server, while a
+    listening socket still refuses the bind. On Windows it is without: there a
+    reusing bind could share a port another server holds.
     """
     family = socket.AF_INET6 if ":" in host else socket.AF_INET
     with socket.socket(family, socket.SOCK_STREAM) as probe:
+        if server_reuses_address():
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         try:
             probe.bind((host, port))
         except OSError:

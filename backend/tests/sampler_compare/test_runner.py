@@ -248,6 +248,23 @@ def test_the_fake_backend_meets_a_taken_port_as_the_real_server_does(world, tmp_
             _stop(successor)
 
 
+@pytest.mark.parametrize("reuse", [True, False])
+def test_a_listening_port_is_taken_whichever_way_its_owner_bound(world, reuse):
+    owner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if reuse:
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        owner.bind(("127.0.0.1", world.port))
+        owner.listen()
+        assert port_taken(world.port) is True
+    finally:
+        owner.close()
+    deadline = time.monotonic() + 5
+    while port_taken(world.port) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert port_taken(world.port) is False
+
+
 def test_a_taken_port_is_refused_and_its_owner_untouched(world):
     owner = listening_owner(world.port)
     try:

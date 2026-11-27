@@ -151,6 +151,9 @@ class YoutuVLModel(CaptionModel):
         # its repo and revision. A partial one has a config.json and would pass
         # that check while the missing files download, so the indicator shows.
         cache_check = dict(repo_id=model_id, revision=revision) if complete else {}
+        # A whole snapshot also loads from the cache alone: no Hub request, so
+        # a flaky network cannot fail a load that needs nothing from it.
+        hub = dict(revision=revision, local_files_only=True) if complete else dict(revision=revision)
         with with_progress(model_id=model_id, category="caption", **cache_check):
             # The cached config.json has no `rope_scaling` key. Under
             # transformers 4.57, that meant `config.rope_scaling is None` and
@@ -179,7 +182,7 @@ class YoutuVLModel(CaptionModel):
             # unconditionally. compat/transformers5.install_transformers5_compat
             # (called from CaptionService.__init__, before this runs) restores
             # it with a faithful port of the deleted function.
-            config = AutoConfig.from_pretrained(model_id, trust_remote_code=True, revision=revision)
+            config = AutoConfig.from_pretrained(model_id, trust_remote_code=True, **hub)
             if getattr(config, "rope_scaling", None) is not None:
                 config.rope_scaling = None
 
@@ -216,7 +219,7 @@ class YoutuVLModel(CaptionModel):
             from transformers.dynamic_module_utils import get_class_from_dynamic_module
 
             model_cls = get_class_from_dynamic_module(
-                config.auto_map["AutoModelForCausalLM"], model_id, revision=revision
+                config.auto_map["AutoModelForCausalLM"], model_id, **hub
             )
             if isinstance(model_cls._tied_weights_keys, list):
                 if model_cls._tied_weights_keys != ["lm_head.weight"]:
@@ -230,7 +233,7 @@ class YoutuVLModel(CaptionModel):
 
             self.model = AutoModelForCausalLM.from_pretrained(
                 model_id,
-                revision=revision,
+                **hub,
                 config=config,
                 dtype=dtype,
                 device_map="auto" if self.device == "cuda" else None,
@@ -242,7 +245,7 @@ class YoutuVLModel(CaptionModel):
 
             self.processor = AutoProcessor.from_pretrained(
                 model_id,
-                revision=revision,
+                **hub,
                 trust_remote_code=True,
                 backend="torchvision",
             )

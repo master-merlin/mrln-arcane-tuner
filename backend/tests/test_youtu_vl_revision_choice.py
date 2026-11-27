@@ -149,6 +149,24 @@ def test_an_unreviewed_hash_in_refs_main_is_ignored(empty_hub_cache):
                 assert "main" not in seen, label
 
 
+def test_a_whole_cached_snapshot_loads_with_no_hub_request(empty_hub_cache):
+    """A whole snapshot is read from the cache alone: no request, so a flaky
+    network cannot fail a load that needs nothing from it."""
+    _write_snapshot(empty_hub_cache, OLD, YOUTU_VL_LOAD_FILES)
+
+    hub, _ = _load()
+    for label, mock in _hub_calls(hub).items():
+        assert mock.call_args.kwargs.get("local_files_only") is True, label
+
+
+def test_a_partial_snapshot_load_may_fetch(empty_hub_cache):
+    _write_snapshot(empty_hub_cache, NEW, _without("tokenizer.json"))
+
+    hub, _ = _load()
+    for label, mock in _hub_calls(hub).items():
+        assert not mock.call_args.kwargs.get("local_files_only", False), label
+
+
 @pytest.mark.parametrize("missing", YOUTU_VL_LOAD_FILES)
 def test_each_missing_load_file_makes_a_snapshot_incomplete(empty_hub_cache, missing):
     _write_snapshot(empty_hub_cache, NEW, _without(missing))

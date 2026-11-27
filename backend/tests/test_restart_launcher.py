@@ -15,6 +15,7 @@ the app. The fix must keep the first property and lose the second.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import socket
@@ -363,6 +364,61 @@ def test_port_is_free_answers_the_operating_system():
     while not restart_launcher.port_is_free("127.0.0.1", port) and time.monotonic() < deadline:
         time.sleep(0.05)
     assert restart_launcher.port_is_free("127.0.0.1", port)
+
+
+def _event_loop_reuses_address() -> bool:
+    """Whether a server the event loop starts here sets ``SO_REUSEADDR`` on its socket."""
+    async def probe() -> bool:
+        server = await asyncio.get_running_loop().create_server(asyncio.Protocol, "127.0.0.1", 0)
+        try:
+            return server.sockets[0].getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) != 0
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    return asyncio.run(probe())
+
+
+def _listener(port: int, reuse: bool) -> socket.socket:
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if reuse:
+            listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        listener.bind(("127.0.0.1", port))
+        listener.listen(1)
+    except BaseException:
+        listener.close()
+        raise
+    return listener
+
+
+def test_the_probe_reuses_the_address_exactly_when_the_event_loop_does():
+    assert restart_launcher.server_reuses_address() == _event_loop_reuses_address()
+
+
+def test_port_is_free_is_true_at_once_after_a_server_that_served_is_gone():
+    port = _free_port()
+    listener = _listener(port, _event_loop_reuses_address())
+    try:
+        client = socket.create_connection(("127.0.0.1", port), timeout=5)
+        try:
+            accepted, _ = listener.accept()
+            accepted.close()  # the server closes first, as one answering a request does
+            assert client.recv(1) == b""
+        finally:
+            client.close()
+    finally:
+        listener.close()
+    assert restart_launcher.port_is_free("127.0.0.1", port) is True
+
+
+def test_port_is_free_is_false_while_a_reusing_server_listens():
+    port = _free_port()
+    listener = _listener(port, reuse=True)
+    try:
+        assert restart_launcher.port_is_free("127.0.0.1", port) is False
+    finally:
+        listener.close()
 
 
 # ── LANE-56: the terminal the user is watching ───────────────────────────

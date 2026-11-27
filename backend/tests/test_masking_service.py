@@ -167,3 +167,78 @@ class TestMaskingServicePreview:
         # Background with 0.5 opacity → alpha = (0 + 1.0 * 0.5) * 255 = 127-128
         assert 126 <= alpha[0, 0] <= 128
         MaskingService._instance = None
+
+
+# ── A mask's source picture, whatever the extension's case ─────────────────
+
+RED, BLUE = (200, 40, 40), (40, 40, 200)
+
+
+@pytest.mark.parametrize("files, stem, expected", [
+    (["photo.JPG", "photo.txt"], "photo", "photo.JPG"),
+    (["a.PNG", "a.jpg"], "a", "a.jpg"),
+    (["a.JPG", "a.png"], "a", "a.JPG"),
+    (["bb.jpg", "b.txt"], "b", None),
+])
+def test_the_source_of_a_stem_is_matched_by_extension_whatever_its_case(tmp_path, files, stem, expected):
+    from app.core.masking.masking_service import _name_index, _source_path
+
+    folder = tmp_path / "scenario"
+    folder.mkdir()
+    for name in files:
+        (folder / name).write_bytes(b"x")
+    found = _source_path(str(folder), stem, _name_index(os.listdir(folder)))
+    if expected is None:
+        assert found is None
+    else:
+        assert found is not None and os.path.samefile(found, folder / expected)
+
+
+def _mask_for(folder, stem):
+    (folder / "masks").mkdir()
+    Image.new("L", (16, 16), 255).save(folder / "masks" / f"{stem}.png")
+
+
+def test_mass_apply_writes_the_masked_picture_of_an_upper_case_extension(tmp_path):
+    from app.core.masking.masking_service import MaskingService
+
+    Image.new("RGB", (16, 16), RED).save(tmp_path / "photo.JPG", "JPEG")
+    _mask_for(tmp_path, "photo")
+    result = MaskingService().mass_apply(str(tmp_path), 0.0, overwrite=True)
+    assert result["applied"] == 1 and result["skipped"] == 0 and result["missing_masks"] == []
+    assert (tmp_path / "masked" / "photo.jpg").exists()
+
+
+@pytest.mark.parametrize("jpeg, png", [("a.JPG", "a.png"), ("a.jpg", "a.PNG")])
+def test_mass_apply_takes_the_preferred_extension_whatever_its_case(tmp_path, jpeg, png):
+    from app.core.masking.masking_service import MaskingService
+
+    Image.new("RGB", (16, 16), RED).save(tmp_path / jpeg, "JPEG")
+    Image.new("RGB", (16, 16), BLUE).save(tmp_path / png, "PNG")
+    _mask_for(tmp_path, "a")
+    result = MaskingService().mass_apply(str(tmp_path), 0.0, overwrite=True)
+    assert result["applied"] == 1
+    with Image.open(tmp_path / "masked" / "a.jpg") as out:
+        r, _, b = out.convert("RGB").getpixel((8, 8))
+    assert r > 150 and b < 100
+
+
+def test_mass_apply_indexes_the_folder_names_once_for_all_its_masks(tmp_path, monkeypatch):
+    from app.core.masking import masking_service
+    from app.core.masking.masking_service import MaskingService
+
+    (tmp_path / "masks").mkdir()
+    for stem in ("a", "b", "c"):
+        Image.new("RGB", (16, 16), RED).save(tmp_path / f"{stem}.JPG", "JPEG")
+        Image.new("L", (16, 16), 255).save(tmp_path / "masks" / f"{stem}.png")
+    calls = []
+    real = masking_service._name_index
+
+    def counting(names):
+        calls.append(list(names))
+        return real(names)
+
+    monkeypatch.setattr(masking_service, "_name_index", counting)
+    result = MaskingService().mass_apply(str(tmp_path), 0.0, overwrite=True)
+    assert result["applied"] == 3
+    assert len(calls) == 1

@@ -61,7 +61,7 @@ _LOG_GROWTH = "job_log.jsonl"
 
 def port_answers(port: int) -> bool:
     """Whether something accepts a connection on ``port``; binds nothing, so it never meets a
-    starting server's own bind (on Windows that bind then fails as in use)."""
+    starting server's own bind (a bind probe there makes that bind fail as in use)."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.settimeout(1)
         return probe.connect_ex((LOOPBACK, port)) == 0
@@ -70,9 +70,10 @@ def port_answers(port: int) -> bool:
 def port_taken(port: int) -> bool:
     """Whether something listens on ``port``, for the checks before a run starts and after it
     stopped, never while a backend of this comparison starts (``port_answers``). A bind probe
-    (``restart_launcher.port_is_free``) answers at once; a port it can't bind is then asked by
-    connecting, since a socket a killed server left waiting blocks a bind on some systems but
-    takes no connection."""
+    (``restart_launcher.port_is_free``) answers at once, binding as the server does: on POSIX with
+    ``SO_REUSEADDR``, so a closed connection still waiting on the port holds nothing; on Windows
+    without, since a reusing bind there could take a live port. A port it can't bind is then asked
+    by connecting, since only a listener takes a connection."""
     if restart_launcher.port_is_free(LOOPBACK, port):
         return False
     return port_answers(port)

@@ -1,13 +1,19 @@
 """One run and the queue, against the fake trainer and backend as real child processes. A test
 that only needs finished runs on disk places them (``World.place_finished``) instead of training."""
+import asyncio
 import json
 import os
+import queue
 import re
 import socket
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from pathlib import Path
 
 import psutil
@@ -20,8 +26,8 @@ from app.core.sampler_compare.telemetry import Card
 from app.engine.core import validation_compare as vc
 from app.engine.core.pipeline.validation_pass import is_due
 
-from . import fake_trainer
-from .conftest import DEFINITION, GIB, FakeClock, fake_facts, started_pids
+from . import fake_backend, fake_trainer
+from .conftest import DEFINITION, GIB, FakeClock, fake_facts, listening_owner, started_pids
 from .test_isolation import hub_snapshot
 
 QUEUE = ["uniform_s42", "radc_s42", "uniform_s43", "radc_s43"]
@@ -87,32 +93,180 @@ def test_the_identity_is_on_disk_before_the_trainer_starts(ran_queue):
 # ── Before a run ────────────────────────────────────────────────────────────
 
 
-def test_the_fake_backend_outlasts_the_runners_port_probe(world, tmp_path):
-    """The readiness wait probes the port with a plain bind (``port_taken``) while the backend
-    starts; a backend binding in that instant must wait it out, as it does once the probe closes."""
-    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    probe.bind(("127.0.0.1", world.port))  # what restart_launcher.port_is_free holds for an instant
-    env = {**os.environ, "PORT": str(world.port), "MRLN_DB_PATH": str(world.db)}
-    backend = subprocess.Popen([sys.executable, str(Path(fake_trainer.__file__).with_name("fake_backend.py"))],
-                               env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+FAKE_BACKEND = Path(fake_trainer.__file__).with_name("fake_backend.py")
+TINY_APP = """async def app(scope, receive, send):
+    await send({"type": "http.response.start", "status": 200, "headers": []})
+    await send({"type": "http.response.body", "body": b"ok"})
+"""
+
+
+def _event_loop_reuses_address() -> bool:
+    """Whether a server the event loop starts here sets ``SO_REUSEADDR`` on its socket."""
+    async def probe() -> bool:
+        server = await asyncio.get_running_loop().create_server(asyncio.Protocol, "127.0.0.1", 0)
+        try:
+            return server.sockets[0].getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR) != 0
+        finally:
+            server.close()
+            await server.wait_closed()
+
+    return asyncio.run(probe())
+
+
+def _start(argv: list[str], port: int, db: Path, cwd: Path | None = None) -> subprocess.Popen:
+    env = {**os.environ, "PORT": str(port), "MRLN_DB_PATH": str(db)}
+    return subprocess.Popen(argv, env=env, cwd=cwd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
+
+
+def _start_fake(world) -> subprocess.Popen:
+    return _start([sys.executable, str(FAKE_BACKEND)], world.port, world.db)
+
+
+def _uvicorn_argv(tmp_path: Path, port: int) -> list[str]:
+    (tmp_path / "tiny_app.py").write_text(TINY_APP, encoding="utf-8")
+    return [sys.executable, "-m", "uvicorn", "tiny_app:app", "--app-dir", str(tmp_path), "--lifespan", "off",
+            "--host", "127.0.0.1", "--port", str(port)]
+
+
+def _stop(child: subprocess.Popen) -> str:
+    """Kills ``child`` and returns what it wrote."""
+    child.kill()
+    out, _ = child.communicate(timeout=30)
+    return out or ""
+
+
+def _first_line(child: subprocess.Popen, timeout: float) -> str | None:
+    """The first line ``child`` writes within ``timeout`` (None: none came)."""
+    lines: queue.Queue = queue.Queue()
+    threading.Thread(target=lambda: lines.put(child.stdout.readline()), daemon=True).start()
     try:
-        time.sleep(0.5)
-        assert backend.poll() is None, backend.stdout.read()
-        probe.close()
-        deadline = time.monotonic() + 30
-        while not port_taken(world.port):
-            assert backend.poll() is None and time.monotonic() < deadline, backend.stdout.read()
+        return lines.get(timeout=timeout)
+    except queue.Empty:
+        return None
+
+
+def _answers(url: str, child: subprocess.Popen, timeout: float) -> bool:
+    """Whether ``url`` answers 200 within ``timeout`` while ``child`` lives; connects, never binds."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and child.poll() is None:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                return response.status == 200
+        except (urllib.error.URLError, OSError):
             time.sleep(0.05)
+    return False
+
+
+def _served_to_the_end(url: str, child: subprocess.Popen, timeout: float) -> bool:
+    """One HTTP/1.0 request to ``url``, read until the server closes the connection: the server's
+    side closes first, so its end of the connection is the one left waiting on the port."""
+    parts = urllib.parse.urlsplit(url)
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline and child.poll() is None:
+        try:
+            with socket.create_connection((parts.hostname, parts.port), timeout=2) as conn:
+                conn.sendall(f"GET {parts.path} HTTP/1.0\r\nHost: {parts.hostname}\r\n\r\n".encode("ascii"))
+                answer = b""
+                while chunk := conn.recv(4096):
+                    answer += chunk
+                return answer.split(b"\r\n", 1)[0].split()[1:2] == [b"200"]
+        except OSError:
+            time.sleep(0.05)
+    return False
+
+
+def _serve_then_kill(argv_start, url: str) -> None:
+    """A predecessor that served one request, killed: what a restart's replacement meets."""
+    child = argv_start()
+    try:
+        assert _served_to_the_end(url, child, 60), child.poll()
     finally:
-        probe.close()
-        backend.kill()
-        backend.wait(timeout=30)
+        _stop(child)
+
+
+def test_the_fake_backend_sets_the_address_reuse_the_event_loop_sets_here():
+    reuses = _event_loop_reuses_address()
+    assert reuses == fake_backend.REUSE_ADDRESS
+    assert reuses == fake_backend._Server.allow_reuse_address
+
+
+def test_a_backend_starts_on_the_port_a_killed_one_just_served(world):
+    url = f"http://127.0.0.1:{world.port}/api/datasets/Cars"
+    _serve_then_kill(lambda: _start_fake(world), url)
+    second = _start_fake(world)
+    try:
+        line = _first_line(second, 5)
+        assert line and "fake_backend_started" in line, (line, second.poll())
+        assert _answers(url, second, 5)
+    finally:
+        _stop(second)
+
+
+def test_the_fake_backend_exits_with_3_at_once_when_its_port_is_listened_on(world):
+    owner = listening_owner(world.port)
+    try:
+        backend = _start_fake(world)
+        try:
+            code = backend.wait(timeout=5)
+        finally:
+            out = _stop(backend)
+    finally:
+        owner.close()
+    assert code == 3
+    assert "fake_backend_started" not in out
+
+
+def test_the_fake_backend_meets_a_taken_port_as_the_real_server_does(world, tmp_path):
+    import uvicorn.config
+
+    port = world.port
+    argv = _uvicorn_argv(tmp_path, port)
+    owner = listening_owner(port)
+    try:
+        real = _start(argv, port, world.db, cwd=tmp_path)
+        try:
+            real_code = real.wait(timeout=60)
+        finally:
+            _stop(real)
+        fake = _start_fake(world)
+        try:
+            fake_code = fake.wait(timeout=60)
+        finally:
+            _stop(fake)
+    finally:
+        owner.close()
+    assert real_code == fake_code == uvicorn.config.STARTUP_FAILURE == fake_backend.STARTUP_FAILURE == 3
+    # With the port free again, both bind it at once after a predecessor that served was killed.
+    starts = ((lambda: _start(argv, port, world.db, cwd=tmp_path), f"http://127.0.0.1:{port}/"),
+              (lambda: _start_fake(world), f"http://127.0.0.1:{port}/api/datasets/Cars"))
+    for start, url in starts:
+        _serve_then_kill(start, url)
+        successor = start()
+        try:
+            assert _answers(url, successor, 10), _stop(successor)
+        finally:
+            _stop(successor)
+
+
+@pytest.mark.parametrize("reuse", [True, False])
+def test_a_listening_port_is_taken_whichever_way_its_owner_bound(world, reuse):
+    owner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if reuse:
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        owner.bind(("127.0.0.1", world.port))
+        owner.listen()
+        assert port_taken(world.port) is True
+    finally:
+        owner.close()
+    deadline = time.monotonic() + 5
+    while port_taken(world.port) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    assert port_taken(world.port) is False
 
 
 def test_a_taken_port_is_refused_and_its_owner_untouched(world):
-    owner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    owner.bind(("127.0.0.1", world.port))
-    owner.listen()
+    owner = listening_owner(world.port)
     try:
         c, stop = _run_all(world)
         assert "already taken" in stop
@@ -1019,9 +1173,7 @@ def test_a_taken_port_is_checked_before_a_partial_run_is_moved(world):
     c = _partial_on_disk(world)
     folder = runner.run_dir(c, "uniform_s42", DEFINITION)
     before = sorted(p.name for p in folder.iterdir())
-    owner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    owner.bind(("127.0.0.1", world.port))
-    owner.listen()
+    owner = listening_owner(world.port)
     try:
         stop = runner.run_queue(c, world.seams())
     finally:

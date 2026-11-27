@@ -181,13 +181,13 @@ RED, BLUE = (200, 40, 40), (40, 40, 200)
     (["bb.jpg", "b.txt"], "b", None),
 ])
 def test_the_source_of_a_stem_is_matched_by_extension_whatever_its_case(tmp_path, files, stem, expected):
-    from app.core.masking.masking_service import _source_path
+    from app.core.masking.masking_service import _name_index, _source_path
 
     folder = tmp_path / "scenario"
     folder.mkdir()
     for name in files:
         (folder / name).write_bytes(b"x")
-    found = _source_path(str(folder), stem, os.listdir(folder))
+    found = _source_path(str(folder), stem, _name_index(os.listdir(folder)))
     if expected is None:
         assert found is None
     else:
@@ -221,3 +221,24 @@ def test_mass_apply_takes_the_preferred_extension_whatever_its_case(tmp_path, jp
     with Image.open(tmp_path / "masked" / "a.jpg") as out:
         r, _, b = out.convert("RGB").getpixel((8, 8))
     assert r > 150 and b < 100
+
+
+def test_mass_apply_indexes_the_folder_names_once_for_all_its_masks(tmp_path, monkeypatch):
+    from app.core.masking import masking_service
+    from app.core.masking.masking_service import MaskingService
+
+    (tmp_path / "masks").mkdir()
+    for stem in ("a", "b", "c"):
+        Image.new("RGB", (16, 16), RED).save(tmp_path / f"{stem}.JPG", "JPEG")
+        Image.new("L", (16, 16), 255).save(tmp_path / "masks" / f"{stem}.png")
+    calls = []
+    real = masking_service._name_index
+
+    def counting(names):
+        calls.append(list(names))
+        return real(names)
+
+    monkeypatch.setattr(masking_service, "_name_index", counting)
+    result = MaskingService().mass_apply(str(tmp_path), 0.0, overwrite=True)
+    assert result["applied"] == 3
+    assert len(calls) == 1

@@ -1,7 +1,8 @@
 
 import os
 import threading
-from collections.abc import Sequence
+from collections import defaultdict
+from collections.abc import Iterable, Mapping
 
 import numpy as np
 import structlog
@@ -35,20 +36,33 @@ logger = structlog.get_logger(__name__)
 _MASKING_GUARD_TASK_TYPES = ("mask_generate_batch",)
 
 
-def _source_path(dataset_path: str, stem: str, names: Sequence[str]) -> str | None:
+def _name_index(names: Iterable[str]) -> dict[tuple[str, str], list[str]]:
+    """The folder's ``names`` by (stem, lower-case extension), each list sorted.
+
+    Built once per folder, so finding the source of every mask stays a lookup, not a rescan.
+    """
+    index: dict[tuple[str, str], list[str]] = defaultdict(list)
+    for name in names:
+        stem, ext = os.path.splitext(name)
+        index[(stem, ext.lower())].append(name)
+    for cased in index.values():
+        cased.sort()
+    return dict(index)
+
+
+def _source_path(dataset_path: str, stem: str, index: Mapping[tuple[str, str], list[str]]) -> str | None:
     """The picture ``stem`` names in ``dataset_path``, by ``IMAGE_EXTENSION_PREFERENCE``.
 
     Every case of one extension is tried before the next extension, so the preferred kind wins
     whatever its case: first the lower-case name (a case-folding file system finds any case
-    there), then the folder's own ``names`` with exactly this stem and this extension in another
-    case, which a case-sensitive file system finds only so.
+    there), then the folder's own names from ``index`` (see ``_name_index``) with exactly this
+    stem and this extension in another case, which a case-sensitive file system finds only so.
     """
     for ext in IMAGE_EXTENSION_PREFERENCE:
         candidate = os.path.join(dataset_path, f"{stem}{ext}")
         if os.path.exists(candidate):
             return candidate
-        cased = sorted(name for name in names
-                       if os.path.splitext(name)[0] == stem and os.path.splitext(name)[1].lower() == ext)
+        cased = index.get((stem, ext))
         if cased:
             return os.path.join(dataset_path, cased[0])
     return None
@@ -199,6 +213,7 @@ class MaskingService:
             if os.path.splitext(f)[0] not in mask_stems
         ]
 
+        index = _name_index(names)
         applied = 0
         skipped = 0
         total = len(mask_files)
@@ -207,7 +222,7 @@ class MaskingService:
             stem = os.path.splitext(mask_file)[0]
             mask_path = os.path.join(masks_dir, mask_file)
 
-            source_path = _source_path(dataset_path, stem, names)
+            source_path = _source_path(dataset_path, stem, index)
             if source_path is None:
                 skipped += 1
                 continue

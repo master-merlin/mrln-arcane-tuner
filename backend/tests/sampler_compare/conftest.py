@@ -18,6 +18,7 @@ from app.engine.strategies.timestep_keys import TIMESTEP_SCHEMA_DEFAULTS
 
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))
+import fake_backend  # noqa: E402
 import fake_trainer  # noqa: E402
 
 GIB = 2**30
@@ -67,6 +68,21 @@ def free_port() -> int:
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
         probe.bind(("127.0.0.1", 0))
         return probe.getsockname()[1]
+
+
+def listening_owner(port: int) -> socket.socket:
+    """Another server on ``127.0.0.1:port``, bound as a server binds on this platform (address
+    reuse exactly when the event loop sets it) and listening; the caller closes it."""
+    owner = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        if fake_backend.REUSE_ADDRESS:
+            owner.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        owner.bind(("127.0.0.1", port))
+        owner.listen()
+    except BaseException:
+        owner.close()
+        raise
+    return owner
 
 
 class FakeClock:

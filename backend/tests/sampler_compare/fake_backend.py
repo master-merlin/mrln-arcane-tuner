@@ -48,29 +48,19 @@ def _started(port: int) -> None:
     sys.stdout.flush()
 
 
+#: The exit code of the real server whose bind is refused: uvicorn's ``config.STARTUP_FAILURE``,
+#: with which its single-process start exits at once (``uvicorn/server.py``, no retry).
+STARTUP_FAILURE = 3
+
+#: Whether the real server's socket has ``SO_REUSEADDR``: asyncio's ``create_server`` sets it
+#: exactly when ``os.name == "posix" and sys.platform != "cygwin"`` (``asyncio/base_events.py``).
+#: With it, a closed connection still waiting on the port blocks no new server; without it (Windows),
+#: a reuse bind could share a port another server holds.
+REUSE_ADDRESS = os.name == "posix" and sys.platform != "cygwin"
+
+
 class _Server(ThreadingHTTPServer):
-    # No SO_REUSEADDR, as uvicorn binds on Windows: there a reuse bind meeting the runner's plain
-    # port probe fails with WinError 10013 instead of "in use".
-    allow_reuse_address = False
-
-
-BIND_WAIT_S = 10.0
-BIND_POLL_S = 0.02
-
-
-def _bind(port: int) -> ThreadingHTTPServer:
-    """The server on ``port``; the runner's readiness probe binds it for an instant, so a bind
-    refused as in use is tried again within ``BIND_WAIT_S``."""
-    deadline = time.monotonic() + BIND_WAIT_S
-    while True:
-        try:
-            return _Server(("127.0.0.1", port), Handler)
-        except OSError as exc:
-            if getattr(exc, "winerror", None) not in (10048, 10013) and exc.errno not in (98, 48):
-                raise
-            if time.monotonic() >= deadline:
-                raise
-            time.sleep(BIND_POLL_S)
+    allow_reuse_address = REUSE_ADDRESS
 
 
 def main() -> int:
@@ -79,7 +69,11 @@ def main() -> int:
         _started(port)
         while True:
             time.sleep(1)
-    server = _bind(port)  # bound before it says it started
+    try:
+        server = _Server(("127.0.0.1", port), Handler)  # bound before it says it started
+    except OSError as exc:
+        sys.stderr.write(f"fake_backend: cannot bind 127.0.0.1:{port}: {exc}\n")
+        return STARTUP_FAILURE
     _started(port)
     server.serve_forever()
     return 0

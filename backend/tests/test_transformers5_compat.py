@@ -813,7 +813,8 @@ def test_youtu_vl_revision_is_a_full_commit_hash():
 @pytest.mark.usefixtures("empty_hub_cache")
 def test_youtu_vl_load_passes_the_pinned_revision_to_every_hub_call():
     """All four hub calls of `load()` read the same pinned upstream commit:
-    a call left on `main` would run remote code nobody reviewed."""
+    a call left on `main` would run remote code nobody reviewed. The hash is
+    written out, not imported: moving the pin must touch this test too."""
     from unittest.mock import MagicMock
 
     from app.core.captioning.models.youtu_vl import YoutuVLModel

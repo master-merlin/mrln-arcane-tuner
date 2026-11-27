@@ -1,6 +1,7 @@
 
 import os
 import threading
+from collections.abc import Sequence
 
 import numpy as np
 import structlog
@@ -32,6 +33,26 @@ logger = structlog.get_logger(__name__)
 # for `plugin`/`load`/`generate_mask` returns nothing. It therefore holds no GPU
 # model and cannot be interrupted by an unload.
 _MASKING_GUARD_TASK_TYPES = ("mask_generate_batch",)
+
+
+def _source_path(dataset_path: str, stem: str, names: Sequence[str]) -> str | None:
+    """The picture ``stem`` names in ``dataset_path``, by ``IMAGE_EXTENSION_PREFERENCE``.
+
+    Every case of one extension is tried before the next extension, so the preferred kind wins
+    whatever its case: first the lower-case name (a case-folding file system finds any case
+    there), then the folder's own ``names`` with exactly this stem and this extension in another
+    case, which a case-sensitive file system finds only so.
+    """
+    for ext in IMAGE_EXTENSION_PREFERENCE:
+        candidate = os.path.join(dataset_path, f"{stem}{ext}")
+        if os.path.exists(candidate):
+            return candidate
+        cased = sorted(name for name in names
+                       if os.path.splitext(name)[0] == stem and os.path.splitext(name)[1].lower() == ext)
+        if cased:
+            return os.path.join(dataset_path, cased[0])
+    return None
+
 
 class MaskingService:
     """
@@ -167,8 +188,9 @@ class MaskingService:
         ]
 
         # Find which images are missing masks
+        names = os.listdir(dataset_path)
         all_images = [
-            f for f in os.listdir(dataset_path)
+            f for f in names
             if os.path.splitext(f)[1].lower() in IMAGE_EXTENSIONS
         ]
         mask_stems = {os.path.splitext(f)[0] for f in mask_files}
@@ -185,14 +207,7 @@ class MaskingService:
             stem = os.path.splitext(mask_file)[0]
             mask_path = os.path.join(masks_dir, mask_file)
 
-            # Find matching source image
-            source_path = None
-            for ext in IMAGE_EXTENSION_PREFERENCE:
-                candidate = os.path.join(dataset_path, f"{stem}{ext}")
-                if os.path.exists(candidate):
-                    source_path = candidate
-                    break
-
+            source_path = _source_path(dataset_path, stem, names)
             if source_path is None:
                 skipped += 1
                 continue

@@ -14,10 +14,18 @@ captioning UX is preserved (per-chunk download bar is the only loss).
 
 These tests mock the transformers ``AutoModel.from_pretrained`` /
 ``AutoProcessor.from_pretrained`` per loader and assert ``tqdm_class`` is
-absent from every recorded call's kwargs.
+absent from every recorded call's kwargs. Youtu-VL also reaches the hub for its
+config and remote class, so it uses ``tests/support/youtu_vl_doubles.py``,
+which doubles all four of its hub calls.
 """
 
 from unittest.mock import MagicMock, patch
+
+import pytest
+
+# Every loader here runs against an empty hub cache, as on a fresh CI runner:
+# a hub call the test does not double fails instead of reading a warm cache.
+pytestmark = pytest.mark.usefixtures("empty_hub_cache")
 
 
 def _assert_no_tqdm_class(mock_fn, label: str) -> None:
@@ -77,12 +85,11 @@ def test_joycaption_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
     _assert_no_tqdm_class(mock_proc_cls.from_pretrained, "joycaption AutoProcessor")
 
 
-@patch("app.core.captioning.models.youtu_vl.AutoProcessor")
-@patch("app.core.captioning.models.youtu_vl.AutoModelForCausalLM")
-def test_youtu_vl_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
+def test_youtu_vl_load_omits_tqdm_class():
     import torch
 
     from app.core.captioning.models.youtu_vl import YoutuVLModel
+    from tests.support.youtu_vl_doubles import youtu_vl_hub_doubles
 
     # load() also runs _repair_nonpersistent_rope_buffers (see
     # test_transformers5_compat.py for that behaviour in isolation), which
@@ -95,9 +102,8 @@ def test_youtu_vl_load_omits_tqdm_class(mock_model_cls, mock_proc_cls):
     fake_model = torch.nn.Module()
     fake_model.rotary_emb = torch.nn.Module()
     fake_model.rotary_emb.register_buffer("inv_freq", torch.ones(4))
-    mock_model_cls.from_pretrained.return_value = fake_model
-    mock_proc_cls.from_pretrained.return_value = MagicMock()
-    plugin = YoutuVLModel(service=MagicMock())
-    plugin.load()
-    _assert_no_tqdm_class(mock_model_cls.from_pretrained, "youtu_vl AutoModelForCausalLM")
-    _assert_no_tqdm_class(mock_proc_cls.from_pretrained, "youtu_vl AutoProcessor")
+    with youtu_vl_hub_doubles(fake_model) as hub:
+        plugin = YoutuVLModel(service=MagicMock())
+        plugin.load()
+    _assert_no_tqdm_class(hub.model_cls.from_pretrained, "youtu_vl AutoModelForCausalLM")
+    _assert_no_tqdm_class(hub.processor_cls.from_pretrained, "youtu_vl AutoProcessor")

@@ -132,6 +132,23 @@ def temp_output_dir(tmp_path):
 
 
 @pytest.fixture
+def empty_hub_cache(monkeypatch, tmp_path):
+    """An empty Hugging Face hub cache: the state of a fresh CI runner.
+
+    ``huggingface_hub`` and ``transformers`` read ``constants.HF_HUB_CACHE`` at
+    call time, so a loader that reaches a real hub call without a double finds
+    nothing cached here and, with the hub offline, raises instead of passing on
+    a machine whose own cache happens to be warm.
+    """
+    import huggingface_hub.constants
+
+    hub = tmp_path / "hub"
+    hub.mkdir()
+    monkeypatch.setattr(huggingface_hub.constants, "HF_HUB_CACHE", str(hub))
+    return hub
+
+
+@pytest.fixture
 def client():
     """Shared FastAPI test client — avoids duplicating in every test file."""
     from app.main import app

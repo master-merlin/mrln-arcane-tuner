@@ -1,7 +1,6 @@
 """Contract tests for the transformers 5.x upgrade."""
 
 import pathlib
-from unittest.mock import patch
 
 import pytest
 import torch
@@ -599,9 +598,8 @@ def test_repair_is_a_noop_when_buffers_are_already_persistent():
     assert torch.all(rope.inv_freq == 0), "not touched -- persistent buffers are the checkpoint's job"
 
 
-@patch("app.core.captioning.models.youtu_vl.AutoProcessor")
-@patch("app.core.captioning.models.youtu_vl.AutoModelForCausalLM")
-def test_load_repairs_the_rope_buffers_of_the_model_it_just_built(mock_model_cls, mock_proc_cls):
+@pytest.mark.usefixtures("empty_hub_cache")
+def test_load_repairs_the_rope_buffers_of_the_model_it_just_built():
     """The CALL SITE, not the function (LESSONS 2026-08-14, gap (a)).
 
     Every test above proves `_repair_nonpersistent_rope_buffers` does the
@@ -624,21 +622,21 @@ def test_load_repairs_the_rope_buffers_of_the_model_it_just_built(mock_model_cls
     NON-persistent and zeroed -- the exact state transformers 5.x's
     meta-device materialization leaves behind -- and asserts on the
     OBSERVABLE state of that buffer after `load()` returns, never on a
-    spy or a call count. Mocking stops at `from_pretrained` (the layer
-    BELOW the contract); the repair itself is the real production code.
+    spy or a call count. Mocking stops at the hub calls (the layer BELOW
+    the contract, all four of them, against an empty hub cache); the
+    repair itself is the real production code.
     """
     from types import SimpleNamespace
     from unittest.mock import MagicMock
 
     from app.core.captioning.models.youtu_vl import YoutuVLModel
+    from tests.support.youtu_vl_doubles import youtu_vl_hub_doubles
     from transformers.modeling_rope_utils import ROPE_INIT_FUNCTIONS
 
     config = SimpleNamespace(rope_theta=500000.0, hidden_size=256, num_attention_heads=4)
     rope = _FakeDefaultRope(config)
     fake_model = torch.nn.Module()
     fake_model.rotary_emb = rope
-    mock_model_cls.from_pretrained.return_value = fake_model
-    mock_proc_cls.from_pretrained.return_value = MagicMock()
 
     assert torch.all(rope.inv_freq == 0), (
         "precondition: the buffer must start uninitialized, or a no-op repair "
@@ -650,9 +648,10 @@ def test_load_repairs_the_rope_buffers_of_the_model_it_just_built(mock_model_cls
         "one makes the repair skip and this test vacuous"
     )
 
-    YoutuVLModel(service=MagicMock()).load()
+    with youtu_vl_hub_doubles(fake_model) as hub:
+        YoutuVLModel(service=MagicMock()).load()
 
-    assert mock_model_cls.from_pretrained.called, (
+    assert hub.model_cls.from_pretrained.called, (
         "load() never built the model -- this test aborted before the line it "
         "exists to pin and is proving nothing"
     )
@@ -667,6 +666,50 @@ def test_load_repairs_the_rope_buffers_of_the_model_it_just_built(mock_model_cls
     )
     assert torch.allclose(rope.inv_freq, expected_inv_freq)
     assert rope.attention_scaling == expected_scaling
+
+
+def _persistent_rope_model() -> torch.nn.Module:
+    """A model tree whose RoPE buffer is persistent: nothing for the repair to do."""
+    model = torch.nn.Module()
+    model.rotary_emb = torch.nn.Module()
+    model.rotary_emb.register_buffer("inv_freq", torch.ones(4))
+    return model
+
+
+@pytest.mark.usefixtures("empty_hub_cache")
+def test_youtu_vl_load_normalises_the_config_and_the_tied_weights():
+    """Every line of `load()` between the config and the model build, run
+    without the hub cache: the config handed to the model build has
+    `rope_scaling` nulled and `pruned_heads` restored, and the remote class's
+    list-form `_tied_weights_keys` is rewritten to the 5.x dict form."""
+    from unittest.mock import MagicMock
+
+    from app.core.captioning.models.youtu_vl import YoutuVLModel
+    from tests.support.youtu_vl_doubles import youtu_vl_hub_doubles
+
+    with youtu_vl_hub_doubles(_persistent_rope_model()) as hub:
+        YoutuVLModel(service=MagicMock()).load()
+
+    built_with = hub.model_cls.from_pretrained.call_args.kwargs["config"]
+    assert built_with.rope_scaling is None
+    assert built_with.pruned_heads == {}
+    assert hub.dynamic_class._tied_weights_keys == {"lm_head.weight": "model.embed_tokens.weight"}
+
+
+@pytest.mark.usefixtures("empty_hub_cache")
+def test_youtu_vl_load_refuses_a_changed_tied_weights_shape():
+    """A remote class whose list-form `_tied_weights_keys` is not the one the
+    patch was written for stops `load()` instead of tying the wrong tensor."""
+    from unittest.mock import MagicMock
+
+    from app.core.captioning.models.youtu_vl import YoutuVLModel
+    from tests.support.youtu_vl_doubles import youtu_vl_hub_doubles
+
+    with youtu_vl_hub_doubles(_persistent_rope_model()) as hub:
+        hub.dynamic_class._tied_weights_keys = ["other.weight"]
+        with pytest.raises(RuntimeError, match="_tied_weights_keys changed"):
+            YoutuVLModel(service=MagicMock()).load()
+    hub.model_cls.from_pretrained.assert_not_called()
 
 
 #: transformers 5.x deprecations. Kept as module state so the scan and its

@@ -309,6 +309,8 @@ def test_a_non_finite_loss_is_written_as_null(tmp_path):
 # ── Each image's own losses in the record ────────────────────────────────────
 
 # The stub's numbers from the code before per-image losses were kept (one noise draw).
+# The losses come out of float32 kernels, which round differently per platform, so they
+# are held to `_FLOAT32_REL`; the image count, the band centres and the worst band exactly.
 _BEFORE = {
     "images": 3,
     "band_centres": [0.125, 0.375, 0.625, 0.875],
@@ -316,6 +318,7 @@ _BEFORE = {
     "mean": 0.8629882037639618,
     "worst_band": 0,
 }
+_FLOAT32_REL = 1e-6
 _TODAYS_FIELDS = {"step", "images", "band_centres", "band_loss", "mean", "worst_band", "seconds"}
 
 
@@ -323,10 +326,71 @@ def _written(tmp_path):
     return json.loads((tmp_path / "validation_metrics.jsonl").read_text(encoding="utf-8").splitlines()[-1])
 
 
-def test_one_draw_leaves_todays_aggregates_unchanged(tmp_path):
+def _assert_todays_aggregates(got: dict) -> None:
+    """`got`'s aggregates are `_BEFORE`'s: the losses within `_FLOAT32_REL`, everything else exactly."""
+    for key, expected in _BEFORE.items():
+        assert key in got, f"the aggregates lack {key!r}"
+        if key in ("band_loss", "mean"):
+            assert got[key] == pytest.approx(expected, rel=_FLOAT32_REL, abs=0), key
+        else:
+            assert got[key] == expected, key
+
+
+# The same pass as `_BEFORE`, its losses rounded as another platform's float32 kernels round them.
+_OTHER_PLATFORM = {
+    **_BEFORE,
+    "band_loss": [1.0015891790390015, 0.8958169023195902, 0.8101021448771158, 0.7444446484247843],
+    "mean": 0.862988218665123,
+}
+
+
+def test_the_aggregate_check_accepts_another_platforms_rounding():
+    _assert_todays_aggregates(_OTHER_PLATFORM)
+
+
+def _scaled_first_band(factor):
+    return [_BEFORE["band_loss"][0] * factor, *_BEFORE["band_loss"][1:]]
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        pytest.param({"images": 2}, id="images"),
+        pytest.param({"band_centres": [0.125, 0.375, 0.625, 0.8750001]}, id="band_centre"),
+        pytest.param({"worst_band": 1}, id="worst_band"),
+        pytest.param({"band_loss": _scaled_first_band(1 + 1e-5)}, id="band_loss"),
+        pytest.param({"mean": _BEFORE["mean"] * (1 - 1e-5)}, id="mean"),
+        pytest.param({"band_loss": _BEFORE["band_loss"][:3]}, id="one_band_fewer"),
+        pytest.param(None, id="missing_field"),
+        pytest.param({"mean": None}, id="null_loss"),
+    ],
+)
+def test_the_aggregate_check_refuses_a_real_change(change):
+    if change is None:
+        got = {key: value for key, value in _BEFORE.items() if key != "mean"}
+    else:
+        got = {**_BEFORE, **change}
+    with pytest.raises(AssertionError):
+        _assert_todays_aggregates(got)
+
+
+def test_a_dropped_image_moves_the_aggregates_far_beyond_the_tolerance(tmp_path):
     _run(_pipeline(tmp_path))
     record = _written(tmp_path)
-    assert {key: record[key] for key in _BEFORE} == _BEFORE
+    losses = record["image_band_loss"]
+    assert len(losses) == record["images"] == 3
+    for dropped in range(len(losses)):
+        kept = [image[0] for i, image in enumerate(losses) if i != dropped]
+        bands = [sum(image[band] for image in kept) / len(kept) for band in range(BANDS)]
+        moves = [abs(bands[b] - record["band_loss"][b]) / abs(record["band_loss"][b]) for b in range(BANDS)]
+        assert max(moves) > 1000 * _FLOAT32_REL, f"dropping image {dropped} moved the bands by only {max(moves)}"
+        with pytest.raises(AssertionError):
+            _assert_todays_aggregates({**record, "band_loss": bands})
+
+
+def test_one_draw_leaves_todays_aggregates_unchanged(tmp_path):
+    _run(_pipeline(tmp_path))
+    _assert_todays_aggregates(_written(tmp_path))
 
 
 def test_the_record_keeps_each_images_losses_per_draw_and_band(tmp_path):
@@ -466,7 +530,7 @@ def test_the_event_carries_todays_fields_only(tmp_path):
     kind, event = t._log_writer.emit.call_args.args
     assert kind == "validation"
     assert set(event) == _TODAYS_FIELDS
-    assert {key: event[key] for key in _BEFORE} == _BEFORE
+    _assert_todays_aggregates(event)
 
 
 # ── Through the real loop ────────────────────────────────────────────────────

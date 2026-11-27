@@ -196,29 +196,127 @@ def test_youtu_vl_shim_is_still_required():
     )
 
 
-@pytest.mark.skipif(
-    # Resolve the cache dir the way huggingface_hub itself does (respects
-    # HF_HOME/HF_HUB_CACHE) instead of a hardcoded machine-specific path -- a
-    # literal path here would silently skip this test, the only real-code
-    # evidence for the Youtu-VL shim, on any other machine or CI.
-    not (pathlib.Path(HF_HUB_CACHE) / "models--tencent--Youtu-VL-4B-Instruct").exists(),
-    reason="Youtu-VL checkpoint not in the local HF cache",
+#: What each real-cache load reads from the pinned snapshot, remote code and
+#: its relative imports included (the snapshot's `auto_map` and `from .x
+#: import` lines). `test_the_youtu_snapshot_lists_cover_what_each_load_reads`
+#: proves the lists are complete; a test skips unless all of its list is there.
+_YOUTU_CONFIG_FILES = ("config.json", "configuration_youtu_vl.py", "configuration_siglip2.py")
+_YOUTU_PROCESSOR_FILES = _YOUTU_CONFIG_FILES + (
+    "preprocessor_config.json",
+    "processing_youtu_vl.py",
+    "image_processing_siglip2_fast.py",
+    "tokenizer.json",
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "chat_template.json",
 )
+
+
+def _youtu_snapshot_dir() -> pathlib.Path:
+    """The pinned snapshot in the real hub cache. Resolved the way
+    huggingface_hub itself does (respects HF_HOME/HF_HUB_CACHE), never a
+    machine-specific literal path."""
+    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
+
+    return (
+        pathlib.Path(HF_HUB_CACHE)
+        / "models--tencent--Youtu-VL-4B-Instruct"
+        / "snapshots"
+        / YOUTU_VL_REVISION
+    )
+
+
+def _youtu_snapshot_has(*names: str) -> bool:
+    """True when every name is a file of the pinned snapshot. Reads the
+    snapshot itself, never `refs/main`, which may point anywhere."""
+    snapshot = _youtu_snapshot_dir()
+    return all((snapshot / name).is_file() for name in names)
+
+
+def _skip_reason() -> str:
+    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
+
+    return f"Youtu-VL snapshot {YOUTU_VL_REVISION} not in the local HF cache"
+
+
+def test_the_youtu_snapshot_probe_is_false_for_a_missing_file():
+    """The probe can say no on every machine, so a skip gate built on it is
+    not always open."""
+    assert _youtu_snapshot_has("no-such-file.bin") is False
+
+
+@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_PROCESSOR_FILES), reason=_skip_reason())
 def test_youtu_vl_processor_loads_with_the_shim():
     """Observable output: AutoProcessor returns a real YoutuVLProcessor.
     Without the shim this raises ImportError inside tencent's remote code."""
     from transformers import AutoProcessor
 
     from app.core.captioning.compat.transformers5 import install_transformers5_compat
+    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
 
     install_transformers5_compat()
     proc = AutoProcessor.from_pretrained(
         "tencent/Youtu-VL-4B-Instruct",
+        revision=YOUTU_VL_REVISION,
         trust_remote_code=True,
-        backend="torchvision",  # the exact kwarg youtu_vl.py:76 now passes
+        backend="torchvision",  # the exact kwarg youtu_vl.py's load() passes
         local_files_only=True,
     )
     assert type(proc).__name__ == "YoutuVLProcessor"
+
+
+@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_PROCESSOR_FILES), reason=_skip_reason())
+def test_the_youtu_snapshot_lists_cover_what_each_load_reads(empty_hub_cache):
+    """Both real-cache loads succeed from a snapshot holding ONLY the listed
+    files (no weights, no `refs/`). A file a load needs that the lists lack
+    fails here, instead of failing a later run on a machine with a partial
+    snapshot that the skip gate let through.
+
+    The loads run in a fresh interpreter with an empty dynamic-modules cache
+    too: transformers fetches a remote file's relative imports only when the
+    modules cache lacks them, and this process may already have imported the
+    remote code, so either would hide a missing name."""
+    import os
+    import shutil
+    import subprocess
+    import sys
+
+    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
+
+    real = _youtu_snapshot_dir()
+    copy = empty_hub_cache / "models--tencent--Youtu-VL-4B-Instruct" / "snapshots" / YOUTU_VL_REVISION
+    copy.mkdir(parents=True)
+    for name in _YOUTU_PROCESSOR_FILES:
+        shutil.copyfile(real / name, copy / name)
+
+    probe = (
+        "from transformers import AutoConfig, AutoProcessor\n"
+        "from app.core.captioning.compat.transformers5 import install_transformers5_compat\n"
+        "install_transformers5_compat()\n"
+        "kw = dict(revision=%r, trust_remote_code=True, local_files_only=True)\n"
+        "repo = 'tencent/Youtu-VL-4B-Instruct'\n"
+        "print('LOADED', type(AutoConfig.from_pretrained(repo, **kw)).__name__)\n"
+        "print('LOADED', type(AutoProcessor.from_pretrained(repo, backend='torchvision', **kw)).__name__)\n"
+    ) % YOUTU_VL_REVISION
+    env = {
+        **os.environ,
+        "HF_HUB_CACHE": str(empty_hub_cache),
+        "HF_MODULES_CACHE": str(empty_hub_cache.parent / "modules"),
+        "PYTHONDONTWRITEBYTECODE": "1",
+    }
+    backend_root = pathlib.Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        cwd=backend_root,
+        env=env,
+        capture_output=True,
+        text=True,
+        timeout=600,
+    )
+    assert result.returncode == 0, result.stderr[-4000:]
+    # The app's logging also writes to stdout; only the probe's lines count.
+    loaded = [line.split()[1] for line in result.stdout.splitlines() if line.startswith("LOADED ")]
+    assert loaded == ["YoutuVLConfig", "YoutuVLProcessor"]
 
 
 def test_rope_default_shim_produces_correct_inv_freq():
@@ -280,12 +378,7 @@ def test_rope_default_shim_reads_a_transformers5_config():
     assert torch.allclose(inv_freq, expected, rtol=1e-5)
 
 
-@pytest.mark.skipif(
-    # Same cache-existence gate as test_youtu_vl_processor_loads_with_the_shim:
-    # a hardcoded path would silently skip this on any other machine/CI.
-    not (pathlib.Path(HF_HUB_CACHE) / "models--tencent--Youtu-VL-4B-Instruct").exists(),
-    reason="Youtu-VL checkpoint not in the local HF cache",
-)
+@pytest.mark.skipif(not _youtu_snapshot_has(*_YOUTU_CONFIG_FILES), reason=_skip_reason())
 def test_youtu_vl_config_normalisation_neutralises_rope_scaling():
     """Pin the exact precondition that stops `KeyError: 'factor'` in the remote
     `YoutuMLAttention.__init__`: after the normalisation `load()` applies,
@@ -298,10 +391,15 @@ def test_youtu_vl_config_normalisation_neutralises_rope_scaling():
 
     from app.core.captioning.compat.transformers5 import install_transformers5_compat
 
+    from app.core.captioning.models.youtu_vl import YOUTU_VL_REVISION
+
     install_transformers5_compat()
 
     config = AutoConfig.from_pretrained(
-        "tencent/Youtu-VL-4B-Instruct", trust_remote_code=True, local_files_only=True
+        "tencent/Youtu-VL-4B-Instruct",
+        revision=YOUTU_VL_REVISION,
+        trust_remote_code=True,
+        local_files_only=True,
     )
 
     # Sanity: prove the precondition this test guards against is real - 5.x's

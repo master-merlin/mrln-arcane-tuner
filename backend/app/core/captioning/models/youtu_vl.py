@@ -39,8 +39,12 @@ YOUTU_VL_REPO_ID = "tencent/Youtu-VL-4B-Instruct"
 #
 # The rule (resolve_youtu_vl_revision): load the newest reviewed revision whose
 # snapshot holds every file of YOUTU_VL_LOAD_FILES, as it is, with no request;
-# with none whole, fetch the newest. A cache filled before 68d50d82 existed
-# holds only 8d30a0e4 and so still captions offline. refs/main is never read.
+# with none whole, fetch the newest. refs/main is never read.
+#
+# The reviewed revisions are these two hashes. Older upstream revisions (for
+# example f0cd60da, from before SDPA attention support came in 8d30a0e4) run
+# different remote code and are never loaded: a cache holding only one of
+# those fetches the newest reviewed revision.
 YOUTU_VL_REVISIONS: tuple[str, ...] = (
     "68d50d82df573c7282ecc1f06f1c9473252c9e72",
     "8d30a0e49662a1d628a472b12df264dbcd768753",

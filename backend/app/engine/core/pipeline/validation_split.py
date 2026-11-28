@@ -15,7 +15,11 @@ from typing import Any
 from PIL import Image
 
 # One rule for the in-run guard and the comparison of runs; it lives in the light module.
-from app.engine.core.validation_compare import same_measurement  # noqa: F401 - re-exported
+from app.engine.core.validation_compare import (  # noqa: F401 - re-exported
+    measurement_difference,
+    recorded_bands,
+    same_measurement,
+)
 
 NEAR_IDENTICAL_BITS = 6
 _HASH_WIDTH = 8
@@ -140,8 +144,9 @@ def split_file_content(split: ValidationSplit, config: dict[str, Any], model: st
     """The text of ``validation_split.json``: the split and the settings that made it.
 
     ``model`` is the definition the run trains: a comparison of runs refuses two models, whose
-    losses aren't on one scale. ``same_measurement`` leaves it out, so a resume of a run whose
-    split file predates it is still accepted.
+    losses aren't on one scale. Which keys ``same_measurement`` compares, and why it leaves
+    out the others (``model`` among them), is in ``validation_compare.COMPARED`` and
+    ``LEFT_OUT``; a key added here needs an entry in one of them.
     """
     representative_fields = ("key", "path", "caption", "prefix", "target_w", "target_h")
     content = {

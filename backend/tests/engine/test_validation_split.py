@@ -6,12 +6,23 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from app.engine.core.pipeline import validation_split
 from app.engine.core.pipeline.validation_split import (
+    ValidationSplit,
     difference_hash,
+    measurement_difference,
     same_measurement,
+    split_file_content,
     split_holdout,
     split_separate_dataset,
 )
+from app.engine.core.validation_compare import (
+    COMPARED,
+    DEFAULT_TIMESTEP_BANDS,
+    LEFT_OUT,
+    REPRESENTATIVE_LEFT_OUT,
+)
+from app.engine.models.base import BaseTrainingConfig
 
 # Distinct hashes far apart, one bit pattern per source, so tests choose the links.
 FAR = [int("".join(str((i >> b) & 1) * 8 for b in range(8)), 2) for i in range(1, 200)]
@@ -221,6 +232,84 @@ def test_another_draw_count_is_the_same_measurement_and_another_seed_is_not():
     assert not same_measurement(_split_text(), _split_text(split_seed=1))
     # The reason it is left out is written where the rule is.
     assert "noise_draws" in same_measurement.__doc__
+
+
+def test_another_band_count_is_another_measurement():
+    assert not same_measurement(_split_text(timestep_bands=8), _split_text(timestep_bands=2))
+    assert measurement_difference(_split_text(timestep_bands=8), _split_text(timestep_bands=2)) == "timestep_bands"
+    assert same_measurement(_split_text(timestep_bands=8), _split_text(timestep_bands=8))
+    assert measurement_difference(_split_text(timestep_bands=8), _split_text(timestep_bands=8)) is None
+
+
+def test_a_split_file_without_a_band_count_reads_as_eight_bands():
+    assert same_measurement(_split_text(), _split_text(timestep_bands=8))
+    assert not same_measurement(_split_text(), _split_text(timestep_bands=2))
+    assert not same_measurement(_split_text(timestep_bands=None), _split_text(timestep_bands=8))
+
+
+def _written_split(tmp_path):
+    """The real text ``split_file_content`` writes for a split of one held-out image."""
+    path = tmp_path / "a.png"
+    Image.new("RGB", (8, 8), "white").save(path)
+    representative = dict(_item("a.png"), path=str(path), prefix="")
+    split = ValidationSplit(
+        training_items=[], holdout_keys=["ds/a.png"], representatives=[representative], groups=[["ds/a.png"]]
+    )
+    return split_file_content(split, {}, "m")
+
+
+def test_every_recorded_key_is_compared_or_left_out_with_a_reason(tmp_path):
+    written = json.loads(_written_split(tmp_path))
+
+    assert set(written) == set(COMPARED) | set(LEFT_OUT)
+    assert set(COMPARED).isdisjoint(LEFT_OUT)
+    for reason in (*LEFT_OUT.values(), *REPRESENTATIVE_LEFT_OUT.values()):
+        assert reason.strip().endswith(".") and len(reason.strip()) > 20
+
+    fields = set(written["representatives"][0])
+    assert "path" in REPRESENTATIVE_LEFT_OUT
+    assert set(REPRESENTATIVE_LEFT_OUT) <= fields
+    assert fields - set(REPRESENTATIVE_LEFT_OUT) == {"key", "caption", "prefix", "target_w", "target_h", "sha256"}
+
+
+# Another value for every key the split file records; a key missing here fails the test.
+_OTHER_VALUE = {
+    "timestep_bands": 2,
+    "split_seed": 1,
+    "noise_draws": 4,
+    "every_n_steps": 50,
+    "holdout_fraction": 0.3,
+    "hash_threshold_bits": 7,
+    "model": "n",
+    "global_triggerword": "ohwx",
+    "validation_dataset": "held",
+    "holdout": ["ds/a.png", "ds/b.png"],
+    "groups": [["ds/a.png", "ds/b.png"]],
+    "representatives": lambda items: [dict(items[0], key="ds/b.png")],
+}
+
+
+@pytest.mark.parametrize("key", sorted(set(COMPARED) | set(LEFT_OUT)))
+def test_a_changed_key_changes_the_verdict_only_when_it_is_compared(tmp_path, key):
+    before = _written_split(tmp_path)
+    written = json.loads(before)
+    assert key in written
+    other = _OTHER_VALUE[key]
+    changed = other(written[key]) if callable(other) else other
+    assert changed != written[key]
+
+    after = json.dumps({**written, key: changed})
+    assert same_measurement(before, after) == (key in LEFT_OUT)
+
+
+def test_every_written_key_has_another_value_in_the_change_table(tmp_path):
+    assert set(json.loads(_written_split(tmp_path))) == set(_OTHER_VALUE)
+
+
+def test_the_band_default_is_the_schema_default():
+    bounds = {name: default for name, default, _low, _high in validation_split._BOUNDS}
+    assert DEFAULT_TIMESTEP_BANDS == BaseTrainingConfig.model_fields["validation_timestep_bands"].default == 8
+    assert bounds["validation_timestep_bands"] == DEFAULT_TIMESTEP_BANDS
 
 
 def test_the_difference_hash_is_close_for_near_copies_and_far_for_others(tmp_path):

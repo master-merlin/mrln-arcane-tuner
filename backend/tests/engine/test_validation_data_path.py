@@ -593,7 +593,106 @@ def _changed_dataset(root):
     return lambda _datasets: {"ds": grown}, {}
 
 
-_CHANGES = pytest.mark.parametrize("change", [_changed_seed, _changed_dataset], ids=["split seed", "dataset"])
+def _changed_bands(_root):
+    return lambda datasets: datasets, {"validation_timestep_bands": 2}
+
+
+_CHANGES = pytest.mark.parametrize(
+    "change", [_changed_seed, _changed_dataset, _changed_bands], ids=["split seed", "dataset", "band count"]
+)
+
+
+def _assert_names_both_band_counts(text):
+    for part in ("validation_split.json", "timestep_bands", "8", "2", "validation_timestep_bands"):
+        assert part in text
+    # The folder names hold the test's name, so each part is matched in its sentence too.
+    assert "differs in timestep_bands." in text
+    assert "has 8 noise bands and this run 2: set validation_timestep_bands back to 8" in text
+
+
+_PATHS = pytest.mark.parametrize("path", ["checkpoint", "output folder"])
+
+
+@_PATHS
+def test_an_eight_band_run_resumed_with_two_bands_stops_naming_both_counts(monkeypatch, tmp_path, path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    first = _prepare(_pipeline(monkeypatch, datasets, _holdout_config()))
+    if path == "checkpoint":
+        record = Path(_checkpoint_of(first, tmp_path / "first"))
+        output = tmp_path / "fresh"
+        resumed = _resuming(monkeypatch, datasets, str(record), output, validation_timestep_bands=2)
+    else:
+        record = tmp_path
+        _with_output_dir(first, tmp_path)._enter_validation_split()
+        resumed = _with_output_dir(
+            _prepare(_pipeline(monkeypatch, datasets, _holdout_config(validation_timestep_bands=2))), tmp_path
+        )
+
+    with pytest.raises(ValueError) as refused:
+        resumed._enter_validation_split()
+
+    _assert_names_both_band_counts(str(refused.value))
+    assert _written_split(record)["timestep_bands"] == 8
+    assert len(resumed.inventory) == 20 * 3
+    if path == "checkpoint":
+        assert not (output / "validation_split.json").exists()
+        assert resumed.checkpoint_manager.validation_split_content is None
+
+
+def _keyless_record(folder):
+    """Rewrite ``folder``'s split record as a writer that recorded no band count would have."""
+    record = Path(folder) / "validation_split.json"
+    split = json.loads(record.read_text(encoding="utf-8"))
+    del split["timestep_bands"]
+    record.write_text(json.dumps(split, indent=2), encoding="utf-8")
+    assert "timestep_bands" not in _written_split(Path(folder))
+
+
+@_PATHS
+def test_a_record_without_a_band_count_resumes_at_eight_bands_and_stops_at_two(monkeypatch, tmp_path, path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    outcomes = {"goes_on": {}, "stops": {"validation_timestep_bands": 2}}
+    for name, config in outcomes.items():
+        root = tmp_path / name
+        root.mkdir()
+        first = _prepare(_pipeline(monkeypatch, datasets, _holdout_config()))
+        if path == "checkpoint":
+            checkpoint = Path(_checkpoint_of(first, root / "first"))
+            _keyless_record(checkpoint)
+            output = root / "fresh"
+            resumed = _resuming(monkeypatch, datasets, str(checkpoint), output, **config)
+            if name == "goes_on":
+                resumed._enter_validation_split()
+                assert _written_split(output)["timestep_bands"] == 8
+            else:
+                _assert_refused(resumed, output)
+            assert "timestep_bands" not in _written_split(checkpoint)
+        else:
+            output = root / "out"
+            _with_output_dir(first, output)._enter_validation_split()
+            _keyless_record(output)
+            resumed = _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config(**config))), output)
+            if name == "goes_on":
+                resumed._enter_validation_split()
+                assert _written_split(output)["timestep_bands"] == 8
+            else:
+                with pytest.raises(ValueError, match="validation_split.json") as refused:
+                    resumed._enter_validation_split()
+                _assert_names_both_band_counts(str(refused.value))
+                assert "timestep_bands" not in _written_split(output)
+
+
+def test_a_changed_split_seed_is_named_in_the_refusal(monkeypatch, tmp_path):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)._enter_validation_split()
+    changed = _with_output_dir(
+        _prepare(_pipeline(monkeypatch, datasets, _holdout_config(validation_split_seed=9))), tmp_path
+    )
+    with pytest.raises(ValueError, match="validation_split.json") as refused:
+        changed._enter_validation_split()
+    # The folder names hold the test's name, so the key is matched in its sentence.
+    assert "differs in split_seed." in str(refused.value)
+    assert "noise bands" not in str(refused.value)
 
 
 @_CHANGES

@@ -80,7 +80,7 @@ def test_runs_with_different_splits_are_refused_naming_the_files(tmp_path):
     b = _write(tmp_path / "b", [_v2(0, _losses([1, 1]), seed=1)], split=_split(split_seed=9))
     with pytest.raises(vc.Refusal, match="validation_split.json") as refused:
         vc.compare([("A", a), ("B", b)])
-    assert "split_seed" in str(refused.value)
+    assert "They differ in split_seed." in str(refused.value)
     assert "noise bands" not in str(refused.value)
 
 
@@ -277,6 +277,9 @@ def test_runs_on_different_band_counts_are_refused(tmp_path):
     for part in (str(a / vc.SPLIT_FILE), str(b / vc.SPLIT_FILE), "timestep_bands", "8", "2",
                  "validation_timestep_bands"):
         assert part in text
+    # The folder names hold the test's name, so the key and the counts are matched in their sentences.
+    assert "They differ in timestep_bands." in text
+    assert f"records 8 noise bands and {b / vc.SPLIT_FILE} 2:" in text
 
 
 def test_runs_whose_split_records_no_band_count_still_compare(tmp_path):

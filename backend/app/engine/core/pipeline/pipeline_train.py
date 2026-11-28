@@ -403,11 +403,28 @@ class PipelineTrainMixin:
             return
         from app.engine.components.checkpoints import VALIDATION_SPLIT_NAME
         from app.engine.core.pipeline.validation_split import (
-            same_measurement,
+            measurement_difference,
+            recorded_bands,
             split_file_content,
         )
 
         content = split_file_content(split, self.config, getattr(getattr(self, "definition", None), "id", None))
+
+        def check(recorded: str, first_sentence: str, otherwise: str) -> None:
+            """Refuse a record that measures otherwise than this run, naming what differs."""
+            key = measurement_difference(recorded, content)
+            if key is None:
+                return
+            if key == "timestep_bands":
+                theirs = recorded_bands(recorded)
+                advice = (
+                    f"The record has {theirs} noise bands and this run {recorded_bands(content)}: "
+                    f"set validation_timestep_bands back to {theirs}, or {otherwise}."
+                )
+            else:
+                advice = f"Restore the dataset and the split seed, or {otherwise}."
+            raise ValueError(f"{first_sentence} It differs in {key}. {advice}")
+
         # The weights' own record, wherever the run now writes. No file: an older
         # checkpoint, or one from a job without validation. isfile would call a
         # locked file absent, and let the run past.
@@ -416,15 +433,16 @@ class PipelineTrainMixin:
             source = os.path.join(resumed_from, VALIDATION_SPLIT_NAME)
             try:
                 with open(source, encoding="utf-8") as saved:
-                    measured = same_measurement(saved.read(), content)
+                    recorded = saved.read()
             except FileNotFoundError:
-                measured = True
-            if not measured:
-                raise ValueError(
+                recorded = None
+            if recorded is not None:
+                check(
+                    recorded,
                     f"{source} records another split than this run's, on which the "
                     "checkpoint's weights were trained, so the numbers couldn't be "
-                    "compared and images that trained could be measured. Restore the "
-                    "dataset and the split seed, or start without this checkpoint."
+                    "compared and images that trained could be measured.",
+                    "start without this checkpoint",
                 )
 
         output_dir = self.checkpoint_manager.output_dir
@@ -432,12 +450,12 @@ class PipelineTrainMixin:
         path = os.path.join(output_dir, VALIDATION_SPLIT_NAME)
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as existing:
-                if not same_measurement(existing.read(), content):
-                    raise ValueError(
-                        f"{path} records another split, and its numbers couldn't be "
-                        "compared with this run's. Restore the dataset and the split "
-                        "seed, or train under another LoRA name."
-                    )
+                recorded = existing.read()
+            check(
+                recorded,
+                f"{path} records another split, and its numbers couldn't be compared with this run's.",
+                "train under another LoRA name",
+            )
         with open(path, "w", encoding="utf-8") as written:
             written.write(content)
         self.checkpoint_manager.validation_split_content = content

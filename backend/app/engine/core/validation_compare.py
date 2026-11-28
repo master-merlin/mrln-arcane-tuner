@@ -53,8 +53,9 @@ class Unreadable(Exception):
 DEFAULT_TIMESTEP_BANDS = 8
 
 # The keys of a split file that define what its numbers measure, in the order a refusal
-# names the first one that differs.
-COMPARED: tuple[str, ...] = ("representatives", "holdout", "split_seed", "global_triggerword", "timestep_bands")
+# names the first one that differs: the settings before the holdout they produce, so a
+# changed split seed is named as itself rather than as the images it moved.
+COMPARED: tuple[str, ...] = ("split_seed", "global_triggerword", "timestep_bands", "holdout", "representatives")
 
 _CHOOSES_THE_HOLDOUT = "It only chooses the holdout, and the holdout and each held-out image's digest are compared."
 
@@ -89,27 +90,35 @@ def recorded_bands(split_text: str) -> Any:
     return json.loads(split_text).get("timestep_bands", DEFAULT_TIMESTEP_BANDS)
 
 
-def measurement_identity(split_text: str, *, with_grid: bool = True) -> tuple:
-    """What a split file's numbers measure: its ``COMPARED`` parts, in that order.
-
-    Without the grid it is the four older parts alone, for a digest recorded before the
-    band count was compared.
-    """
+def _compared_parts(split_text: str) -> dict[str, Any]:
+    """Each ``COMPARED`` key's value as the comparison reads it."""
     split = json.loads(split_text)
-    representatives = [
-        {field: value for field, value in item.items() if field not in REPRESENTATIVE_LEFT_OUT}
-        for item in split.get("representatives") or []
-    ]
-    parts = (representatives, *(split.get(key) for key in ("holdout", "split_seed", "global_triggerword")))
-    return (*parts, recorded_bands(split_text)) if with_grid else parts
+    return {
+        "representatives": [
+            {field: value for field, value in item.items() if field not in REPRESENTATIVE_LEFT_OUT}
+            for item in split.get("representatives") or []
+        ],
+        **{key: split.get(key) for key in ("holdout", "split_seed", "global_triggerword")},
+        "timestep_bands": recorded_bands(split_text),
+    }
+
+
+def measurement_identity(split_text: str, *, with_grid: bool = True) -> tuple:
+    """What a split file's numbers measure: ``(representatives, holdout, split_seed,
+    global_triggerword, timestep_bands)``.
+
+    Without the grid it is the four older parts alone, in that order, for a digest recorded
+    before the band count was compared.
+    """
+    parts = _compared_parts(split_text)
+    keys = ("representatives", "holdout", "split_seed", "global_triggerword")
+    return tuple(parts[key] for key in (*keys, "timestep_bands") if with_grid or key != "timestep_bands")
 
 
 def measurement_difference(earlier: str, content: str) -> str | None:
     """The first ``COMPARED`` key in which two split files differ, or None when they agree."""
-    for key, one, other in zip(COMPARED, measurement_identity(earlier), measurement_identity(content), strict=True):
-        if one != other:
-            return key
-    return None
+    one, other = _compared_parts(earlier), _compared_parts(content)
+    return next((key for key in COMPARED if one[key] != other[key]), None)
 
 
 def same_measurement(earlier: str, content: str) -> bool:

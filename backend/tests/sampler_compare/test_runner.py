@@ -1229,8 +1229,6 @@ def test_the_recorded_measurement_digest_agrees_with_same_measurement(changes):
     earlier, content = _split(), _split(**changes)
     assert (runner._measured_digest(earlier) == runner._measured_digest(content)) == \
         vc.same_measurement(earlier, content)
-    assert (runner._measured_digest(earlier) == runner._measured_digest(content)) == \
-        (vc.measurement_identity(earlier, with_grid=False) == vc.measurement_identity(content, with_grid=False))
 
 
 def test_the_recorded_measurement_digest_is_unchanged_for_files_already_recorded():

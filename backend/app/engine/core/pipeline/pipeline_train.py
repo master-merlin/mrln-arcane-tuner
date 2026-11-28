@@ -435,8 +435,8 @@ class PipelineTrainMixin:
                 with open(source, encoding="utf-8") as saved:
                     recorded = saved.read()
             except FileNotFoundError:
-                recorded = None
-            if recorded is not None:
+                pass
+            else:
                 check(
                     recorded,
                     f"{source} records another split than this run's, on which the "

@@ -409,7 +409,7 @@ def _measured_digest(split_text: str) -> str:
     ``measurement_identity``. The band count is left out: a comparison in progress holds this
     digest in ``comparison.json``, and a digest that took it in would call that record changed.
     ``split_problem`` checks each run's band count by value instead."""
-    measured = list(vc.measurement_identity(split_text, with_grid=False))
+    measured = list(vc.measurement_identity(split_text))
     return hashlib.sha256(json.dumps(measured, sort_keys=True).encode("utf-8")).hexdigest()
 
 

@@ -85,9 +85,13 @@ REPRESENTATIVE_LEFT_OUT: dict[str, str] = {
 }
 
 
+def _bands(split: dict[str, Any]) -> Any:
+    return split.get("timestep_bands", DEFAULT_TIMESTEP_BANDS)
+
+
 def recorded_bands(split_text: str) -> Any:
     """The band count a split file records, or the default for a record without one."""
-    return json.loads(split_text).get("timestep_bands", DEFAULT_TIMESTEP_BANDS)
+    return _bands(json.loads(split_text))
 
 
 def _compared_parts(split_text: str) -> dict[str, Any]:
@@ -99,20 +103,15 @@ def _compared_parts(split_text: str) -> dict[str, Any]:
             for item in split.get("representatives") or []
         ],
         **{key: split.get(key) for key in ("holdout", "split_seed", "global_triggerword")},
-        "timestep_bands": recorded_bands(split_text),
+        "timestep_bands": _bands(split),
     }
 
 
-def measurement_identity(split_text: str, *, with_grid: bool = True) -> tuple:
-    """What a split file's numbers measure: ``(representatives, holdout, split_seed,
-    global_triggerword, timestep_bands)``.
-
-    Without the grid it is the four older parts alone, in that order, for a digest recorded
-    before the band count was compared.
-    """
+def measurement_identity(split_text: str) -> tuple:
+    """``(representatives, holdout, split_seed, global_triggerword)``: what a split file's
+    numbers measured before the band count was compared, for a digest recorded then."""
     parts = _compared_parts(split_text)
-    keys = ("representatives", "holdout", "split_seed", "global_triggerword")
-    return tuple(parts[key] for key in (*keys, "timestep_bands") if with_grid or key != "timestep_bands")
+    return tuple(parts[key] for key in ("representatives", "holdout", "split_seed", "global_triggerword"))
 
 
 def measurement_difference(earlier: str, content: str) -> str | None:

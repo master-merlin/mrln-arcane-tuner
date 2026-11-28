@@ -405,11 +405,11 @@ def write_verdict(c: Comparison, label: str, accepted: bool, stopped_for: str | 
 
 
 def _measured_digest(split_text: str) -> str:
-    """The sha256 of what ``validation_compare.same_measurement`` compares (a test pins the two
-    agreeing; that module's own reading is local to its function)."""
-    split = json.loads(split_text)
-    representatives = [{k: v for k, v in item.items() if k != "path"} for item in split.get("representatives") or []]
-    measured = [representatives, *(split.get(k) for k in ("holdout", "split_seed", "global_triggerword"))]
+    """The sha256 of what ``validation_compare.same_measurement`` compares, read through its own
+    ``measurement_identity``. The band count is left out: a comparison in progress holds this
+    digest in ``comparison.json``, and a digest that took it in would call that record changed.
+    ``split_problem`` checks each run's band count by value instead."""
+    measured = list(vc.measurement_identity(split_text, with_grid=False))
     return hashlib.sha256(json.dumps(measured, sort_keys=True).encode("utf-8")).hexdigest()
 
 

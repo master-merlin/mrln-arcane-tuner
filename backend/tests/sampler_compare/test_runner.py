@@ -1229,3 +1229,14 @@ def test_the_recorded_measurement_digest_agrees_with_same_measurement(changes):
     earlier, content = _split(), _split(**changes)
     assert (runner._measured_digest(earlier) == runner._measured_digest(content)) == \
         vc.same_measurement(earlier, content)
+    assert (runner._measured_digest(earlier) == runner._measured_digest(content)) == \
+        (vc.measurement_identity(earlier, with_grid=False) == vc.measurement_identity(content, with_grid=False))
+
+
+def test_the_recorded_measurement_digest_is_unchanged_for_files_already_recorded():
+    # A comparison in progress holds this digest in its comparison.json; another value would stop it
+    # as changed since it was recorded. The band count is checked by value instead.
+    recorded = "027da1c1678a27d4bd2ba53f5fdc8643a06c5af389802a81ff6a7813162e8b60"
+    assert runner._measured_digest(_split(timestep_bands=8)) == recorded
+    assert runner._measured_digest(_split()) == recorded
+    assert runner._measured_digest(_split(timestep_bands=2)) == recorded

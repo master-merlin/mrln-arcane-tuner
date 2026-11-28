@@ -16,6 +16,7 @@ from PIL import Image
 
 # One rule for the in-run guard and the comparison of runs; it lives in the light module.
 from app.engine.core.validation_compare import (  # noqa: F401 - re-exported
+    RESTORE,
     measurement_difference,
     recorded_bands,
     same_measurement,

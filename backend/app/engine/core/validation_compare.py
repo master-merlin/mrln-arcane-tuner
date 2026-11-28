@@ -57,6 +57,15 @@ DEFAULT_TIMESTEP_BANDS = 8
 # changed split seed is named as itself rather than as the images it moved.
 COMPARED: tuple[str, ...] = ("split_seed", "global_triggerword", "timestep_bands", "holdout", "representatives")
 
+# For each ``COMPARED`` key, what a resume restores, and runs to compare keep the same, when it differs.
+RESTORE: dict[str, str] = {
+    "split_seed": "the dataset and the split seed",
+    "global_triggerword": "the trigger word",
+    "timestep_bands": "validation_timestep_bands",
+    "holdout": "the dataset and the split seed",
+    "representatives": "the held-out images, their captions and their caption prefixes",
+}
+
 _CHOOSES_THE_HOLDOUT = "It only chooses the holdout, and the holdout and each held-out image's digest are compared."
 
 # Every other key a split file records, and why two runs may differ in it.
@@ -399,8 +408,10 @@ def _check_comparable(runs: list[Run], step: int) -> None:
                 message += (
                     f" {first.folder / SPLIT_FILE} records {recorded_bands(first.split_text)} noise bands and "
                     f"{run.folder / SPLIT_FILE} {recorded_bands(run.split_text)}: compare runs trained with one "
-                    "validation_timestep_bands."
+                    f"{RESTORE[key]}."
                 )
+            else:
+                message += f" Keep {RESTORE[key]} the same in the runs you compare."
             raise Refusal(message)
     centres = first.records[step]["band_centres"]
     for run in runs[1:]:

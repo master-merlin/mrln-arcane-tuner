@@ -682,6 +682,64 @@ def test_a_record_without_a_band_count_resumes_at_eight_bands_and_stops_at_two(m
                 assert "timestep_bands" not in _written_split(output)
 
 
+def _changed_trigger(datasets):
+    return datasets, {"global_triggerword": "ohwx"}
+
+
+def _changed_caption(datasets):
+    for pair in datasets["ds"]["pairs"]:
+        pair["caption_content"] = "another caption"
+    return datasets, {}
+
+
+@pytest.mark.parametrize(
+    "change, key, advice",
+    [
+        (_changed_trigger, "global_triggerword", "Restore the trigger word, or start without this checkpoint."),
+        (_changed_caption, "representatives",
+         "Restore the held-out images, their captions and their caption prefixes, or start without this checkpoint."),
+    ],
+    ids=["trigger word", "caption"],
+)
+def test_a_refusal_advises_restoring_what_differs(monkeypatch, tmp_path, change, key, advice):
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = _checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first")
+    later, config = change(datasets)
+    fresh = tmp_path / "fresh"
+    resumed = _resuming(monkeypatch, later, checkpoint, fresh, **config)
+
+    with pytest.raises(ValueError, match="validation_split.json") as refused:
+        resumed._enter_validation_split()
+
+    text = str(refused.value)
+    assert f"It differs in {key}. {advice}" in text
+    assert "split seed" not in text
+
+
+@pytest.mark.parametrize("bands", [8, 2])
+def test_records_of_two_band_counts_stop_once_naming_both(monkeypatch, tmp_path, bands):
+    """The checkpoint's record has 8 bands and the output folder's 2: no setting matches both,
+    so no advice to set one back, which the other record would refuse."""
+    datasets = {"ds": _dataset(tmp_path, "ds", 20)}
+    checkpoint = Path(_checkpoint_of(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path / "first"))
+    output = tmp_path / "out"
+    two = _prepare(_pipeline(monkeypatch, datasets, _holdout_config(validation_timestep_bands=2)))
+    _with_output_dir(two, output)._enter_validation_split()
+    resumed = _resuming(monkeypatch, datasets, str(checkpoint), output, validation_timestep_bands=bands)
+
+    with pytest.raises(ValueError) as refused:
+        resumed._enter_validation_split()
+
+    text = str(refused.value)
+    source, existing = checkpoint / "validation_split.json", output / "validation_split.json"
+    assert f"{source} records 8 noise bands and {existing} 2" in text
+    assert "timestep_bands" in text and "back to" not in text
+    assert _written_split(checkpoint)["timestep_bands"] == 8
+    assert _written_split(output)["timestep_bands"] == 2
+    assert resumed.checkpoint_manager.validation_split_content is None
+    assert len(resumed.inventory) == 20 * 3
+
+
 def test_a_changed_split_seed_is_named_in_the_refusal(monkeypatch, tmp_path):
     datasets = {"ds": _dataset(tmp_path, "ds", 20)}
     _with_output_dir(_prepare(_pipeline(monkeypatch, datasets, _holdout_config())), tmp_path)._enter_validation_split()
@@ -691,7 +749,7 @@ def test_a_changed_split_seed_is_named_in_the_refusal(monkeypatch, tmp_path):
     with pytest.raises(ValueError, match="validation_split.json") as refused:
         changed._enter_validation_split()
     # The folder names hold the test's name, so the key is matched in its sentence.
-    assert "differs in split_seed." in str(refused.value)
+    assert "differs in split_seed. Restore the dataset and the split seed, or train under" in str(refused.value)
     assert "noise bands" not in str(refused.value)
 
 

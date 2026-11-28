@@ -472,6 +472,12 @@ def split_problem(run_dir: Path, c: Comparison, requested: dict, manifest: dict[
     reference_text = reference.read_text(encoding="utf-8", errors="replace")
     if _measured_digest(reference_text) != recorded["measured_sha256"]:
         return f"the recorded measurement's split file {reference} changed since it was recorded"
+    # The digest leaves the band count out, so it is checked by value: an edited reference is
+    # named as changed, not every run after it as another measurement.
+    reference_bands = vc.recorded_bands(reference_text)
+    if reference_bands != wanted["timestep_bands"]:
+        return (f"the recorded measurement's split file {reference} changed since it was recorded: "
+                f"it records timestep_bands {reference_bands!r}, not {wanted['timestep_bands']!r}")
     if not vc.same_measurement(reference_text, text):
         return f"its split is not the same measurement as {recorded['label']} ({reference})"
     return None

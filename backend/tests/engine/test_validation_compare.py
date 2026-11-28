@@ -282,6 +282,33 @@ def test_runs_on_different_band_counts_are_refused(tmp_path):
     assert f"records 8 noise bands and {b / vc.SPLIT_FILE} 2:" in text
 
 
+def test_every_compared_key_has_its_advice():
+    assert set(vc.RESTORE) == set(vc.COMPARED)
+    assert all(advice.strip() for advice in vc.RESTORE.values())
+
+
+@pytest.mark.parametrize(
+    "changes, advice",
+    [
+        ({"global_triggerword": "ohwx"},
+         "They differ in global_triggerword. Keep the trigger word the same in the runs you compare."),
+        ({"representatives": [{"key": key, "path": f"/data/{key}", "caption": "other", "target_w": 64, "target_h": 64,
+                               "sha256": key} for key in KEYS]},
+         "They differ in representatives. Keep the held-out images, their captions and their caption prefixes "
+         "the same in the runs you compare."),
+        ({"split_seed": 9},
+         "They differ in split_seed. Keep the dataset and the split seed the same in the runs you compare."),
+    ],
+    ids=["trigger word", "caption", "split seed"],
+)
+def test_a_refused_comparison_says_what_to_keep_the_same(tmp_path, changes, advice):
+    a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))])
+    b = _write(tmp_path / "b", [_v2(0, _losses([1, 1]))], split=_split(**changes))
+    with pytest.raises(vc.Refusal) as refused:
+        vc.compare([("A", a), ("B", b)])
+    assert advice in str(refused.value)
+
+
 def test_runs_whose_split_records_no_band_count_still_compare(tmp_path):
     a = _write(tmp_path / "a", [_v2(0, _losses([1, 1]))])
     b = _write(tmp_path / "b", [_v2(0, _losses([1, 1]))], split=_split(timestep_bands=8))

@@ -654,6 +654,26 @@ def test_the_first_run_cannot_replace_the_recorded_measurement(world):
     assert world.trainer_starts == 0
 
 
+def test_a_reference_split_given_another_band_count_is_reported_as_changed(world):
+    c = world.comparison()
+    world.place_all(c)
+    assert runner.run_queue(c, world.seams()) is None
+    recorded = json.loads((c.work_dir / "comparison.json").read_text(encoding="utf-8"))
+    reference = Path(recorded["split"])
+    content = json.loads(reference.read_text(encoding="utf-8"))
+    content["timestep_bands"] = 2
+    reference.write_text(json.dumps(content), encoding="utf-8")
+
+    prepared = world.prepared(c)
+    folders = {plan.label(arm, seed): runner.run_dir(c, plan.label(arm, seed), prepared.definition_id)
+               for arm, seed in plan.queue(c)}
+    later, folder = next((label, folder) for label, folder in folders.items() if folder != reference.parent)
+    problem = runner.split_problem(folder, c, prepared.requested[later], prepared.manifest, record=False)
+
+    assert problem is not None and "changed since it was recorded" in problem and str(reference) in problem
+    assert "timestep_bands 2" in problem
+
+
 def _folders(c):
     return {p.name: sorted(x.name for x in p.iterdir()) for p in (c.work_dir / "runs").iterdir()}
 
@@ -1222,13 +1242,21 @@ def _split(**changes):
     "changes",
     [{}, {"noise_draws": 1}, {"representatives": [{"key": "Cars/a.png", "path": "E:/moved/a.png", "sha256": "1" * 64}]},
      {"split_seed": 1}, {"holdout": ["Cars/b.png"]}, {"global_triggerword": "ohwx"},
-     {"representatives": [{"key": "Cars/a.png", "path": "D:/x/a.png", "sha256": "2" * 64}]}],
-    ids=["same", "draws", "moved", "seed", "holdout", "trigger", "digest"],
+     {"representatives": [{"key": "Cars/a.png", "path": "D:/x/a.png", "sha256": "2" * 64}]},
+     {"timestep_bands": 2}],
+    ids=["same", "draws", "moved", "seed", "holdout", "trigger", "digest", "bands"],
 )
 def test_the_recorded_measurement_digest_agrees_with_same_measurement(changes):
+    """The digest agrees with same_measurement on every key but one: the band count, which it
+    leaves out on purpose so that digests already recorded stay valid. split_problem checks the
+    band count by value instead."""
     earlier, content = _split(), _split(**changes)
-    assert (runner._measured_digest(earlier) == runner._measured_digest(content)) == \
-        vc.same_measurement(earlier, content)
+    same_digest = runner._measured_digest(earlier) == runner._measured_digest(content)
+    if "timestep_bands" in changes:
+        # The deliberate exception: another measurement, and the same digest.
+        assert same_digest and not vc.same_measurement(earlier, content)
+    else:
+        assert same_digest == vc.same_measurement(earlier, content)
 
 
 def test_the_recorded_measurement_digest_is_unchanged_for_files_already_recorded():

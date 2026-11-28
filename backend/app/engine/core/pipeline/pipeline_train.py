@@ -403,6 +403,7 @@ class PipelineTrainMixin:
             return
         from app.engine.components.checkpoints import VALIDATION_SPLIT_NAME
         from app.engine.core.pipeline.validation_split import (
+            RESTORE,
             measurement_difference,
             recorded_bands,
             split_file_content,
@@ -422,40 +423,56 @@ class PipelineTrainMixin:
                     f"set validation_timestep_bands back to {theirs}, or {otherwise}."
                 )
             else:
-                advice = f"Restore the dataset and the split seed, or {otherwise}."
+                advice = f"Restore {RESTORE[key]}, or {otherwise}."
             raise ValueError(f"{first_sentence} It differs in {key}. {advice}")
 
         # The weights' own record, wherever the run now writes. No file: an older
         # checkpoint, or one from a job without validation. isfile would call a
         # locked file absent, and let the run past.
         resumed_from = self.config.get("resume_from_checkpoint")
+        source = saved_record = None
         if resumed_from:
             source = os.path.join(resumed_from, VALIDATION_SPLIT_NAME)
             try:
                 with open(source, encoding="utf-8") as saved:
-                    recorded = saved.read()
+                    saved_record = saved.read()
             except FileNotFoundError:
                 pass
-            else:
-                check(
-                    recorded,
-                    f"{source} records another split than this run's, on which the "
-                    "checkpoint's weights were trained, so the numbers couldn't be "
-                    "compared and images that trained could be measured.",
-                    "start without this checkpoint",
-                )
 
         output_dir = self.checkpoint_manager.output_dir
-        os.makedirs(output_dir, exist_ok=True)
         path = os.path.join(output_dir, VALIDATION_SPLIT_NAME)
+        existing_record = None
         if os.path.isfile(path):
             with open(path, encoding="utf-8") as existing:
-                recorded = existing.read()
+                existing_record = existing.read()
+
+        # Two records on two band counts: no setting matches both, so advising one
+        # would only send the next resume to the other's refusal.
+        if saved_record is not None and existing_record is not None:
+            saved_bands, existing_bands = recorded_bands(saved_record), recorded_bands(existing_record)
+            if saved_bands != existing_bands:
+                raise ValueError(
+                    f"{source} records {saved_bands} noise bands and {path} {existing_bands}: the "
+                    "checkpoint and this output folder differ in timestep_bands, so no "
+                    "validation_timestep_bands measures like both. Start without this checkpoint, "
+                    "or train under another LoRA name."
+                )
+        if saved_record is not None:
             check(
-                recorded,
+                saved_record,
+                f"{source} records another split than this run's, on which the "
+                "checkpoint's weights were trained, so the numbers couldn't be "
+                "compared and images that trained could be measured.",
+                "start without this checkpoint",
+            )
+        if existing_record is not None:
+            check(
+                existing_record,
                 f"{path} records another split, and its numbers couldn't be compared with this run's.",
                 "train under another LoRA name",
             )
+
+        os.makedirs(output_dir, exist_ok=True)
         with open(path, "w", encoding="utf-8") as written:
             written.write(content)
         self.checkpoint_manager.validation_split_content = content

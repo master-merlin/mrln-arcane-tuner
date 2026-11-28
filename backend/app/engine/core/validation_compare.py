@@ -48,27 +48,97 @@ class Unreadable(Exception):
     """A file can't be read, or isn't what a validation pass writes (exit code 1)."""
 
 
+# The band count a run measures when its config doesn't set one; the schema's default
+# (a test pins the two together, as this module can't import the schema).
+DEFAULT_TIMESTEP_BANDS = 8
+
+# The keys of a split file that define what its numbers measure, in the order a refusal
+# names the first one that differs: the settings before the holdout they produce, so a
+# changed split seed is named as itself rather than as the images it moved.
+COMPARED: tuple[str, ...] = ("split_seed", "global_triggerword", "timestep_bands", "holdout", "representatives")
+
+# For each ``COMPARED`` key, what a resume restores, and runs to compare keep the same, when it differs.
+RESTORE: dict[str, str] = {
+    "split_seed": "the dataset and the split seed",
+    "global_triggerword": "the trigger word",
+    "timestep_bands": "validation_timestep_bands",
+    "holdout": "the dataset and the split seed",
+    "representatives": "the held-out images, their captions and their caption prefixes",
+}
+
+_CHOOSES_THE_HOLDOUT = "It only chooses the holdout, and the holdout and each held-out image's digest are compared."
+
+# Every other key a split file records, and why two runs may differ in it.
+LEFT_OUT: dict[str, str] = {
+    "groups": _CHOOSES_THE_HOLDOUT,
+    "holdout_fraction": _CHOOSES_THE_HOLDOUT,
+    "validation_dataset": _CHOOSES_THE_HOLDOUT,
+    "hash_threshold_bits": _CHOOSES_THE_HOLDOUT,
+    "every_n_steps": "It sets when a pass runs, not what a pass measures, and each record names its own step.",
+    "noise_draws": (
+        "Draw 0 is the same noise whatever the count, each pass record names its own count, "
+        "and a comparison of runs pairs only the draws every run has."
+    ),
+    "model": (
+        "Older split files don't record it, so a resume of such a run must still be accepted; "
+        "a comparison of runs refuses two recorded models on its own."
+    ),
+}
+
+# The fields of a held-out image's record that two runs may differ in, and why.
+REPRESENTATIVE_LEFT_OUT: dict[str, str] = {
+    "path": (
+        "A checkpoint can move to a machine where the dataset lies in another folder; "
+        "the file's content digest is compared, so a name can't change its picture."
+    ),
+}
+
+
+def _bands(split: dict[str, Any]) -> Any:
+    return split.get("timestep_bands", DEFAULT_TIMESTEP_BANDS)
+
+
+def recorded_bands(split_text: str) -> Any:
+    """The band count a split file records, or the default for a record without one."""
+    return _bands(json.loads(split_text))
+
+
+def _compared_parts(split_text: str) -> dict[str, Any]:
+    """Each ``COMPARED`` key's value as the comparison reads it."""
+    split = json.loads(split_text)
+    return {
+        "representatives": [
+            {field: value for field, value in item.items() if field not in REPRESENTATIVE_LEFT_OUT}
+            for item in split.get("representatives") or []
+        ],
+        **{key: split.get(key) for key in ("holdout", "split_seed", "global_triggerword")},
+        "timestep_bands": _bands(split),
+    }
+
+
+def measurement_identity(split_text: str) -> tuple:
+    """``(representatives, holdout, split_seed, global_triggerword)``: what a split file's
+    numbers measured before the band count was compared, for a digest recorded then."""
+    parts = _compared_parts(split_text)
+    return tuple(parts[key] for key in ("representatives", "holdout", "split_seed", "global_triggerword"))
+
+
+def measurement_difference(earlier: str, content: str) -> str | None:
+    """The first ``COMPARED`` key in which two split files differ, or None when they agree."""
+    one, other = _compared_parts(earlier), _compared_parts(content)
+    return next((key for key in COMPARED if one[key] != other[key]), None)
+
+
 def same_measurement(earlier: str, content: str) -> bool:
     """Whether two split files measure the same images the same way.
 
-    A changed interval, or a new image in training, keeps the numbers comparable. A
-    different holdout doesn't: an image that trained could now be measured. The folder a
-    dataset lies in isn't part of it, as a checkpoint can move to a machine where it
-    differs; each held-out file's content digest is, so a name can't change its picture.
-    The draw count (``noise_draws``) isn't part of it either: draw 0 is the same noise
-    whatever the count, each pass record names its own count, and a comparison of runs
-    pairs only the draws every run has.
+    The keys compared are ``COMPARED``; every other key, and why it may differ, is in
+    ``LEFT_OUT`` (a held-out image's own fields in ``REPRESENTATIVE_LEFT_OUT``). A changed
+    interval, the draw count (``noise_draws``), or a new image in training keeps the numbers
+    comparable. A different holdout doesn't: an image that trained could now be measured;
+    nor does another band count, whose means lie on another grid.
     """
-
-    def measured(text: str) -> tuple:
-        split = json.loads(text)
-        representatives = [
-            {field: value for field, value in item.items() if field != "path"}
-            for item in split.get("representatives") or []
-        ]
-        return (representatives, *(split.get(k) for k in ("holdout", "split_seed", "global_triggerword")))
-
-    return measured(earlier) == measured(content)
+    return measurement_difference(earlier, content) is None
 
 
 # ── Loading ──────────────────────────────────────────────────────────────────
@@ -328,11 +398,21 @@ def _digest_reasons(runs: list[Run]) -> list[str]:
 def _check_comparable(runs: list[Run], step: int) -> None:
     first = runs[0]
     for run in runs[1:]:
-        if not same_measurement(first.split_text, run.split_text):
-            raise Refusal(
+        key = measurement_difference(first.split_text, run.split_text)
+        if key is not None:
+            message = (
                 f"{first.folder / SPLIT_FILE} and {run.folder / SPLIT_FILE} don't hold out the same "
-                "images the same way: their numbers measure different things."
+                f"images the same way: their numbers measure different things. They differ in {key}."
             )
+            if key == "timestep_bands":
+                message += (
+                    f" {first.folder / SPLIT_FILE} records {recorded_bands(first.split_text)} noise bands and "
+                    f"{run.folder / SPLIT_FILE} {recorded_bands(run.split_text)}: compare runs trained with one "
+                    f"{RESTORE[key]}."
+                )
+            else:
+                message += f" Keep {RESTORE[key]} the same in the runs you compare."
+            raise Refusal(message)
     centres = first.records[step]["band_centres"]
     for run in runs[1:]:
         if run.records[step]["band_centres"] != centres:

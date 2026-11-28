@@ -405,11 +405,11 @@ def write_verdict(c: Comparison, label: str, accepted: bool, stopped_for: str | 
 
 
 def _measured_digest(split_text: str) -> str:
-    """The sha256 of what ``validation_compare.same_measurement`` compares (a test pins the two
-    agreeing; that module's own reading is local to its function)."""
-    split = json.loads(split_text)
-    representatives = [{k: v for k, v in item.items() if k != "path"} for item in split.get("representatives") or []]
-    measured = [representatives, *(split.get(k) for k in ("holdout", "split_seed", "global_triggerword"))]
+    """The sha256 of what ``validation_compare.same_measurement`` compares, read through its own
+    ``measurement_identity``. The band count is left out: a comparison in progress holds this
+    digest in ``comparison.json``, and a digest that took it in would call that record changed.
+    ``split_problem`` checks each run's band count by value instead."""
+    measured = list(vc.measurement_identity(split_text))
     return hashlib.sha256(json.dumps(measured, sort_keys=True).encode("utf-8")).hexdigest()
 
 
@@ -472,6 +472,12 @@ def split_problem(run_dir: Path, c: Comparison, requested: dict, manifest: dict[
     reference_text = reference.read_text(encoding="utf-8", errors="replace")
     if _measured_digest(reference_text) != recorded["measured_sha256"]:
         return f"the recorded measurement's split file {reference} changed since it was recorded"
+    # The digest leaves the band count out, so it is checked by value: an edited reference is
+    # named as changed, not every run after it as another measurement.
+    reference_bands = vc.recorded_bands(reference_text)
+    if reference_bands != wanted["timestep_bands"]:
+        return (f"the recorded measurement's split file {reference} changed since it was recorded: "
+                f"it records timestep_bands {reference_bands!r}, not {wanted['timestep_bands']!r}")
     if not vc.same_measurement(reference_text, text):
         return f"its split is not the same measurement as {recorded['label']} ({reference})"
     return None
